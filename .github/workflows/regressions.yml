@@ -24,6 +24,11 @@ jobs:
         with:
           python-version: ${{ matrix.python }}
           cache: pip
+      - name: Install Qt runtime libraries
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libegl1 libopengl0 libxkbcommon0
       - run: python -m pip install -r requirements-dev.txt
       - run: python -m compileall -q nightwatch nightwatch_futures.py
       - run: python -m pytest -q

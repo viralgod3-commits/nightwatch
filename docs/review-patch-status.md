@@ -142,6 +142,9 @@ NumPy 2.5.3 and HTTPX 0.28.1 with SOCKS support installed.
   by Qt's virtual screen; this is not a 720p/high-DPI Windows desktop pass.
 - The Windows/Linux × Python 3.12/3.14 CI matrix is configured. Check the actual
   run on the published commit; configuration alone is not a passing result.
+  Ubuntu jobs explicitly install native EGL/OpenGL runtime libraries before
+  importing Qt; the initial CI run exposed a missing `libEGL.so.1` in the runner
+  image. Both Windows jobs passed that initial run.
 
 No live orders or real API credentials were used. There is no measured
 maximum-FPS, zero-hitch, native-GPU, high-DPI or live-network reliability claim.

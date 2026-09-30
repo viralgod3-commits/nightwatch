@@ -20,6 +20,15 @@ mainnet market data. Configure matching Binance Futures credentials in the app
 or through `BINANCE_API_KEY` and `BINANCE_API_SECRET`. Public research does not
 require trading credentials. Trading starts disarmed.
 
+Ubuntu/Debian headless checks also require Qt's native EGL/OpenGL runtime:
+
+```bash
+sudo apt-get install -y libegl1 libopengl0 libxkbcommon0
+```
+
+A native Linux desktop also needs its Qt platform/graphics dependencies; see
+[Qt for Linux requirements](https://doc.qt.io/qt-6/linux-requirements.html).
+
 Optional `fonts/` and `assets/` directories belong beside
 `nightwatch_futures.py`, at the project root. Resource lookup is independent of
 the working directory. A checkout without bundled fonts uses system UI and
