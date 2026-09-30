@@ -45,6 +45,11 @@ class TextRole:
     ICON_FALLBACK = "icon_fallback"
     TRADING_TICKET = "trading_ticket"
     TRADING_TICKET_VALUE = "trading_ticket_value"
+    TRADING_DESK_CONTROL = "trading_desk_control"
+    TRADING_DESK_VALUE = "trading_desk_value"
+    TRADING_DESK_CAPTION = "trading_desk_caption"
+    TRADING_DESK_AMOUNT = "trading_desk_amount"
+    TRADING_DESK_PNL = "trading_desk_pnl"
     UI_GLYPH = "ui_glyph"
     INSTRUMENT_SYMBOL = "instrument_symbol"
     TOP_TICKER_SYMBOL = "top_ticker_symbol"
@@ -88,6 +93,11 @@ TYPOGRAPHY_ROLE_LABELS: dict[str, str] = {
     TextRole.ICON_FALLBACK: "Fallback icon glyphs",
     TextRole.TRADING_TICKET: "Compact execution-ticket controls",
     TextRole.TRADING_TICKET_VALUE: "Compact execution-ticket numeric values",
+    TextRole.TRADING_DESK_CONTROL: "Position Desk controls",
+    TextRole.TRADING_DESK_VALUE: "Position Desk numeric values",
+    TextRole.TRADING_DESK_CAPTION: "Position Desk captions",
+    TextRole.TRADING_DESK_AMOUNT: "Position Desk close quantity",
+    TextRole.TRADING_DESK_PNL: "Position Desk selected PnL",
     TextRole.UI_GLYPH: "UI glyph controls",
     TextRole.INSTRUMENT_SYMBOL: "Instrument / symbol identifiers",
     TextRole.TOP_TICKER_SYMBOL: "Top-bar ticker identifier",
@@ -162,6 +172,11 @@ TYPOGRAPHY_DEFAULTS: dict[str, dict[str, Any]] = {
     TextRole.ICON_FALLBACK: _font_profile("ui", 6.5, 600, hinting="vertical"),
     TextRole.TRADING_TICKET: _font_profile("ui", 7.75, 400, hinting="vertical"),
     TextRole.TRADING_TICKET_VALUE: _font_profile("numeric", 8.5, 500, hinting="full", fixed_pitch=True),
+    TextRole.TRADING_DESK_CONTROL: _font_profile("ui", 10.0, 400, hinting="vertical"),
+    TextRole.TRADING_DESK_VALUE: _font_profile("numeric", 10.5, 500, hinting="full", fixed_pitch=True),
+    TextRole.TRADING_DESK_CAPTION: _font_profile("ui", 9.0, 400, hinting="vertical"),
+    TextRole.TRADING_DESK_AMOUNT: _font_profile("numeric", 21.0, 500, hinting="full", fixed_pitch=True, numeric_width="extended"),
+    TextRole.TRADING_DESK_PNL: _font_profile("numeric", 20.0, 500, hinting="full", fixed_pitch=True, numeric_width="extended"),
     TextRole.UI_GLYPH: _font_profile("ui", 11.0, 400, hinting="vertical"),
     # Instrument identifiers are alphabetic labels, not tabular numeric data.
     # Keep their size terminal-dense while avoiding full numeric hinting, which

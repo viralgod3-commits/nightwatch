@@ -21,7 +21,7 @@ from ..constants import (
 from ..models import SymbolRules
 from ..models import TradingGatewayPort
 from ..utilities import ElidedLabel, line_icon
-from ..utilities import TextRole, set_text_role, typography_font
+from ..utilities import TextRole, set_text_role, typography_controller, typography_font
 from ..models import format_price, human_number, quantize_step, safe_float, validate_step
 from .orders import (
     is_shift_letter_shortcut,
@@ -32,6 +32,134 @@ from .orders import (
 
 
 _ACCOUNT_POLL_MINIMUM_INTERVAL = 8.0
+
+
+def _trading_stylesheet(theme: dict[str, str]) -> str:
+    """Keep the ticket and account surfaces styled without changing the shell."""
+    t = {"panel": "#040404", "panel2": "#080808", "control": "#0C0C0C",
+         "control_hover": "#161616", "border": "#252525", "control_border": "#353535",
+         "text": "#EDEDED", "muted": "#92929A", "cyan": "#79BCFF",
+         "green": "#22D27A", "red": "#FF4757", "amber": "#E8A64A", **theme}
+    return f"""
+        QWidget#responsiveOrderTicket, QWidget#accountActivityPanel, QWidget#positionDeskBody,
+        QFrame#positionDeskView, QScrollArea#positionDeskScroll, QScrollArea#deskTicketScroll,
+        QFrame#tradingAccountFrame {{ background: {t['panel']}; }}
+        QLabel {{ background: transparent; border: 0; padding: 0; color: {t['text']}; }}
+        QLabel#accountCardDetail, QLabel#ticketFieldCaption, QLabel#ticketContext {{ color: {t['muted']}; }}
+        QWidget#tradingInlineField, QWidget#ticketField {{ background: transparent; border: 0; }}
+        QFrame#tradingPanelCard, QFrame#tradingControlRow, QFrame#tradingMarginRow {{
+            background: transparent; border: 0; padding: 0;
+        }}
+        QLineEdit, QComboBox, QDoubleSpinBox {{
+            background: {t['control']}; color: {t['text']}; border: 1px solid {t['control_border']};
+            border-radius: 3px; min-width: 0; min-height: 26px; padding: 4px 8px;
+        }}
+        QLineEdit:focus, QComboBox:focus, QDoubleSpinBox:focus {{ border-color: {t['cyan']}; }}
+        QComboBox {{ padding-right: 24px; }}
+        QComboBox::drop-down {{ border: 0; width: 22px; }}
+        QComboBox::down-arrow, QComboBox#tradeTicketPrimaryCombo::down-arrow,
+        QComboBox#leverageDropdown::down-arrow, QComboBox#timeInForceCycle::down-arrow,
+        QComboBox#positionCloseSize::down-arrow, QDoubleSpinBox::up-arrow, QDoubleSpinBox::down-arrow {{
+            image: none; width: 0; height: 0;
+        }}
+        QComboBox QAbstractItemView {{
+            background: {t['panel2']}; color: {t['text']}; selection-background-color: {t['control_hover']};
+            border: 1px solid {t['control_border']}; padding: 3px;
+        }}
+        QPushButton, QToolButton {{
+            background: {t['control']}; color: {t['text']}; border: 1px solid {t['control_border']};
+            border-radius: 3px; min-width: 0; min-height: 22px; padding: 4px 7px;
+        }}
+        QPushButton:hover, QToolButton:hover {{ background: {t['control_hover']}; border-color: {t['muted']}; }}
+        QPushButton:disabled, QToolButton:disabled {{ color: {t['muted']}; border-color: {t['border']}; }}
+        QToolButton#tradeSettingsMini {{ border: 0; background: transparent; padding: 0; min-height: 0; }}
+        QPushButton#buySideButton {{ color: {t['green']}; border-color: {t['green']}; min-height: 32px; }}
+        QPushButton#sellSideButton {{ color: {t['red']}; border-color: {t['red']}; min-height: 32px; }}
+        QPushButton#buySideButton:checked, QPushButton#sellSideButton:checked {{ background: {t['control_hover']}; }}
+        QCheckBox#reduceOnlyCheck {{ background: transparent; padding: 0; spacing: 6px; }}
+        QCheckBox::indicator {{ width: 13px; height: 13px; }}
+        QPushButton#protectionButton[active="true"] {{ color: {t['cyan']}; border-color: {t['cyan']}; }}
+        QTabBar#ticketIntentTabs::tab, QTabBar#ticketOrderTypes::tab, QTabWidget#tradingAccountTabs QTabBar::tab {{
+            background: transparent; color: {t['muted']}; border: 0;
+            border-bottom: 2px solid {t['border']}; min-width: 0; min-height: 22px;
+            padding: 5px 4px; margin: 0;
+        }}
+        QTabBar#ticketIntentTabs::tab:selected, QTabBar#ticketOrderTypes::tab:selected, QTabWidget#tradingAccountTabs QTabBar::tab:selected {{
+            color: {t['text']}; border-bottom-color: {t['cyan']}; background: transparent;
+        }}
+        QTabBar#ticketOrderTypes::tab:hover, QTabWidget#tradingAccountTabs QTabBar::tab:hover {{ color: {t['text']}; }}
+        QTabWidget#tradingAccountTabs::pane {{ border: 0; background: #000000; top: 0; }}
+        QListWidget#tradingCardList {{ border: 0; background: #000000; padding: 0; }}
+        QListWidget#tradingCardList::item {{ border: 0; padding: 0; background: transparent; }}
+        QListWidget#tradingCardList::item:selected {{ background: transparent; }}
+        QFrame#positionAccountCard, QFrame#orderAccountCard, QFrame#fillAccountCard {{
+            background: {t['panel2']}; border: 1px solid {t['border']}; border-radius: 4px;
+        }}
+        QFrame#positionAccountCard:hover, QFrame#orderAccountCard:hover {{ border-color: {t['control_border']}; }}
+        QFrame#positionAccountCard[current="true"], QFrame#orderAccountCard[current="true"] {{ border-left: 2px solid {t['cyan']}; }}
+        QLabel#accountCardSide[direction="long"], QLabel[pnl="positive"] {{ color: {t['green']}; }}
+        QLabel#accountCardSide[direction="short"], QLabel[pnl="negative"] {{ color: {t['red']}; }}
+        QLabel#accountCardRisk[risk="warning"], QLabel#accountOrderStatus[state="partial"],
+        QLabel#tradeValidation {{ color: {t['amber']}; }}
+        QLabel#accountCardRisk[risk="critical"], QLabel#tradeExecutionState[attention="true"],
+        QLabel#tradeValidation[blocked="true"] {{ color: {t['red']}; }}
+        QLabel#tradeAvailableSummary, QLabel#tradeAccountSummary, QLabel#tradingDeskStatus,
+        QLabel#accountTotalPnl {{ border: 0; background: transparent; padding: 0; }}
+        QFrame#ticketEstimates {{ border: 0; border-top: 1px solid {t['border']}; background: transparent; }}
+        QProgressBar#orderFillProgress {{ border: 0; background: {t['border']}; max-height: 3px; min-height: 3px; }}
+        QProgressBar#orderFillProgress::chunk {{ background: {t['cyan']}; }}
+        QFrame#positionDeskRow, QFrame#workingOrderRow, QFrame#fillAccountCard {{
+            background: transparent; border: 0; border-bottom: 1px solid {t['border']}; border-radius: 0;
+        }}
+        QFrame#positionDeskRow[selected="true"] {{ background: {t['control']}; border-left: 3px solid {t['cyan']}; }}
+        QFrame#positionDeskDetails, QFrame#deskRiskMetrics {{ background: transparent; border: 0; border-top: 1px solid {t['border']}; }}
+        QTabBar#ticketIntentTabs::tab {{ border: 1px solid {t['control_border']}; border-bottom-width: 2px; padding: 8px 4px; }}
+        QTabBar#ticketIntentTabs[intent="reduce"]::tab:selected {{ color: {t['red']}; border-color: {t['red']}; }}
+        QTabBar#ticketIntentTabs::tab:selected {{ border-bottom-color: {t['cyan']}; }}
+        QLineEdit#deskReduceAmount {{ padding: 9px 8px; }}
+        QPushButton#deskReduceSubmit {{ color: {t['red']}; border-color: {t['red']}; padding: 9px 7px; min-height: 26px; }}
+        QPushButton#deskReduceSubmit:hover {{ background: {t['control_hover']}; }}
+        QPushButton#sizePresetButton:checked {{ border-bottom: 2px solid {t['cyan']}; background: {t['control_hover']}; }}
+        QFrame#accountEmptyState {{ background: transparent; color: {t['muted']}; border: 0; }}
+        QPushButton#accountCardCancel, QPushButton#dangerButton {{ color: {t['red']}; }}
+        QPushButton#accountCardCancel:hover, QPushButton#dangerButton:hover {{ border-color: {t['red']}; }}
+    """
+
+
+def _paint_trade_arrow(widget: QtWidgets.QWidget, painter: QtGui.QPainter,
+                       rect: QtCore.QRect, *, up: bool = False) -> None:
+    """Use Qt's native arrow primitive even when the shell's SVG is absent."""
+    native = getattr(widget, "_native_arrow_style", None)
+    if native is None:
+        native = QtWidgets.QStyleFactory.create("Fusion")
+        native.setParent(widget)
+        widget._native_arrow_style = native
+    option = QtWidgets.QStyleOption()
+    option.initFrom(widget)
+    option.rect = rect
+    native.drawPrimitive(
+        QtWidgets.QStyle.PrimitiveElement.PE_IndicatorArrowUp if up
+        else QtWidgets.QStyle.PrimitiveElement.PE_IndicatorArrowDown,
+        option, painter,
+    )
+
+
+class TradingRateSpinBox(QtWidgets.QDoubleSpinBox):
+    def __init__(self, parent: QtWidgets.QWidget | None = None):
+        super().__init__(parent)
+        self.setStyleSheet("QDoubleSpinBox::up-arrow, QDoubleSpinBox::down-arrow "
+                          "{ image: none; width: 0; height: 0; }")
+
+    def paintEvent(self, event: QtGui.QPaintEvent) -> None:
+        super().paintEvent(event)
+        option = QtWidgets.QStyleOptionSpinBox()
+        self.initStyleOption(option)
+        painter = QtGui.QPainter(self)
+        for subcontrol, up in ((QtWidgets.QStyle.SubControl.SC_SpinBoxUp, True),
+                               (QtWidgets.QStyle.SubControl.SC_SpinBoxDown, False)):
+            rect = self.style().subControlRect(QtWidgets.QStyle.ComplexControl.CC_SpinBox,
+                                               option, subcontrol, self)
+            _paint_trade_arrow(self, painter, rect.adjusted(3, 1, -3, -1), up=up)
 
 
 def _exchange_step_text(value: Any) -> str:
@@ -711,14 +839,11 @@ class ProtectionEditorDialog(QtWidgets.QDialog):
 
 
 class CompactTradeComboBox(QtWidgets.QComboBox):
-    """Compact ticket combo whose single arrow is owned by the stylesheet."""
+    """A compact native combo that does not depend on external arrow assets."""
 
     def __init__(self, parent: QtWidgets.QWidget | None = None) -> None:
         super().__init__(parent)
-
-
-
-
+        self.setStyleSheet("QComboBox::down-arrow { image: none; width: 0; height: 0; }")
         self.setSizePolicy(
             QtWidgets.QSizePolicy.Policy.Minimum,
             QtWidgets.QSizePolicy.Policy.Fixed,
@@ -729,6 +854,19 @@ class CompactTradeComboBox(QtWidgets.QComboBox):
         self.setSizeAdjustPolicy(
             QtWidgets.QComboBox.SizeAdjustPolicy.AdjustToContents
         )
+
+    def paintEvent(self, event: QtGui.QPaintEvent) -> None:
+        super().paintEvent(event)
+        option = QtWidgets.QStyleOptionComboBox()
+        self.initStyleOption(option)
+        arrow = self.style().subControlRect(
+            QtWidgets.QStyle.ComplexControl.CC_ComboBox, option,
+            QtWidgets.QStyle.SubControl.SC_ComboBoxArrow, self,
+        )
+        rect = QtCore.QRect(0, 0, 12, 12)
+        rect.moveCenter(arrow.center())
+        painter = QtGui.QPainter(self)
+        _paint_trade_arrow(self, painter, rect)
 
 
 class LeverageComboBox(CompactTradeComboBox):
@@ -894,23 +1032,24 @@ class OrderPanel(QtWidgets.QWidget):
     open_workspace_requested = Signal()
     quick_settings_requested = Signal()
     minimum_content_height_changed = Signal(int)
+    position_target_selected = Signal(object)
 
     ORDER_TYPES: ClassVar[tuple[tuple[str, str], ...]] = (
-        ("LIMIT", "LIMIT"),
-        ("MARKET", "MARKET"),
-        ("STOP LIMIT", "STOP"),
-        ("STOP MARKET", "STOP_MARKET"),
-        ("TRAILING STOP", "TRAILING_STOP_MARKET"),
+        ("Limit", "LIMIT"),
+        ("Market", "MARKET"),
+        ("Stop limit", "STOP"),
+        ("Stop market", "STOP_MARKET"),
+        ("Trailing stop", "TRAILING_STOP_MARKET"),
     )
     OPEN_SIZE_MODES: ClassVar[tuple[tuple[str, str], ...]] = (
-        ("QUANTITY", "CONTRACTS"),
-        ("USDT VALUE", "QUOTE NOTIONAL"),
-        ("AVAILABLE %", "BALANCE %"),
-        ("RISK %", "RISK %"),
+        ("Quantity", "CONTRACTS"),
+        ("USDT value", "QUOTE NOTIONAL"),
+        ("Available %", "BALANCE %"),
+        ("Risk %", "RISK %"),
     )
     REDUCE_SIZE_MODES: ClassVar[tuple[tuple[str, str], ...]] = (
-        ("QUANTITY", "CONTRACTS"),
-        ("POSITION %", "POSITION %"),
+        ("Quantity", "CONTRACTS"),
+        ("Position %", "POSITION %"),
     )
 
     def __init__(
@@ -948,6 +1087,7 @@ class OrderPanel(QtWidgets.QWidget):
 
         self.setMinimumWidth(0 if compact else 350)
         self.setMinimumHeight(0 if compact else 430)
+        self.setStyleSheet(_trading_stylesheet({}))
         layout = QtWidgets.QVBoxLayout(self)
 
 
@@ -955,39 +1095,55 @@ class OrderPanel(QtWidgets.QWidget):
 
 
         layout.setSpacing(0)
-        group_gap = 12
+        group_gap = 10
 
-        self.credentials_button = QtWidgets.QPushButton("API")
+        self.credentials_button = QtWidgets.QPushButton("Connect API")
+        self.credentials_button.setObjectName("tradeConnectButton")
+        set_text_role(self.credentials_button, TextRole.TRADING_DESK_CAPTION)
         self.credentials_button.setToolTip("Set session-only Binance API credentials")
-        self.credentials_button.setVisible(False)
+        self.credentials_button.setVisible(not self.gateway.has_credentials())
 
         account_row_widget = QtWidgets.QWidget(self)
         account_row_widget.setObjectName("tradingAccountContextRow")
         account_row = QtWidgets.QHBoxLayout(account_row_widget)
-        account_row.setContentsMargins(5, 2, 5, 2)
+        account_row.setContentsMargins(0, 2, 0, 2)
         account_row.setSpacing(8)
         self.account_summary = ElidedLabel("AVAIL — USDT · MODE …")
         self.account_summary.setObjectName("tradeAvailableSummary")
-        set_text_role(self.account_summary, TextRole.TRADING_TICKET_VALUE)
+        set_text_role(self.account_summary, TextRole.TRADING_DESK_VALUE)
         self.account_summary.setToolTip(
             "Available cross collateral and account position mode"
         )
         self.quick_settings_button = QtWidgets.QToolButton()
         self.quick_settings_button.setObjectName("tradeSettingsMini")
-        self.quick_settings_button.setFixedSize(20, 20)
-        self.quick_settings_button.setIconSize(QtCore.QSize(12, 12))
+        self.quick_settings_button.setFixedSize(24, 24)
+        self.quick_settings_button.setIconSize(QtCore.QSize(15, 15))
         self.quick_settings_button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.quick_settings_button.setAccessibleName("Trading settings")
         self.quick_settings_button.setToolTip(
             "Fast-order keys, Smart Exit, custom hotkeys, leverage, TP/SL, and close presets"
         )
         account_row.addWidget(self.account_summary, 1)
+        account_row.addWidget(self.credentials_button)
         account_row.addWidget(self.quick_settings_button, 0, Qt.AlignmentFlag.AlignVCenter)
         layout.addWidget(account_row_widget)
         layout.addSpacing(group_gap)
 
+        self.order_type_tabs = QtWidgets.QTabBar()
+        self.order_type_tabs.setObjectName("ticketOrderTypes")
+        self.order_type_tabs.setExpanding(True)
+        self.order_type_tabs.setDrawBase(False)
+        self.order_type_tabs.setUsesScrollButtons(True)
+        self.order_type_tabs.setElideMode(Qt.TextElideMode.ElideNone)
+        set_text_role(self.order_type_tabs, TextRole.TRADING_DESK_CONTROL)
+        for title in ("Market", "Limit", "Conditional"):
+            self.order_type_tabs.addTab(title)
+        self._conditional_order_type = "STOP"
+        layout.addWidget(self.order_type_tabs)
+        layout.addSpacing(group_gap)
+
         side_row = QtWidgets.QHBoxLayout()
-        side_row.setContentsMargins(5, 0, 5, 0)
+        side_row.setContentsMargins(0, 0, 0, 0)
         side_row.setSpacing(8)
         self.buy_button = QtWidgets.QPushButton("BUY / LONG")
         self.sell_button = QtWidgets.QPushButton("SELL / SHORT")
@@ -1007,7 +1163,7 @@ class OrderPanel(QtWidgets.QWidget):
         side_group.addButton(self.buy_button)
         side_group.addButton(self.sell_button)
         for button in (self.buy_button, self.sell_button):
-            set_text_role(button, TextRole.TRADING_TICKET)
+            set_text_role(button, TextRole.TRADING_DESK_CONTROL)
             button.setAutoDefault(False)
             button.setDefault(False)
             button.setMinimumWidth(0)
@@ -1025,8 +1181,8 @@ class OrderPanel(QtWidgets.QWidget):
             QtWidgets.QSizePolicy.Policy.Fixed,
         )
         order_card_layout = QtWidgets.QVBoxLayout(order_card)
-        order_card_layout.setContentsMargins(5, 5, 5, 4)
-        order_card_layout.setSpacing(7)
+        order_card_layout.setContentsMargins(0, 0, 0, 0)
+        order_card_layout.setSpacing(8)
         self._order_card = order_card
         self._order_card_layout = order_card_layout
         form = QtWidgets.QGridLayout()
@@ -1035,7 +1191,7 @@ class OrderPanel(QtWidgets.QWidget):
         form.setAlignment(Qt.AlignmentFlag.AlignTop)
         self.type_combo = CompactTradeComboBox()
         self.type_combo.setObjectName("tradeTicketPrimaryCombo")
-        set_text_role(self.type_combo, TextRole.TRADING_TICKET)
+        set_text_role(self.type_combo, TextRole.TRADING_DESK_CONTROL)
         for label, value in self.ORDER_TYPES:
             self.type_combo.addItem(label, value)
         self.type_combo.setToolTip(
@@ -1047,7 +1203,7 @@ class OrderPanel(QtWidgets.QWidget):
         self.type_combo.setMinimumContentsLength(6)
         self.size_mode = CompactTradeComboBox()
         self.size_mode.setObjectName("tradeTicketPrimaryCombo")
-        set_text_role(self.size_mode, TextRole.TRADING_TICKET)
+        set_text_role(self.size_mode, TextRole.TRADING_DESK_CONTROL)
         for label, value in self.OPEN_SIZE_MODES:
             self.size_mode.addItem(label, value)
         self.size_mode.setToolTip(
@@ -1071,16 +1227,18 @@ class OrderPanel(QtWidgets.QWidget):
             self.trigger_edit,
             self.activation_edit,
         ):
-            set_text_role(numeric_edit, TextRole.TRADING_TICKET_VALUE)
-        self.callback_rate = QtWidgets.QDoubleSpinBox()
+            set_text_role(numeric_edit, TextRole.TRADING_DESK_VALUE)
+        self.callback_rate = TradingRateSpinBox()
         self.callback_rate.setRange(0.1, 10.0)
         self.callback_rate.setDecimals(1)
         self.callback_rate.setSingleStep(0.1)
         self.callback_rate.setValue(0.5)
         self.callback_rate.setSuffix(" %")
-        self.working_type = QtWidgets.QComboBox()
-        self.working_type.addItem("MARK PRICE", "MARK_PRICE")
-        self.working_type.addItem("LAST PRICE", "CONTRACT_PRICE")
+        self.working_type = CompactTradeComboBox()
+        self.working_type.addItem("Mark price", "MARK_PRICE")
+        self.working_type.addItem("Last price", "CONTRACT_PRICE")
+        set_text_role(self.working_type, TextRole.TRADING_DESK_CONTROL)
+        set_text_role(self.callback_rate, TextRole.TRADING_DESK_VALUE)
         self.working_type.setToolTip("Price source used to trigger conditional orders")
 
         def inline_mark_field(
@@ -1095,8 +1253,9 @@ class OrderPanel(QtWidgets.QWidget):
             mark.setText("MARK")
             mark.setObjectName("tradeMarkButton")
             mark.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
-            mark.setFixedWidth(50)
-            set_text_role(mark, TextRole.TRADING_TICKET)
+            mark.setSizePolicy(QtWidgets.QSizePolicy.Policy.Minimum,
+                               QtWidgets.QSizePolicy.Policy.Fixed)
+            set_text_role(mark, TextRole.TRADING_DESK_CONTROL)
             mark.setToolTip("Use current mark price")
             row.addWidget(edit, 1)
             row.addWidget(mark)
@@ -1111,7 +1270,7 @@ class OrderPanel(QtWidgets.QWidget):
         self.time_in_force_values = ("GTC", "IOC", "FOK", "GTX")
         self.time_in_force = CompactTradeComboBox()
         self.time_in_force.setObjectName("timeInForceCycle")
-        set_text_role(self.time_in_force, TextRole.TRADING_TICKET)
+        set_text_role(self.time_in_force, TextRole.TRADING_DESK_CONTROL)
         self.time_in_force.addItem("GTC", "GTC")
         self.time_in_force.addItem("IOC", "IOC")
         self.time_in_force.addItem("FOK", "FOK")
@@ -1123,24 +1282,24 @@ class OrderPanel(QtWidgets.QWidget):
 
 
 
-        self.position_side = QtWidgets.QComboBox(self)
+        self.position_side = CompactTradeComboBox(self)
         self.position_side.addItems(("BOTH", "LONG", "SHORT"))
         self.position_side.setToolTip(
             "BOTH for one-way mode; LONG or SHORT for Binance hedge mode"
         )
         self.position_side.setVisible(False)
-        self.reduce_only = QtWidgets.QCheckBox("REDUCE ONLY")
+        self.reduce_only = QtWidgets.QCheckBox("Reduce only")
         self.reduce_only.setObjectName("reduceOnlyCheck")
         self.reduce_only.setToolTip(
             "Prevent the order from increasing exposure. BUY reduces SHORT; SELL reduces LONG."
         )
         self.reduce_only.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        set_text_role(self.reduce_only, TextRole.TRADING_TICKET)
+        set_text_role(self.reduce_only, TextRole.TRADING_DESK_CONTROL)
         self.protection_button = QtWidgets.QPushButton("TP / SL")
         self.protection_button.setObjectName("protectionButton")
         self.protection_button.setProperty("active", False)
         self.protection_button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        set_text_role(self.protection_button, TextRole.TRADING_TICKET)
+        set_text_role(self.protection_button, TextRole.TRADING_DESK_CONTROL)
         self.protection_button.setToolTip(
             "Attach up to four take-profits and four stop-losses after entry fill"
         )
@@ -1169,6 +1328,33 @@ class OrderPanel(QtWidgets.QWidget):
         for name, control in self._form_controls.items():
             if not control.accessibleName():
                 control.setAccessibleName(accessible_names[name])
+            control.setMinimumWidth(0)
+            control.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding,
+                                  QtWidgets.QSizePolicy.Policy.Fixed)
+        self._field_rows: dict[str, QtWidgets.QWidget] = {}
+        self._field_captions: dict[str, ElidedLabel] = {}
+        for name in ("type", "price", "trigger", "activation", "callback", "source", "amount"):
+            container = QtWidgets.QWidget()
+            container.setObjectName("ticketField")
+            field_layout = QtWidgets.QVBoxLayout(container)
+            field_layout.setContentsMargins(0, 0, 0, 0)
+            field_layout.setSpacing(4)
+            caption = ElidedLabel(accessible_names[name])
+            caption.setObjectName("ticketFieldCaption")
+            set_text_role(caption, TextRole.TRADING_DESK_CAPTION)
+            caption.setBuddy(self._form_controls[name])
+            if name == "amount":
+                header = QtWidgets.QHBoxLayout()
+                header.setContentsMargins(0, 0, 0, 0)
+                header.setSpacing(6)
+                header.addWidget(caption, 1)
+                header.addWidget(self.size_mode)
+                field_layout.addLayout(header)
+            else:
+                field_layout.addWidget(caption)
+            field_layout.addWidget(self._form_controls[name])
+            self._field_rows[name] = container
+            self._field_captions[name] = caption
         self.time_in_force.setAccessibleName("Time in force")
         for column in range(4):
             form.setColumnStretch(column, 1)
@@ -1178,14 +1364,14 @@ class OrderPanel(QtWidgets.QWidget):
         self.margin_bar = QtWidgets.QFrame()
         self.margin_bar.setObjectName("tradingMarginRow")
         margin_row = QtWidgets.QHBoxLayout(self.margin_bar)
-        margin_row.setContentsMargins(5, 2, 5, 2)
-        margin_row.setSpacing(9)
+        margin_row.setContentsMargins(0, 0, 0, 0)
+        margin_row.setSpacing(6)
         self.size_presets: list[QtWidgets.QPushButton] = []
         for percent in (25, 50, 75, 100):
             button = QtWidgets.QPushButton(f"{percent}%")
             button.setObjectName("sizePresetButton")
             button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-            set_text_role(button, TextRole.TRADING_TICKET)
+            set_text_role(button, TextRole.TRADING_DESK_CONTROL)
             button.setToolTip(
                 f"Use {percent}% of available margin for an opening order, "
                 f"or {percent}% of the target position when Reduce Only is enabled."
@@ -1201,25 +1387,49 @@ class OrderPanel(QtWidgets.QWidget):
         self.leverage.setToolTip(
             "Requested cross leverage. Choose a common value, or open the list and start typing a custom 1–125× value."
         )
-        set_text_role(self.leverage, TextRole.TRADING_TICKET)
+        set_text_role(self.leverage, TextRole.TRADING_DESK_CONTROL)
 
         self.options_bar = QtWidgets.QFrame()
         self.options_bar.setObjectName("tradingControlRow")
-        options_row = QtWidgets.QHBoxLayout(self.options_bar)
-        options_row.setContentsMargins(5, 2, 5, 2)
-        options_row.setSpacing(10)
+        options_layout = QtWidgets.QVBoxLayout(self.options_bar)
+        options_layout.setContentsMargins(0, 0, 0, 0)
+        options_layout.setSpacing(6)
+        options_row = QtWidgets.QHBoxLayout()
+        options_row.setSpacing(8)
         options_row.addWidget(self.reduce_only)
-        options_row.addWidget(self.protection_button)
         options_row.addStretch(1)
-        options_row.addWidget(self.time_in_force)
-        options_row.addWidget(self.leverage)
+        options_row.addWidget(self.protection_button)
+        options_layout.addLayout(options_row)
+        execution_row = QtWidgets.QHBoxLayout()
+        execution_row.setSpacing(8)
+        self.time_in_force_caption = QtWidgets.QLabel("Time in force")
+        self.time_in_force_caption.setObjectName("ticketFieldCaption")
+        cross_caption = QtWidgets.QLabel("Cross leverage")
+        cross_caption.setObjectName("ticketFieldCaption")
+        for caption in (self.time_in_force_caption, cross_caption):
+            set_text_role(caption, TextRole.TRADING_DESK_CAPTION)
+        self.time_in_force_field = QtWidgets.QWidget()
+        for container, caption, control in (
+            (self.time_in_force_field, self.time_in_force_caption, self.time_in_force),
+            (self._make_leverage_field(), cross_caption, self.leverage),
+        ):
+            container.setObjectName("ticketField")
+            field_layout = QtWidgets.QVBoxLayout(container)
+            field_layout.setContentsMargins(0, 0, 0, 0)
+            field_layout.setSpacing(3)
+            field_layout.addWidget(caption)
+            field_layout.addWidget(control)
+            control.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding,
+                                  QtWidgets.QSizePolicy.Policy.Fixed)
+            execution_row.addWidget(container, 1)
+        options_layout.addLayout(execution_row)
 
         controls_cluster = QtWidgets.QVBoxLayout()
         controls_cluster.setContentsMargins(0, 0, 0, 0)
         controls_cluster.setSpacing(8)
         controls_cluster.addWidget(order_card)
-        controls_cluster.addWidget(self.options_bar)
         controls_cluster.addWidget(self.margin_bar)
+        controls_cluster.addWidget(self.options_bar)
         layout.addLayout(controls_cluster)
         layout.addSpacing(group_gap)
 
@@ -1229,8 +1439,12 @@ class OrderPanel(QtWidgets.QWidget):
         self.execution_state_label = QtWidgets.QLabel("")
         self.execution_state_label.setObjectName("tradeExecutionState")
         self.execution_state_label.setWordWrap(True)
-        set_text_role(self.execution_state_label, TextRole.TRADING_TICKET)
+        set_text_role(self.execution_state_label, TextRole.TRADING_DESK_CONTROL)
         feedback_cluster.addWidget(self.execution_state_label)
+        self.execution_context_label = ElidedLabel("")
+        self.execution_context_label.setObjectName("ticketContext")
+        set_text_role(self.execution_context_label, TextRole.TRADING_DESK_CAPTION)
+        feedback_cluster.addWidget(self.execution_context_label)
         self.reconcile_button = QtWidgets.QPushButton("RECONCILE UNKNOWN ORDERS")
         self.reconcile_button.setToolTip("Query existing client order IDs; this does not resend placements.")
         self.reconcile_button.clicked.connect(self.gateway.reconcile_unknown_orders)
@@ -1239,24 +1453,44 @@ class OrderPanel(QtWidgets.QWidget):
         self.risk_size_hint = QtWidgets.QLabel("")
         self.risk_size_hint.setObjectName("subtleLabel")
         self.risk_size_hint.setWordWrap(True)
-        set_text_role(self.risk_size_hint, TextRole.TRADING_TICKET)
+        set_text_role(self.risk_size_hint, TextRole.TRADING_DESK_CONTROL)
         self.risk_size_hint.hide()
         feedback_cluster.addWidget(self.risk_size_hint)
         self.protection_summary = ElidedLabel("")
         self.protection_summary.setObjectName("tradeAccountSummary")
-        set_text_role(self.protection_summary, TextRole.TRADING_TICKET_VALUE)
+        set_text_role(self.protection_summary, TextRole.TRADING_DESK_VALUE)
         self.protection_summary.hide()
         feedback_cluster.addWidget(self.protection_summary)
-        self.validation_label = ElidedLabel("")
+        self.validation_label = QtWidgets.QLabel("")
+        self.validation_label.setWordWrap(True)
         self.validation_label.setObjectName("tradeValidation")
-        set_text_role(self.validation_label, TextRole.TRADING_TICKET)
+        set_text_role(self.validation_label, TextRole.TRADING_DESK_CONTROL)
         self.validation_label.hide()
         feedback_cluster.addWidget(self.validation_label)
         layout.addLayout(feedback_cluster)
         layout.addSpacing(group_gap)
 
-
-
+        estimates = QtWidgets.QFrame()
+        estimates.setObjectName("ticketEstimates")
+        estimate_grid = QtWidgets.QGridLayout(estimates)
+        estimate_grid.setContentsMargins(0, 8, 0, 5)
+        estimate_grid.setVerticalSpacing(3)
+        estimate_grid.setColumnStretch(1, 1)
+        self.estimate_values: dict[str, ElidedLabel] = {}
+        for row, (key, text) in enumerate((("quantity", "Order quantity"),
+                                            ("value", "Order value"),
+                                            ("margin", "Est. margin"))):
+            caption = QtWidgets.QLabel(text)
+            caption.setObjectName("ticketFieldCaption")
+            set_text_role(caption, TextRole.TRADING_DESK_CAPTION)
+            value = ElidedLabel("—")
+            value.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            set_text_role(value, TextRole.TRADING_DESK_VALUE)
+            estimate_grid.addWidget(caption, row, 0)
+            estimate_grid.addWidget(value, row, 1)
+            self.estimate_values[key] = value
+        layout.addWidget(estimates)
+        layout.addSpacing(5)
         layout.addLayout(side_row)
         layout.addStretch(1)
         self.credentials_button.clicked.connect(self.edit_credentials)
@@ -1264,6 +1498,7 @@ class OrderPanel(QtWidgets.QWidget):
         self.type_combo.currentIndexChanged.connect(
             lambda _index: self._type_changed(self.current_order_type())
         )
+        self.order_type_tabs.currentChanged.connect(self._select_order_type_tab)
         self.position_side.currentTextChanged.connect(self._position_side_changed)
         self.size_mode.currentIndexChanged.connect(
             lambda _index: self._size_mode_changed(str(self.size_mode.currentData()))
@@ -1312,12 +1547,315 @@ class OrderPanel(QtWidgets.QWidget):
         self._readiness_timer.setInterval(1000)
         self._readiness_timer.timeout.connect(self._refresh_execution_freshness)
         self._readiness_timer.start()
+        typography_controller().changed.connect(self._typography_changed)
         self._type_changed(self.current_order_type())
         self._size_mode_changed(str(self.size_mode.currentData()))
         self._position_cache: list[dict[str, Any]] = []
         self._update_submit_text()
         self._update_execution_state()
         self._update_order_summary()
+        self._build_position_desk_ticket(layout, account_row_widget)
+        self._type_changed(self.current_order_type())
+
+    def _make_leverage_field(self):
+        self.leverage_field = QtWidgets.QWidget()
+        return self.leverage_field
+
+    def _build_position_desk_ticket(self, layout, account_row_widget):
+        """Rearrange existing execution controls; the canonical editors stay authoritative."""
+        def detach(box):
+            while box.count():
+                item = box.takeAt(0)
+                child = item.layout()
+                if child is not None:
+                    detach(child)
+                    child.deleteLater()
+        detach(layout)
+        self._desk_layout = layout
+        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setSpacing(10)
+        header = account_row_widget.layout()
+        header.removeWidget(self.account_summary)
+        self.ticket_title = ElidedLabel(f"TRADE {self.symbol}")
+        set_text_role(self.ticket_title, TextRole.PANEL_TITLE)
+        header.insertWidget(0, self.ticket_title, 1)
+        layout.addWidget(account_row_widget)
+        self.intent_tabs = QtWidgets.QTabBar()
+        self.intent_tabs.setObjectName("ticketIntentTabs")
+        self.intent_tabs.setExpanding(True)
+        self.intent_tabs.setDrawBase(False)
+        set_text_role(self.intent_tabs, TextRole.TRADING_DESK_CONTROL)
+        self.intent_tabs.addTab("Open")
+        self.intent_tabs.addTab("Reduce")
+        self.intent_tabs.currentChanged.connect(lambda index: self.reduce_only.setChecked(index == 1))
+        layout.addWidget(self.intent_tabs)
+        self.reduce_context = QtWidgets.QWidget()
+        context = QtWidgets.QVBoxLayout(self.reduce_context)
+        context.setContentsMargins(0, 0, 0, 0)
+        context.setSpacing(4)
+        self.reduce_position_combo = CompactTradeComboBox()
+        self.reduce_position_combo.setAccessibleName("Position to reduce")
+        set_text_role(self.reduce_position_combo, TextRole.TRADING_DESK_CONTROL)
+        self.reduce_position_combo.currentIndexChanged.connect(self._reduce_position_selected)
+        self.reduce_direction_label = ElidedLabel("")
+        self.reduce_direction_label.setObjectName("accountCardSide")
+        set_text_role(self.reduce_direction_label, TextRole.UI_LABEL)
+        self.reduce_position_label = ElidedLabel("")
+        self.reduce_position_label.setObjectName("ticketContext")
+        set_text_role(self.reduce_position_label, TextRole.TRADING_DESK_VALUE)
+        context.addWidget(self.reduce_position_combo)
+        context.addWidget(self.reduce_direction_label)
+        context.addWidget(self.reduce_position_label)
+        layout.addWidget(self.reduce_context)
+        self.preset_section = QtWidgets.QWidget()
+        preset = QtWidgets.QVBoxLayout(self.preset_section)
+        preset.setContentsMargins(0, 0, 0, 0)
+        preset.setSpacing(5)
+        self.preset_caption = QtWidgets.QLabel("Available margin")
+        self.preset_caption.setObjectName("ticketFieldCaption")
+        set_text_role(self.preset_caption, TextRole.UI_LABEL)
+        preset.addWidget(self.preset_caption)
+        preset.addWidget(self.margin_bar)
+        for button in self.size_presets:
+            button.setCheckable(True)
+        layout.addWidget(self.preset_section)
+        self.reduce_amount_field = QtWidgets.QWidget()
+        amount = QtWidgets.QVBoxLayout(self.reduce_amount_field)
+        amount.setContentsMargins(0, 0, 0, 0)
+        amount.setSpacing(4)
+        amount_row = QtWidgets.QHBoxLayout()
+        amount_row.setSpacing(6)
+        self.reduce_amount_edit = QtWidgets.QLineEdit()
+        self.reduce_amount_edit.setObjectName("deskReduceAmount")
+        self.reduce_amount_edit.setPlaceholderText("0.00")
+        self.reduce_amount_edit.setAccessibleName("Close quantity in base asset")
+        set_text_role(self.reduce_amount_edit, TextRole.TRADING_DESK_AMOUNT)
+        self.reduce_unit = QtWidgets.QLabel("")
+        set_text_role(self.reduce_unit, TextRole.MARKET_VALUE)
+        amount_row.addWidget(self.reduce_amount_edit, 1)
+        amount_row.addWidget(self.reduce_unit)
+        amount.addLayout(amount_row)
+        self.reduce_amount_hint = ElidedLabel("")
+        self.reduce_amount_hint.setObjectName("ticketContext")
+        set_text_role(self.reduce_amount_hint, TextRole.TRADING_DESK_CAPTION)
+        amount.addWidget(self.reduce_amount_hint)
+        self.reduce_amount_edit.textEdited.connect(self._edit_reduce_amount)
+        layout.addWidget(self.reduce_amount_field)
+        layout.addWidget(self.order_type_tabs)
+        layout.addWidget(self._order_card)
+        self.mark_row = QtWidgets.QWidget()
+        mark = QtWidgets.QHBoxLayout(self.mark_row)
+        mark.setContentsMargins(0, 5, 0, 5)
+        caption = QtWidgets.QLabel("Mark price")
+        caption.setObjectName("ticketFieldCaption")
+        set_text_role(caption, TextRole.TRADING_DESK_CAPTION)
+        self.mark_value = ElidedLabel("—")
+        self.mark_value.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        set_text_role(self.mark_value, TextRole.TRADING_DESK_VALUE)
+        mark.addWidget(caption)
+        mark.addWidget(self.mark_value, 1)
+        layout.addWidget(self.mark_row)
+        self.reduce_only.hide()
+        layout.addWidget(self.options_bar)
+        self.reduce_policy_label = ElidedLabel("")
+        self.reduce_policy_label.setObjectName("ticketContext")
+        set_text_role(self.reduce_policy_label, TextRole.TRADING_DESK_CAPTION)
+        layout.addWidget(self.reduce_policy_label)
+        self.feedback_box = QtWidgets.QWidget()
+        feedback = QtWidgets.QVBoxLayout(self.feedback_box)
+        feedback.setContentsMargins(0, 0, 0, 0)
+        feedback.setSpacing(4)
+        for widget in (self.risk_size_hint, self.protection_summary, self.validation_label, self.reconcile_button):
+            feedback.addWidget(widget)
+        layout.addWidget(self.feedback_box)
+        self._desk_estimates = self.estimate_values["value"].parentWidget()
+        layout.addWidget(self._desk_estimates)
+        self.reduce_submit = QtWidgets.QPushButton("Close at market")
+        self.reduce_submit.setObjectName("deskReduceSubmit")
+        self.reduce_submit.setAutoDefault(False)
+        set_text_role(self.reduce_submit, TextRole.TRADING_DESK_CONTROL)
+        self.reduce_submit.clicked.connect(self._submit_desk_reduce)
+        layout.addWidget(self.reduce_submit)
+        self.open_submit_bar = QtWidgets.QWidget()
+        side = QtWidgets.QHBoxLayout(self.open_submit_bar)
+        side.setContentsMargins(0, 0, 0, 0)
+        side.setSpacing(8)
+        side.addWidget(self.buy_button, 1)
+        side.addWidget(self.sell_button, 1)
+        layout.addWidget(self.open_submit_bar)
+        self.desk_footer = QtWidgets.QWidget()
+        footer = QtWidgets.QVBoxLayout(self.desk_footer)
+        footer.setContentsMargins(0, 2, 0, 0)
+        footer.setSpacing(3)
+        for widget in (self.execution_state_label, self.execution_context_label, self.account_summary):
+            footer.addWidget(widget)
+        layout.addWidget(self.desk_footer)
+        layout.addStretch(1)
+        self._desk_syncing = False
+        self._desk_selected_key = None
+        self._sync_position_desk()
+        # Keep execution actions visible while the fields scroll inside short
+        # rail panels. The rail continues to own the panel's actual geometry.
+        self.ticket_scroll = QtWidgets.QScrollArea()
+        self.ticket_scroll.setObjectName("deskTicketScroll")
+        self.ticket_scroll.setWidgetResizable(True)
+        self.ticket_scroll.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
+        self.ticket_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        body = QtWidgets.QWidget()
+        body.setObjectName("responsiveOrderTicket")
+        content = QtWidgets.QVBoxLayout(body)
+        content.setContentsMargins(0, 0, 3, 0)
+        content.setSpacing(10)
+        while layout.count():
+            item = layout.takeAt(0)
+            widget = item.widget()
+            if widget in (self.reduce_submit, self.open_submit_bar):
+                continue
+            if widget is not None:
+                content.addWidget(widget)
+            else:
+                content.addItem(item)
+        self._desk_layout = content
+        self.ticket_scroll.setWidget(body)
+        layout.addWidget(self.ticket_scroll, 1)
+        layout.addWidget(self.reduce_submit)
+        layout.addWidget(self.open_submit_bar)
+        self.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Expanding)
+        self.gateway.credentials_changed.connect(self._clear_position_desk_account)
+
+    def _clear_position_desk_account(self, _key):
+        self._position_cache = []
+        self._desk_selected_key = None
+        self.hedge_mode = None
+        self.quantity_edit.clear()
+        self._refresh_reduce_positions()
+
+    def _edit_reduce_amount(self, text):
+        # A typed base amount is a normal CONTRACTS order. Presets still use
+        # the original POSITION % calculation and exchange quantization.
+        index = self.size_mode.findData("CONTRACTS")
+        self.size_mode.setCurrentIndex(index)
+        self.quantity_edit.setText(text)
+
+    def _refresh_reduce_positions(self):
+        if not hasattr(self, "reduce_position_combo"):
+            return
+        rows = list(getattr(self, "_position_cache", []))
+        key = self._desk_selected_key
+        blocker = QtCore.QSignalBlocker(self.reduce_position_combo)
+        self.reduce_position_combo.clear()
+        for row in rows:
+            self.reduce_position_combo.addItem(_position_direction(row).title(), dict(row))
+        index = next((i for i, row in enumerate(rows) if _account_key(row) == key), -1)
+        if index < 0:
+            side = "SHORT" if self.buy_button.isChecked() else "LONG"
+            index = next((i for i, row in enumerate(rows) if _position_direction(row) == side), 0)
+        self.reduce_position_combo.setCurrentIndex(index if rows else -1)
+        del blocker
+        self._reduce_position_selected()
+
+    def _reduce_position_selected(self, *_args):
+        row = self.reduce_position_combo.currentData()
+        previous_key = self._desk_selected_key
+        self._desk_selected_key = _account_key(row) if isinstance(row, dict) else None
+        if isinstance(row, dict) and self.reduce_only.isChecked():
+            target = self.buy_button if _position_close_side(row) == "BUY" else self.sell_button
+            target.setChecked(True)
+            self._sync_auto_position_side()
+            if self._desk_selected_key != previous_key:
+                self.position_target_selected.emit(dict(row))
+        self._sync_position_desk()
+
+    def focus_position(self, payload, *, enter_reduce=False):
+        if str(payload.get("symbol") or "") != self.symbol:
+            return
+        self._desk_selected_key = _account_key(payload)
+        if enter_reduce:
+            self.reduce_only.setChecked(True)
+            self.type_combo.setCurrentIndex(self.type_combo.findData("MARKET"))
+        self._refresh_reduce_positions()
+        if enter_reduce:
+            self._apply_size_preset(50)
+
+    def _submit_desk_reduce(self):
+        row = self.reduce_position_combo.currentData()
+        if not self.reduce_only.isChecked() or not isinstance(row, dict):
+            self._set_validation_message("Select an open position to reduce.")
+            return
+        self._submit_from_side(_position_close_side(row) == "BUY")
+
+    def _sync_position_desk(self, quantity=None):
+        if not hasattr(self, "intent_tabs") or getattr(self, "_desk_syncing", False):
+            return
+        self._desk_syncing = True
+        try:
+            reducing = self.reduce_only.isChecked()
+            blocker = QtCore.QSignalBlocker(self.intent_tabs)
+            self.intent_tabs.setCurrentIndex(1 if reducing else 0)
+            _set_repolished_property(self.intent_tabs, "intent", "reduce" if reducing else "open")
+            del blocker
+            self.reduce_context.setVisible(reducing)
+            self.reduce_amount_field.setVisible(reducing)
+            self.reduce_submit.setVisible(reducing)
+            self.open_submit_bar.setVisible(not reducing)
+            self.reduce_policy_label.setVisible(reducing)
+            self.leverage_field.setVisible(not reducing)
+            self.reduce_only.hide()
+            self.preset_caption.setText("Close size" if reducing else "Available margin")
+            if getattr(self, "_desk_last_reducing", None) != reducing:
+                self._desk_last_reducing = reducing
+                self._desk_layout.removeWidget(self.preset_section)
+                anchor = self.reduce_amount_field if reducing else self._order_card
+                self._desk_layout.insertWidget(self._desk_layout.indexOf(anchor) + (0 if reducing else 1), self.preset_section)
+            _set_text_if_changed(self.ticket_title, f"TRADE {self.symbol}")
+            base = self.symbol.removesuffix(self.rules.quote_asset)
+            _set_text_if_changed(self.reduce_unit, base)
+            mark = f"{format_price(self.mark_price)} {self.rules.quote_asset}" if self.mark_price > 0 else "—"
+            _set_text_if_changed(self.mark_value, mark)
+            self.mark_row.setVisible(self.current_order_type() == "MARKET")
+            self.options_bar.setVisible(not reducing or self.current_order_type() in {"LIMIT", "STOP"})
+            grid = self._desk_estimates.layout()
+            for i, key in enumerate(("quantity", "value", "margin")):
+                show = key == "value" or not reducing
+                grid.itemAtPosition(i, 0).widget().setVisible(show)
+                self.estimate_values[key].setVisible(show)
+            grid.itemAtPosition(1, 0).widget().setText("Estimated value")
+            self.feedback_box.setVisible(any(not w.isHidden() for w in
+                                             (self.validation_label, self.risk_size_hint, self.protection_summary, self.reconcile_button)))
+            row = self.reduce_position_combo.currentData()
+            self.reduce_position_combo.setVisible(reducing and self.reduce_position_combo.count() > 1)
+            has_position = isinstance(row, dict)
+            direction = _position_direction(row) if has_position else "—"
+            leverage = str(row.get("leverage") or "—") if has_position else "—"
+            _set_text_if_changed(self.reduce_direction_label, f"{direction} · {leverage}× cross" if has_position else "No open position")
+            _set_repolished_property(self.reduce_direction_label, "direction", direction.lower())
+            amount = abs(safe_float(row.get("positionAmt"))) if has_position else 0
+            _set_text_if_changed(self.reduce_position_label, f"Current position {_quantity_text(amount)} {base}" if has_position else f"No {self.symbol} position available to reduce")
+            _set_text_if_changed(self.reduce_policy_label, f"Reduce only · {'Hedge mode' if self.hedge_mode else 'One-way mode' if self.hedge_mode is False else 'Account mode unknown'}")
+            mode = str(self.size_mode.currentData())
+            raw = self.quantity_edit.text().strip()
+            if quantity is None:
+                quantity = getattr(self, "_desk_preview_quantity", "")
+            for button, percent in zip(self.size_presets, (25, 50, 75, 100)):
+                button.setChecked(mode in {"BALANCE %", "POSITION %"} and safe_float(raw) == percent)
+            if reducing:
+                blocker = QtCore.QSignalBlocker(self.reduce_amount_edit)
+                text = raw if mode == "CONTRACTS" else _quantity_text(quantity) if quantity else ""
+                if self.reduce_amount_edit.text() != text:
+                    self.reduce_amount_edit.setText(text)
+                del blocker
+                percent = f"{safe_float(raw):g}%" if mode == "POSITION %" and raw else ""
+                hint = f"{percent} of this position" if percent else "Enter a quantity in the base asset"
+                _set_text_if_changed(self.reduce_amount_hint, hint)
+                size_text = percent or (f"{_quantity_text(quantity)} {base}" if quantity else "position")
+                kind = self.current_order_type()
+                text = f"Close {size_text} at market" if kind == "MARKET" else f"Close {size_text} with limit" if kind == "LIMIT" else f"Place {size_text} {dict((v, k) for k, v in self.ORDER_TYPES).get(kind, 'conditional').lower()}"
+                _set_text_if_changed(self.reduce_submit, text)
+                self.reduce_submit.setEnabled(has_position)
+                self.reduce_submit.setToolTip(f"{self.symbol} · {_position_close_side(row)} · {direction} · Qty {quantity or '—'} · {kind}" if has_position else "No open position")
+        finally:
+            self._desk_syncing = False
+
 
     def compact_required_height(self) -> int:
         """Return the ticket's current unsqueezed content height.
@@ -1328,12 +1866,17 @@ class OrderPanel(QtWidgets.QWidget):
         """
         if not self.compact:
             return max(0, self.minimumSizeHint().height())
+        if hasattr(self, "ticket_scroll"):
+            body_height = self._desk_layout.sizeHint().height()
+            action = self.reduce_submit if self.reduce_only.isChecked() else self.open_submit_bar
+            return max(150, body_height + action.sizeHint().height() + 30)
         self.ensurePolished()
         layout = self.layout()
         layout.invalidate()
         layout.activate()
         return max(
             1,
+            layout.sizeHint().height(),
             layout.minimumSize().height(),
             self.minimumSizeHint().height(),
         )
@@ -1346,6 +1889,10 @@ class OrderPanel(QtWidgets.QWidget):
             return
         self._published_compact_minimum_height = required
         self.minimum_content_height_changed.emit(required)
+
+    def _typography_changed(self) -> None:
+        if self.compact:
+            QTimer.singleShot(0, self._publish_compact_minimum_height)
 
     def sync_compact_fixed_height(self) -> int:
         """Compatibility shim: measure the current ticket without fixing geometry."""
@@ -1384,6 +1931,8 @@ class OrderPanel(QtWidgets.QWidget):
             f"{symbol} · quote {rules.quote_asset} · margin {rules.margin_asset} · cross margin only"
         )
         self._prepare_manual_trading()
+        self._refresh_reduce_positions()
+        self._size_mode_changed(str(self.size_mode.currentData()))
         self._update_execution_state()
         self._update_order_summary()
 
@@ -1483,6 +2032,14 @@ class OrderPanel(QtWidgets.QWidget):
             line_icon("gear", color, max(1.0, self.devicePixelRatioF()))
         )
 
+    def apply_theme(self, theme: dict[str, str]) -> None:
+        self.setStyleSheet(_trading_stylesheet(theme))
+        self.set_settings_icon(theme.get("muted", "#92929A"))
+
+    def _select_order_type_tab(self, index: int) -> None:
+        value = ("MARKET", "LIMIT", self._conditional_order_type)[max(0, min(2, index))]
+        self.type_combo.setCurrentIndex(self.type_combo.findData(value))
+
     def current_order_type(self) -> str:
         return str(self.type_combo.currentData() or self.type_combo.currentText())
 
@@ -1505,6 +2062,13 @@ class OrderPanel(QtWidgets.QWidget):
         conditional = order_type in CONDITIONAL_ORDER_TYPES
         trailing = order_type == "TRAILING_STOP_MARKET"
         self.time_in_force.setVisible(limit_price)
+        self.time_in_force_caption.setVisible(limit_price)
+        self.time_in_force_field.setVisible(limit_price)
+        if conditional:
+            self._conditional_order_type = order_type
+        blocker = QtCore.QSignalBlocker(self.order_type_tabs)
+        self.order_type_tabs.setCurrentIndex(2 if conditional else 0 if order_type == "MARKET" else 1)
+        del blocker
         self._sync_mark_controls(order_type)
         active_fields = ["type", "size", "amount"]
         if limit_price:
@@ -1523,43 +2087,25 @@ class OrderPanel(QtWidgets.QWidget):
     def _reflow_order_fields(self, active_fields: list[str]) -> None:
         active = set(active_fields)
         form = self._order_form
-        for control in self._form_controls.values():
-            form.removeWidget(control)
-            control.hide()
-
-
-
-
-        self.type_combo.show()
-        self.size_mode.show()
-        form.addWidget(self.type_combo, 0, 0, 1, 2)
-        form.addWidget(self.size_mode, 0, 2, 1, 2)
+        for container in self._field_rows.values():
+            form.removeWidget(container)
+            container.hide()
+        # The tabs expose Limit and Market directly; only conditional variants
+        # need the full-width type selector. Input widgets remain the same.
+        if self.current_order_type() not in CONDITIONAL_ORDER_TYPES:
+            active.discard("type")
+        if self.reduce_only.isChecked():
+            active.discard("amount")
         self.time_in_force.setVisible("tif" in active)
-
-        row = 1
-        self.quantity_edit.show()
-        if "price" in active:
-            form.addWidget(self.quantity_edit, row, 0, 1, 2)
-            form.addWidget(self._form_controls["price"], row, 2, 1, 2)
-            self._form_controls["price"].show()
-            row += 1
-        else:
-            form.addWidget(self.quantity_edit, row, 0, 1, 4)
-            row += 1
-
-        if "trigger" in active:
-            form.addWidget(self._form_controls["trigger"], row, 0, 1, 2)
-            form.addWidget(self.working_type, row, 2, 1, 2)
-            self._form_controls["trigger"].show()
-            self.working_type.show()
-            row += 1
-        elif "activation" in active:
-            form.addWidget(self._form_controls["activation"], row, 0, 1, 2)
-            form.addWidget(self.callback_rate, row, 2)
-            form.addWidget(self.working_type, row, 3)
-            self._form_controls["activation"].show()
-            self.callback_rate.show()
-            self.working_type.show()
+        self.time_in_force_caption.setVisible("tif" in active)
+        self.time_in_force_field.setVisible("tif" in active)
+        row = 0
+        for name in ("type", "price", "trigger", "activation", "callback", "source", "amount"):
+            if name not in active:
+                continue
+            container = self._field_rows[name]
+            container.show()
+            form.addWidget(container, row, 0, 1, 4)
             row += 1
 
         form.invalidate()
@@ -1575,7 +2121,8 @@ class OrderPanel(QtWidgets.QWidget):
 
 
 
-        self._order_card.setMinimumHeight(max(36, target_height + 2))
+        self._order_card.setVisible(row > 0)
+        self._order_card.setMinimumHeight(max(36, target_height + 2) if row else 0)
         self._order_card.updateGeometry()
         if self.compact:
             QTimer.singleShot(0, self._publish_compact_minimum_height)
@@ -1607,6 +2154,7 @@ class OrderPanel(QtWidgets.QWidget):
         del blocker
 
 
+        self._refresh_reduce_positions()
         self.protection_button.setVisible(not reducing)
         self.protection_button.setEnabled(not reducing)
         self._type_changed(self.current_order_type())
@@ -1703,6 +2251,7 @@ class OrderPanel(QtWidgets.QWidget):
             else "MODE UNKNOWN"
         )
         self._refresh_account_summary()
+        self._refresh_reduce_positions()
         self._update_execution_state()
         self._update_order_summary()
 
@@ -1719,8 +2268,19 @@ class OrderPanel(QtWidgets.QWidget):
         self._quantity_unit = mode
         if previous != mode:
             self.quantity_edit.clear()
-        self.quantity_edit.setPlaceholderText("Amount")
+        base_asset = self.symbol.removesuffix(self.rules.quote_asset)
+        label, placeholder = {
+            "CONTRACTS": (f"Amount · {base_asset}", "0.00"),
+            "QUOTE NOTIONAL": (f"Value · {self.rules.quote_asset}", "0.00"),
+            "BALANCE %": ("Available margin · %", "1–100"),
+            "RISK %": ("Account risk · %", "1–100"),
+            "POSITION %": ("Position size · %", "1–100"),
+        }.get(mode, ("Amount", "0.00"))
+        _set_text_if_changed(self._field_captions["amount"], label)
+        self.quantity_edit.setPlaceholderText(placeholder)
         self._update_order_summary()
+        if self.compact:
+            QTimer.singleShot(0, self._publish_compact_minimum_height)
 
     def edit_protections(self) -> None:
         dialog = ProtectionEditorDialog(self.protection_plans, self)
@@ -1754,6 +2314,8 @@ class OrderPanel(QtWidgets.QWidget):
             self.protection_summary.setToolTip(text)
         if self.protection_summary.isVisible() != bool(text):
             self.protection_summary.setVisible(bool(text))
+            if self.compact:
+                QTimer.singleShot(0, self._publish_compact_minimum_height)
         self._update_order_summary()
 
     def set_execution_market_state(self, live: bool, book_valid: bool, reason: str = "") -> None:
@@ -1795,11 +2357,15 @@ class OrderPanel(QtWidgets.QWidget):
     def _set_validation_message(self, text: str, *, blocked: bool = True) -> None:
         text = str(text or "")
         _set_repolished_property(self.validation_label, "blocked", bool(text) and blocked)
-        _set_text_if_changed(self.validation_label, text)
+        changed = _set_text_if_changed(self.validation_label, text)
         if self.validation_label.toolTip() != text:
             self.validation_label.setToolTip(text)
-        if self.validation_label.isVisible() != bool(text):
+        if self.validation_label.isHidden() == bool(text):
             self.validation_label.setVisible(bool(text))
+            changed = True
+        self._sync_position_desk()
+        if self.compact and changed:
+            QTimer.singleShot(0, self._publish_compact_minimum_height)
 
     def _mark_is_fresh(self) -> bool:
         return bool(
@@ -1873,14 +2439,23 @@ class OrderPanel(QtWidgets.QWidget):
             tooltip += f" · {detail}"
         if gateway_detail:
             tooltip += f" · {gateway_detail}"
-        visible = f"{submission} · PLACEMENTS {used}/{capacity}"
+        visible = f"{submission} · {venue}"
+        leverage = self.gateway.current_leverage(self.symbol)
+        if leverage > 0:
+            visible += f" · CROSS {leverage}×"
         if unknown:
             visible += f" · {unknown} UNKNOWN"
         elif self._submission_state == "SENDING" and self._submission_detail:
             visible += f"\n{self._submission_detail}"
         if not self.gateway.has_credentials():
-            visible += "\nAPI CREDENTIALS REQUIRED"
-        visible += f"\n{venue} · {market} · {quick}\n{self._leverage_state_text()}"
+            visible = "CONNECT API TO TRADE"
+        elif self.symbol in self.gateway.cross_pending or self._leverage_apply_timer.isActive():
+            visible += " · APPLYING LEVERAGE"
+        self.credentials_button.setVisible(not self.gateway.has_credentials())
+        _set_text_if_changed(self.execution_context_label,
+                             f"{market} · {used}/{capacity} placements · "
+                             f"Quick {'unlocked' if self.gateway.armed else 'locked'}")
+        self.execution_context_label.setToolTip(tooltip)
         state_changed = _set_text_if_changed(self.execution_state_label, visible)
         if self.execution_state_label.toolTip() != tooltip:
             self.execution_state_label.setToolTip(tooltip)
@@ -1893,6 +2468,7 @@ class OrderPanel(QtWidgets.QWidget):
         if self.compact and (state_changed or reconcile_changed):
             QTimer.singleShot(0, self._publish_compact_minimum_height)
         self.reconcile_button.setEnabled(self.gateway.has_credentials() and not self.gateway.stopping)
+        self._sync_position_desk()
         if self.quick_settings_button.toolTip() != tooltip:
             self.quick_settings_button.setToolTip(tooltip)
 
@@ -1924,6 +2500,7 @@ class OrderPanel(QtWidgets.QWidget):
         buying = self.buy_button.isChecked()
         order_type = self.current_order_type()
         preview_error = ""
+        quantity = ""
         try:
             if order_type in {"LIMIT", "STOP"} and self.price_edit.text().strip():
                 self._validated_price(self.price_edit.text().replace(",", "").strip(), "Order price")
@@ -1932,7 +2509,7 @@ class OrderPanel(QtWidgets.QWidget):
             if order_type == "TRAILING_STOP_MARKET" and self.activation_edit.text().strip():
                 self._validated_price(self.activation_edit.text().replace(",", "").strip(), "Activation price")
             if self.quantity_edit.text().strip():
-                self._quantity(order_type)
+                quantity = self._quantity(order_type)
             elif reducing:
                 available = self._reduced_position_size()
                 if available <= 0 and getattr(self.gateway, "account_loaded", False):
@@ -1940,6 +2517,7 @@ class OrderPanel(QtWidgets.QWidget):
                     preview_error = f"NO {target} POSITION AVAILABLE TO REDUCE"
         except (ValueError, TypeError) as exc:
             preview_error = str(exc)
+        self._update_ticket_estimates(quantity, order_type)
         block = self._manual_market_block_reason(order_type, reducing)
         if block:
             self._set_validation_message(block)
@@ -1949,6 +2527,23 @@ class OrderPanel(QtWidgets.QWidget):
             self._set_validation_message("LIMIT READY TO DRAFT · MARK STALE · PRICE BAND NOT VERIFIED", blocked=False)
         elif self.validation_label.text():
             self._set_validation_message("")
+
+    def _update_ticket_estimates(self, quantity: str, order_type: str) -> None:
+        self._desk_preview_quantity = quantity
+        reference = self._entry_reference(order_type)
+        notional = safe_float(quantity) * reference
+        leverage = self.gateway.current_leverage(self.symbol)
+        base_asset = self.symbol.removesuffix(self.rules.quote_asset)
+        values = {
+            "quantity": f"{_quantity_text(quantity)} {base_asset}" if quantity else "—",
+            "value": f"{human_number(notional)} {self.rules.quote_asset}" if quantity and reference > 0 else "—",
+            "margin": f"{human_number(notional / leverage)} {self.rules.margin_asset}"
+                      if quantity and reference > 0 and leverage > 0 and not self.reduce_only.isChecked() else "—",
+        }
+        for key, text in values.items():
+            _set_text_if_changed(self.estimate_values[key], text)
+            self.estimate_values[key].setToolTip(text)
+        self._sync_position_desk(quantity)
 
     def apply_external_price_prefill(self, price: float) -> tuple[bool, str]:
         order_type = self.current_order_type()
@@ -2452,6 +3047,18 @@ def _signed_money(value: float) -> str:
     return f"{sign}{human_number(abs(value), money=True)}"
 
 
+def _quantity_text(value: Any) -> str:
+    """Display small contract sizes and fees without rounding them to zero."""
+    try:
+        number = Decimal(str(value).replace(",", "").strip())
+    except (InvalidOperation, TypeError, ValueError):
+        return "—"
+    if not number.is_finite():
+        return "—"
+    text = format(number, "f")
+    return text.rstrip("0").rstrip(".") if "." in text else text
+
+
 def _pnl_state(value: float) -> str:
     value = safe_float(value)
     return "positive" if value > 1e-12 else "negative" if value < -1e-12 else "flat"
@@ -2459,7 +3066,8 @@ def _pnl_state(value: float) -> str:
 
 def _set_text_if_changed(widget: QtWidgets.QLabel | QtWidgets.QAbstractButton, text: str) -> bool:
     text = str(text)
-    if widget.text() == text:
+    current = widget.full_text() if isinstance(widget, ElidedLabel) else widget.text()
+    if current == text:
         return False
     widget.setText(text)
     return True
@@ -2560,7 +3168,7 @@ class CloseLimitDialog(QtWidgets.QDialog):
 
 
 class PositionAccountCard(QtWidgets.QFrame):
-    MINIMUM_HEIGHT = 138
+    MINIMUM_HEIGHT = 0
 
     selected_requested = Signal()
     close_requested = Signal(object, int)
@@ -2593,8 +3201,8 @@ class PositionAccountCard(QtWidgets.QFrame):
         self.setMinimumHeight(self.MINIMUM_HEIGHT)
 
         layout = QtWidgets.QVBoxLayout(self)
-        layout.setContentsMargins(8, 6, 8, 6)
-        layout.setSpacing(3)
+        layout.setContentsMargins(10, 9, 10, 9)
+        layout.setSpacing(8)
 
         header = QtWidgets.QHBoxLayout()
         header.setContentsMargins(0, 0, 0, 0)
@@ -2609,27 +3217,38 @@ class PositionAccountCard(QtWidgets.QFrame):
         self.side_label.setProperty("direction", direction.casefold())
         self.pnl_label = QtWidgets.QLabel()
         self.pnl_label.setObjectName("accountCardPnl")
-        set_text_role(self.pnl_label, TextRole.MARKET_VALUE_EMPHASIZED)
+        set_text_role(self.pnl_label, TextRole.MARKET_VALUE_LARGE)
         self.pnl_label.setProperty("pnl", "flat")
         self.pnl_label.setAlignment(
             Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
         )
         header.addWidget(self.symbol_label, 1)
         header.addWidget(self.side_label)
-        header.addWidget(self.pnl_label)
         layout.addLayout(header)
-
-
-
-
+        pnl_row = QtWidgets.QGridLayout()
+        pnl_row.setContentsMargins(0, 0, 0, 0)
+        pnl_row.setHorizontalSpacing(8)
+        pnl_row.setVerticalSpacing(2)
+        self.roe_label = QtWidgets.QLabel("—")
+        self.roe_label.setObjectName("accountCardDetail")
+        self.roe_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        set_text_role(self.roe_label, TextRole.UI_CAPTION)
+        for row, (text, value) in enumerate((("Unrealized PnL", self.pnl_label), ("Return on margin", self.roe_label))):
+            caption = QtWidgets.QLabel(text)
+            caption.setObjectName("accountCardDetail")
+            set_text_role(caption, TextRole.UI_CAPTION)
+            pnl_row.addWidget(caption, row, 0)
+            pnl_row.addWidget(value, row, 1)
+        pnl_row.setColumnStretch(1, 1)
+        layout.addLayout(pnl_row)
         metrics = QtWidgets.QGridLayout()
         metrics.setContentsMargins(0, 0, 0, 0)
         metrics.setHorizontalSpacing(8)
         metrics.setVerticalSpacing(1)
-        self.entry_value_label = QtWidgets.QLabel("—")
-        self.mark_value_label = QtWidgets.QLabel("—")
-        self.size_value_label = QtWidgets.QLabel("—")
-        self.notional_value_label = QtWidgets.QLabel("—")
+        self.entry_value_label = ElidedLabel("—")
+        self.mark_value_label = ElidedLabel("—")
+        self.size_value_label = ElidedLabel("—")
+        self.notional_value_label = ElidedLabel("—")
         for column, (caption, value_label) in enumerate((
             ("ENTRY", self.entry_value_label),
             ("MARK", self.mark_value_label),
@@ -2641,21 +3260,22 @@ class PositionAccountCard(QtWidgets.QFrame):
             set_text_role(label, TextRole.UI_CAPTION)
             set_text_role(value_label, TextRole.MARKET_VALUE)
             value_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-            metrics.addWidget(label, 0, column)
-            metrics.addWidget(value_label, 1, column)
-            metrics.setColumnStretch(column, 1)
+            row, col = divmod(column, 2)
+            metrics.addWidget(label, row * 2, col)
+            metrics.addWidget(value_label, row * 2 + 1, col)
+            metrics.setColumnStretch(col, 1)
         layout.addLayout(metrics)
 
         risk = QtWidgets.QGridLayout()
         risk.setContentsMargins(0, 0, 0, 0)
         risk.setHorizontalSpacing(8)
         risk.setVerticalSpacing(1)
-        self.liquidation_value_label = QtWidgets.QLabel("—")
-        self.distance_value_label = QtWidgets.QLabel("—")
-        self.margin_value_label = QtWidgets.QLabel("—")
+        self.liquidation_value_label = ElidedLabel("—")
+        self.distance_value_label = ElidedLabel("—")
+        self.margin_value_label = ElidedLabel("—")
         for column, (caption, value_label, object_name) in enumerate((
-            ("LIQ", self.liquidation_value_label, "accountCardRisk"),
-            ("DIST", self.distance_value_label, "accountCardRisk"),
+            ("LIQ. PRICE", self.liquidation_value_label, "accountCardRisk"),
+            ("DISTANCE", self.distance_value_label, "accountCardRisk"),
             ("MARGIN", self.margin_value_label, "accountCardDetail"),
         )):
             label = QtWidgets.QLabel(caption)
@@ -2669,24 +3289,31 @@ class PositionAccountCard(QtWidgets.QFrame):
             risk.setColumnStretch(column, 1)
         layout.addLayout(risk)
 
+        close_caption = QtWidgets.QLabel("Close position")
+        close_caption.setObjectName("accountCardDetail")
+        set_text_role(close_caption, TextRole.UI_CAPTION)
+        layout.addWidget(close_caption)
+
         actions = QtWidgets.QHBoxLayout()
         actions.setContentsMargins(0, 1, 0, 0)
         actions.setSpacing(4)
-        self.close_size = QtWidgets.QComboBox()
+        self.close_size = CompactTradeComboBox()
         self.close_size.setObjectName("positionCloseSize")
         self.close_size.setToolTip("Percentage of this position to close")
-        self.close_size.setMinimumContentsLength(4)
+        self.close_size.setMinimumContentsLength(3)
         self.close_size.setSizeAdjustPolicy(
             QtWidgets.QComboBox.SizeAdjustPolicy.AdjustToContents
         )
-        self.close_size.setMinimumWidth(92)
+        self.close_size.setMinimumWidth(0)
         self.close_size.setSizePolicy(
             QtWidgets.QSizePolicy.Policy.Minimum,
             QtWidgets.QSizePolicy.Policy.Fixed,
         )
-        self.close_market = QtWidgets.QPushButton("CLOSE MARKET")
+        self.close_market = QtWidgets.QPushButton("Market")
+        self.close_market.setAccessibleName("Close position at market")
         self.close_market.setObjectName("accountCardCloseMarket")
-        self.close_limit = QtWidgets.QPushButton("CLOSE LIMIT")
+        self.close_limit = QtWidgets.QPushButton("Limit")
+        self.close_limit.setAccessibleName("Close position at limit")
         self.close_limit.setObjectName("accountCardCloseLimit")
         set_text_role(self.close_size, TextRole.UI_CONTROL_COMPACT)
         for button in (self.close_market, self.close_limit):
@@ -2760,8 +3387,8 @@ class PositionAccountCard(QtWidgets.QFrame):
         margin = safe_float(self.payload.get("positionInitialMargin"))
         if margin <= 0:
             margin = safe_float(self.payload.get("initialMargin"))
-        roe_text = f" · {pnl / margin * 100:+.1f}% ROE" if margin > 0 else ""
-        _set_text_if_changed(self.pnl_label, f"{_signed_money(pnl)}{roe_text}")
+        _set_text_if_changed(self.pnl_label, _signed_money(pnl))
+        _set_text_if_changed(self.roe_label, f"{pnl / margin * 100:+.1f}%" if margin > 0 else "—")
         _set_repolished_property(self.pnl_label, "pnl", _pnl_state(pnl))
         _set_text_if_changed(
             self.entry_value_label, format_price(entry) if entry > 0 else "—"
@@ -2769,7 +3396,7 @@ class PositionAccountCard(QtWidgets.QFrame):
         _set_text_if_changed(
             self.mark_value_label, format_price(mark) if mark > 0 else "—"
         )
-        _set_text_if_changed(self.size_value_label, human_number(amount))
+        _set_text_if_changed(self.size_value_label, _quantity_text(amount))
         _set_text_if_changed(
             self.notional_value_label,
             human_number(_position_notional(self.payload), money=True),
@@ -2805,7 +3432,7 @@ class PositionAccountCard(QtWidgets.QFrame):
 
 
 class OrderAccountCard(QtWidgets.QFrame):
-    MINIMUM_HEIGHT = 102
+    MINIMUM_HEIGHT = 0
 
     selected_requested = Signal()
     cancel_requested = Signal(object)
@@ -2830,8 +3457,8 @@ class OrderAccountCard(QtWidgets.QFrame):
         self.setMinimumHeight(self.MINIMUM_HEIGHT)
 
         layout = QtWidgets.QVBoxLayout(self)
-        layout.setContentsMargins(8, 6, 8, 6)
-        layout.setSpacing(3)
+        layout.setContentsMargins(10, 9, 10, 9)
+        layout.setSpacing(7)
 
         header = QtWidgets.QHBoxLayout()
         header.setContentsMargins(0, 0, 0, 0)
@@ -2853,9 +3480,12 @@ class OrderAccountCard(QtWidgets.QFrame):
         )
         header.addWidget(self.symbol_label, 1)
         header.addWidget(self.side_label)
-        header.addWidget(self.type_label)
-        header.addWidget(self.status_label)
         layout.addLayout(header)
+        detail_row = QtWidgets.QHBoxLayout()
+        detail_row.setSpacing(8)
+        detail_row.addWidget(self.type_label, 1)
+        detail_row.addWidget(self.status_label)
+        layout.addLayout(detail_row)
 
         metrics = QtWidgets.QGridLayout()
         metrics.setContentsMargins(0, 0, 0, 0)
@@ -2872,22 +3502,40 @@ class OrderAccountCard(QtWidgets.QFrame):
             caption_label = QtWidgets.QLabel(caption)
             caption_label.setObjectName("accountCardDetail")
             set_text_role(caption_label, TextRole.UI_CAPTION)
-            value_label = QtWidgets.QLabel("—")
+            value_label = ElidedLabel("—")
             value_label.setObjectName("accountCardDetail")
             set_text_role(value_label, role)
             value_label.setAlignment(
                 Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
             )
-            metrics.addWidget(caption_label, 0, column)
-            metrics.addWidget(value_label, 1, column)
-            metrics.setColumnStretch(column, 1)
+            row, col = divmod(column, 2)
+            metrics.addWidget(caption_label, row * 2, col)
+            metrics.addWidget(value_label, row * 2 + 1, col)
+            metrics.setColumnStretch(col, 1)
             self.metric_value_labels[caption] = value_label
         layout.addLayout(metrics)
+
+        fill_row = QtWidgets.QHBoxLayout()
+        fill_caption = QtWidgets.QLabel("Filled")
+        fill_caption.setObjectName("accountCardDetail")
+        set_text_role(fill_caption, TextRole.UI_CAPTION)
+        self.filled_label = ElidedLabel("—")
+        self.filled_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        set_text_role(self.filled_label, TextRole.MARKET_VALUE)
+        fill_row.addWidget(fill_caption)
+        fill_row.addWidget(self.filled_label, 1)
+        layout.addLayout(fill_row)
+        self.fill_progress = QtWidgets.QProgressBar()
+        self.fill_progress.setObjectName("orderFillProgress")
+        self.fill_progress.setRange(0, 1000)
+        self.fill_progress.setTextVisible(False)
+        self.fill_progress.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        layout.addWidget(self.fill_progress)
 
         bottom = QtWidgets.QHBoxLayout()
         bottom.setContentsMargins(0, 0, 0, 0)
         bottom.setSpacing(6)
-        self.context_label = QtWidgets.QLabel("WORKING ORDER")
+        self.context_label = ElidedLabel("WORKING ORDER")
         self.context_label.setObjectName("accountCardDetail")
         set_text_role(self.context_label, TextRole.UI_CAPTION)
         self.cancel_button = QtWidgets.QPushButton("CANCEL")
@@ -2905,9 +3553,11 @@ class OrderAccountCard(QtWidgets.QFrame):
             label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
         self.update_payload(self.payload)
 
-    def update_payload(self, payload: dict[str, Any]) -> None:
+    def update_payload(self, payload: dict[str, Any], current_symbol: str | None = None) -> None:
         """Refresh an existing card in place from the latest order payload."""
         self.payload = dict(payload)
+        if current_symbol is not None:
+            self.current_symbol = str(current_symbol)
         side = str(self.payload.get("side") or "—").upper()
         status = str(
             self.payload.get("status")
@@ -2918,7 +3568,7 @@ class OrderAccountCard(QtWidgets.QFrame):
             self.payload.get("type")
             or self.payload.get("orderType")
             or "ORDER"
-        ).replace("_", " ")
+        ).replace("_", " ").title()
         quantity = str(
             self.payload.get("origQty")
             or self.payload.get("quantity")
@@ -2947,13 +3597,15 @@ class OrderAccountCard(QtWidgets.QFrame):
             "long" if side == "BUY" else "short",
         )
         _set_text_if_changed(self.type_label, order_type)
-        _set_text_if_changed(self.status_label, status)
+        status_text = {"NEW": "Working", "PARTIALLY_FILLED": "Partial fill"}.get(status, status.replace("_", " ").title())
+        _set_text_if_changed(self.status_label, status_text)
         _set_repolished_property(
             self.status_label,
             "state",
             "partial" if status == "PARTIALLY_FILLED" else "open",
         )
-        _set_text_if_changed(self.metric_value_labels["SIZE"], quantity)
+        close_all = str(self.payload.get("closePosition", False)).lower() == "true"
+        _set_text_if_changed(self.metric_value_labels["SIZE"], "Close position" if close_all else _quantity_text(quantity))
         _set_text_if_changed(
             self.metric_value_labels["PRICE"],
             format_price(price) if price > 0 else "MARKET",
@@ -2967,10 +3619,101 @@ class OrderAccountCard(QtWidgets.QFrame):
         )
         context = (
             "REDUCE ONLY"
-            if str(self.payload.get("reduceOnly", False)).lower() == "true"
+            if str(self.payload.get("reduceOnly", False)).lower() == "true" or close_all
             else "WORKING ORDER"
         )
         _set_text_if_changed(self.context_label, context)
+        total = safe_float(quantity)
+        filled = max(0.0, safe_float(self.payload.get("executedQty") or self.payload.get("cumQty")))
+        percent = max(0.0, min(100.0, filled / total * 100.0)) if total > 0 else 0.0
+        _set_text_if_changed(self.filled_label, f"{_quantity_text(filled)} / {_quantity_text(quantity)} · {percent:.0f}%" if total > 0 else "—")
+        progress = round(percent * 10)
+        if self.fill_progress.value() != progress:
+            self.fill_progress.setValue(progress)
+        self.fill_progress.setToolTip(f"{percent:.1f}% filled")
+        if str(self.payload.get("_source", "")) == "ALGO":
+            activation = safe_float(self.payload.get("activatePrice") or self.payload.get("activationPrice"))
+            if trigger <= 0 and activation > 0:
+                _set_text_if_changed(self.metric_value_labels["TRIGGER"], format_price(activation))
+            source = str(self.payload.get("workingType") or "").replace("_", " ").title()
+            if source:
+                _set_text_if_changed(self.context_label, f"{context} · {source}")
+
+    def mousePressEvent(self, event: QtGui.QMouseEvent) -> None:
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.selected_requested.emit()
+        super().mousePressEvent(event)
+
+
+class FillAccountCard(QtWidgets.QFrame):
+    selected_requested = Signal()
+
+    def __init__(self, payload: dict[str, Any], parent: QtWidgets.QWidget | None = None):
+        super().__init__(parent)
+        self.setObjectName("fillAccountCard")
+        layout = QtWidgets.QVBoxLayout(self)
+        layout.setContentsMargins(10, 9, 10, 9)
+        layout.setSpacing(6)
+        header = QtWidgets.QHBoxLayout()
+        self.symbol_label = ElidedLabel("—")
+        self.symbol_label.setObjectName("accountCardSymbol")
+        set_text_role(self.symbol_label, TextRole.INSTRUMENT_SYMBOL)
+        self.side_label = QtWidgets.QLabel("—")
+        self.side_label.setObjectName("accountCardSide")
+        set_text_role(self.side_label, TextRole.UI_LABEL)
+        header.addWidget(self.symbol_label, 1)
+        header.addWidget(self.side_label)
+        layout.addLayout(header)
+        grid = QtWidgets.QGridLayout()
+        grid.setHorizontalSpacing(8)
+        grid.setVerticalSpacing(2)
+        self.values: dict[str, ElidedLabel] = {}
+        self.captions: dict[str, QtWidgets.QLabel] = {}
+        for index, (key, caption) in enumerate((("price", "PRICE"), ("qty", "SIZE"),
+                                                ("pnl", "REALIZED PNL"), ("fee", "FEE"))):
+            row, column = divmod(index, 2)
+            label = QtWidgets.QLabel(caption)
+            label.setObjectName("accountCardDetail")
+            set_text_role(label, TextRole.UI_CAPTION)
+            self.captions[key] = label
+            value = ElidedLabel("—")
+            value.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            set_text_role(value, TextRole.MARKET_VALUE)
+            grid.addWidget(label, row * 2, column)
+            grid.addWidget(value, row * 2 + 1, column)
+            grid.setColumnStretch(column, 1)
+            self.values[key] = value
+        layout.addLayout(grid)
+        self.time_label = ElidedLabel("—")
+        self.time_label.setObjectName("accountCardDetail")
+        set_text_role(self.time_label, TextRole.UI_CAPTION)
+        layout.addWidget(self.time_label)
+        for label in self.findChildren(QtWidgets.QLabel):
+            label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        self.update_payload(payload)
+
+    def update_payload(self, payload: dict[str, Any]) -> None:
+        self.payload = dict(payload)
+        side = str(payload.get("side") or "—").upper()
+        _set_text_if_changed(self.symbol_label, str(payload.get("symbol") or "—"))
+        _set_text_if_changed(self.side_label, side)
+        _set_repolished_property(self.side_label, "direction", "long" if side == "BUY" else "short")
+        pnl = safe_float(payload.get("realizedPnl"))
+        values = {"price": _quantity_text(payload.get("price")),
+                  "qty": _quantity_text(payload.get("qty")), "pnl": _signed_money(pnl),
+                  "fee": _quantity_text(payload.get("commission"))}
+        asset = str(payload.get("commissionAsset") or "").strip()
+        _set_text_if_changed(self.captions["fee"], f"FEE · {asset}" if asset else "FEE")
+        self.values["fee"].setToolTip(f"{values['fee']} {asset}".strip())
+        for key, text in values.items():
+            _set_text_if_changed(self.values[key], text)
+        _set_repolished_property(self.values["pnl"], "pnl", _pnl_state(pnl))
+        timestamp = safe_float(payload.get("time")) / 1000.0
+        try:
+            stamp = datetime.fromtimestamp(timestamp, timezone.utc).strftime("%d %b %Y · %H:%M:%S UTC") if timestamp > 0 else "—"
+        except (OverflowError, OSError, ValueError):
+            stamp = "—"
+        _set_text_if_changed(self.time_label, stamp)
 
     def mousePressEvent(self, event: QtGui.QMouseEvent) -> None:
         if event.button() == Qt.MouseButton.LeftButton:
@@ -3251,8 +3994,54 @@ class CompactOrderActivityCard(QtWidgets.QFrame):
         super().mousePressEvent(event)
 
 
+class AccountCardList(QtWidgets.QListWidget):
+    """Refresh row heights on presentation changes, without a polling timer."""
+    presentation_changed = Signal()
+
+    def __init__(self):
+        super().__init__()
+        self._height_refresh = QTimer(self)
+        self._height_refresh.setSingleShot(True)
+        self._height_refresh.setInterval(0)
+        self._height_refresh.timeout.connect(self._sync_card_heights)
+        typography_controller().changed.connect(self._schedule_card_heights)
+
+    def _schedule_card_heights(self) -> None:
+        self._height_refresh.start()
+
+    def _sync_card_heights(self) -> None:
+        for index in range(self.count()):
+            item = self.item(index)
+            card = self.itemWidget(item)
+            if card is None:
+                continue
+            if hasattr(card, "set_presentation_width"):
+                card.set_presentation_width(self.viewport().width())
+            required = max(card.minimumSizeHint().height(), card.sizeHint().height()) + 2
+            if item.sizeHint().height() != required:
+                item.setSizeHint(QtCore.QSize(0, required))
+        rows = int(self.property("fitVisibleRows") or 0)
+        if rows:
+            count = min(rows, self.count())
+            height = sum(self.item(i).sizeHint().height() for i in range(count)) + 2
+            self.setFixedHeight(max(36, height))
+        self.presentation_changed.emit()
+
+    def resizeEvent(self, event: QtGui.QResizeEvent) -> None:
+        super().resizeEvent(event)
+        if event.size().width() != event.oldSize().width():
+            self._schedule_card_heights()
+
+    def changeEvent(self, event: QtCore.QEvent) -> None:
+        super().changeEvent(event)
+        if event.type() in {QtCore.QEvent.Type.FontChange, QtCore.QEvent.Type.StyleChange}:
+            timer = getattr(self, "_height_refresh", None)
+            if timer is not None:
+                timer.start()
+
+
 def _new_account_card_list() -> QtWidgets.QListWidget:
-    view = QtWidgets.QListWidget()
+    view = AccountCardList()
     view.setObjectName("tradingCardList")
     view.setSelectionMode(QtWidgets.QAbstractItemView.SelectionMode.SingleSelection)
     view.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
@@ -3263,6 +4052,12 @@ def _new_account_card_list() -> QtWidgets.QListWidget:
 
 
 def _account_key(payload):
+    if payload.get("_source") == "FILL":
+        identifier = payload.get("id")
+        if identifier is None:
+            identifier = (payload.get("orderId"), payload.get("time"),
+                          payload.get("price"), payload.get("qty"))
+        return (str(payload.get("symbol", "")), "", "FILL", str(identifier))
     return (
         str(payload.get("symbol", "")),
         str(payload.get("positionSide", "")),
@@ -3364,9 +4159,10 @@ def _populate_account_cards(
     payloads = [dict(payload) for payload in payloads]
     structure = (
         str(empty_text),
-        fingerprint if fingerprint is not None
-        else tuple(_account_key(payload) for payload in payloads),
+        tuple(_account_key(payload) for payload in payloads),
     )
+    # Live prices, partial fills and statuses change card content, not identity.
+    # Keep selection, close-size choices, scroll position and signal connections.
     if getattr(view, "_cards_fingerprint", None) == structure:
         if payloads and update_existing is not None and view.count() == len(payloads):
             for index, payload in enumerate(payloads):
@@ -3374,6 +4170,9 @@ def _populate_account_cards(
                 item.setData(Qt.ItemDataRole.UserRole, dict(payload))
                 card = view.itemWidget(item)
                 update_existing(card, dict(payload))
+                required = max(card.minimumSizeHint().height(), card.sizeHint().height()) + 2
+                if item.sizeHint().height() != required:
+                    item.setSizeHint(QtCore.QSize(0, required))
         return False
 
     previous = view.currentItem()
@@ -3404,7 +4203,7 @@ def _populate_account_cards(
             item = QtWidgets.QListWidgetItem()
             item.setData(Qt.ItemDataRole.UserRole, dict(payload))
             card = factory(dict(payload))
-            item.setSizeHint(QtCore.QSize(0, card.sizeHint().height() + 2))
+            item.setSizeHint(QtCore.QSize(0, max(card.minimumSizeHint().height(), card.sizeHint().height()) + 2))
             view.addItem(item)
             view.setItemWidget(item, card)
             if hasattr(card, "selected_requested"):
@@ -3431,9 +4230,566 @@ def _account_fill_rows(snapshot, symbol):
     return result
 
 
+def _populate_fill_cards(view: QtWidgets.QListWidget, snapshot: dict[str, Any],
+                         symbol: str, *, connected: bool) -> None:
+    payloads = [{**row, "_source": "FILL"}
+                for row in sorted(snapshot.get("fills", []),
+                                  key=lambda item: safe_float(item.get("time")), reverse=True)
+                if str(row.get("symbol", "")) == symbol]
+    _populate_account_cards(
+        view, payloads, FillAccountCard,
+        f"No fills for {symbol}" if connected else "Connect API credentials to view fills",
+        update_existing=lambda card, payload: card.update_payload(payload),
+    )
+
+
+class PositionDeskRow(QtWidgets.QFrame):
+    """One selectable position, with details rendered once below the list."""
+    selected_requested = Signal()
+
+    def __init__(self, payload, current_symbol):
+        super().__init__()
+        self.setObjectName("positionDeskRow")
+        self.setMinimumWidth(0)
+        row = QtWidgets.QHBoxLayout(self)
+        row.setContentsMargins(8, 8, 8, 8)
+        row.setSpacing(8)
+        self.symbol_label = ElidedLabel("")
+        self.side_label = ElidedLabel("")
+        self.side_label.setObjectName("accountCardSide")
+        self.leverage_label = ElidedLabel("")
+        self.pnl_label = ElidedLabel("")
+        self.pnl_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        for label, role, stretch in ((self.symbol_label, TextRole.INSTRUMENT_SYMBOL, 3),
+                                     (self.side_label, TextRole.UI_LABEL, 2),
+                                     (self.leverage_label, TextRole.TRADING_DESK_VALUE, 1),
+                                     (self.pnl_label, TextRole.TRADING_DESK_VALUE, 3)):
+            set_text_role(label, role)
+            label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+            row.addWidget(label, stretch)
+        self.update_payload(payload, current_symbol)
+
+    def update_payload(self, payload, current_symbol):
+        self.payload = dict(payload)
+        direction = _position_direction(payload)
+        _set_text_if_changed(self.symbol_label, str(payload.get("symbol") or "—"))
+        _set_text_if_changed(self.side_label, direction)
+        _set_text_if_changed(self.leverage_label, f"{payload.get('leverage') or '—'}×")
+        _set_repolished_property(self.side_label, "direction", direction.lower())
+        pnl = safe_float(payload.get("unrealizedProfit"))
+        _set_text_if_changed(self.pnl_label, _signed_money(pnl).replace("$", ""))
+        _set_repolished_property(self.pnl_label, "pnl", _pnl_state(pnl))
+        self.setToolTip(f"{payload.get('symbol')} · {direction} · UPNL {_signed_money(pnl).replace("$", "")}")
+
+    def update_mark_price(self, mark):
+        pnl = _update_position_mark(self.payload, mark)
+        self.update_payload(self.payload, "")
+        return pnl
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.selected_requested.emit()
+        super().mousePressEvent(event)
+
+
+class PositionDeskDetails(QtWidgets.QFrame):
+    trade_requested = Signal(object)
+    close_requested = Signal(object, int)
+    close_limit_requested = Signal(object, int)
+
+    def __init__(self):
+        super().__init__()
+        self.payload = {}
+        self.setObjectName("positionDeskDetails")
+        self.setMinimumWidth(0)
+        layout = QtWidgets.QVBoxLayout(self)
+        layout.setContentsMargins(4, 8, 4, 8)
+        layout.setSpacing(8)
+        heading = QtWidgets.QHBoxLayout()
+        self._detail_layout = layout
+        self._detail_heading = heading
+        self.title = ElidedLabel("Select a position")
+        set_text_role(self.title, TextRole.UI_HEADING)
+        heading.addWidget(self.title, 1)
+        layout.addLayout(heading)
+        self.pnl_label = ElidedLabel("—")
+        set_text_role(self.pnl_label, TextRole.TRADING_DESK_PNL)
+        layout.addWidget(self.pnl_label)
+        returns = QtWidgets.QHBoxLayout()
+        returns.setSpacing(8)
+        caption = ElidedLabel("Unrealized PnL · Return on margin")
+        caption.setObjectName("accountCardDetail")
+        set_text_role(caption, TextRole.TRADING_DESK_CAPTION)
+        self.roe_label = QtWidgets.QLabel("—")
+        self.roe_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        set_text_role(self.roe_label, TextRole.TRADING_DESK_VALUE)
+        returns.addWidget(caption, 1)
+        returns.addWidget(self.roe_label)
+        layout.addLayout(returns)
+        self.metrics = QtWidgets.QGridLayout()
+        self.metrics.setHorizontalSpacing(12)
+        self.metrics.setVerticalSpacing(7)
+        self.values = {}
+        self.captions = {}
+        for key, text in (("entry", "ENTRY"), ("mark", "MARK"), ("size", "SIZE"), ("value", "VALUE")):
+            cap = QtWidgets.QLabel(text)
+            cap.setObjectName("accountCardDetail")
+            set_text_role(cap, TextRole.TRADING_DESK_CAPTION)
+            value = ElidedLabel("—")
+            value.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            set_text_role(value, TextRole.TRADING_DESK_VALUE)
+            self.captions[key], self.values[key] = cap, value
+        layout.addLayout(self.metrics)
+        risk = QtWidgets.QFrame()
+        risk.setObjectName("deskRiskMetrics")
+        risk_grid = QtWidgets.QGridLayout(risk)
+        risk_grid.setContentsMargins(0, 10, 0, 0)
+        risk_grid.setHorizontalSpacing(10)
+        for column, (key, text) in enumerate((("liquidation", "Liq. price"), ("distance", "Distance"), ("margin", "Initial margin"))):
+            cap = ElidedLabel(text)
+            cap.setObjectName("accountCardDetail")
+            set_text_role(cap, TextRole.TRADING_DESK_CAPTION)
+            value = ElidedLabel("—")
+            set_text_role(value, TextRole.TRADING_DESK_VALUE)
+            if key != "margin":
+                value.setObjectName("accountCardRisk")
+                value.setProperty("risk", "warning")
+            risk_grid.addWidget(cap, 0, column)
+            risk_grid.addWidget(value, 1, column)
+            risk_grid.setColumnStretch(column, 1)
+            self.values[key] = value
+        layout.addWidget(risk)
+        self._detail_actions = QtWidgets.QWidget()
+        actions = QtWidgets.QHBoxLayout(self._detail_actions)
+        actions.setContentsMargins(0, 0, 0, 0)
+        actions.setSpacing(8)
+        self.trade_button = QtWidgets.QPushButton("Reduce in Trade")
+        self.trade_button.setObjectName("deskTradePosition")
+        set_text_role(self.trade_button, TextRole.TRADING_DESK_CONTROL)
+        self.trade_button.clicked.connect(lambda: self.trade_requested.emit(dict(self.payload)) if self.payload else None)
+        self.close_button = QtWidgets.QToolButton()
+        self.close_button.setText("Close…")
+        self.close_button.setPopupMode(QtWidgets.QToolButton.ToolButtonPopupMode.InstantPopup)
+        set_text_role(self.close_button, TextRole.TRADING_DESK_CONTROL)
+        self.close_menu = QtWidgets.QMenu(self.close_button)
+        self.close_button.setMenu(self.close_menu)
+        self.set_close_percentages([25, 50, 100])
+        actions.addWidget(self.trade_button, 1)
+        actions.addWidget(self.close_button)
+        layout.addWidget(self._detail_actions)
+        self._wide = None
+        self.set_presentation_width(500)
+        self.set_payload(None)
+
+    def set_close_percentages(self, values):
+        self.close_menu.clear()
+        for caption, signal in (("Market close", self.close_requested), ("Limit close…", self.close_limit_requested)):
+            menu = self.close_menu.addMenu(caption)
+            for percent in values:
+                action = menu.addAction(f"{percent}%")
+                action.triggered.connect(lambda _checked=False, p=int(percent), s=signal:
+                                         s.emit(dict(self.payload), p) if self.payload else None)
+
+    def set_presentation_width(self, width):
+        required = max(440, sum(self.values[k].fontMetrics().horizontalAdvance("65,000.0 USDT")
+                                for k in ("entry", "mark")) + 120)
+        wide = width >= required
+        if wide == self._wide:
+            return
+        self._wide = wide
+        if wide:
+            self._detail_layout.removeWidget(self._detail_actions)
+            self._detail_heading.addWidget(self._detail_actions)
+        else:
+            self._detail_heading.removeWidget(self._detail_actions)
+            self._detail_layout.addWidget(self._detail_actions)
+        for cap in self.captions.values():
+            self.metrics.removeWidget(cap)
+        for key in self.captions:
+            self.metrics.removeWidget(self.values[key])
+        for i, key in enumerate(("entry", "mark", "size", "value")):
+            row, column = (i // 2, (i % 2) * 2) if wide else (i, 0)
+            self.metrics.addWidget(self.captions[key], row, column)
+            self.metrics.addWidget(self.values[key], row, column + 1)
+        self.metrics.setColumnStretch(1, 1)
+        self.metrics.setColumnStretch(3, 1 if wide else 0)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self.set_presentation_width(event.size().width())
+
+    def set_payload(self, payload):
+        self.payload = dict(payload or {})
+        self.setVisible(bool(self.payload))
+        if not self.payload:
+            return
+        symbol = str(payload.get("symbol") or "")
+        quote = str(payload.get("_quote_asset") or "USDT")
+        margin_asset = str(payload.get("_margin_asset") or quote)
+        base = symbol.removesuffix(quote)
+        direction = _position_direction(payload)
+        pnl = safe_float(payload.get("unrealizedProfit"))
+        mark = safe_float(payload.get("markPrice"))
+        margin = safe_float(payload.get("positionInitialMargin") or payload.get("initialMargin"))
+        liquidation = safe_float(payload.get("liquidationPrice"))
+        _set_text_if_changed(self.title, f"{symbol} · {direction}")
+        _set_text_if_changed(self.pnl_label, f"{_signed_money(pnl).replace("$", "")} {quote}")
+        _set_repolished_property(self.pnl_label, "pnl", _pnl_state(pnl))
+        _set_text_if_changed(self.roe_label, f"{pnl / margin * 100:+.1f}%" if margin > 0 else "—")
+        distance = abs(mark - liquidation) / mark * 100 if mark > 0 and liquidation > 0 else None
+        values = {
+            "entry": format_price(safe_float(payload.get("entryPrice"))),
+            "mark": format_price(mark) if mark > 0 else "—",
+            "size": f"{_quantity_text(abs(safe_float(payload.get('positionAmt'))))} {base}",
+            "value": f"{human_number(_position_notional(payload), money=True).replace('$', '')} {quote}",
+            "liquidation": format_price(liquidation) if liquidation > 0 else "—",
+            "distance": f"{distance:.1f}%" if distance is not None else "—",
+            "margin": f"{human_number(margin, money=True).replace('$', '')} {margin_asset}" if margin > 0 else "—",
+        }
+        for key, text in values.items():
+            _set_text_if_changed(self.values[key], text)
+            self.values[key].setToolTip(text)
+        for key in ("liquidation", "distance"):
+            _set_repolished_property(self.values[key], "risk", "critical" if distance is not None and distance < 5 else "warning")
+
+
+class WorkingOrderRow(QtWidgets.QFrame):
+    cancel_requested = Signal(object)
+    selected_requested = Signal()
+
+    def __init__(self, payload, theme, current_symbol):
+        super().__init__()
+        self.setObjectName("workingOrderRow")
+        self.setMinimumWidth(0)
+        self.grid = QtWidgets.QGridLayout(self)
+        self.grid.setContentsMargins(6, 9, 6, 9)
+        self.grid.setHorizontalSpacing(8)
+        self.grid.setVerticalSpacing(4)
+        self.symbol_label = ElidedLabel("")
+        self.side_label = ElidedLabel("")
+        self.side_label.setObjectName("accountCardSide")
+        self.type_label = ElidedLabel("")
+        self.type_label.setObjectName("accountCardDetail")
+        self.price_label = ElidedLabel("")
+        self.quantity_label = ElidedLabel("")
+        self.status_label = ElidedLabel("")
+        self.status_label.setObjectName("accountOrderStatus")
+        self.fill_progress = QtWidgets.QProgressBar()
+        self.fill_progress.setObjectName("orderFillProgress")
+        self.fill_progress.setRange(0, 1000)
+        self.fill_progress.setTextVisible(False)
+        self.fill_progress.setFixedHeight(3)
+        self.cancel_button = QtWidgets.QPushButton("Cancel")
+        self.cancel_button.setObjectName("deskOrderCancel")
+        self.cancel_button.setMinimumWidth(0)
+        self.cancel_button.clicked.connect(lambda: self.cancel_requested.emit(dict(self.payload)))
+        for widget, role in ((self.symbol_label, TextRole.INSTRUMENT_SYMBOL),
+                             (self.side_label, TextRole.TRADING_DESK_CONTROL),
+                             (self.type_label, TextRole.TRADING_DESK_CAPTION),
+                             (self.price_label, TextRole.TRADING_DESK_VALUE),
+                             (self.quantity_label, TextRole.TRADING_DESK_VALUE),
+                             (self.status_label, TextRole.TRADING_DESK_CAPTION),
+                             (self.cancel_button, TextRole.TRADING_DESK_CONTROL)):
+            set_text_role(widget, role)
+        self._wide = None
+        self.update_payload(payload, current_symbol)
+        self.set_presentation_width(400)
+
+    def set_presentation_width(self, width):
+        required = max(520, self.price_label.fontMetrics().horizontalAdvance("00,000.00") * 3 +
+                       self.symbol_label.fontMetrics().horizontalAdvance("BTCUSDT") +
+                       self.cancel_button.sizeHint().width() + 135)
+        wide = width >= required
+        if wide == self._wide:
+            return
+        self._wide = wide
+        while self.grid.count():
+            self.grid.takeAt(0)
+        for column in range(6):
+            self.grid.setColumnStretch(column, 0)
+        if wide:
+            for widget, row, column, span in ((self.symbol_label, 0, 0, 1), (self.side_label, 0, 1, 1),
+                                             (self.type_label, 0, 2, 1), (self.price_label, 1, 2, 1),
+                                             (self.quantity_label, 0, 3, 1), (self.status_label, 0, 4, 1),
+                                             (self.fill_progress, 1, 4, 1)):
+                self.grid.addWidget(widget, row, column, 1, span)
+            self.grid.addWidget(self.cancel_button, 0, 5, 2, 1)
+            for column, stretch in ((0, 3), (1, 2), (2, 4), (3, 3), (4, 4)):
+                self.grid.setColumnStretch(column, stretch)
+        else:
+            self.grid.addWidget(self.symbol_label, 0, 0)
+            self.grid.addWidget(self.side_label, 0, 1)
+            self.grid.addWidget(self.type_label, 0, 2)
+            self.grid.addWidget(self.cancel_button, 0, 3, 2, 1)
+            self.grid.addWidget(self.price_label, 1, 0)
+            self.grid.addWidget(self.quantity_label, 1, 1, 1, 2)
+            self.grid.addWidget(self.status_label, 2, 0, 1, 3)
+            self.grid.addWidget(self.fill_progress, 3, 0, 1, 3)
+            self.grid.setColumnStretch(0, 3)
+            self.grid.setColumnStretch(1, 2)
+            self.grid.setColumnStretch(2, 4)
+        self.quantity_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        if hasattr(self, "_quantity_text"):
+            _set_text_if_changed(self.quantity_label, self._quantity_text if wide else f"Qty {self._quantity_text}")
+
+    def update_payload(self, payload, current_symbol=None):
+        self.payload = dict(payload)
+        side = str(payload.get("side") or "")
+        kind = str(payload.get("type") or payload.get("orderType") or "").replace("_", " ").title()
+        price = payload.get("price")
+        if safe_float(price) <= 0:
+            price = payload.get("triggerPrice") or payload.get("stopPrice") or payload.get("activatePrice")
+        status = str(payload.get("status") or payload.get("algoStatus") or "NEW").upper()
+        total = safe_float(payload.get("origQty") or payload.get("quantity"))
+        done = safe_float(payload.get("executedQty") or payload.get("cumQty"))
+        filled = max(0.0, min(100.0, done / total * 100)) if total > 0 else 0
+        reducing = payload.get("reduceOnly") is True or str(payload.get("reduceOnly")).lower() == "true"
+        _set_text_if_changed(self.symbol_label, str(payload.get("symbol") or "—"))
+        _set_text_if_changed(self.side_label, side.title())
+        _set_repolished_property(self.side_label, "direction", "long" if side == "BUY" else "short")
+        _set_text_if_changed(self.type_label, kind)
+        price_text = format_price(safe_float(price)) if safe_float(price) > 0 else "Market"
+        if "Trailing" in kind:
+            price_text = f"Trail {payload.get('callbackRate') or '—'}%"
+        _set_text_if_changed(self.price_label, price_text)
+        self._quantity_text = _quantity_text(payload.get("origQty") or payload.get("quantity") or "0")
+        _set_text_if_changed(self.quantity_label, self._quantity_text if self._wide else f"Qty {self._quantity_text}")
+        text = f"{filled:.0f}% filled" if filled > 0 else "Reduce only" if reducing else status.replace("_", " ").title()
+        if reducing and filled > 0:
+            text += " · Reduce only"
+        _set_text_if_changed(self.status_label, text)
+        self.fill_progress.setVisible(filled > 0)
+        self.fill_progress.setValue(round(filled * 10))
+        identifier = payload.get("algoId") if payload.get("_source") == "ALGO" else payload.get("orderId")
+        self.cancel_button.setEnabled(identifier not in (None, ""))
+        self.setToolTip(f"{payload.get('symbol')} · {side} · {kind} · {price_text} · Qty {self.quantity_label.full_text()} · {text}")
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.selected_requested.emit()
+        super().mousePressEvent(event)
+
+
+class PositionDeskView(QtWidgets.QFrame):
+    """Shared native account view for the Orders panel and attached drawer."""
+    position_selected = Signal(object)
+    trade_requested = Signal(object)
+
+    def __init__(self, position_factory, order_factory):
+        super().__init__()
+        self.setObjectName("positionDeskView")
+        self.setMinimumSize(0, 0)
+        self._details_user_choice = None
+        self.symbol_rules = {}
+        root = QtWidgets.QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
+        self.scroll = QtWidgets.QScrollArea()
+        self.scroll.setObjectName("positionDeskScroll")
+        self.scroll.setWidgetResizable(True)
+        self.scroll.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
+        self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        root.addWidget(self.scroll)
+        body = QtWidgets.QWidget()
+        body.setObjectName("positionDeskBody")
+        self.body_layout = QtWidgets.QVBoxLayout(body)
+        self.body_layout.setContentsMargins(10, 10, 10, 10)
+        self.body_layout.setSpacing(4)
+        header = QtWidgets.QHBoxLayout()
+        title = QtWidgets.QLabel("ACCOUNT")
+        set_text_role(title, TextRole.PANEL_TITLE)
+        self.position_toggle = QtWidgets.QToolButton()
+        self.position_toggle.setCheckable(True)
+        self.position_toggle.setChecked(True)
+        self.position_toggle.setText("Positions 0")
+        self.position_toggle.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
+        set_text_role(self.position_toggle, TextRole.TRADING_DESK_CONTROL)
+        self.position_toggle.clicked.connect(self._toggle_positions)
+        header.addWidget(title, 1)
+        header.addWidget(self.position_toggle)
+        self.body_layout.addLayout(header)
+        self.position_area = QtWidgets.QWidget()
+        position_layout = QtWidgets.QVBoxLayout(self.position_area)
+        position_layout.setContentsMargins(0, 0, 0, 0)
+        position_layout.setSpacing(0)
+        self.positions = _new_account_card_list()
+        self.positions.setSpacing(0)
+        self.positions.setProperty("fitVisibleRows", 3)
+        position_layout.addWidget(self.positions)
+        self.details = PositionDeskDetails()
+        position_layout.addWidget(self.details)
+        self.details.trade_requested.connect(self.trade_requested)
+        self.body_layout.addWidget(self.position_area)
+        self.working_title = ElidedLabel("WORKING ORDERS 0")
+        set_text_role(self.working_title, TextRole.UI_LABEL)
+        self.body_layout.addWidget(self.working_title)
+        self.tabs = QtWidgets.QTabWidget()
+        self.tabs.setObjectName("tradingAccountTabs")
+        self.tabs.setDocumentMode(True)
+        set_text_role(self.tabs.tabBar(), TextRole.TRADING_DESK_CONTROL)
+        self.tabs.tabBar().setExpanding(True)
+        self.tabs.tabBar().setUsesScrollButtons(True)
+        self.tabs.tabBar().setElideMode(Qt.TextElideMode.ElideNone)
+        self.orders = _new_account_card_list()
+        self.orders.setSpacing(0)
+        self.fills = _new_account_card_list()
+        self.fills.setSpacing(0)
+        order_page = QtWidgets.QWidget()
+        order_layout = QtWidgets.QVBoxLayout(order_page)
+        order_layout.setContentsMargins(0, 0, 0, 0)
+        order_layout.setSpacing(0)
+        self.order_headers = QtWidgets.QWidget()
+        headers = QtWidgets.QHBoxLayout(self.order_headers)
+        headers.setContentsMargins(6, 5, 6, 5)
+        headers.setSpacing(8)
+        for text, stretch in (("Symbol", 3), ("Side", 2), ("Type / Price", 4), ("Quantity", 3), ("Status", 4), ("Action", 0)):
+            label = ElidedLabel(text)
+            label.setObjectName("accountCardDetail")
+            set_text_role(label, TextRole.TRADING_DESK_CAPTION)
+            if text == "Action":
+                label.setMinimumWidth(54)
+            headers.addWidget(label, stretch)
+        self.order_headers.hide()
+        order_layout.addWidget(self.order_headers)
+        order_layout.addWidget(self.orders, 1)
+        self.tabs.addTab(order_page, "Orders")
+        self.orders.presentation_changed.connect(self._sync_order_headers)
+        self.tabs.addTab(self.fills, "Fills")
+        self.tabs.setMinimumHeight(130)
+        self.body_layout.addWidget(self.tabs, 1)
+        footer_widget = QtWidgets.QWidget()
+        footer_layout = QtWidgets.QVBoxLayout(footer_widget)
+        footer_layout.setContentsMargins(10, 6, 10, 10)
+        footer_layout.setSpacing(6)
+        footer = QtWidgets.QHBoxLayout()
+        footer.setSpacing(6)
+        self.cancel_button = QtWidgets.QPushButton("Cancel symbol orders")
+        self.cancel_button.setObjectName("deskCancelSymbolOrders")
+        set_text_role(self.cancel_button, TextRole.TRADING_DESK_CONTROL)
+        footer.addWidget(self.cancel_button, 1)
+        self.more_button = QtWidgets.QToolButton()
+        self.more_button.setText("More")
+        set_text_role(self.more_button, TextRole.TRADING_DESK_CONTROL)
+        self.more_button.setPopupMode(QtWidgets.QToolButton.ToolButtonPopupMode.InstantPopup)
+        self.more_menu = QtWidgets.QMenu(self.more_button)
+        self.more_button.setMenu(self.more_menu)
+        self.more_button.hide()
+        footer.addWidget(self.more_button)
+        footer_layout.addLayout(footer)
+        self.status = ElidedLabel("All symbols · Current pair first")
+        self.status.setObjectName("accountCardDetail")
+        set_text_role(self.status, TextRole.TRADING_DESK_CAPTION)
+        footer_layout.addWidget(self.status)
+        root.addWidget(footer_widget)
+        self.scroll.setWidget(body)
+        self.positions.currentItemChanged.connect(self._selection_changed)
+        self._position_factory, self._order_factory = position_factory, order_factory
+        typography_controller().changed.connect(lambda: self.details.set_presentation_width(self.details.width()))
+
+    def _sync_order_headers(self):
+        first = self.orders.item(0)
+        row = self.orders.itemWidget(first) if first else None
+        self.order_headers.setVisible(isinstance(row, WorkingOrderRow) and bool(row._wide))
+        if isinstance(row, WorkingOrderRow) and row._wide:
+            row.grid.activate()
+            width = self.orders.viewport().width()
+            if self.order_headers.maximumWidth() != width:
+                self.order_headers.setMaximumWidth(width)
+            for column in range(6):
+                label = self.order_headers.layout().itemAt(column).widget()
+                required = row.grid.cellRect(0, column).width()
+                if required > 0 and label.maximumWidth() != required:
+                    label.setMaximumWidth(required)
+
+    def _toggle_positions(self, checked):
+        self._details_user_choice = bool(checked)
+        self.position_area.setVisible(checked)
+        self.tabs.setMinimumHeight(220 if checked else 100)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        expanded = self._details_user_choice if self._details_user_choice is not None else event.size().height() >= 580
+        blocker = QtCore.QSignalBlocker(self.position_toggle)
+        self.position_toggle.setChecked(expanded)
+        del blocker
+        self.position_area.setVisible(expanded)
+        self.tabs.setMinimumHeight(220 if expanded else 100)
+
+    def _selection_changed(self, *_args):
+        item = self.positions.currentItem()
+        payload = item.data(Qt.ItemDataRole.UserRole) if item else None
+        self._show_position_details(payload)
+        self._sync_selected_rows()
+        if isinstance(payload, dict):
+            self.position_selected.emit(dict(payload))
+
+    def _show_position_details(self, payload):
+        if not isinstance(payload, dict):
+            self.details.set_payload(None)
+            return
+        display = dict(payload)
+        symbol = str(payload.get("symbol") or "")
+        rules = self.symbol_rules.get(symbol)
+        quote = rules.quote_asset if rules is not None else "USDC" if symbol.endswith("USDC") else "USDT"
+        display["_quote_asset"] = quote
+        display["_margin_asset"] = rules.margin_asset if rules is not None else quote
+        self.details.set_payload(display)
+
+    def _sync_selected_rows(self):
+        current = self.positions.currentItem()
+        for index in range(self.positions.count()):
+            item = self.positions.item(index)
+            card = self.positions.itemWidget(item)
+            if card is not None:
+                _set_repolished_property(card, "selected", item is current)
+
+    def set_positions(self, payloads, symbol, connected):
+        blocker = QtCore.QSignalBlocker(self.positions)
+        _populate_account_cards(self.positions, payloads, self._position_factory,
+                                "No open positions" if connected else "Connect API credentials to view positions",
+                                update_existing=lambda card, payload: card.update_payload(payload, symbol))
+        del blocker
+        self.positions._schedule_card_heights()
+        _set_text_if_changed(self.position_toggle, f"Positions {len(payloads)}")
+        self._selection_changed()
+
+    def select_position(self, payload):
+        key = _account_key(payload)
+        for index in range(self.positions.count()):
+            item = self.positions.item(index)
+            row = item.data(Qt.ItemDataRole.UserRole)
+            if isinstance(row, dict) and _account_key(row) == key:
+                if self.positions.currentItem() is not item:
+                    self.positions.setCurrentItem(item)
+                return
+
+    def set_orders(self, payloads, symbol, connected):
+        _populate_account_cards(self.orders, payloads, self._order_factory,
+                                "No working orders" if connected else "Connect API credentials to view orders",
+                                update_existing=lambda card, payload: card.update_payload(payload, symbol))
+        self.orders._schedule_card_heights()
+        _set_text_if_changed(self.working_title, f"WORKING ORDERS {len(payloads)}")
+        _set_text_if_changed(self.cancel_button, f"Cancel {symbol} orders")
+
+    def set_mark_price(self, mark, symbol):
+        for index in range(self.positions.count()):
+            item = self.positions.item(index)
+            card = self.positions.itemWidget(item)
+            if isinstance(card, PositionDeskRow) and card.payload.get("symbol") == symbol:
+                card.update_mark_price(mark)
+                item.setData(Qt.ItemDataRole.UserRole, dict(card.payload))
+        item = self.positions.currentItem()
+        payload = item.data(Qt.ItemDataRole.UserRole) if item else None
+        self._show_position_details(payload)
+
+
+
 class TradingWorkspace(QtWidgets.QWidget):
     order_requested = Signal(object)
     batch_orders_requested = Signal(object)
+    position_trade_requested = Signal(object)
+    position_selection_changed = Signal(object)
+    close_presets_changed = Signal(object)
     orders_drawer_toggled = Signal(bool)
     rail_minimum_height_changed = Signal()
 
@@ -3477,13 +4833,13 @@ class TradingWorkspace(QtWidgets.QWidget):
         self.ticket = OrderPanel(gateway, compact=True)
         self.ticket.setSizePolicy(
             QtWidgets.QSizePolicy.Policy.Expanding,
-            QtWidgets.QSizePolicy.Policy.Fixed,
+            QtWidgets.QSizePolicy.Policy.Expanding,
         )
         self.ticket.order_requested.connect(self.order_requested)
         self.ticket.minimum_content_height_changed.connect(
             self._sync_rail_minimum_height
         )
-        layout.addWidget(self.ticket, 0)
+        layout.addWidget(self.ticket, 1)
 
 
 
@@ -3507,82 +4863,40 @@ class TradingWorkspace(QtWidgets.QWidget):
         self._adaptive_activity_key: tuple[Any, ...] | None = None
         self.adaptive_activity_frame.hide()
         layout.addWidget(self.adaptive_activity_frame, 0)
-        layout.addStretch(1)
         self._sync_rail_minimum_height(self.ticket.compact_required_height())
 
-        self.account_frame = QtWidgets.QFrame(self)
-        self.account_frame.setObjectName("tradingAccountFrame")
-        account_layout = QtWidgets.QVBoxLayout(self.account_frame)
-        account_layout.setContentsMargins(8, 8, 8, 8)
-        account_layout.setSpacing(6)
-        account_header = QtWidgets.QHBoxLayout()
-        account_header.setContentsMargins(2, 0, 2, 0)
-        account_header.setSpacing(8)
-        self.status = ElidedLabel("ACCOUNT DATA · ADD API CREDENTIALS")
-        self.status.setObjectName("tradingDeskStatus")
+        self.account_frame = PositionDeskView(self._position_card, self._order_card)
+        self.account_frame.symbol_rules = self.symbol_rules
+        self.account_frame._details_user_choice = True
+        self.positions = self.account_frame.positions
+        self.orders = self.account_frame.orders
+        self.fills = self.account_frame.fills
+        self.tabs = self.account_frame.tabs
+        self.status = self.account_frame.status
         self.total_pnl = QtWidgets.QLabel("UPNL —")
         self.total_pnl.setObjectName("accountTotalPnl")
-
-
-        set_text_role(self.total_pnl, TextRole.MARKET_VALUE_LARGE)
-        self.total_pnl.setAlignment(
-            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
-        )
-        account_header.addWidget(self.status, 1)
-        account_header.addWidget(self.total_pnl)
-        account_layout.addLayout(account_header)
-
-        self.tabs = QtWidgets.QTabWidget()
-        self.tabs.setObjectName("tradingAccountTabs")
-        self.tabs.setDocumentMode(True)
-        set_text_role(self.tabs.tabBar(), TextRole.UI_CONTROL_COMPACT)
-        self.positions = _new_account_card_list()
-        self.orders = _new_account_card_list()
-        self.fills = self._table(("TIME", "SIDE", "PRICE", "SIZE", "PNL", "FEE"))
         self.balances = self._table(("ASSET", "WALLET", "AVAILABLE", "UPNL"))
-        self._position_count = 0
-        self._order_count = 0
-
-        def account_page(content: QtWidgets.QWidget) -> QtWidgets.QWidget:
-            page = QtWidgets.QWidget()
-            page_layout = QtWidgets.QVBoxLayout(page)
-            page_layout.setContentsMargins(0, 4, 0, 4)
-            page_layout.setSpacing(0)
-            page_layout.addWidget(content)
-            return page
-
-        _populate_account_cards(self.positions, [], None, "Connect API credentials to view positions")
-        _populate_account_cards(self.orders, [], None, "Connect API credentials to view orders")
-        self.fills.empty.setText("Connect API credentials to view fills")
-        self.balances.empty.setText("Connect API credentials to view balances")
-        self.tabs.addTab(account_page(self.positions), "POSITIONS 0")
-        self.tabs.addTab(account_page(self.fills), "FILLS")
-        self.tabs.addTab(account_page(self.orders), "ORDERS 0")
-        self.tabs.addTab(account_page(self.balances), "BALANCES")
-        self.tabs.tabBar().setElideMode(Qt.TextElideMode.ElideNone)
-        self.tabs.tabBar().setUsesScrollButtons(True)
-        self.tabs.tabBar().setExpanding(True)
-        account_layout.addWidget(self.tabs, 1)
-
-        self.order_actions = QtWidgets.QWidget()
-        order_row = QtWidgets.QHBoxLayout(self.order_actions)
-        order_row.setContentsMargins(0, 0, 0, 0)
-        order_row.setSpacing(4)
-        self.batch_button = QtWidgets.QPushButton("NEW LIMIT BATCH")
-        self.modify_button = QtWidgets.QPushButton("EDIT SELECTED")
-        self.cancel_all_button = QtWidgets.QPushButton("CANCEL ALL SYMBOL ORDERS")
-        self.cancel_all_button.setObjectName("dangerButton")
-        order_row.addWidget(self.batch_button, 1)
-        order_row.addWidget(self.modify_button, 1)
-        order_row.addWidget(self.cancel_all_button, 1)
-        account_layout.addWidget(self.order_actions)
-
-        self.account_frame.hide()
-        self.batch_button.clicked.connect(self.open_batch_orders)
-        self.modify_button.clicked.connect(self.modify_selected)
+        self.tabs.addTab(self.balances, "Balances")
+        self._position_count = self._order_count = 0
+        self.cancel_all_button = self.account_frame.cancel_button
+        self.order_actions = self.account_frame.more_button
+        self.order_actions.show()
+        self.batch_button = self.account_frame.more_menu.addAction("Limit batch…")
+        self.modify_button = self.account_frame.more_menu.addAction("Edit selected limit…")
+        self.batch_button.triggered.connect(self.open_batch_orders)
+        self.modify_button.triggered.connect(self.modify_selected)
         self.ticket.reduce_only.toggled.connect(lambda _checked: self._sync_batch_action())
         self.cancel_all_button.clicked.connect(self.cancel_selected_symbol_orders)
         self.tabs.currentChanged.connect(self._account_tab_changed)
+        self.account_frame.position_selected.connect(self._position_selected)
+        self.ticket.position_target_selected.connect(self.select_position)
+        self.account_frame.trade_requested.connect(self.position_trade_requested)
+        self.account_frame.details.close_requested.connect(self._close_position_payload)
+        self.account_frame.details.close_limit_requested.connect(self._close_position_limit_payload)
+        _populate_account_cards(self.positions, [], None, "Connect API credentials to view positions")
+        _populate_account_cards(self.orders, [], None, "Connect API credentials to view orders")
+        _populate_fill_cards(self.fills, {}, self.symbol, connected=False)
+        self.account_frame.hide()
         self.gateway.snapshot_ready.connect(self.apply_snapshot)
         self.gateway.credentials_changed.connect(self._clear_account_view)
         self.gateway.account_event.connect(self._account_event)
@@ -3597,7 +4911,8 @@ class TradingWorkspace(QtWidgets.QWidget):
         required = max(0, int(height))
 
 
-        self.ticket.setMaximumHeight(max(1, required))
+        self.ticket.setMaximumHeight(16777215)
+        required = min(required, 280)
         if int(self.property("rightRailMinimumHeight") or 0) != required:
             self.setProperty("rightRailMinimumHeight", required)
             self.updateGeometry()
@@ -3677,7 +4992,7 @@ class TradingWorkspace(QtWidgets.QWidget):
             else:
                 card = CompactOrderActivityCard(payload, self.symbol, self)
                 card.selected_requested.connect(
-                    lambda: self._open_adaptive_account_tab(2)
+                    lambda: self._open_adaptive_account_tab(0)
                 )
             self._adaptive_activity_card = card
             self._adaptive_activity_key = key
@@ -3697,6 +5012,14 @@ class TradingWorkspace(QtWidgets.QWidget):
         self.adaptive_activity_frame.show()
 
     def _open_adaptive_account_tab(self, tab_index: int) -> None:
+        card = self._adaptive_activity_card
+        if isinstance(card, CompactPositionActivityCard):
+            self.select_position(card.payload)
+            self.account_frame.position_toggle.setChecked(True)
+            self.account_frame._toggle_positions(True)
+        elif isinstance(card, CompactOrderActivityCard):
+            self.account_frame.position_toggle.setChecked(False)
+            self.account_frame._toggle_positions(False)
         self.tabs.setCurrentIndex(int(tab_index))
         self.set_orders_drawer_open(True)
 
@@ -3737,8 +5060,9 @@ class TradingWorkspace(QtWidgets.QWidget):
         self.symbol = symbol
         self.rules = rules
         self.ticket.set_symbol(symbol, rules)
-        self.fills.setRowCount(0)
-        self.fills.empty.setText(f"Loading fills for {symbol}…" if self.gateway.has_credentials() else "Connect API credentials to view fills")
+        self.symbol_rules[symbol] = rules
+        _populate_account_cards(self.fills, [], None, f"Loading fills for {symbol}…"
+                                if self.gateway.has_credentials() else "Connect API credentials to view fills")
         self.status.setText(f"{symbol} · ACCOUNT DATA")
         self._refresh_adaptive_activity()
         self._poll_account_if_open()
@@ -3752,13 +5076,7 @@ class TradingWorkspace(QtWidgets.QWidget):
             if str(row.get("symbol") or "").upper() == symbol:
                 _update_position_mark(row, price)
                 changed = True
-        for index in range(self.positions.count()):
-            card = self.positions.itemWidget(self.positions.item(index))
-            if (
-                isinstance(card, PositionAccountCard)
-                and str(card.payload.get("symbol") or "").upper() == symbol
-            ):
-                card.update_mark_price(price)
+        self.account_frame.set_mark_price(price, symbol)
         adaptive = self._adaptive_activity_card
         if (
             isinstance(adaptive, CompactPositionActivityCard)
@@ -3849,7 +5167,8 @@ class TradingWorkspace(QtWidgets.QWidget):
             )
 
     def _sync_account_actions(self, tab_index: int) -> None:
-        self.order_actions.setVisible(tab_index == 2)
+        self.order_actions.setVisible(tab_index == 0)
+        self.cancel_all_button.setVisible(tab_index == 0)
         self._sync_batch_action()
 
     def _sync_batch_action(self) -> None:
@@ -3874,6 +5193,8 @@ class TradingWorkspace(QtWidgets.QWidget):
             card = self.positions.itemWidget(self.positions.item(index))
             if isinstance(card, PositionAccountCard):
                 card.set_close_percentages(self.close_percentages)
+        self.account_frame.details.set_close_percentages(self.close_percentages)
+        self.close_presets_changed.emit(list(self.close_percentages))
 
     @staticmethod
     def _fill_table(
@@ -3958,16 +5279,7 @@ class TradingWorkspace(QtWidgets.QWidget):
         )
         self._position_payloads = [dict(row) for row in position_payloads]
         self._position_count = len(position_payloads)
-        _populate_account_cards(
-            self.positions,
-            position_payloads,
-            lambda payload: self._position_card(payload),
-            "NO OPEN POSITIONS",
-            update_existing=lambda card, payload: card.update_payload(payload, self.symbol)
-            if isinstance(card, PositionAccountCard)
-            else None,
-        )
-        _set_tab_text_if_changed(self.tabs, 0, f"POSITIONS {self._position_count}")
+        self.account_frame.set_positions(position_payloads, self.symbol, self.gateway.has_credentials())
 
         if str(snapshot.get("ordersScope", "")).upper() == "ALL":
             combined_orders: list[dict[str, Any]] = []
@@ -3995,21 +5307,10 @@ class TradingWorkspace(QtWidgets.QWidget):
             )
             self._open_orders = [dict(row) for row in combined_orders]
             self._order_count = len(combined_orders)
-            _populate_account_cards(
-                self.orders,
-                combined_orders,
-                lambda payload: self._order_card(payload),
-                "NO OPEN ORDERS",
-                fingerprint=_order_card_render_fingerprint(combined_orders, self.symbol),
-                update_existing=lambda card, payload: card.update_payload(payload)
-                if isinstance(card, OrderAccountCard)
-                else None,
-            )
-            _set_tab_text_if_changed(self.tabs, 2, f"ORDERS {self._order_count}")
+            self.account_frame.set_orders(combined_orders, self.symbol, self.gateway.has_credentials())
 
         if snapshot.get("fillsSymbol", self.symbol) == self.symbol:
-            self._fill_table(self.fills, _account_fill_rows(snapshot, self.symbol))
-            self.fills.empty.setText(f"No fills for {self.symbol}" if self.gateway.has_credentials() else "Connect API credentials to view fills")
+            _populate_fill_cards(self.fills, snapshot, self.symbol, connected=self.gateway.has_credentials())
 
         balances: list[tuple[tuple[str, ...], dict[str, Any]]] = []
         for row in account.get("assets", []):
@@ -4021,7 +5322,7 @@ class TradingWorkspace(QtWidgets.QWidget):
             values = (
                 str(row.get("asset", "")),
                 human_number(wallet),
-                human_number(safe_float(row.get("availableBalance"))) if 'availableBalance' in row else '—',
+                human_number(safe_float(row.get("availableBalance"))),
                 human_number(safe_float(row.get("unrealizedProfit")), money=True),
             )
             balances.append((values, dict(row)))
@@ -4048,21 +5349,21 @@ class TradingWorkspace(QtWidgets.QWidget):
         _set_text_if_changed(self.total_pnl, f"UPNL {_signed_money(total_pnl)}")
         _set_repolished_property(self.total_pnl, "pnl", _pnl_state(total_pnl))
 
-    def _position_card(self, payload: dict[str, Any]) -> PositionAccountCard:
-        card = PositionAccountCard(
-            payload,
-            self.theme,
-            self.close_percentages,
-            self.symbol,
-        )
-        card.close_requested.connect(self._close_position_payload)
-        card.close_limit_requested.connect(self._close_position_limit_payload)
-        return card
+    def _position_card(self, payload):
+        return PositionDeskRow(payload, self.symbol)
 
-    def _order_card(self, payload: dict[str, Any]) -> OrderAccountCard:
-        card = OrderAccountCard(payload, self.theme, self.symbol)
+    def _order_card(self, payload):
+        card = WorkingOrderRow(payload, self.theme, self.symbol)
         card.cancel_requested.connect(self._cancel_order_payload)
         return card
+
+    def _position_selected(self, payload):
+        if isinstance(payload, dict):
+            self.ticket.focus_position(payload)
+            self.position_selection_changed.emit(dict(payload))
+
+    def select_position(self, payload):
+        self.account_frame.select_position(payload)
 
     def _selected_payload(
         self,
@@ -4096,8 +5397,7 @@ class TradingWorkspace(QtWidgets.QWidget):
         self._cancel_order_payload(order)
 
     def cancel_selected_symbol_orders(self) -> None:
-        order = self._selected_payload(self.orders)
-        symbol = str((order or {}).get("symbol") or self.symbol)
+        symbol = self.symbol
         if _confirm_cancel_symbol_orders(self, symbol):
             self.gateway.cancel_all(symbol)
 
@@ -4311,7 +5611,8 @@ class TradingWorkspace(QtWidgets.QWidget):
 
     def apply_theme(self, theme: dict[str, str]) -> None:
         self.theme = theme
-        self.ticket.set_settings_icon(theme["muted"])
+        self.setStyleSheet(_trading_stylesheet(theme))
+        self.ticket.apply_theme(theme)
 
 
 
@@ -4330,31 +5631,29 @@ class CompactOrdersWidget(QtWidgets.QWidget):
         self._open_orders = []
         self._last_snapshot_mono = 0.0
         self.setObjectName("accountActivityPanel")
+        self.setStyleSheet(_trading_stylesheet(self.theme))
         self.setMinimumSize(0, 0)
         layout = QtWidgets.QVBoxLayout(self)
-        layout.setContentsMargins(6, 6, 6, 6)
-        layout.setSpacing(8)
-        self.tabs = QtWidgets.QTabWidget()
-        self.tabs.setObjectName("tradingAccountTabs")
-        self.tabs.setDocumentMode(True)
-        self.tabs.tabBar().setExpanding(True)
-        self.tabs.tabBar().setElideMode(Qt.TextElideMode.ElideNone)
-        self.tabs.tabBar().setUsesScrollButtons(True)
-        self.positions = _new_account_card_list()
-        self.list = _new_account_card_list()
-        self.fills = TradingWorkspace._table(("TIME UTC", "SIDE", "PRICE", "SIZE", "PNL", "FEE"))
-        self.tabs.addTab(self.positions, "POSITIONS")
-        self.tabs.addTab(self.fills, "FILLS")
-        self.tabs.addTab(self.list, "ORDERS")
-        layout.addWidget(self.tabs, 1)
-        self.status = ElidedLabel("Connect API credentials to view account activity")
-        self.status.setObjectName("tradeAccountSummary")
-        layout.addWidget(self.status)
-        self.cancel_all = QtWidgets.QPushButton("CANCEL ALL SYMBOL ORDERS")
-        self.cancel_all.setObjectName("dangerButton")
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+        self.desk = PositionDeskView(self._position_card, self._card)
+        layout.addWidget(self.desk)
+        self.tabs, self.positions, self.list, self.fills = self.desk.tabs, self.desk.positions, self.desk.orders, self.desk.fills
+        self.status, self.cancel_all = self.desk.status, self.desk.cancel_button
         self.cancel_all.clicked.connect(self._cancel_symbol_orders)
-        layout.addWidget(self.cancel_all)
         self.tabs.currentChanged.connect(self._tab_changed)
+        if account_owner is not None:
+            self.desk.symbol_rules = account_owner.symbol_rules
+            self.desk.position_selected.connect(account_owner.select_position)
+            account_owner.position_selection_changed.connect(self.desk.select_position)
+            self.desk.trade_requested.connect(account_owner.position_trade_requested)
+            self.desk.details.close_requested.connect(account_owner._close_position_payload)
+            self.desk.details.close_limit_requested.connect(account_owner._close_position_limit_payload)
+            self.desk.details.set_close_percentages(account_owner.close_percentages)
+            account_owner.close_presets_changed.connect(self.desk.details.set_close_percentages)
+        else:
+            self.desk.details.trade_button.setEnabled(False)
+            self.desk.details.close_button.setEnabled(False)
         self.refresh_timer = QTimer(self)
         self.refresh_timer.setInterval(20_000)
         self.refresh_timer.timeout.connect(self._poll_if_visible)
@@ -4379,8 +5678,9 @@ class CompactOrdersWidget(QtWidgets.QWidget):
 
     def set_symbol(self, symbol, rules):
         self.symbol, self.rules = symbol, rules
-        self.fills.setRowCount(0)
-        self.fills.empty.setText(f"Loading fills for {symbol}…" if self.gateway.has_credentials() else "Connect API credentials to view fills")
+        self.desk.symbol_rules[symbol] = rules
+        _populate_account_cards(self.fills, [], None, f"Loading fills for {symbol}…"
+                                if self.gateway.has_credentials() else "Connect API credentials to view fills")
         self.apply_snapshot(self._snapshot, mark_fresh=False)
         self._poll_if_visible()
 
@@ -4398,7 +5698,7 @@ class CompactOrdersWidget(QtWidgets.QWidget):
         self._poll_if_visible()
 
     def _sync_scope(self):
-        self.cancel_all.setVisible(self.tabs.currentIndex() == 2)
+        self.cancel_all.setVisible(self.tabs.currentIndex() == 0)
         current_symbol = str(self.symbol).upper()
         self.cancel_all.setEnabled(
             self.gateway.has_credentials()
@@ -4408,6 +5708,7 @@ class CompactOrdersWidget(QtWidgets.QWidget):
             )
         )
         self.cancel_all.setToolTip(f"Cancel open orders for {self.symbol} only")
+        self.cancel_all.setText(f"Cancel {self.symbol} orders")
         if not self.gateway.has_credentials():
             self.status.setText("Connect API credentials to view account activity")
             return
@@ -4441,15 +5742,10 @@ class CompactOrdersWidget(QtWidgets.QWidget):
         super().hideEvent(event)
 
     def _position_card(self, payload):
-        if self.account_owner is not None:
-            return self.account_owner._position_card(payload)
-        card = PositionAccountCard(payload, self.theme, [25, 50, 100], self.symbol)
-        for button in card.findChildren(QtWidgets.QAbstractButton):
-            button.setEnabled(False)
-        return card
+        return PositionDeskRow(payload, self.symbol)
 
     def _card(self, payload):
-        card = OrderAccountCard(payload, self.theme, self.symbol)
+        card = WorkingOrderRow(payload, self.theme, self.symbol)
         card.cancel_requested.connect(self._cancel_payload)
         return card
 
@@ -4469,15 +5765,7 @@ class CompactOrdersWidget(QtWidgets.QWidget):
         positions = [dict(row) for row in (snapshot.get("account") or {}).get("positions", [])
                      if abs(safe_float(row.get("positionAmt"))) > 0]
         positions.sort(key=lambda row: (row.get("symbol") != self.symbol, -_position_notional(row)))
-        _populate_account_cards(
-            self.positions,
-            positions,
-            self._position_card,
-            "No open positions" if connected else "Connect API credentials to view positions",
-            update_existing=lambda card, payload: card.update_payload(payload, self.symbol)
-            if isinstance(card, PositionAccountCard)
-            else None,
-        )
+        self.desk.set_positions(positions, self.symbol, connected)
         if str(snapshot.get("ordersScope", "")).upper() == "ALL":
             orders = []
             for source, rows in (("STANDARD", snapshot.get("orders", [])), ("ALGO", snapshot.get("algoOrders", []))):
@@ -4486,21 +5774,9 @@ class CompactOrdersWidget(QtWidgets.QWidget):
                         orders.append({**row, "_source": source})
             orders.sort(key=lambda row: (row.get("symbol") != self.symbol, str(row.get("symbol", ""))))
             self._open_orders = orders
-        _populate_account_cards(
-            self.list,
-            self._open_orders,
-            self._card,
-            "No open orders" if connected else "Connect API credentials to view orders",
-            fingerprint=_order_card_render_fingerprint(self._open_orders, self.symbol),
-            update_existing=lambda card, payload: card.update_payload(payload)
-            if isinstance(card, OrderAccountCard)
-            else None,
-        )
+        self.desk.set_orders(self._open_orders, self.symbol, connected)
         if snapshot.get("fillsSymbol", self.symbol) == self.symbol:
-            TradingWorkspace._fill_table(self.fills, _account_fill_rows(snapshot, self.symbol))
-            self.fills.empty.setText(f"No fills for {self.symbol}" if connected else "Connect API credentials to view fills")
-        _set_tab_text_if_changed(self.tabs, 0, f"POSITIONS {len(positions)}")
-        _set_tab_text_if_changed(self.tabs, 2, f"ORDERS {len(self._open_orders)}")
+            _populate_fill_cards(self.fills, snapshot, self.symbol, connected=connected)
         order_count = len(self._open_orders)
         if getattr(self, "_published_order_count", None) != order_count:
             self._published_order_count = order_count
@@ -4509,10 +5785,7 @@ class CompactOrdersWidget(QtWidgets.QWidget):
 
     def set_mark_price(self, price, symbol=None):
         symbol = symbol or self.symbol
-        for index in range(self.positions.count()):
-            card = self.positions.itemWidget(self.positions.item(index))
-            if isinstance(card, PositionAccountCard) and card.payload.get("symbol") == symbol:
-                card.update_mark_price(price)
+        self.desk.set_mark_price(price, symbol)
 
     def _cancel_payload(self, payload):
         if not payload:
@@ -4535,5 +5808,6 @@ class CompactOrdersWidget(QtWidgets.QWidget):
 
     def apply_theme(self, theme):
         self.theme = theme
+        self.setStyleSheet(_trading_stylesheet(theme))
 
         self.apply_snapshot(self._snapshot, mark_fresh=False)

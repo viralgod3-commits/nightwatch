@@ -1811,6 +1811,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.trading_gateway,
             symbol_rules=self.symbol_rules,
         )
+        self.trading_workspace.position_trade_requested.connect(self._reduce_position_in_trade)
         self.order_panel = self.trading_workspace.ticket
         self.orders_panel = CompactOrdersWidget(
             self.trading_gateway,
@@ -3708,6 +3709,23 @@ class MainWindow(QtWidgets.QMainWindow):
     def _open_market_from_board(self, symbol: str) -> None:
         self.switch_symbol(symbol)
         self._switch_workspace(0)
+
+    def _reduce_position_in_trade(self, position: dict[str, Any]) -> None:
+        symbol = str(position.get("symbol") or "")
+        if not symbol or symbol not in self.symbol_rules:
+            self.statusBar().showMessage("Load exchange rules before reducing this position.", 5000)
+            return
+        active = next((row for row in self.trading_gateway.position_cache.values()
+                       if row.get("symbol") == symbol
+                       and str(row.get("positionSide") or "BOTH") == str(position.get("positionSide") or "BOTH")
+                       and abs(safe_float(row.get("positionAmt"))) > 0), None)
+        if active is None:
+            self.statusBar().showMessage("This position is no longer open. Refresh account data.", 5000)
+            return
+        self._open_market_from_board(symbol)
+        self._show_trading_sidebar()
+        self.order_panel.apply_account_snapshot({"account": {"positions": list(self.trading_gateway.position_cache.values()), "availableBalance": self.trading_gateway.available_balance(self.order_panel.rules.margin_asset)}})
+        self.order_panel.focus_position(active, enter_reduce=True)
 
     def _open_watchlist_symbol(self, symbol: str) -> None:
         self.switch_symbol(symbol)
@@ -9022,10 +9040,15 @@ class MainWindow(QtWidgets.QMainWindow):
             position = candidates[0]
         elif (
             len(candidates) > 1
-            and self.trading_workspace.current_page() == 1
-            and self.trading_workspace.tabs.currentIndex() == 0
+            and (
+                self.trading_workspace.current_page() == 1
+                or self.order_panel.reduce_only.isChecked()
+                or (self.orders_panel.isVisible() and self.orders_panel.desk.position_area.isVisible())
+            )
         ):
             position = self.trading_workspace.selected_position()
+            if position is not None and position.get("symbol") != self.current_symbol:
+                position = None
         if position is None:
             self.statusBar().showMessage(
                 f"SMART EXIT · SELECT A {self.current_symbol} POSITION", 5000
