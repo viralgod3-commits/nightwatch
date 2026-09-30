@@ -6386,7 +6386,7 @@ class _DomRasterProcess:
         os.environ['QT_FONT_DPI'] = str(options['dpi'])
         from ..utilities import load_app_fonts
         self.application = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
-        load_app_fonts(self.application, os.getcwd())
+        load_app_fonts(self.application, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
         self.canvas = _DomRasterWorkerCanvas(options['theme'])
         self.config = {}
         self.epoch = self.market_epoch = -1

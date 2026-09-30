@@ -160,7 +160,7 @@ from .utilities import typography_state_weight
 
 def build_shell_stylesheet(theme_name: str, theme: dict[str, str], surfaces: dict[str, int] | None=None, status: dict[str, object] | None=None) -> str:
     t = theme
-    asset_root = Path.cwd() / 'assets'
+    asset_root = Path(__file__).resolve().parent.parent / 'assets'
     combo_arrow = str(asset_root / 'dropdown-arrow.svg').replace('\\', '/')
     spin_up_arrow = str(asset_root / 'spin-up-arrow.svg').replace('\\', '/')
     spin_down_arrow = str(asset_root / 'spin-down-arrow.svg').replace('\\', '/')

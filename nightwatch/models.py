@@ -102,13 +102,13 @@ def api_period(interval: str) -> str:
     return interval if interval in {"15m", "30m", "1h", "2h", "4h", "6h", "12h", "1d"} else "15m"
 
 
-def quantize_step(value: str, step: str) -> str:
+def quantize_step(value: str, step: str, *, rounding: str = ROUND_DOWN) -> str:
     try:
         number = Decimal(value)
         quantum = Decimal(step)
-        if number <= 0 or quantum <= 0:
+        if not number.is_finite() or not quantum.is_finite() or number <= 0 or quantum <= 0:
             raise InvalidOperation
-        rounded = (number / quantum).to_integral_value(rounding=ROUND_DOWN) * quantum
+        rounded = (number / quantum).to_integral_value(rounding=rounding) * quantum
         return format(rounded.normalize(), "f")
     except (InvalidOperation, ValueError):
         raise ValueError("Enter a valid positive quantity or price.")
@@ -576,6 +576,8 @@ class TradingGatewayPort(Protocol):
     credentials_changed: Any
     leverage_changing: Any
     leverage_changed: Any
+    protections_recovered: Any
+    _protection_recovery_pending: bool
     api_key: str
     api_secret: str
     armed: bool
@@ -613,6 +615,9 @@ class TradingGatewayPort(Protocol):
         ...
 
     def submit_order(self, order: dict[str, Any], context: dict[str, Any] | None=None) -> str:
+        ...
+
+    def submit_protection_tranche(self, plan: dict, legs: list[tuple[dict, dict]]) -> None:
         ...
 
     def submit_batch_orders(self, orders: list[dict[str, Any]], rules: Any=None, position_intent: str='OPEN', requires_arm: bool=False) -> str:
@@ -881,4 +886,3 @@ class CandlePages(Sequence):
 
     def clear(self):
         self._pages, self._start, self._size = (), 0, 0
-

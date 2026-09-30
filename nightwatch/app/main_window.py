@@ -174,7 +174,7 @@ from ..utilities import (
 )
 
 COIN_ICON_REFRESH_MS = 7 * 24 * 60 * 60 * 1000
-COINGECKO_DEMO_API_KEY = "CG-kinyEe2ZKdcNj1Y27q5JU1NL"
+COINGECKO_DEMO_API_KEY = os.getenv("COINGECKO_API_KEY", "").strip()
 COINGECKO_API = "https://api.coingecko.com/api/v3"
 COINPAPRIKA_API = "https://api.coinpaprika.com/v1"
 COIN_ICON_MAX_BYTES = 2_000_000
@@ -227,7 +227,7 @@ def _write_coin_icon(base: str, payload: bytes) -> tuple[str, bool]:
 
 def _coingecko_icon_rows(remote_symbols: list[str]) -> dict[str, dict[str, Any]]:
     rows_by_symbol: dict[str, dict[str, Any]] = {}
-    headers = {"x-cg-demo-api-key": COINGECKO_DEMO_API_KEY}
+    headers = {"x-cg-demo-api-key": COINGECKO_DEMO_API_KEY} if COINGECKO_DEMO_API_KEY else {}
     unique = list(dict.fromkeys(symbol.lower() for symbol in remote_symbols if symbol))
     for start in range(0, len(unique), 50):
         chunk = unique[start:start + 50]
@@ -896,6 +896,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._order_flow_runtime.failed.connect(
             self._on_order_flow_runtime_failed, QtCore.Qt.ConnectionType.QueuedConnection
         )
+        self._order_flow_runtime.restarted.connect(self._on_order_flow_runtime_restarted, QtCore.Qt.ConnectionType.QueuedConnection)
         self._order_flow_runtime_thread.finished.connect(self._order_flow_runtime.deleteLater)
         self._order_flow_runtime_thread.start()
         self._order_flow_reset_requested.emit(
@@ -1071,6 +1072,11 @@ class MainWindow(QtWidgets.QMainWindow):
         self.symbol_search_pending = False
         self._syncing_drawing_buttons = False
         self.market_event_buffer: list[tuple[str, str, int, dict[str, Any]]] = []
+        self._market_event_dropped = 0
+        self._market_event_error = ""
+        self._close_waiting_for_recorder = False
+        self._market_event_pool = QtCore.QThreadPool(self)
+        self._market_event_pool.setMaxThreadCount(1)
         self.market_event_task: ApiTask | None = None
         self.last_recorded_depth = 0.0
         self.last_recorded_funding = 0.0
@@ -1101,13 +1107,16 @@ class MainWindow(QtWidgets.QMainWindow):
         self.emergency_guards: dict[str, dict[str, Any]] = {}
         self.emergency_close_requests: dict[str, dict[str, Any]] = {}
         self.emergency_reserved: dict[tuple[str, str], float] = {}
+        self._emergency_tranches: set[str] = set()
         self.emergency_timer = QTimer(self)
         self.emergency_timer.setInterval(100)
         self.emergency_timer.timeout.connect(self._check_emergency_guards)
 
         self.setWindowTitle(f"{APP_NAME} · Binance USD-M")
-        self.setMinimumHeight(760)
-        self.resize(1720, 1040)
+        screen = QtGui.QGuiApplication.primaryScreen()
+        available = screen.availableGeometry() if screen else QtCore.QRect(0, 0, 1720, 1040)
+        self.setMinimumHeight(min(600, max(320, available.height() - 80)))
+        self.resize(min(1720, available.width()), min(1040, available.height()))
         build_ui_started = time.perf_counter()
         self._build_ui()
         self._sync_shell_minimum_width()
@@ -1180,6 +1189,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.trading_gateway.leverage_changed.connect(self._magnetic_rail_leverage_changed)
         self.trading_gateway.armed_changed.connect(self._trading_armed_changed)
         self.trading_gateway.account_event.connect(self._trading_account_event)
+        self.trading_gateway.protections_recovered.connect(self._restore_saved_protections)
         self.trading_gateway.snapshot_ready.connect(self._sync_chart_working_orders)
         self.trading_gateway.snapshot_ready.connect(self._sync_dom_execution_context)
         self.trading_gateway.snapshot_ready.connect(self._sync_ticker_streams)
@@ -6154,8 +6164,8 @@ class MainWindow(QtWidgets.QMainWindow):
             self,
             "Download market history data",
             f"Download and resume {selected_data} for {len(active_symbols)} active USDT perpetuals?\n\n"
-            "This can take a long time and use substantial disk space. Nightwatch will lock its "
-            "other workspaces and stay below the configured Binance safety ceiling. You may pause "
+            "This can take a long time and use substantial disk space. Live feeds and trading remain "
+            "available while research requests use background rate-limit priority. You may pause "
             "after any complete page and resume later.",
             QtWidgets.QMessageBox.StandardButton.Yes
             | QtWidgets.QMessageBox.StandardButton.Cancel,
@@ -6168,31 +6178,17 @@ class MainWindow(QtWidgets.QMainWindow):
         )
         self.market_history_dialog = dialog
         self.download_market_history_action.setEnabled(False)
-        hub.suspend_for_history()
-        if self.market_board is not None:
-            self.market_board.set_active(False)
-        if self.sector_overview is not None:
-            self.sector_overview.set_active(False)
-        self.rotation_overview.set_active(False)
-        try:
-            dialog.exec()
-        finally:
-            if not self._close_after_market_history:
-                hub.resume_after_history()
-                if self.market_board is not None:
-                    self.market_board.set_active(
-                        self.workspace_stack.currentIndex() in (1, 3),
-                        visible=self.workspace_stack.currentIndex() == 1,
-                    )
-                if self.sector_overview is not None:
-                    self.sector_overview.set_active(self.workspace_stack.currentIndex() == 2)
-                self.rotation_overview.set_active(self.workspace_stack.currentIndex() == 3)
-            self.market_history_dialog = None
+        def finished(_result):
+            if self.market_history_dialog is dialog:
+                self.market_history_dialog = None
             self.download_market_history_action.setEnabled(True)
-            self.statusBar().showMessage(
-                "Market-history downloader closed | committed pages remain in the local database.",
-                7000,
-            )
+            self.statusBar().showMessage("Market-history downloader closed | committed pages remain in the local database.", 7000)
+            dialog.deleteLater()
+
+        dialog.finished.connect(finished)
+        dialog.setWindowModality(Qt.WindowModality.NonModal)
+        dialog.setModal(False)
+        dialog.show()
 
     def download_history(self) -> None:
         if self.history_task is not None:
@@ -7559,13 +7555,6 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _flush_presentation_frame(self, _frame_mono: float) -> None:
         """Commit secondary GUI state only when chart interaction is idle."""
-        if self._chart_interaction_priority_active or self._ui_resize_active:
-            if (
-                getattr(self, "pending_ticker_symbols", None)
-                or getattr(self, "ticker_rank_dirty", False)
-            ):
-                self._interaction_deferred_ticker_ui = True
-            return
         if (
             getattr(self, "pending_ticker_symbols", None)
             or getattr(self, "ticker_rank_dirty", False)
@@ -8010,6 +7999,14 @@ class MainWindow(QtWidgets.QMainWindow):
         if self._closing or int(generation) != self._order_flow_generation:
             return
         self.statusBar().showMessage(str(message), 5000)
+        self._book_valid = False
+        self._reset_market_inference_boundary()
+        self.orderbook.set_book_validity(False, 'ANALYSIS WORKER RECOVERING')
+
+    @QtCore.Slot(int)
+    def _on_order_flow_runtime_restarted(self, generation: int) -> None:
+        if not self._closing and generation == self._order_flow_generation and self.hub is not None:
+            self.hub.request_orderbook_resync()
 
     def order_flow_diagnostic_state(self) -> dict[str, Any]:
         return dict(self._order_flow_diagnostic_state)
@@ -8026,12 +8023,13 @@ class MainWindow(QtWidgets.QMainWindow):
             self._order_flow_shutdown_requested.emit()
         except RuntimeError:
             pass
+        thread.finished.connect(self._finish_runtime_shutdown, QtCore.Qt.ConnectionType.QueuedConnection)
         thread.requestInterruption()
         thread.quit()
-        # The worker performs bounded in-memory computation only; allow an
-        # in-flight snapshot to finish rather than terminating it unsafely.
-        if not thread.wait(2000):
-            thread.wait()
+
+    @QtCore.Slot()
+    def _finish_runtime_shutdown(self) -> None:
+        QTimer.singleShot(0, self, self.close)
 
     def _on_book_ticker(self, payload: dict[str, Any]) -> None:
         """Feed real-time BBO into the temporal order-flow model."""
@@ -8136,6 +8134,12 @@ class MainWindow(QtWidgets.QMainWindow):
         event_time: int | None = None,
         symbol: str | None = None,
     ) -> None:
+        if self._closing or self._close_waiting_for_recorder:
+            return
+        if len(self.market_event_buffer) >= 10_000:
+            del self.market_event_buffer[:500]
+            self._market_event_dropped += 500
+            self.statusBar().showMessage("LOCAL RECORDER OVERLOAD · dropped events are recorded as an explicit data gap", 5000)
         self.market_event_buffer.append(
             (
                 symbol or self.current_symbol,
@@ -8147,43 +8151,47 @@ class MainWindow(QtWidgets.QMainWindow):
         if len(self.market_event_buffer) >= 500:
             self._flush_market_events()
 
-    def _flush_market_events(self, blocking: bool = False) -> None:
+    def _flush_market_events(self) -> None:
+        if self.market_event_task is not None:
+            return
+        if self._market_event_dropped:
+            self.market_event_buffer.append((self.current_symbol, "recorder_gap", int(time.time() * 1000),
+                                             {"dropped_events": self._market_event_dropped, "reason": "bounded recorder queue overload"}))
+            self._market_event_dropped = 0
         if not self.market_event_buffer:
+            if self._close_waiting_for_recorder:
+                QTimer.singleShot(0, self.close)
             return
         db = self._ensure_app_database()
-        if self.market_event_task is not None and not blocking:
-            return
-        pending = self.market_event_buffer
-        self.market_event_buffer = []
-        if blocking:
-            try:
-                db.insert_market_events(pending)
-            except sqlite3.Error:
-                pass
-            return
+        pending, self.market_event_buffer = self.market_event_buffer, []
+        from ..market.recording import commit_market_events, spool_market_events
+        spooling = bool(self._close_waiting_for_recorder and self._market_event_error)
         task: ApiTask
 
-        def done(_result: Any) -> None:
+        def done(_result):
             self.tasks.discard(task)
-            if self._closing:
-                return
             self.market_event_task = None
+            self._market_event_error = ""
             if self.market_event_buffer:
                 self._flush_market_events()
+            elif self._close_waiting_for_recorder:
+                QTimer.singleShot(0, self.close)
 
-        def failed(message: str) -> None:
+        def failed(message):
             self.tasks.discard(task)
-            if self._closing:
-                return
             self.market_event_task = None
-            self.market_event_buffer[:0] = pending[-500:]
-            self.statusBar().showMessage(f"Local market recorder paused: {message}", 7000)
+            self._market_event_error = message
+            self.market_event_buffer[:0] = pending
+            if len(self.market_event_buffer) > 10_000:
+                excess = len(self.market_event_buffer) - 10_000
+                del self.market_event_buffer[-excess:]
+                self._market_event_dropped += excess
+            self.statusBar().showMessage(f"Local recorder paused: {message}", 7000)
+            if self._close_waiting_for_recorder and not spooling:
+                self._flush_market_events()
 
-        task = launch_task(
-            lambda: db.insert_market_events(pending),
-            done,
-            failed,
-        )
+        work = (lambda: spool_market_events(db, pending)) if spooling else (lambda: commit_market_events(db, pending))
+        task = launch_task(work, done, failed, self._market_event_pool, source="local market recorder")
         self.market_event_task = task
         self.tasks.add(task)
 
@@ -9181,6 +9189,16 @@ class MainWindow(QtWidgets.QMainWindow):
                 hub.request_universe_refresh()
             return ""
         if has_protections:
+            try:
+                for kind in ("tp", "sl"):
+                    targets = list(protections.get(kind, []))[:4]
+                    protection_quantities(safe_float(order.get("quantity")), targets, resolved_rules)
+                    for target in targets:
+                        validate_step(str(target.get("price", "")), resolved_rules.tick_size, "Protection trigger")
+            except ValueError as exc:
+                self.alerts_panel.append_alert("ENTRY PROTECTION INVALID", f"{symbol} · {exc} · entry not sent")
+                return ""
+        if has_protections:
             # Register the plan before transmission. A fast market fill can be
             # delivered by the account stream before the request response.
             order.setdefault(
@@ -9194,6 +9212,8 @@ class MainWindow(QtWidgets.QMainWindow):
             "position_intent": request.get("position_intent"),
             "rules": resolved_rules if isinstance(resolved_rules, SymbolRules) else SymbolRules(),
             "source": str(request.get("source") or ""),
+            "collateral_asset": str(request.get("collateral_asset") or ""),
+            "collateral_required": safe_float(request.get("collateral_required")),
             "rail_draft_id": int(safe_float(request.get("rail_draft_id"), 0)),
         }
         request_id = self.trading_gateway.submit_order(order, context)
@@ -9416,8 +9436,9 @@ class MainWindow(QtWidgets.QMainWindow):
                             rail_draft_id, canceled=True
                         )
         if failure_context.get("emergency_close"):
-            self._release_emergency_reservation(failure_context)
-            self.emergency_close_requests.pop(request_id, None)
+            if not uncertain:
+                self._release_emergency_reservation(failure_context)
+                self.emergency_close_requests.pop(request_id, None)
             self.alerts_panel.append_alert(
                 "EMERGENCY CLOSE NOT CONFIRMED",
                 f"{failure_context.get('symbol', '—')} · {message} · no retry was sent.",
@@ -9441,6 +9462,39 @@ class MainWindow(QtWidgets.QMainWindow):
             )
             self._start_emergency_close(failure_context, message)
 
+    def _restore_saved_protections(self, recovered: dict) -> None:
+        """Restore monitoring and cumulative allocation before processing new fills."""
+        entries = []
+        for record in recovered.get("records", []):
+            client_id = record["client_id"]
+            context = dict(record.get("context") or {})
+            result = record.get("result") or {}
+            status = str(result.get("status") or result.get("algoStatus") or "").upper()
+            if record["kind"] == "leg":
+                if status in {"NEW", "PARTIALLY_FILLED", "TRIGGERED"}:
+                    self.active_protection_legs[client_id] = context
+                elif status == "REJECTED":
+                    self.alerts_panel.append_alert("RECOVERED PROTECTION REJECTED", f"{client_id} · inspect position risk before resuming trading")
+            else:
+                context["client_id"] = client_id
+                previous = self.pending_protections.get(client_id, {})
+                context["filled_quantity"] = max(safe_float(context.get("filled_quantity")), safe_float(previous.get("filled_quantity")), safe_float(result.get("executedQty") or result.get("cumQty") or result.get("aq")))
+                context["protected_quantity"] = max(safe_float(context.get("protected_quantity")), safe_float(previous.get("protected_quantity")))
+                self.pending_protections[client_id] = context
+                entries.append((context, status))
+        if recovered.get("errors"):
+            self.alerts_panel.append_alert("PROTECTION RECOVERY NEEDS REVIEW", "\n".join(recovered["errors"]))
+            return
+        for context, status in entries:
+            symbol = str((context.get('entry') or {}).get('symbol') or '')
+            if status in {"FILLED", "FINISHED", "CANCELED", "EXPIRED", "REJECTED"} and not self.trading_gateway.has_open_position(symbol):
+                self.submitted_protection_clients.add(str(context['client_id']))
+                self.pending_protections.pop(str(context['client_id']), None)
+                continue
+            if context["filled_quantity"] > 0:
+                self._submit_protection_plan(context, context["filled_quantity"], terminal=status in {"FILLED", "FINISHED", "CANCELED", "EXPIRED", "REJECTED"})
+        self.alerts_panel.append_alert("PROTECTION MONITORING RESTORED", f"{len(entries)} saved entries · {len(self.active_protection_legs)} active legs reconciled by client ID")
+
     def _submit_protection_plan(
         self, context: dict[str, Any], filled_quantity: float, *, terminal: bool = True
     ) -> None:
@@ -9454,14 +9508,17 @@ class MainWindow(QtWidgets.QMainWindow):
         if client_id in self.submitted_protection_clients:
             return
         pending = self.pending_protections.setdefault(client_id, context)
+        if self.trading_gateway._protection_recovery_pending:
+            pending["filled_quantity"] = max(safe_float(pending.get("filled_quantity")), filled_quantity)
+            self._set_ticket_protection_state(str((pending.get("entry") or {}).get("symbol") or ""), "PROTECTION RECOVERY PENDING")
+            return
         filled = max(safe_float(pending.get("filled_quantity")), filled_quantity)
         protected = safe_float(pending.get("protected_quantity"))
         pending["filled_quantity"] = filled
-        if terminal:
-            self.submitted_protection_clients.add(client_id)
         delta = Decimal(str(filled)) - Decimal(str(protected))
         if delta <= 0:
             if terminal:
+                self.submitted_protection_clients.add(client_id)
                 self.pending_protections.pop(client_id, None)
             return
         entry = dict(pending.get("entry") or {})
@@ -9472,8 +9529,6 @@ class MainWindow(QtWidgets.QMainWindow):
             rules = self.symbol_rules.get(symbol)
         position_side = str(entry.get("positionSide", "BOTH"))
         opposite = "SELL" if entry.get("side") == "BUY" else "BUY"
-        # Pending/uncertain submissions own this tranche too; never resend it.
-        pending["protected_quantity"] = filled
         self._set_ticket_protection_state(symbol, "PROTECTION SUBMITTING")
         try:
             if not isinstance(rules, SymbolRules):
@@ -9485,6 +9540,11 @@ class MainWindow(QtWidgets.QMainWindow):
                     target["price"] = validate_step(str(target.get("price", "")), rules.tick_size, "Protection trigger")
                 prepared_sizes[kind] = (targets, protection_quantities(float(delta), targets, rules))
         except ValueError as exc:
+            if not terminal and "quantity" in str(exc).lower():
+                self._set_ticket_protection_state(symbol, "PARTIAL FILL · WAITING FOR MINIMUM PROTECTION LOT")
+                return
+            if terminal:
+                self.submitted_protection_clients.add(client_id)
             self.alerts_panel.append_alert("PROTECTION PLAN INVALID", f"{symbol} · {exc}")
             self._start_emergency_close({
                 "kind": "tp/sl", "symbol": symbol, "entry_side": str(entry.get("side") or ""),
@@ -9494,11 +9554,14 @@ class MainWindow(QtWidgets.QMainWindow):
             if terminal:
                 self.pending_protections.pop(client_id, None)
             return
-        placed = 0
-        rejected = False
+        # One durable tranche reservation precedes every leg transmission.
+        pending["protected_quantity"] = filled
+        if terminal:
+            self.submitted_protection_clients.add(client_id)
+        prepared_legs = []
         for kind, order_type in (("tp", "TAKE_PROFIT_MARKET"), ("sl", "STOP_MARKET")):
             targets, quantities = prepared_sizes[kind]
-            for target, quantity in zip(targets, quantities):
+            for target_index, (target, quantity) in enumerate(zip(targets, quantities)):
                 leg_client_id = self.trading_gateway.client_order_id("nwtp" if kind == "tp" else "nwsl")
                 order = {
                     "symbol": symbol, "side": opposite, "positionSide": position_side,
@@ -9511,20 +9574,16 @@ class MainWindow(QtWidgets.QMainWindow):
                     "protective_leg": True, "kind": kind, "symbol": symbol,
                     "entry_side": str(entry.get("side") or ""), "position_side": position_side,
                     "quantity": quantity, "rules": rules, "entry_client_id": client_id,
-                    "client_id": leg_client_id,
+                    "client_id": leg_client_id, "fill_total": filled,
+                    "tranche_quantity": str(delta), "target_index": target_index,
                 }
-                protection_request = self.trading_gateway.submit_order(order, leg_context)
-                if self.trading_gateway.request_was_admitted(protection_request):
-                    self.active_protection_legs[leg_client_id] = dict(leg_context)
-                    placed += 1
-                else:
-                    # Synchronous rejection already enters the fail-safe callback.
-                    rejected = True
+                self.active_protection_legs[leg_client_id] = dict(leg_context)
+                prepared_legs.append((order, leg_context))
+        self.trading_gateway.submit_protection_tranche(dict(pending), prepared_legs)
         if terminal:
             self.pending_protections.pop(client_id, None)
-        if not rejected:
-            self._set_ticket_protection_state(symbol, f"PROTECTION SUBMITTED · {placed} NEW LEGS")
-        self.statusBar().showMessage(f"Entry fill {filled:g} · submitted {placed} additional protection legs.", 9000)
+        self._set_ticket_protection_state(symbol, f"PROTECTION QUEUED · {len(prepared_legs)} NEW LEGS")
+        self.statusBar().showMessage(f"Entry fill {filled:g} · queued {len(prepared_legs)} additional protection legs.", 9000)
 
     def _start_emergency_close(
         self,
@@ -9534,7 +9593,12 @@ class MainWindow(QtWidgets.QMainWindow):
         symbol = str(context.get("symbol") or "")
         position_side = str(context.get("position_side") or "BOTH")
         entry_side = str(context.get("entry_side") or "BUY").upper()
-        requested = safe_float(context.get("quantity"))
+        tranche = str(context.get('entry_client_id') or '') + ':' + str(context.get('fill_total') or '')
+        if context.get('entry_client_id') and context.get('fill_total'):
+            if tranche in self._emergency_tranches:
+                return
+            self._emergency_tranches.add(tranche)
+        requested = safe_float(context.get('tranche_quantity') or context.get("quantity"))
         rules = context.get("rules")
         if not isinstance(rules, SymbolRules):
             rules = self.symbol_rules.get(symbol)
@@ -9557,7 +9621,7 @@ class MainWindow(QtWidgets.QMainWindow):
         cached_position = self.trading_gateway.position_cache.get(reserve_key) or {}
         position_amount = abs(safe_float(cached_position.get("positionAmt")))
         already_reserved = self.emergency_reserved.get(reserve_key, 0.0)
-        available = max(0.0, position_amount - already_reserved) if position_amount else requested
+        available = max(0.0, (position_amount or requested) - already_reserved)
         close_amount = min(requested, available)
         if close_amount <= 0:
             self.alerts_panel.append_alert(
@@ -9597,12 +9661,12 @@ class MainWindow(QtWidgets.QMainWindow):
             "last_tick": 0.0,
             "rejection": rejection,
         }
-        self.emergency_timer.start()
-        self._set_ticket_protection_state(symbol, "PROTECTION REJECTED · FAIL-SAFE ACTIVE")
+        self._submit_emergency_close(guard_id, "confirmed protection rejection: " + rejection)
+        self._set_ticket_protection_state(symbol, "PROTECTION REJECTED · FAIL-SAFE CLOSE REQUESTED")
         self.alerts_panel.append_alert(
             "PROTECTION REJECTED · FAIL-SAFE ACTIVE",
             f"{symbol} · {context.get('kind', 'TP/SL').upper()} · amount {quantity} · "
-            "watching fresh mark ticks for up to 1.5s, then sending one reduce-only market close.",
+            "requesting one immediate risk-reducing market close through the durable gateway.",
         )
 
     def _observe_emergency_mark(self, symbol: str, price: float) -> None:
@@ -10270,6 +10334,20 @@ class MainWindow(QtWidgets.QMainWindow):
             self.presentation_clock.request(immediate=True)
 
     def closeEvent(self, event: QtGui.QCloseEvent) -> None:
+        if getattr(self, "_shutdown_started", False):
+            thread = getattr(self, "_order_flow_runtime_thread", None)
+            if thread is not None and thread.isRunning():
+                event.ignore()
+            else:
+                event.accept()
+            return
+        if self.market_event_task is not None or self.market_event_buffer or self._market_event_dropped:
+            self._close_waiting_for_recorder = True
+            self.trading_gateway.disarm()
+            self.statusBar().showMessage("Closing · saving the local recorder in the background", 5000)
+            self._flush_market_events()
+            event.ignore()
+            return
         if (
             self.market_history_dialog is not None
             and self.market_history_dialog.task is not None
@@ -10288,12 +10366,14 @@ class MainWindow(QtWidgets.QMainWindow):
             event.ignore()
             return
         self._closing = True
+        self._shutdown_started = True
         self._ticker_prepare_job.close()
         self.history_cancel_requested = True
-        # ApiTask has no cancellation primitive. Disconnect every worker signal
+        # Cancel reads/retries and disconnect every worker signal
         # before Qt child teardown so late queued completions cannot call back
         # into deleted chart/order-book/status widgets.
         for task in tuple(self.tasks):
+            task.cancel()
             signals = getattr(task, "signals", None)
             if signals is None:
                 continue
@@ -10322,7 +10402,6 @@ class MainWindow(QtWidgets.QMainWindow):
         self.search_hour_queue.clear()
         self._save_layout()
         self.market_event_timer.stop()
-        self._flush_market_events(blocking=True)
         hub = self.hub
         if hub is not None:
             hub.stop()
@@ -10330,4 +10409,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.chart_container.stop()
         self.trading_gateway.stop()
         QtWidgets.QApplication.instance().removeEventFilter(self)
-        event.accept()
+        if self._order_flow_runtime_thread.isRunning():
+            event.ignore()
+        else:
+            event.accept()

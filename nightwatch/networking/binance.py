@@ -29,6 +29,7 @@ class RateLimitDeferred(BaseException):
 DEFER_RATE_WAITS = contextvars.ContextVar('defer_rate_waits', default=False)
 REQUEST_SOURCE = contextvars.ContextVar('request_source', default='')
 READ_RESULTS = contextvars.ContextVar('read_results', default=None)
+TASK_CANCELLED = contextvars.ContextVar('task_cancelled', default=None)
 _SHUTDOWN_CALLBACKS: list[Callable[[], None]] = []
 
 
@@ -48,6 +49,7 @@ class _AsyncHttpRuntime:
         self._active_requests = 0
         self._closed = False
         self._qt_hooked = False
+        self._start_error: Exception | None = None
 
     def _ensure_started(self) -> None:
         if self._closed:
@@ -63,18 +65,27 @@ class _AsyncHttpRuntime:
             thread = self._thread
             if thread is None or not thread.is_alive():
                 self._ready.clear()
+                self._start_error = None
                 thread = threading.Thread(target=self._run_loop, name='nightwatch-async-http', daemon=True)
                 self._thread = thread
                 thread.start()
         if not self._ready.wait(timeout=5.0):
             raise RuntimeError('Network transport failed to start.')
+        if self._start_error is not None:
+            raise RuntimeError(f'Network transport failed to start: {self._start_error}') from self._start_error
 
     def _run_loop(self) -> None:
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         limits = httpx.Limits(max_connections=100, max_keepalive_connections=32, keepalive_expiry=15.0)
         self._loop = loop
-        self._client = httpx.AsyncClient(limits=limits, follow_redirects=True, http2=False, trust_env=True)
+        try:
+            self._client = httpx.AsyncClient(limits=limits, follow_redirects=True, http2=False, trust_env=True)
+        except Exception as exc:
+            self._start_error = exc
+            self._ready.set()
+            loop.close()
+            return
         self._ready.set()
         try:
             loop.run_forever()
@@ -109,7 +120,8 @@ class _AsyncHttpRuntime:
         async def drain() -> None:
 
 
-            while self._active_requests:
+            deadline = time.monotonic() + 15.0
+            while self._active_requests and time.monotonic() < deadline:
                 await asyncio.sleep(0.05)
             loop.stop()
 
@@ -134,7 +146,17 @@ class _AsyncHttpRuntime:
             except Exception:
                 pass
             raise RuntimeError('Synchronous wait attempted on the async transport thread.')
-        return self.submit(coroutine).result()
+        future = self.submit(coroutine)
+        cancelled = TASK_CANCELLED.get()
+        while True:
+            if cancelled is not None and cancelled.is_set():
+                future.cancel()
+                raise concurrent.futures.CancelledError('Request cancelled.')
+            try:
+                return future.result(timeout=0.1)
+            except concurrent.futures.TimeoutError:
+                if future.done():
+                    return future.result()
 
     async def request_json(self, url: str, params: dict[str, Any] | None=None, method: str='GET', headers: dict[str, str] | None=None, body: bytes | None=None, timeout: float=12.0, response_hook: Callable[[int, Any], None] | None=None) -> Any:
         client = self._client
@@ -215,11 +237,18 @@ class _AsyncHttpRuntime:
         started = time.perf_counter()
         self._active_requests += 1
         try:
-            response = await client.get(
-                url,
-                headers={'User-Agent': f'{APP_NAME}/1.0', **(headers or {})},
-                timeout=timeout,
-            )
+            ceiling = max(1, int(max_bytes))
+            async with client.stream('GET', url, headers={'User-Agent': f'{APP_NAME}/1.0', **(headers or {})}, timeout=timeout) as response:
+                if response.status_code >= 300:
+                    raise RuntimeError(f'HTTP {response.status_code}: {response.reason_phrase}')
+                declared = response.headers.get('content-length')
+                if declared and declared.isdigit() and int(declared) > ceiling:
+                    raise RuntimeError(f'Remote asset exceeds {ceiling:,} bytes.')
+                payload = bytearray()
+                async for chunk in response.aiter_bytes(chunk_size=min(64 * 1024, ceiling + 1)):
+                    if len(payload) + len(chunk) > ceiling:
+                        raise RuntimeError(f'Remote asset exceeds {ceiling:,} bytes.')
+                    payload.extend(chunk)
         except httpx.TimeoutException as exc:
             raise RuntimeError('Network request timed out.') from exc
         except httpx.RequestError as exc:
@@ -236,16 +265,7 @@ class _AsyncHttpRuntime:
                 log.warning('Slow asset request %s · %.0f ms', slow_key, elapsed_ms)
             else:
                 log.debug('Asset request latency %s · %.0f ms', slow_key, elapsed_ms)
-        if response.status_code >= 300:
-            message = response.text.strip().replace('\n', ' ')[:240]
-            raise RuntimeError(
-                f'HTTP {response.status_code}: {message or response.reason_phrase}'
-            )
-        payload = bytes(response.content)
-        ceiling = max(1, int(max_bytes))
-        if len(payload) > ceiling:
-            raise RuntimeError(f'Remote asset exceeds {ceiling:,} bytes.')
-        return payload
+        return bytes(payload)
 
 _ASYNC_HTTP = _AsyncHttpRuntime()
 
@@ -311,7 +331,8 @@ class TaskSignals(QtCore.QObject):
 
     @QtCore.Slot(float)
     def schedule_retry(self, delay: float) -> None:
-        self.retry_timer.start(max(50, int(delay * 1000) + 25))
+        if not self.cancelled.is_set():
+            self.retry_timer.start(max(50, int(delay * 1000) + 25))
 
 class ApiTask(QtCore.QRunnable):
 
@@ -327,12 +348,16 @@ class ApiTask(QtCore.QRunnable):
         self.signals.retry_timer = self.retry_timer
         self.pool: QtCore.QThreadPool | None = None
         self.valid: Callable[[], bool] | None = None
+        self.cancelled = threading.Event()
+        self.signals.cancelled = self.cancelled
         if defer_rate_waits:
             self.setAutoDelete(False)
             self.retry_timer.timeout.connect(self._retry)
             self.signals.deferred.connect(self.signals.schedule_retry)
 
     def _retry(self) -> None:
+        if self.cancelled.is_set():
+            return
         if self.valid is None or self.valid():
             (self.pool or QtCore.QThreadPool.globalInstance()).start(self)
         else:
@@ -341,25 +366,37 @@ class ApiTask(QtCore.QRunnable):
 
     @QtCore.Slot()
     def run(self) -> None:
+        if self.cancelled.is_set():
+            return
         defer_token = DEFER_RATE_WAITS.set(self.defer_rate_waits)
         source_token = REQUEST_SOURCE.set(self.source)
         cache_token = READ_RESULTS.set(self.read_results if self.defer_rate_waits else None)
+        cancel_token = TASK_CANCELLED.set(self.cancelled)
         try:
             result = self.function()
         except RateLimitDeferred as exc:
-            self.signals.deferred.emit(exc.delay)
+            if not self.cancelled.is_set():
+                self.signals.deferred.emit(exc.delay)
         except Exception as exc:
             if not isinstance(exc, RuntimeError):
                 log.exception('Unexpected API task failure')
             self.read_results.clear()
-            self.signals.failed.emit(str(exc))
+            if not self.cancelled.is_set():
+                self.signals.failed.emit(str(exc))
         else:
             self.read_results.clear()
-            self.signals.finished.emit(result)
+            if not self.cancelled.is_set():
+                self.signals.finished.emit(result)
         finally:
+            TASK_CANCELLED.reset(cancel_token)
             READ_RESULTS.reset(cache_token)
             REQUEST_SOURCE.reset(source_token)
             DEFER_RATE_WAITS.reset(defer_token)
+
+    def cancel(self) -> None:
+        """Cancel unsent reads/retries; admitted placements keep their journal."""
+        self.cancelled.set()
+        self.retry_timer.stop()
 
 def launch_task(function: Callable[[], Any], finished: Callable[[Any], None], failed: Callable[[str], None], pool: QtCore.QThreadPool | None=None, *, defer_rate_waits: bool=False, source: str="", valid: Callable[[], bool] | None=None) -> ApiTask:
     task = ApiTask(function, defer_rate_waits=defer_rate_waits, source=source)
@@ -446,15 +483,26 @@ class BinanceRateLimiter:
         self._last_rate_log = 0.0
         self._last_stdout_warning = 0.0
         self._rate_handler: RotatingFileHandler | None = None
+        self._log_pool = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix='nightwatch-rate-log')
         self._logging_closed = False
         register_network_shutdown(self.close)
 
     def close(self) -> None:
         with self._condition:
+            if self._logging_closed:
+                return
             self._logging_closed = True
-            if self._rate_handler is not None:
-                self._rate_handler.close()
-                self._rate_handler = None
+            try:
+                self._log_pool.submit(self._close_rate_log)
+            except RuntimeError:
+                # Executor shutdown precedes ordinary atexit callbacks.
+                self._close_rate_log()
+            self._log_pool.shutdown(wait=False)
+
+    def _close_rate_log(self):
+        if self._rate_handler is not None:
+            self._rate_handler.close()
+            self._rate_handler = None
 
     @staticmethod
     def _window_label(seconds: int) -> str:
@@ -493,20 +541,21 @@ class BinanceRateLimiter:
             if self._logging_closed or (not force and now - self._last_rate_log < 30.0):
                 return
             self._last_rate_log = now
-            try:
-                if self._rate_handler is None:
+            line = self._snapshot_line()
+            self._log_pool.submit(self._emit_rate_log, line)
 
-
-
-                    directory = os.path.join(os.getcwd(), 'logs')
-                    os.makedirs(directory, exist_ok=True)
-                    self._rate_handler = RotatingFileHandler(
-                        os.path.join(directory, f'binance_{self.domain.lower()}_rate_limit.log'),
-                        maxBytes=1024 * 1024, backupCount=2, encoding='utf-8', delay=True)
-                    self._rate_handler.setFormatter(logging.Formatter('%(asctime)s | %(message)s'))
-                self._rate_handler.emit(logging.LogRecord(__name__, logging.INFO, __file__, 0, self._snapshot_line(), (), None))
-            except OSError:
-                logging.getLogger(__name__).debug('Rate diagnostics unavailable', exc_info=True)
+    def _emit_rate_log(self, line):
+        try:
+            if self._rate_handler is None:
+                root = QtCore.QStandardPaths.writableLocation(QtCore.QStandardPaths.StandardLocation.AppDataLocation)
+                directory = os.path.join(root or os.path.expanduser('~/.nightwatch'), 'logs')
+                os.makedirs(directory, exist_ok=True)
+                self._rate_handler = RotatingFileHandler(os.path.join(directory, f'binance_{self.domain.lower()}_rate_limit.log'),
+                                                        maxBytes=1024 * 1024, backupCount=2, encoding='utf-8', delay=True)
+                self._rate_handler.setFormatter(logging.Formatter('%(asctime)s | %(message)s'))
+            self._rate_handler.emit(logging.LogRecord(__name__, logging.INFO, __file__, 0, line, (), None))
+        except OSError:
+            log.debug('Rate diagnostics unavailable', exc_info=True)
 
     def _attribute(self, request_weight: int, ws_weight: int, source: str, endpoint: str) -> None:
         second = int(time.monotonic())
@@ -883,7 +932,15 @@ class BinanceVisionArchive:
     def _read(url: str, timeout: float=30.0) -> bytes:
         request = urllib.request.Request(url, headers={'User-Agent': f'{APP_NAME}/1.0'})
         with urllib.request.urlopen(request, timeout=timeout) as response:
-            return response.read()
+            ceiling = 64 * 1024 * 1024
+            chunks = bytearray()
+            while True:
+                chunk = response.read(64 * 1024)
+                if not chunk:
+                    return bytes(chunks)
+                if len(chunks) + len(chunk) > ceiling:
+                    raise RuntimeError("Binance Vision archive exceeds the 64 MiB download limit.")
+                chunks.extend(chunk)
 
     def _archive_keys(self, prefix: str, stopped: Callable[[], bool]) -> list[str]:
         keys: list[str] = []
@@ -905,6 +962,8 @@ class BinanceVisionArchive:
     def _csv_rows(self, archive_key: str) -> list[dict[str, str]]:
         payload = self._read(VISION_FILES + archive_key)
         with zipfile.ZipFile(io.BytesIO(payload)) as archive:
+            if sum(info.file_size for info in archive.infolist()) > 256 * 1024 * 1024:
+                raise RuntimeError('Binance Vision archive expands beyond the 256 MiB import limit.')
             if archive.testzip() is not None:
                 raise RuntimeError(f'Damaged Binance Vision archive: {archive_key}')
             names = [name for name in archive.namelist() if name.endswith('.csv')]
@@ -1083,6 +1142,8 @@ class BinanceRest:
         params = params or {}
         if path == '/fapi/v1/positionSide/dual':
             return 30
+        if path in {'/fapi/v1/accountConfig', '/fapi/v1/symbolConfig'}:
+            return 5
         if path in {'/fapi/v1/klines', '/fapi/v1/continuousKlines', '/fapi/v1/indexPriceKlines', '/fapi/v1/markPriceKlines', '/fapi/v1/premiumIndexKlines'}:
             limit = max(1, int(safe_float(params.get('limit'), 500.0)))
             if limit < 100:
@@ -1377,12 +1438,15 @@ class BinanceRest:
         async def collect() -> dict[str, dict[str, Any]]:
             gate = asyncio.Semaphore(6)
             needs_spot = any((spec.get('spot_15m') or spec.get('spot_1h') for spec in requests.values()))
-            spot_symbols: frozenset[str] | None = None
+            spot_symbols: frozenset[str] | None = frozenset() if self.testnet else None
+            spot_error = ''
             if needs_spot and (not self.testnet):
                 try:
                     spot_symbols = await self._spot_symbols_async()
-                except (RuntimeError, TimeoutError, OSError):
-                    spot_symbols = frozenset()
+                except RateLimitDeferred:
+                    raise
+                except (RuntimeError, TimeoutError, OSError) as exc:
+                    spot_error = str(exc)
 
             async def futures_rows(symbol: str, interval: str, limit: int, end_ms: int) -> list[Candle]:
                 async with gate:
@@ -1405,28 +1469,30 @@ class BinanceRest:
                     calls.append(('futures_1h', futures_rows(symbol, '1h', int(spec.get('futures_1h_limit') or 96), end_hour)))
                 if spec.get('daily'):
                     calls.append(('daily', futures_rows(symbol, '1d', int(spec.get('daily_limit') or 25), day_end)))
-                spot_ok = spot_symbols is None or symbol in spot_symbols
+                spot_ok = not spot_error and (spot_symbols is None or symbol in spot_symbols)
                 if spec.get('spot_15m'):
                     if spot_ok:
                         calls.append(('spot_15m', spot_rows(symbol, '15m', int(spec.get('spot_15m_limit') or 64), end_15m)))
-                    else:
+                    elif not spot_error:
                         unavailable.append('spot_15m')
                 if spec.get('spot_1h'):
                     if spot_ok:
                         calls.append(('spot_1h', spot_rows(symbol, '1h', int(spec.get('spot_1h_limit') or 96), end_hour)))
-                    else:
+                    elif not spot_error:
                         unavailable.append('spot_1h')
                 payload: dict[str, Any] = {'_network_calls': len(calls), '_spot_unavailable': tuple(unavailable)}
-                if not calls:
-                    return (symbol, payload)
                 values = await asyncio.gather(*(call for _name, call in calls), return_exceptions=True)
                 errors: dict[str, str] = {}
+                if spot_error:
+                    for component in ('spot_15m', 'spot_1h'):
+                        if spec.get(component):
+                            errors[component] = 'Spot universe unavailable: ' + spot_error
                 for (name, _call), value in zip(calls, values):
                     if isinstance(value, RateLimitDeferred):
                         raise value
                     if isinstance(value, BaseException):
                         errors[name] = str(value)
-                    else:
+                    elif name not in errors:
                         payload[name] = value
                 if errors:
                     payload['errors'] = errors
@@ -1864,7 +1930,8 @@ class BinanceRest:
                 read('/fapi/v3/positionRisk', fallback='/fapi/v2/positionRisk'),
                 read('/fapi/v1/openOrders', order_param), fills_read(),
                 read('/fapi/v1/openAlgoOrders', order_param),
-                self._position_mode_async(api_key, api_secret, priority='reconciliation'),
+                read('/fapi/v1/accountConfig'),
+                read('/fapi/v1/symbolConfig'),
                 return_exceptions=True,
             )
             for value in values:
@@ -1872,27 +1939,34 @@ class BinanceRest:
                     raise value
             return values
 
-        account, position_risk, open_orders, fills, algo_orders, position_mode = run_async(collect())
+        account, position_risk, open_orders, fills, algo_orders, account_config, symbol_config = run_async(collect())
+        if not isinstance(account_config, dict) or not isinstance(symbol_config, list):
+            raise RuntimeError('Unexpected Binance account/symbol configuration response.')
+        configs = {str(row.get('symbol')): row for row in symbol_config if isinstance(row, dict)}
+        position_mode = ({'dualSidePosition': account_config['dualSidePosition']}
+                         if 'dualSidePosition' in account_config
+                         else run_async(self._position_mode_async(api_key, api_secret, priority='reconciliation')))
         if not isinstance(account, dict):
             raise RuntimeError('Unexpected response: Binance account payload is not an object.')
         if not isinstance(position_risk, list):
             raise RuntimeError('Unexpected response: Binance position-risk payload is not a list.')
         if isinstance(account, dict):
             account = dict(account)
+            account.update({key: account_config[key] for key in ('canTrade', 'multiAssetsMargin') if key in account_config})
             account_positions = [dict(row) for row in account.get('positions', []) if isinstance(row, dict)]
             account_keys = {(str(row.get('symbol', '')), str(row.get('positionSide', 'BOTH'))) for row in account_positions}
             risk_by_key = {(str(row.get('symbol', '')), str(row.get('positionSide', 'BOTH'))): row for row in position_risk if isinstance(row, dict) and row.get('symbol')}
             merged_positions: list[dict[str, Any]] = []
             for row in account_positions:
                 key = (str(row.get('symbol', '')), str(row.get('positionSide', 'BOTH')))
-                merged = {**row, **risk_by_key.get(key, {})}
+                merged = {**row, **risk_by_key.get(key, {}), **configs.get(key[0], {})}
                 if 'unRealizedProfit' in merged:
                     merged['unrealizedProfit'] = merged['unRealizedProfit']
                 merged_positions.append(merged)
             for key, row in risk_by_key.items():
                 if key in account_keys or abs(safe_float(row.get('positionAmt'))) <= 0:
                     continue
-                merged = dict(row)
+                merged = {**row, **configs.get(key[0], {})}
                 if 'unRealizedProfit' in merged:
                     merged['unrealizedProfit'] = merged['unRealizedProfit']
                 merged_positions.append(merged)
@@ -1905,7 +1979,7 @@ class BinanceRest:
             algo_orders = algo_orders.get('orders') or algo_orders.get('rows') or algo_orders.get('data') or []
         if not isinstance(algo_orders, list):
             raise RuntimeError('Unexpected response: Binance open-Algo payload is not a list.')
-        return {'account': account, 'positionRisk': position_risk, 'orders': open_orders, 'algoOrders': algo_orders, 'ordersScope': 'ALL' if all_open_orders or not symbol else symbol, 'fills': fills, 'fillsSymbol': symbol or '', 'positionMode': position_mode}
+        return {'account': account, 'accountConfig': account_config, 'symbolConfig': symbol_config, 'positionRisk': position_risk, 'orders': open_orders, 'algoOrders': algo_orders, 'ordersScope': 'ALL' if all_open_orders or not symbol else symbol, 'fills': fills, 'fillsSymbol': symbol or '', 'positionMode': position_mode}
 
     def start_user_stream(self, api_key: str) -> str:
         payload = self._request('/fapi/v1/listenKey', method='POST', headers={'X-MBX-APIKEY': api_key}, priority='live')

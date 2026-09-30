@@ -4,11 +4,17 @@ from __future__ import annotations
 """Primary Nightwatch Futures launcher."""
 
 import ctypes
+import multiprocessing
+import os
 import sys
+
+# Apply before importing NumPy/Qt, including in Windows spawned workers.
+for _name in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS", "NUMEXPR_NUM_THREADS"):
+    os.environ[_name] = os.environ.get("NIGHTWATCH_NUMERIC_THREADS", "1")
 
 
 def _set_windows_priority() -> None:
-    if sys.platform != "win32":
+    if sys.platform != "win32" or os.environ.get("NIGHTWATCH_HIGH_PRIORITY") != "1":
         return
 
     kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
@@ -33,10 +39,10 @@ def _set_windows_priority() -> None:
         )
 
 
-_set_windows_priority()
-
 from nightwatch.entrypoint import main
 
 
 if __name__ == "__main__":
+    multiprocessing.freeze_support()
+    _set_windows_priority()
     raise SystemExit(main())

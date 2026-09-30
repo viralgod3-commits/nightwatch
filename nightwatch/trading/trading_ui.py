@@ -3306,6 +3306,37 @@ def _set_tab_text_if_changed(tabs, index, text):
         tabs.setTabText(index, text)
 
 
+_ACCOUNT_SORT_ROLE = int(Qt.ItemDataRole.UserRole) + 51
+
+
+def _table_record_key(payload):
+    if payload.get("asset"):
+        return ("asset", str(payload["asset"]))
+    if payload.get("id") is not None:
+        return ("fill", str(payload.get("symbol", "")), str(payload["id"]))
+    return (*_account_key(payload), str(payload.get("time", "")))
+
+
+class _AccountTableItem(QtWidgets.QTableWidgetItem):
+    def __lt__(self, other):
+        left, right = self.data(_ACCOUNT_SORT_ROLE), other.data(_ACCOUNT_SORT_ROLE)
+        if left is None or right is None:
+            return left is not None and right is None
+        if isinstance(left, (float, int)) and isinstance(right, (float, int)):
+            return left < right
+        return str(left).casefold() < str(right).casefold()
+
+
+def _account_sort_value(header, text, payload):
+    key = {"PRICE": "price", "SIZE": "qty", "PNL": "realizedPnl", "FEE": "commission",
+           "WALLET": "walletBalance", "AVAILABLE": "availableBalance", "UPNL": "unrealizedProfit",
+           "TIME": "time", "TIME UTC": "time"}.get(header)
+    if key:
+        value = payload.get(key)
+        return safe_float(value) if value is not None else None
+    return text
+
+
 class AccountDataTable(QtWidgets.QTableWidget):
     """Visible empty state that never masquerades as an account data row."""
 
@@ -3849,49 +3880,54 @@ class TradingWorkspace(QtWidgets.QWidget):
         table: QtWidgets.QTableWidget,
         rows: list[tuple[tuple[str, ...], dict[str, Any]]],
     ) -> None:
-        fingerprint = tuple(values for values, _payload in rows)
+        fingerprint = tuple((_table_record_key(payload), values) for values, payload in rows)
         if (
             getattr(table, "_rows_fingerprint", None) == fingerprint
             and table.rowCount() == len(rows)
         ):
-            for row_index, (_values, payload) in enumerate(rows):
+            by_key = {_table_record_key(payload): payload for _values, payload in rows}
+            for row_index in range(table.rowCount()):
                 item = table.item(row_index, 0)
                 if item is not None:
-                    item.setData(Qt.ItemDataRole.UserRole, payload)
+                    key = _table_record_key(item.data(Qt.ItemDataRole.UserRole) or {})
+                    if key in by_key:
+                        item.setData(Qt.ItemDataRole.UserRole, by_key[key])
             return
-        previous_row = table.currentRow()
+        previous = table.item(table.currentRow(), 0)
+        selected_key = _table_record_key(previous.data(Qt.ItemDataRole.UserRole) or {}) if previous else None
+        scroll = table.verticalScrollBar().value()
+        updates_enabled = table.updatesEnabled()
+        table.setUpdatesEnabled(False)
         table.setSortingEnabled(False)
-        table.setRowCount(len(rows))
-        for row_index, (values, payload) in enumerate(rows):
-            for column, value in enumerate(values):
-                item = table.item(row_index, column)
-                if item is None:
-                    item = QtWidgets.QTableWidgetItem()
+        try:
+            table.setRowCount(len(rows))
+            for row_index, (values, payload) in enumerate(rows):
+                for column, value in enumerate(values):
+                    item = table.item(row_index, column)
                     header_item = table.horizontalHeaderItem(column)
                     header = header_item.text().upper() if header_item is not None else ""
-                    numeric = header in {
-                        "PRICE", "SIZE", "PNL", "FEE", "WALLET", "AVAILABLE", "UPNL"
-                    }
-                    item.setFont(typography_font(
-                        TextRole.TABLE_VALUE if numeric else TextRole.TABLE_TEXT
-                    ))
-                    if numeric:
-                        item.setTextAlignment(
-                            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
-                        )
-                    table.setItem(row_index, column, item)
-                if item.text() != value:
+                    if item is None:
+                        item = _AccountTableItem()
+                        numeric = header in {"PRICE", "SIZE", "PNL", "FEE", "WALLET", "AVAILABLE", "UPNL"}
+                        item.setFont(typography_font(TextRole.TABLE_VALUE if numeric else TextRole.TABLE_TEXT))
+                        if numeric:
+                            item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+                        table.setItem(row_index, column, item)
                     item.setText(value)
-                if column == 0:
-                    item.setData(Qt.ItemDataRole.UserRole, payload)
-                if item.toolTip() != value:
+                    item.setData(_ACCOUNT_SORT_ROLE, _account_sort_value(header, value, payload))
+                    if column == 0:
+                        item.setData(Qt.ItemDataRole.UserRole, dict(payload))
                     item.setToolTip(value)
-            if table.rowHeight(row_index) != 25:
                 table.setRowHeight(row_index, 25)
-        table.setSortingEnabled(True)
-        table._rows_fingerprint = fingerprint
-        if rows:
-            table.selectRow(min(max(previous_row, 0), len(rows) - 1))
+            table._rows_fingerprint = fingerprint
+        finally:
+            table.setSortingEnabled(True)
+            table.setUpdatesEnabled(updates_enabled)
+        for row_index in range(table.rowCount()):
+            if _table_record_key(table.item(row_index, 0).data(Qt.ItemDataRole.UserRole) or {}) == selected_key:
+                table.selectRow(row_index)
+                break
+        table.verticalScrollBar().setValue(scroll)
 
 
     def _clear_account_view(self, _key):
@@ -3904,7 +3940,7 @@ class TradingWorkspace(QtWidgets.QWidget):
 
     def apply_snapshot(self, snapshot: dict[str, Any], *, mark_fresh: bool = True) -> None:
         if mark_fresh and self.gateway.has_credentials():
-            self._last_account_snapshot_mono = time.monotonic()
+            self._last_account_snapshot_mono = safe_float(snapshot.get('_read_started_mono'), time.monotonic())
         account = snapshot.get("account") or {}
 
         position_payloads: list[dict[str, Any]] = []
@@ -3985,7 +4021,7 @@ class TradingWorkspace(QtWidgets.QWidget):
             values = (
                 str(row.get("asset", "")),
                 human_number(wallet),
-                human_number(safe_float(row.get("availableBalance"))),
+                human_number(safe_float(row.get("availableBalance"))) if 'availableBalance' in row else '—',
                 human_number(safe_float(row.get("unrealizedProfit")), money=True),
             )
             balances.append((values, dict(row)))
@@ -4501,4 +4537,3 @@ class CompactOrdersWidget(QtWidgets.QWidget):
         self.theme = theme
 
         self.apply_snapshot(self._snapshot, mark_fresh=False)
-

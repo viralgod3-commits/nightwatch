@@ -1,5 +1,6 @@
-PySide6
-pyqtgraph
-numpy
-httpx
-psutil
+PySide6>=6.11.2,<6.12
+pyqtgraph>=0.14,<0.15
+numpy>=2.3,<3
+httpx[socks]>=0.28.1,<0.29
+psutil>=7.2,<8
+threadpoolctl>=3.6,<4

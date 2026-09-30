@@ -762,13 +762,17 @@ class _TypographyRoleFilter(QtCore.QObject):
 def load_app_fonts(application: QtGui.QGuiApplication, package_root: str) -> None:
     """Register every application font from project-root ``fonts/``."""
     global _UI_FONT_FAMILY, _NUMERIC_FONT_FAMILY
-    del package_root  # Fonts are intentionally resolved from the launch directory.
-    font_root = os.path.abspath(os.path.join(os.getcwd(), "fonts"))
-
-    registered = {
-        key: _register_font(font_root, filename)
-        for key, filename in TYPOGRAPHY_FONT_FILES.items()
-    }
+    project_root = os.path.dirname(os.path.abspath(package_root))
+    font_root = os.path.join(project_root, "fonts")
+    registered = {}
+    for key, filename in TYPOGRAPHY_FONT_FILES.items():
+        try:
+            registered[key] = _register_font(font_root, filename)
+        except ValueError:
+            # Source checkouts and packaged builds without optional fonts must
+            # still start. Resolve resources independently of the launch CWD.
+            fallback = QtGui.QFontDatabase.SystemFont.FixedFont if key.startswith("numeric") else QtGui.QFontDatabase.SystemFont.GeneralFont
+            registered[key] = QtGui.QFontDatabase.systemFont(fallback).family()
     _UI_FONT_FAMILY = registered["ui_regular"]
     _NUMERIC_FONT_FAMILY = registered["numeric_regular"]
     _NUMERIC_FONT_FAMILIES.clear()

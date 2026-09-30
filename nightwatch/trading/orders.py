@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from decimal import ROUND_DOWN, Decimal
+from decimal import ROUND_DOWN, ROUND_UP, Decimal
 from typing import Any, Protocol
 
 from ..models import Candle, SymbolRules
@@ -103,8 +103,24 @@ def build_quick_order_request(
     if slippage_enabled and time_in_force == "GTX":
         raise ValueError("Slippage-capped orders cannot use GTX (post-only). Choose IOC, FOK or GTC.")
     order_type = "LIMIT" if mode == "LIMIT" or slippage_enabled else "MARKET"
-    sizing_price = reference
-    notional = available * collateral_percent / 100.0 * leverage
+    limit_price = None
+    if order_type == "LIMIT":
+        price = Decimal(str(passive_reference or mark_price or reference))
+        if slippage_enabled:
+            slippage = Decimal(str(preset.get("max_slippage_percent", 0)))
+            if not slippage.is_finite() or not (0 < slippage <= 10):
+                raise ValueError("Maximum slippage must be between 0% and 10%.")
+            bound = Decimal(str(reference)) * (1 + (slippage if side == "BUY" else -slippage) / 100)
+            price = bound
+        limit_price = quantize_step(str(price), rules.tick_size, rounding=ROUND_DOWN if side == "BUY" else ROUND_UP)
+        if not (Decimal(str(rules.min_price)) <= Decimal(limit_price) <= Decimal(str(rules.max_price))):
+            raise ValueError("Rounded limit price is outside the exchange price range.")
+        if slippage_enabled and ((side == "BUY" and Decimal(limit_price) > bound) or
+                                 (side == "SELL" and Decimal(limit_price) < bound)):
+            raise ValueError("The exchange tick size cannot represent the slippage cap.")
+    # Reserve against the maximum entry price, including a capped BUY limit.
+    sizing_price = max(Decimal(str(reference)), Decimal(limit_price)) if limit_price else Decimal(str(reference))
+    notional = Decimal(str(available)) * Decimal(str(collateral_percent)) / 100 * leverage
     step = rules.market_step if order_type == "MARKET" else rules.lot_step
     quantity = quantize_step(str(notional / sizing_price), step)
     quantity_value = safe_float(quantity)
@@ -114,7 +130,7 @@ def build_quick_order_request(
         raise ValueError(
             f"Resulting size must be between {minimum_qty:g} and {maximum_qty:g}."
         )
-    if rules.min_notional and quantity_value * sizing_price < rules.min_notional:
+    if rules.min_notional and Decimal(quantity) * sizing_price < Decimal(str(rules.min_notional)):
         raise ValueError(
             f"Order value must be at least {rules.min_notional:g} {rules.quote_asset}."
         )
@@ -133,14 +149,7 @@ def build_quick_order_request(
     if reduce_only:
         order["reduceOnly"] = True
     if order_type == "LIMIT":
-        price = passive_reference or mark_price or reference
-        if slippage_enabled:
-            slippage = safe_float(preset.get("max_slippage_percent"))
-            if not (0 < slippage <= 10):
-                raise ValueError("Maximum slippage must be between 0% and 10%.")
-            multiplier = 1.0 + slippage / 100.0 if side == "BUY" else 1.0 - slippage / 100.0
-            price = reference * multiplier
-        order["price"] = quantize_step(str(price), rules.tick_size)
+        order["price"] = limit_price
         order["timeInForce"] = time_in_force
 
     protections: dict[str, list[dict[str, float]]] = {"tp": [], "sl": []}
@@ -167,6 +176,8 @@ def build_quick_order_request(
         "protections": protections,
         "rules": rules,
         "position_intent": "REDUCE" if reduce_only else "OPEN",
+        "collateral_asset": rules.margin_asset,
+        "collateral_required": 0.0 if reduce_only else float(Decimal(quantity) * sizing_price / leverage),
     }
 
 
@@ -360,6 +371,8 @@ def build_magnetic_rail_order_request(
         "protections": {"tp": [], "sl": []},
         "rules": rules,
         "position_intent": "REDUCE" if reducing else "OPEN",
+        "collateral_asset": rules.margin_asset,
+        "collateral_required": 0.0 if reducing else quantity_value * sizing_price / leverage,
         "requires_arm": False,
         "source": "magnetic_rail",
         "rail_draft_id": int(safe_float(rail_state.get("railDraftId"), 0)),

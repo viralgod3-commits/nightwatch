@@ -124,8 +124,8 @@ def coin_name(symbol: str, default: str = "—") -> str:
 
 
 def coin_icon_directory() -> str:
-    """Icons live under <current working directory>/assets/icons."""
-    return os.path.join(os.getcwd(), "assets", "icons")
+    """Resolve project resources independently of the launch directory."""
+    return os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "assets", "icons")
 
 
 def coin_icon_path(symbol: str) -> str:

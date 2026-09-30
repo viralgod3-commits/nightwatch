@@ -13,6 +13,7 @@ import gc
 from functools import wraps
 from collections import deque
 from collections.abc import Callable
+from typing import Any
 from PySide6 import QtCore, QtWidgets
 from PySide6.QtCore import Qt, Signal
 
@@ -607,7 +608,7 @@ class PresentationClock(QtCore.QObject):
         index = int(round((len(ordered) - 1) * fraction))
         return ordered[max(0, min(len(ordered) - 1, index))]
 
-    def frame_profile(self) -> dict[str, float | int | bool]:
+    def frame_profile(self) -> dict[str, Any]:
         """Return the active/completed capture without changing presentation behavior."""
         started = self._profile_started_at
         duration = self._profile_duration_s
@@ -638,6 +639,17 @@ class PresentationClock(QtCore.QObject):
         )
         request_latency_ms = list(_PROFILE_PAINT_REQUEST_LATENCIES.get(source_key, ()))
         requested_paints = list(_PROFILE_REQUESTED_PAINT_TIMESTAMPS.get(source_key, ()))
+        surfaces = []
+        for key, samples in paint_items:
+            intervals = [(current - previous) * 1000 for previous, current in zip(samples, samples[1:]) if current > previous]
+            widget = self._frame_sources.get(key)
+            surfaces.append({
+                'name': widget.objectName() or type(widget).__name__ if widget is not None else str(key),
+                'frame_count': len(samples), 'paint_rate_fps': len(samples) / elapsed if elapsed else 0.0,
+                'frame_p95_ms': self._percentile(intervals, .95), 'frame_p99_ms': self._percentile(intervals, .99),
+                'frame_max_ms': max(intervals, default=0.0),
+                'request_latency_p99_ms': self._percentile(list(_PROFILE_PAINT_REQUEST_LATENCIES.get(key, ())), .99),
+            })
         if not active:
             self._stop_profile_probes()
         return {
@@ -649,6 +661,7 @@ class PresentationClock(QtCore.QObject):
             "frame_count": len(frames),
             "sample_source": "chart_paint" if paint_items else "presentation_clock",
             "chart_streams": len(paint_items),
+            "surfaces": surfaces,
 
 
             "avg_fps": len(frames) / elapsed if elapsed > 0.0 else 0.0,

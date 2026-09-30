@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import math
+import re
 import sqlite3
 import statistics
 import threading
@@ -26,13 +27,13 @@ from .utilities import (
     set_text_role,
     typography_font,
 )
-from .coin_catalog import coin_base_symbol, coin_icon_bytes, coin_name
+from .coin_catalog import coin_base_symbol, coin_remote_symbol, coin_icon_bytes, coin_name
 from .presentation import display_frame_interval_ms, profile_callback
 
 
 HOUR = 3_600_000
 BENCHMARK = "BTCUSDT"
-HISTORY_HOURS = 96
+HISTORY_HOURS = 200  # 7-day span + 24-hour replay + warm-up
 LEADERS_REFRESH_MS = 300_000
 log = logging.getLogger(__name__)
 
@@ -176,7 +177,7 @@ def _load_batch(rest: Any, db: Any, symbols: list[str], end: int,
                 break
             raw = rest.get("/fapi/v1/klines", {
                 "symbol": symbol, "interval": "1h", "startTime": request_start,
-                "endTime": end - 1, "limit": 96,
+                "endTime": end - 1, "limit": HISTORY_HOURS,
             }, priority="background")
             fetched = [Candle.from_rest(row) for row in raw
                        if len(row) > 7 and int(row[0]) + HOUR <= end]
@@ -292,9 +293,8 @@ class _LeaderAnalysis:
         base = coin_base_symbol(symbol)
         name = coin_name(base)
 
-        reference_tags = {"SOL": "L1", "RENDER": "AI", "RNDR": "AI", "FET": "AI",
-                          "TAO": "AI", "INJ": "DeFi", "AAVE": "DeFi", "WIF": "Memes"}
-        category = "Benchmark" if symbol == BENCHMARK else reference_tags.get(base, self.categories.get(symbol, "—"))
+        category = "Benchmark" if symbol == BENCHMARK else (
+            _sector_overview_classify(symbol, {}) or self.categories.get(symbol, "—"))
         return name, category
 
     def _ordered(self) -> list[str]:
@@ -383,8 +383,8 @@ def _prepare_leaders(state):
         "end": end, "metrics": model.metrics, "ordered": ordered,
         "all_ordered": all_ordered, "candidates": candidates, "events": events[:30],
         "cohort_count": len(cohort),
-        "covered": sum(bool(_window(model.series.get(symbol, {}), end, min(hours, 24))) for symbol in model.symbols),
-        "btc_ready": bool(_window(btc, end, min(hours, 24))),
+        "covered": sum(bool(_window(model.series.get(symbol, {}), end, hours)) for symbol in model.symbols),
+        "btc_ready": bool(_window(btc, end, hours)),
         "sparks": {symbol: [model.series.get(symbol, {}).get(at).close if at in model.series.get(symbol, {}) else None
                             for at in range(end - 23 * HOUR, end + 1, HOUR)] for symbol in model.symbols},
         "paths": {symbol: [model.series.get(symbol, {}).get(at).close if at in model.series.get(symbol, {}) else None
@@ -521,9 +521,8 @@ class LeadershipTimelineWidget(QtWidgets.QWidget):
         base = coin_base_symbol(symbol)
         name = coin_name(base)
 
-        reference_tags = {"SOL": "L1", "RENDER": "AI", "RNDR": "AI", "FET": "AI",
-                          "TAO": "AI", "INJ": "DeFi", "AAVE": "DeFi", "WIF": "Memes"}
-        category = "Benchmark" if symbol == BENCHMARK else reference_tags.get(base, self.categories.get(symbol, "—"))
+        category = "Benchmark" if symbol == BENCHMARK else (
+            _sector_overview_classify(symbol, {}) or self.categories.get(symbol, "—"))
         return name, category
 
     def invalidate_coin_icons(self, symbols: object) -> None:
@@ -658,7 +657,7 @@ class LeadershipTimelineWidget(QtWidgets.QWidget):
     def set_universe(self, symbols: set[str], metadata: list[dict[str, Any]]) -> None:
         self.valid_symbols = set(symbols)
         self.categories = {
-            row["symbol"]: " / ".join(str(tag) for tag in row.get("underlyingSubType", [])[:2]) or "—"
+            row["symbol"]: _sector_overview_classify(row["symbol"], row) or "—"
             for row in metadata if row.get("symbol") in self.valid_symbols
             and isinstance(row.get("underlyingSubType", []), list)
         }
@@ -677,6 +676,22 @@ class LeadershipTimelineWidget(QtWidgets.QWidget):
         self.tickers = tickers
         if self.active and not self.symbols:
             self.refresh(force=True)
+        self._refresh_live_prices()
+
+    def _refresh_live_prices(self) -> None:
+        if not self.active or not self._view_visible or self.closing or self.replay.value() != 24:
+            return
+        for row in range(self.table.rowCount()):
+            symbol_item = self.table.item(row, 1)
+            price_item = self.table.item(row, 3)
+            if symbol_item is None or price_item is None:
+                continue
+            symbol = str(symbol_item.data(Qt.ItemDataRole.UserRole) or "")
+            value = safe_float(self.tickers.get(symbol, {}).get("c"))
+            if value > 0:
+                text = _price(value)
+                if price_item.text() != text:
+                    price_item.setText(text)
 
     def update_tickers(self, updates: list[dict[str, Any]]) -> None:
         for ticker in updates:
@@ -687,6 +702,7 @@ class LeadershipTimelineWidget(QtWidgets.QWidget):
                     self.tickers[symbol] = dict(ticker)
                 elif current is not ticker:
                     current.update(ticker)
+        self._refresh_live_prices()
 
     def set_active(self, active: bool, *, visible: bool = True) -> None:
         was_active, was_visible = self.active, self._view_visible
@@ -990,82 +1006,85 @@ class LeadershipTimelineWidget(QtWidgets.QWidget):
         blocker = QtCore.QSignalBlocker(self.table)
         scroll = self.table.verticalScrollBar().value()
         self.table.setUpdatesEnabled(False)
-        if self.table.columnCount() != len(headers):
-            self.table.setColumnCount(len(headers))
-            self.table.setHorizontalHeaderLabels(headers)
-        header = self.table.horizontalHeader()
-        header.setMinimumSectionSize(42)
-        fixed_widths = {0: 38, 1: 108, 2: 130, 3: 92, 4: 70, 5: 70, 6: 74, 7: 76, 8: 100, 9: 112}
-        for column in range(len(headers)):
-            if column in fixed_widths:
-                header.setSectionResizeMode(column, QtWidgets.QHeaderView.ResizeMode.Fixed)
-                self.table.setColumnWidth(column, fixed_widths[column])
-            else:
-                header.setSectionResizeMode(column, QtWidgets.QHeaderView.ResizeMode.Stretch)
-        self.table.setRowCount(len(ordered))
-        self.row_symbols = ordered
-
-        for row_index, symbol in enumerate(ordered):
-            metrics = self.metrics.get(symbol, {})
-            name, category = self.identity(symbol)
-            state = metrics.get("state", "Waiting")
-            score = metrics.get("score")
-            live_ticker_price = safe_float(self.tickers.get(symbol, {}).get("c"), 0.0) if self.replay.value() == 24 else 0.0
-            price = live_ticker_price if live_ticker_price > 0 else metrics.get("price")
-            spark = prepared["sparks"].get(symbol, [])
-            values = [
-                str(row_index + 1),
-                symbol.removesuffix("USDT"),
-                name,
-                _price(price),
-                _pct(metrics.get("usd1"), 1),
-                _pct(metrics.get("usd4"), 1),
-                _pct(metrics.get("usd24"), 1),
-                "—" if score is None else str(score),
-                state,
-                category,
-                "",
-            ]
-            for column, value in enumerate(values):
-                item = self.table.item(row_index, column)
-                if item is None:
-                    item = QtWidgets.QTableWidgetItem()
-                    self.table.setItem(row_index, column, item)
-                if item.text() != value:
-                    item.setText(value)
-                item.setData(Qt.ItemDataRole.UserRole, symbol)
-                detail: dict[str, Any] = {"align": "left" if column in (1, 2, 9) else "right" if column in (3, 4, 5, 6, 7) else "center"}
-                if column == 1:
-                    detail["role"] = "symbol"
-                elif column in (4, 5, 6):
-                    amount = (metrics.get("usd1"), metrics.get("usd4"), metrics.get("usd24"))[column - 4]
-                    background, foreground = _heat_color(amount, self.theme)
-                    detail.update(background=background, foreground=foreground, numeric=True)
-                elif column == 7:
-                    detail["numeric"] = True
-                    if score is not None:
-                        strength = max(0.0, min(1.0, score / 100.0))
-                        detail["background"] = _blend_hex(
-                            self.theme.get("panel2", self.theme.get("panel", "#181C24")),
-                            self.theme.get("green", "#4DDFA4"),
-                            0.10 + 0.34 * strength,
-                        )
-                        detail["foreground"] = self.theme.get("text", "#DFE5EE")
-                    item.setToolTip("Display-only relative-strength score (0–100) derived from 1H/4H/24H BTC-relative return, acceleration and relative volume. It is not a forecast probability.")
-                elif column == 8:
-                    detail.update(role="state", foreground=_leader_color(state, self.theme))
-                elif column == 10:
-                    rising = len(spark) >= 2 and spark[-1] >= spark[0]
-                    detail.update(role="spark", spark=spark, foreground=self.theme.get("green", "#4DDFA4") if rising else self.theme.get("red", "#FF7A85"))
-                    item.setToolTip("Last 24 completed hourly closes. Gaps remain gaps; replay uses the selected historical cursor.")
+        try:
+            if self.table.columnCount() != len(headers):
+                self.table.setColumnCount(len(headers))
+                self.table.setHorizontalHeaderLabels(headers)
+            header = self.table.horizontalHeader()
+            header.setMinimumSectionSize(42)
+            fixed_widths = {0: 38, 1: 108, 2: 130, 3: 92, 4: 70, 5: 70, 6: 74, 7: 76, 8: 100, 9: 112}
+            for column in range(len(headers)):
+                if column in fixed_widths:
+                    header.setSectionResizeMode(column, QtWidgets.QHeaderView.ResizeMode.Fixed)
+                    self.table.setColumnWidth(column, fixed_widths[column])
                 else:
-                    detail["numeric"] = column in (0, 3)
-                if column not in (7, 10):
-                    item.setToolTip(f"{symbol} · {name} · {category}\nDouble-click to open chart\n4H vs BTC: {_pct(metrics.get('rs4'))} · 24H vs BTC: {_pct(metrics.get('rs24'))}")
-                item.setData(DETAIL_ROLE, detail)
-                item.setForeground(QtGui.QColor(detail.get("foreground", self.theme.get("text", "#DFE5EE"))))
+                    header.setSectionResizeMode(column, QtWidgets.QHeaderView.ResizeMode.Stretch)
+            self.table.setRowCount(len(ordered))
+            self.row_symbols = ordered
 
-        self.table.setUpdatesEnabled(True)
+            for row_index, symbol in enumerate(ordered):
+                metrics = self.metrics.get(symbol, {})
+                name, category = self.identity(symbol)
+                state = metrics.get("state", "Waiting")
+                score = metrics.get("score")
+                live_ticker_price = safe_float(self.tickers.get(symbol, {}).get("c"), 0.0) if self.replay.value() == 24 else 0.0
+                price = live_ticker_price if live_ticker_price > 0 else metrics.get("price")
+                spark = prepared["sparks"].get(symbol, [])
+                values = [
+                    str(row_index + 1),
+                    symbol.removesuffix("USDT"),
+                    name,
+                    _price(price),
+                    _pct(metrics.get("usd1"), 1),
+                    _pct(metrics.get("usd4"), 1),
+                    _pct(metrics.get("usd24"), 1),
+                    "—" if score is None else str(score),
+                    state,
+                    category,
+                    "",
+                ]
+                for column, value in enumerate(values):
+                    item = self.table.item(row_index, column)
+                    if item is None:
+                        item = QtWidgets.QTableWidgetItem()
+                        self.table.setItem(row_index, column, item)
+                    if item.text() != value:
+                        item.setText(value)
+                    item.setData(Qt.ItemDataRole.UserRole, symbol)
+                    detail: dict[str, Any] = {"align": "left" if column in (1, 2, 9) else "right" if column in (3, 4, 5, 6, 7) else "center"}
+                    if column == 1:
+                        detail["role"] = "symbol"
+                    elif column in (4, 5, 6):
+                        amount = (metrics.get("usd1"), metrics.get("usd4"), metrics.get("usd24"))[column - 4]
+                        background, foreground = _heat_color(amount, self.theme)
+                        detail.update(background=background, foreground=foreground, numeric=True)
+                    elif column == 7:
+                        detail["numeric"] = True
+                        if score is not None:
+                            strength = max(0.0, min(1.0, score / 100.0))
+                            detail["background"] = _blend_hex(
+                                self.theme.get("panel2", self.theme.get("panel", "#181C24")),
+                                self.theme.get("green", "#4DDFA4"),
+                                0.10 + 0.34 * strength,
+                            )
+                            detail["foreground"] = self.theme.get("text", "#DFE5EE")
+                        item.setToolTip("Display-only relative-strength score (0–100) derived from 1H/4H/24H BTC-relative return, acceleration and relative volume. It is not a forecast probability.")
+                    elif column == 8:
+                        detail.update(role="state", foreground=_leader_color(state, self.theme))
+                    elif column == 10:
+                        valid_spark = [value for value in spark if value is not None and math.isfinite(value)]
+                        rising = len(valid_spark) >= 2 and valid_spark[-1] >= valid_spark[0]
+                        detail.update(role="spark", spark=spark, foreground=self.theme.get("green", "#4DDFA4") if rising else self.theme.get("red", "#FF7A85"))
+                        item.setToolTip("Last 24 completed hourly closes. Gaps remain gaps; replay uses the selected historical cursor.")
+                    else:
+                        detail["numeric"] = column in (0, 3)
+                    if column not in (7, 10):
+                        item.setToolTip(f"{symbol} · {name} · {category}\nDouble-click to open chart\n4H vs BTC: {_pct(metrics.get('rs4'))} · 24H vs BTC: {_pct(metrics.get('rs24'))}")
+                    item.setData(DETAIL_ROLE, detail)
+                    item.setForeground(QtGui.QColor(detail.get("foreground", self.theme.get("text", "#DFE5EE"))))
+
+        finally:
+            self.table.setUpdatesEnabled(True)
         self.table.verticalScrollBar().setValue(scroll)
 
         if self.selected not in ordered:
@@ -2508,7 +2527,7 @@ def _prepare_dashboard(model):
     for symbol in valid:
         category = model.identity(symbol)[1]
         value = metrics[symbol].get("rs4")
-        if category and category not in {"-", "Benchmark"} and value is not None:
+        if category and category not in {"-", "—", "Benchmark"} and value is not None:
             sector_values[category].append(value)
     sectors = sorted(
         ((category, sum(values) / len(values)) for category, values in sector_values.items() if values),
@@ -2912,8 +2931,8 @@ def _sector_overview_map_candles(candles: list[Candle], step: int) -> dict[int, 
 def _sector_overview_classify(symbol: str, metadata: dict[str, Any] | None) -> str | None:
     if symbol == _SECTOR_OVERVIEW_BENCHMARK or not symbol.endswith("USDT"):
         return None
-    base = symbol.removesuffix("USDT")
-    curated = _SECTOR_OVERVIEW_SECTOR_MEMBERSHIP.get(base)
+    base = coin_base_symbol(symbol)
+    curated = _SECTOR_OVERVIEW_SECTOR_MEMBERSHIP.get(base) or _SECTOR_OVERVIEW_SECTOR_MEMBERSHIP.get(coin_remote_symbol(symbol))
     if curated:
         return curated
     tags: list[str] = []
@@ -2926,7 +2945,7 @@ def _sector_overview_classify(symbol: str, metadata: dict[str, Any] | None) -> s
         tags.append(str(underlying).lower())
     joined = " | ".join(tags)
     for sector, keywords in _SECTOR_OVERVIEW_TAG_SECTOR_RULES:
-        if any(keyword in joined for keyword in keywords):
+        if any(re.search(r"(?<![a-z0-9])" + re.escape(keyword) + r"(?![a-z0-9])", joined) for keyword in keywords):
             return sector
     return None
 
@@ -2937,10 +2956,8 @@ def _sector_overview_closed_window_ready(
     step_ms: int,
     minimum_rows: int,
 ) -> bool:
-    if len(rows) < minimum_rows:
-        return False
-    latest_close = max(int(round(row.time * 1000)) + step_ms for row in rows)
-    return latest_close >= end_ms
+    series = _sector_overview_map_candles(rows, step_ms)
+    return bool(_sector_overview_series_window(series, end_ms, step_ms, minimum_rows))
 
 
 def _sector_overview_tail_limit(
@@ -2950,15 +2967,14 @@ def _sector_overview_tail_limit(
     full_limit: int,
     minimum_rows: int,
 ) -> int:
-    if not rows:
-        return full_limit
-    latest_close = max(int(round(row.time * 1000)) + step_ms for row in rows)
-    missing = max(0, int(math.ceil((end_ms - latest_close) / step_ms)))
-
-
-
-    shallow = max(0, minimum_rows - len(rows))
-    return max(2, min(full_limit, max(missing + 1, shallow + 1)))
+    series = _sector_overview_map_candles(rows, step_ms)
+    required = range(end_ms - (minimum_rows - 1) * step_ms, end_ms + 1, step_ms)
+    missing = [stamp for stamp in required if not _sector_overview_series_window(series, stamp, step_ms, 1)]
+    if not missing:
+        return 2
+    # Fetch from the oldest hole, including internal gaps, rather than merely
+    # fetching the most recent tail and permanently preserving a cache hole.
+    return min(full_limit, max(2, (end_ms - min(missing)) // step_ms + 1))
 
 
 def _sector_overview_merge_candles(existing: list[Candle], fetched: list[Candle]) -> list[Candle]:
@@ -3110,6 +3126,7 @@ def _sector_overview_load_sector_batch(
         target = output.setdefault(symbol, {})
         stats["network_calls"] += int(fetched_entry.get("_network_calls") or 0)
         unavailable = fetched_entry.get("_spot_unavailable") or ()
+        target["_spot_unavailable"] = tuple(unavailable)
         stats["spot_unavailable"] += len(unavailable)
 
         for key in ("futures_15m", "futures_1h", "daily"):
@@ -3219,12 +3236,12 @@ class _SectorOverviewShareBar(QtWidgets.QWidget):
 class _SectorOverviewVolumeBars(QtWidgets.QWidget):
     def __init__(self, parent: QtWidgets.QWidget | None = None):
         super().__init__(parent)
-        self.values: list[float] = []
+        self.values: list[float | None] = []
         self.color = QtGui.QColor("#3A4250")
         self.setMinimumHeight(42)
 
-    def set_values(self, values: list[float], color: str | None = None) -> None:
-        next_values = [max(0.0, safe_float(value)) for value in values]
+    def set_values(self, values: list[float | None], color: str | None = None) -> None:
+        next_values = [max(0.0, float(value)) if _sector_overview_finite(value) else None for value in values]
         next_color = QtGui.QColor(self.color)
         if color:
             next_color = QtGui.QColor(color)
@@ -3239,14 +3256,17 @@ class _SectorOverviewVolumeBars(QtWidgets.QWidget):
         del event
         if not self.values:
             return
-        maximum = max(self.values)
-        if maximum <= 0:
-            return
+        maximum = max((value for value in self.values if value is not None), default=0.0) or 1.0
         painter = QtGui.QPainter(self)
         rect = self.rect().adjusted(1, 2, -1, -2)
         width = rect.width() / max(1, len(self.values))
         for index, value in enumerate(self.values):
-            height = rect.height() * value / maximum
+            if value is None:
+                painter.setPen(self.color)
+                painter.drawText(QtCore.QRectF(rect.left() + index * width, rect.top(), width, rect.height()),
+                                 Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignBottom, '—')
+                continue
+            height = max(1.0, rect.height() * value / maximum)
             painter.fillRect(
                 QtCore.QRectF(rect.left() + index * width + 0.5, rect.bottom() - height, max(1.0, width - 1.0), height),
                 self.color,
@@ -3377,6 +3397,8 @@ class _SectorOverviewSectorTile(QtWidgets.QFrame):
         if self.members.text() != members_text:
             self.members.setText(members_text)
         self.bars.set_values(metrics.get("volume_bars", []), _sector_overview_sector_color(self.sector, self.theme))
+        self.bars.setToolTip(f"Turnover history · fixed cohort {metrics.get('volume_history_covered', 0)}/{metrics.get('members', 0)} pairs · — means unavailable")
+        self.spark.setToolTip(f"Median vs BTC history · fixed cohort {metrics.get('trend_covered', 0)}/{metrics.get('members', 0)} pairs")
 
     def mouseReleaseEvent(self, event: QtGui.QMouseEvent) -> None:
         if event.button() == Qt.MouseButton.LeftButton:
@@ -3537,7 +3559,7 @@ class _SectorOverviewSectorDetail(QtWidgets.QFrame):
 
     def update_data(self, sector: str, metrics: dict[str, Any], timeframe_label: str) -> None:
         self.title.setText(f"{sector}  ·  {metrics.get('outperformers', 0)} of {metrics.get('covered', 0)} outperform BTC")
-        self.caption.setText(f"Relative performance vs BTC · {timeframe_label}")
+        self.caption.setText(f"Median vs BTC · {timeframe_label} · trend {metrics.get('trend_covered', 0)}/{metrics.get('members', 0)} comparable pairs")
         self.spark.set_values(metrics.get("trend", []), _sector_overview_sector_color(sector, self.theme))
         current_share = metrics.get("volume_share")
         previous_share = metrics.get("previous_volume_share")
@@ -3580,36 +3602,18 @@ class _SectorAnalysis:
     def _sector_members(self, sector: str) -> list[str]:
         return [symbol for symbol in self.symbols if self.sectors.get(symbol) == sector]
 
-    def _trend(self, sector: str, timeframe: str) -> list[float | None]:
-        _series, end, step, count = self._dataset(_SECTOR_OVERVIEW_BENCHMARK, timeframe)
+    def _fixed_history_cohort(self, sector: str, timeframe: str, points: int, *, relative: bool) -> tuple[list[float | None], int]:
+        _series, end, _step, _count = self._dataset(_SECTOR_OVERVIEW_BENCHMARK, timeframe)
         sample_step = _SECTOR_OVERVIEW_QUARTER if timeframe == "15m" else _SECTOR_OVERVIEW_HOUR
-        points = 24 if timeframe != "1d" else 32
-        members = self._sector_members(sector)
-        output: list[float | None] = []
-        for index in range(points - 1, -1, -1):
-            at = end - index * sample_step
-            values = [
-                value
-                for symbol in members
-                if (value := self._relative_value(symbol, timeframe, at)) is not None
-            ]
-            output.append(_sector_overview_median(values))
-        return output
-
-    def _volume_bars(self, sector: str, timeframe: str) -> list[float]:
-        _series, end, step, count = self._dataset(_SECTOR_OVERVIEW_BENCHMARK, timeframe)
-        sample_step = _SECTOR_OVERVIEW_QUARTER if timeframe == "15m" else _SECTOR_OVERVIEW_HOUR
-        members = self._sector_members(sector)
-        bars: list[float] = []
-        for index in range(11, -1, -1):
-            at = end - index * sample_step
-            value = sum(
-                volume
-                for symbol in members
-                if (volume := self._volume_value(symbol, timeframe, at)) is not None
-            )
-            bars.append(value)
-        return bars
+        metric = self._relative_value if relative else self._volume_value
+        histories = [[metric(symbol, timeframe, end - index * sample_step)
+                      for index in range(points - 1, -1, -1)]
+                     for symbol in self._sector_members(sector)]
+        cohort = [history for history in histories if all(value is not None for value in history)]
+        if not cohort:
+            return [None] * points, 0
+        reduce = _sector_overview_median if relative else sum
+        return [reduce([history[index] for history in cohort]) for index in range(points)], len(cohort)
 
     def _spot_participation(self, members: list[str], timeframe: str) -> float | None:
         if timeframe == "15m":
@@ -3661,15 +3665,18 @@ class _SectorAnalysis:
                     continue
                 relative_values.append((symbol, value))
                 prior = self._relative_value(symbol, timeframe, previous_end)
-                if prior is not None:
+                if prior is not None and value > prior:
                     improving.append((symbol, value - prior))
             performance = _sector_overview_median([value for _symbol, value in relative_values])
             outperf = sum(value > 0 for _symbol, value in relative_values)
             covered = len(relative_values)
             sector_current = sum(current_volumes.get(symbol, 0.0) for symbol in members if symbol in comparable)
             sector_previous = sum(previous_volumes.get(symbol, 0.0) for symbol in members if symbol in comparable)
-            current_share = sector_current / current_total * 100.0 if current_total > 0 else None
-            previous_share = sector_previous / previous_total * 100.0 if previous_total > 0 else None
+            volume_covered = sum(symbol in comparable for symbol in members)
+            current_share = sector_current / current_total * 100.0 if volume_covered and current_total > 0 else None
+            previous_share = sector_previous / previous_total * 100.0 if volume_covered and previous_total > 0 else None
+            trend, trend_covered = self._fixed_history_cohort(sector, timeframe, 32 if timeframe == '1d' else 24, relative=True)
+            volume_bars, volume_history_covered = self._fixed_history_cohort(sector, timeframe, 12, relative=False)
             output[sector] = {
                 "performance": performance,
                 "outperformers": outperf,
@@ -3682,8 +3689,9 @@ class _SectorAnalysis:
                     if _sector_overview_finite(current_share) and _sector_overview_finite(previous_share)
                     else None
                 ),
-                "trend": self._trend(sector, timeframe),
-                "volume_bars": self._volume_bars(sector, timeframe),
+                "trend": trend, "trend_covered": trend_covered,
+                "volume_bars": volume_bars, "volume_history_covered": volume_history_covered,
+                "volume_covered": volume_covered,
                 "leaders": sorted(relative_values, key=lambda item: (-item[1], item[0]))[:3],
                 "improving": sorted(improving, key=lambda item: (-item[1], item[0]))[:3],
                 "spot_participation": self._spot_participation(members, timeframe),
@@ -3700,17 +3708,23 @@ class _SectorAnalysis:
             for sector in _SECTOR_OVERVIEW_SECTOR_ORDER
         }
 
-    def _above_20d(self) -> tuple[int, int]:
+    def _daily_means(self) -> dict[str, float]:
+        end = self.end_hour // _SECTOR_OVERVIEW_DAY * _SECTOR_OVERVIEW_DAY
+        return {symbol: statistics.mean(row.close for row in window)
+                for symbol in self.symbols
+                if (window := _sector_overview_series_window(
+                    _sector_overview_map_candles(self.daily.get(symbol, []), _SECTOR_OVERVIEW_DAY),
+                    end, _SECTOR_OVERVIEW_DAY, 20))}
+
+    def _above_20d(self, means: dict[str, float]) -> tuple[int, int]:
         above = 0
         covered = 0
-        for symbol in self.symbols:
-            rows = self.daily.get(symbol, [])
-            closes = [row.close for row in rows[-20:] if row.close > 0 and math.isfinite(row.close)]
+        for symbol, mean in means.items():
             current = safe_float(self.tickers.get(symbol, {}).get("c"))
-            if len(closes) < 20 or current <= 0:
+            if current <= 0:
                 continue
             covered += 1
-            if current > statistics.mean(closes):
+            if current > mean:
                 above += 1
         return above, covered
 
@@ -3723,11 +3737,12 @@ def _prepare_sectors(state):
     btc, end, step, count = model._dataset(_SECTOR_OVERVIEW_BENCHMARK, model.timeframe)
     values = [value for symbol in model.symbols
               if (value := model._relative_value(symbol, model.timeframe)) is not None]
+    means = model._daily_means()
     return {
         "metrics": metrics, "performances": performances,
         "btc_trend": _sector_overview_return(btc, end, step, count),
         "alt_pct": sum(value > 0 for value in values) / len(values) * 100.0 if values else None,
-        "above": model._above_20d(),
+        "above": model._above_20d(means), "ma20": means,
         "loaded15": sum(bool(_sector_overview_series_window(model.futures_15m.get(symbol, {}), model.end_15m, _SECTOR_OVERVIEW_QUARTER, 1)) for symbol in model.symbols),
         "loaded1h": sum(bool(_sector_overview_series_window(model.hourly.get(symbol, {}), model.end_hour, _SECTOR_OVERVIEW_HOUR, 1)) for symbol in model.symbols),
     }
@@ -3772,6 +3787,7 @@ class SectorOverviewWidget(QtWidgets.QWidget):
         self.end_hour = 0
         self.end_15m = 0
         self._component_attempts: dict[tuple[str, str], int] = {}
+        self._component_retries: dict[tuple[str, str], tuple[int, float]] = {}
         self.task: ApiTask | None = None
         self.cancel = threading.Event()
         self._analysis_serial = 0
@@ -3983,8 +3999,7 @@ class SectorOverviewWidget(QtWidgets.QWidget):
 
         if not self.symbols:
             self.refresh()
-        elif self.active and not self.render_timer.isActive():
-            self.render_timer.start(display_frame_interval_ms(self))
+        self._refresh_ticker_stat()
 
     def update_tickers(self, updates: list[dict[str, Any]]) -> None:
         for ticker in updates:
@@ -3995,8 +4010,20 @@ class SectorOverviewWidget(QtWidgets.QWidget):
                     self.tickers[symbol] = dict(ticker)
                 elif current is not ticker:
                     current.update(ticker)
-        if self.active and not self.render_timer.isActive():
-            self.render_timer.start(display_frame_interval_ms(self))
+        self._refresh_ticker_stat()
+
+    def _refresh_ticker_stat(self) -> None:
+        if not self.active or self.closing or self._interaction_paused:
+            return
+        means = getattr(self, "_ma20", {})
+        current = [(safe_float(self.tickers.get(symbol, {}).get("c")), mean) for symbol, mean in means.items()]
+        current = [(price, mean) for price, mean in current if price > 0]
+        covered = len(current)
+        above = sum(price > mean for price, mean in current)
+        value = above / covered * 100 if covered else None
+        self.stat_ma.set_metric(_sector_overview_share(value, 0), f"/ {covered} covered",
+                                self.theme.get("green", "#4DDFA4"), (value or 0) / 100,
+                                self.theme.get("grid", "#1D222B"))
 
     def set_active(self, active: bool) -> None:
         was_active = self.active
@@ -4101,19 +4128,18 @@ class SectorOverviewWidget(QtWidgets.QWidget):
             self.load_timer.start(0)
 
     def _request_spec(self, symbol: str) -> dict[str, bool]:
-        hourly_ready = bool(_sector_overview_series_window(self.hourly.get(symbol, {}), self.end_hour, _SECTOR_OVERVIEW_HOUR, 24))
-        spot_hourly_ready = bool(_sector_overview_series_window(self.spot_hourly.get(symbol, {}), self.end_hour, _SECTOR_OVERVIEW_HOUR, 24))
-        future15_ready = bool(_sector_overview_series_window(self.futures_15m.get(symbol, {}), self.end_15m, _SECTOR_OVERVIEW_QUARTER, 2))
-        spot15_ready = bool(_sector_overview_series_window(self.spot_15m.get(symbol, {}), self.end_15m, _SECTOR_OVERVIEW_QUARTER, 1))
+        hourly_ready = bool(_sector_overview_series_window(self.hourly.get(symbol, {}), self.end_hour, _SECTOR_OVERVIEW_HOUR, 56))
+        spot_hourly_ready = bool(_sector_overview_series_window(self.spot_hourly.get(symbol, {}), self.end_hour, _SECTOR_OVERVIEW_HOUR, 56))
+        future15_ready = bool(_sector_overview_series_window(self.futures_15m.get(symbol, {}), self.end_15m, _SECTOR_OVERVIEW_QUARTER, 24))
+        spot15_ready = bool(_sector_overview_series_window(self.spot_15m.get(symbol, {}), self.end_15m, _SECTOR_OVERVIEW_QUARTER, 24))
         daily_rows = self.daily.get(symbol, [])
         day_stamp = int(self.end_hour // _SECTOR_OVERVIEW_DAY) * _SECTOR_OVERVIEW_DAY
-        daily_ready = bool(
-            len(daily_rows) >= 20
-            and max((int(round(row.time * 1000)) + _SECTOR_OVERVIEW_DAY for row in daily_rows), default=0) >= day_stamp
-        )
+        daily_ready = _sector_overview_closed_window_ready(daily_rows, day_stamp, _SECTOR_OVERVIEW_DAY, 20)
 
         def attempted(component: str, stamp: int) -> bool:
-            return self._component_attempts.get((symbol, component)) == stamp
+            key = (symbol, component)
+            retry = self._component_retries.get(key)
+            return self._component_attempts.get(key) == stamp or bool(retry and time.monotonic() < retry[1])
 
         leader_expected = bool(
             self.leadership is not None
@@ -4158,6 +4184,9 @@ class SectorOverviewWidget(QtWidgets.QWidget):
                 if len(pending) >= _SECTOR_OVERVIEW_ACTIVE_BATCH_SIZE:
                     break
         if not pending:
+            deadlines = [deadline for _count, deadline in self._component_retries.values() if deadline > time.monotonic()]
+            if deadlines:
+                self.load_timer.start(max(50, int((min(deadlines) - time.monotonic()) * 1000)))
             return
         batch_symbols = pending[:_SECTOR_OVERVIEW_ACTIVE_BATCH_SIZE]
         batch_specs = {symbol: specs[symbol] for symbol in batch_symbols}
@@ -4190,7 +4219,20 @@ class SectorOverviewWidget(QtWidgets.QWidget):
                     if component == "daily"
                     else result_hour
                 )
-                self._component_attempts[(symbol, component)] = stamp
+                key = (symbol, component)
+                entry = result.get("data", {}).get(symbol, {})
+                error = entry.get("errors", {}).get(component)
+                rows = entry.get(component) or ([] if component == 'daily' else {})
+                unavailable = component in entry.get("_spot_unavailable", ())
+                step = _SECTOR_OVERVIEW_QUARTER if component.endswith("15m") else _SECTOR_OVERVIEW_DAY if component == "daily" else _SECTOR_OVERVIEW_HOUR
+                minimum = 24 if component.endswith("15m") else 20 if component == "daily" else 56
+                ready = _sector_overview_closed_window_ready(rows, stamp, step, minimum) if component == "daily" else bool(_sector_overview_series_window(rows, stamp, step, minimum))
+                if unavailable or (not error and ready):
+                    self._component_attempts[key] = stamp
+                    self._component_retries.pop(key, None)
+                else:
+                    count = self._component_retries.get(key, (0, 0.0))[0] + 1
+                    self._component_retries[key] = (count, time.monotonic() + min(60.0, 1.5 * 2 ** min(count - 1, 6)))
         for symbol, entry in result.get("data", {}).items():
             rows = entry.get("futures_15m") or []
             if rows:
@@ -4246,6 +4288,7 @@ class SectorOverviewWidget(QtWidgets.QWidget):
                 or key[0] != self._analysis_view_key()):
             return
         self._prepared_analysis = prepared
+        self._ma20 = prepared['ma20']
         self._render_dirty = False
         timeframe_label = _SECTOR_OVERVIEW_TIMEFRAMES[self.timeframe][0]
         metrics, performances = prepared["metrics"], prepared["performances"]
@@ -5715,6 +5758,10 @@ class RotationScannerWidget(LeadershipTimelineWidget):
         super()._details_failed(error)
         if self.active and self._prepared_analysis:
             self._populate_candidates()
+
+    def _refresh_live_prices(self):
+        # Rotation's candidate table has RS/RVol columns; price is in its inspector.
+        pass
 
     def set_tickers(self, tickers):
         super().set_tickers(tickers)

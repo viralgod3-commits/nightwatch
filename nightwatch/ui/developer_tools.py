@@ -1063,6 +1063,8 @@ class DeveloperDialog(QtWidgets.QWidget):
             f"max {float(profile.get('frame_max_ms', 0.0)):.2f} ms · "
             f"1% low {float(profile.get('one_percent_low_fps', 0.0)):.1f} FPS · "
             f"{int(profile.get('frame_count', 0))} frames"
+            + "".join(f"\n{surface['name']}: {surface['paint_rate_fps']:.1f} FPS · p99 {surface['frame_p99_ms']:.2f} ms · max {surface['frame_max_ms']:.2f} ms"
+                      for surface in profile.get('surfaces', []))
         )
 
     def _verbosity_changed(self, index: int) -> None:
@@ -1440,9 +1442,9 @@ class MarketHistoryDownloadDialog(QtWidgets.QDialog):
         self._status_wake_pending = False
         self._status_last_applied_mono = 0.0
         self.setWindowTitle("Download complete USD-M research history")
-        self.setWindowModality(Qt.WindowModality.ApplicationModal)
+        self.setWindowModality(Qt.WindowModality.NonModal)
         self.setMinimumWidth(660)
-        self.setModal(True)
+        self.setModal(False)
         layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(16, 14, 16, 14)
         layout.setSpacing(10)
@@ -1451,7 +1453,7 @@ class MarketHistoryDownloadDialog(QtWidgets.QDialog):
         note = QtWidgets.QLabel(
             "Selected research datasets are checkpointed after every complete page or archive. "
             "Restarting this downloader resumes without repeating completed work. "
-            "The rest of Nightwatch is intentionally locked while this runs."
+            "Live feeds and trading remain available; downloads use background request priority."
         )
         note.setObjectName("subtleLabel")
         note.setWordWrap(True)

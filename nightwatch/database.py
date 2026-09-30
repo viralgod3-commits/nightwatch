@@ -50,8 +50,6 @@ class AppDatabase:
                     quote_volume REAL NOT NULL,
                     PRIMARY KEY (symbol, interval, open_time)
                 );
-                CREATE INDEX IF NOT EXISTS candle_cache_range
-                    ON candle_cache(symbol, interval, open_time);
 
                 CREATE TABLE IF NOT EXISTS candle_coverage (
                     symbol TEXT NOT NULL,
@@ -143,6 +141,7 @@ class AppDatabase:
                     """
                 )
             connection.execute("DROP INDEX IF EXISTS market_events_range")
+            connection.execute("DROP INDEX IF EXISTS candle_cache_range")
 
 
     def cache_candles(self, symbol: str, interval: str, candles: list[Candle]) -> None:

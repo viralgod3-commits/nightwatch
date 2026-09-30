@@ -3478,6 +3478,9 @@ import threading
 class _OrderBookProcessLink(QtCore.QObject):
     ready = QtCore.Signal(object)
     failed = QtCore.Signal(str)
+    MAX_PENDING_BATCHES = 1024
+    MAX_PENDING_BYTES = 16 * 1024 * 1024
+    MAX_QUEUE_AGE_SECONDS = 1.5
 
     def __init__(self, factory, options, parent=None, *, ordered=False):
         super().__init__(parent)
@@ -3491,6 +3494,8 @@ class _OrderBookProcessLink(QtCore.QObject):
         self._lease = None
         self._due = float('inf')
         self._thread = None
+        self._pending_bytes = 0
+        self._oldest_pending = 0.0
         self.destroyed.connect(lambda *_: self.close())
 
     def enable(self, active):
@@ -3506,13 +3511,23 @@ class _OrderBookProcessLink(QtCore.QObject):
             if self._closed:
                 return
             if self._ordered:
-
-
-                if len(self._pending) >= 4096:
+                size = 256
+                if name == 'add_depth':
+                    size += sum(len(levels) for levels in value[1:3]) * 64
+                elif name == 'add_trade_batch':
+                    size += len(value[1]) * 512
+                now = time.monotonic()
+                stale = bool(self._oldest_pending and now - self._oldest_pending > self.MAX_QUEUE_AGE_SECONDS)
+                if len(self._pending) >= self.MAX_PENDING_BATCHES or self._pending_bytes + size > self.MAX_PENDING_BYTES or stale:
+                    self._pending.clear()
+                    self._pending_bytes = 0
                     self._closed = True
-                    self.failed.emit('Order-flow input backlog exceeded 4096 batches; restart the application')
+                    self.failed.emit('Order-flow input exceeded its memory/age budget; resetting inference and restarting the worker')
                 else:
+                    if not self._pending:
+                        self._oldest_pending = now
                     self._pending.append((name, value))
+                    self._pending_bytes += size
             else:
                 self._pending[name] = value
             self._condition.notify_all()
@@ -3551,6 +3566,8 @@ class _OrderBookProcessLink(QtCore.QObject):
                         break
                     commands = list(self._pending) if self._ordered else list(self._pending.items())
                     self._pending.clear()
+                    self._pending_bytes = 0
+                    self._oldest_pending = 0.0
                     lease = self._lease
                 connection.send((commands, lease))
                 while not connection.poll(0.05):
@@ -3660,6 +3677,7 @@ class OrderFlowRuntime(QtCore.QObject):
     microstructure_ready = QtCore.Signal(int, object)
     diagnostic_ready = QtCore.Signal(int, object)
     failed = QtCore.Signal(int, str)
+    restarted = QtCore.Signal(int)
 
     def __init__(self, symbol, *, tick_size=0.0, quote_volume=0.0,
                  min_snapshot_interval_ms=16, interaction_snapshot_interval_ms=33,
@@ -3670,11 +3688,25 @@ class OrderFlowRuntime(QtCore.QObject):
                        min_snapshot_interval_ms=min_snapshot_interval_ms,
                        interaction_snapshot_interval_ms=interaction_snapshot_interval_ms,
                        active_decay_ms=active_decay_ms, idle_decay_ms=idle_decay_ms)
+        self._options = options
+        self._stopping = False
+        self._restart_pending = False
+        self._restart_attempts = 0
+        self._last_restart_mono = 0.0
+        self._reset_args = (0, symbol, tick_size, quote_volume)
+        self._active = False
+        self._depth_capacity = 1000
+        self._interaction_priority = False
+        self._restart_timer = QtCore.QTimer(self)
+        self._restart_timer.setSingleShot(True)
+        self._restart_timer.timeout.connect(self._restart)
         self._link = _OrderBookProcessLink(_OrderFlowAnalysisProcess, options, self, ordered=True)
         self._link.ready.connect(self._deliver)
         self._link.failed.connect(self._failed)
 
     def _post(self, name, *args):
+        if self._stopping or self._restart_pending:
+            return
         self._link.submit(name, args)
         self._link.enable(True)
 
@@ -3689,23 +3721,51 @@ class OrderFlowRuntime(QtCore.QObject):
 
     @QtCore.Slot(str)
     def _failed(self, message):
+        if self._stopping or self._restart_pending:
+            return
+        self._restart_pending = True
+        self._link.close()
+        self._restart_attempts = self._restart_attempts + 1 if time.monotonic() - self._last_restart_mono < 60 else 1
+        self._last_restart_mono = time.monotonic()
+        self._restart_timer.start(min(30_000, 500 * 2 ** min(self._restart_attempts - 1, 6)))
         self.failed.emit(self._generation, message)
+
+    @QtCore.Slot()
+    def _restart(self):
+        if self._stopping:
+            return
+        old = self._link
+        old.ready.disconnect(self._deliver)
+        old.failed.disconnect(self._failed)
+        self._link = _OrderBookProcessLink(_OrderFlowAnalysisProcess, self._options, self, ordered=True)
+        self._link.ready.connect(self._deliver)
+        self._link.failed.connect(self._failed)
+        self._restart_pending = False
+        self._post('reset_model', *self._reset_args)
+        self._post('set_depth_capacity', self._generation, self._depth_capacity)
+        self._post('set_active', self._generation, self._active)
+        self._post('set_interaction_priority', self._generation, self._interaction_priority)
+        self.restarted.emit(self._generation)
 
     @QtCore.Slot(int, str, float, float)
     def reset_model(self, generation, symbol, tick_size, quote_volume):
         self._generation = int(generation)
+        self._reset_args = (generation, symbol, tick_size, quote_volume)
         self._post('reset_model', generation, symbol, tick_size, quote_volume)
 
     @QtCore.Slot(int, bool)
     def set_active(self, generation, active):
+        self._active = bool(active)
         self._post('set_active', generation, active)
 
     @QtCore.Slot(int, float)
     def set_quote_volume(self, generation, quote_volume):
+        self._reset_args = (*self._reset_args[:3], quote_volume)
         self._post('set_quote_volume', generation, quote_volume)
 
     @QtCore.Slot(int, int)
     def set_depth_capacity(self, generation, limit_per_side):
+        self._depth_capacity = limit_per_side
         self._post('set_depth_capacity', generation, limit_per_side)
 
     @QtCore.Slot(int, object, object, int, object)
@@ -3722,6 +3782,7 @@ class OrderFlowRuntime(QtCore.QObject):
 
     @QtCore.Slot(int, bool)
     def set_interaction_priority(self, generation, active):
+        self._interaction_priority = bool(active)
         self._post('set_interaction_priority', generation, active)
 
     @QtCore.Slot()
@@ -3729,5 +3790,5 @@ class OrderFlowRuntime(QtCore.QObject):
         self.stop_transport()
 
     def stop_transport(self):
-
+        self._stopping = True
         self._link.close()

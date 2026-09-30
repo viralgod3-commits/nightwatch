@@ -213,6 +213,9 @@ class _SocketParserWorker(QtCore.QObject):
     backpressure = Signal(str, int, str)
 
     MAX_INGRESS_EVENTS = 512
+    MAX_INGRESS_BYTES = 8 * 1024 * 1024
+    DRAIN_BATCH_SIZE = 32
+    DRAIN_BUDGET_MS = 4.0
     MAX_PARSER_QUEUE_AGE_MS = 1_500.0
     MAX_TRADE_BUFFER_EVENTS = 1_024
 
@@ -241,6 +244,7 @@ class _SocketParserWorker(QtCore.QObject):
             tuple[str, int, str, str, str, object, frozenset[str], float]
         ] = deque()
         self._ingress_scheduled = False
+        self._ingress_bytes = 0
         self._overflow_contexts: set[tuple[str, int]] = set()
 
     def enqueue(
@@ -277,13 +281,19 @@ class _SocketParserWorker(QtCore.QObject):
             float(arrival_mono_ms or 0.0),
         )
         with self._ingress_lock:
-            if len(self._ingress) >= self.MAX_INGRESS_EVENTS:
+            size = len(message) * 4
+            if len(self._ingress) >= self.MAX_INGRESS_EVENTS or self._ingress_bytes + size > self.MAX_INGRESS_BYTES:
                 self._overflow_contexts.update(
                     (queued[0], queued[1]) for queued in self._ingress
                 )
                 self._overflow_contexts.add((item[0], item[1]))
                 self._ingress.clear()
-            self._ingress.append(item)
+                self._ingress_bytes = 0
+            if size <= self.MAX_INGRESS_BYTES:
+                self._ingress.append(item)
+                self._ingress_bytes += size
+            else:
+                self._overflow_contexts.add((item[0], item[1]))
             if self._ingress_scheduled:
                 return False
             self._ingress_scheduled = True
@@ -300,47 +310,33 @@ class _SocketParserWorker(QtCore.QObject):
 
     @QtCore.Slot()
     def drain(self) -> None:
-        """Drain a bounded batch and reject work that waited too long to parse."""
-        while True:
+        """Yield to timers, seed/reset slots and shutdown even during a flood."""
+        started = time.perf_counter()
+        count = 0
+        while count < self.DRAIN_BATCH_SIZE and (time.perf_counter() - started) * 1000 < self.DRAIN_BUDGET_MS:
             with self._ingress_lock:
-                if not self._ingress:
-                    self._ingress_scheduled = False
-                    return
-                batch = list(self._ingress)
-                self._ingress.clear()
                 affected = set(self._overflow_contexts)
                 self._overflow_contexts.clear()
-
-            now_ms = time.perf_counter() * 1000.0
-            fresh: list[tuple[str, int, str, str, str, object, frozenset[str], float]] = []
-            for item in batch:
-                arrival_mono_ms = item[7]
-                if (
-                    arrival_mono_ms > 0.0
-                    and now_ms - arrival_mono_ms > self.MAX_PARSER_QUEUE_AGE_MS
-                ):
-                    affected.add((item[0], item[1]))
-                    continue
-                fresh.append(item)
-
+                item = self._ingress.popleft() if self._ingress else None
+                if item is not None:
+                    self._ingress_bytes -= len(item[2]) * 4
+            if item is not None and item[7] > 0 and time.perf_counter() * 1000 - item[7] > self.MAX_PARSER_QUEUE_AGE_MS:
+                affected.add((item[0], item[1]))
             if affected:
-
-
-
                 self._discard_coalesced_state()
-                fresh = [
-                    item for item in fresh
-                    if (item[0], item[1]) not in affected
-                ]
                 for kind, generation in sorted(affected):
-                    self.backpressure.emit(
-                        kind,
-                        generation,
-                        "SOCKET PARSER BACKPRESSURE",
-                    )
-
-            for item in fresh:
+                    self.backpressure.emit(kind, generation, "SOCKET PARSER BACKPRESSURE")
+            if item is None:
+                break
+            if (item[0], item[1]) not in affected:
                 self.parse(*item[:7])
+            count += 1
+        with self._ingress_lock:
+            more = bool(self._ingress or self._overflow_contexts)
+            if not more:
+                self._ingress_scheduled = False
+        if more:
+            QtCore.QTimer.singleShot(0, self, self.drain)
 
     def _signal_trade_backpressure(self, kind: str, generation: int) -> None:
         self._discard_coalesced_state()
@@ -468,6 +464,9 @@ class _DepthParserWorker(QtCore.QObject):
 
     MAX_BUFFERED_EVENTS = 512
     MAX_INGRESS_EVENTS = 512
+    MAX_INGRESS_BYTES = 8 * 1024 * 1024
+    DRAIN_BATCH_SIZE = 32
+    DRAIN_BUDGET_MS = 4.0
 
 
 
@@ -513,21 +512,22 @@ class _DepthParserWorker(QtCore.QObject):
         self._ingress_lock = threading.Lock()
         self._ingress: deque[tuple[int, str, str, object]] = deque()
         self._ingress_scheduled = False
+        self._ingress_bytes = 0
         self._ingress_overflow = False
 
-    def enqueue(
-        self,
-        epoch: int,
-        message: str,
-        symbol: str,
-        timing: object,
-    ) -> bool:
-        """Thread-safe bounded ingress; return True when a drain wakeup is needed."""
+    def enqueue(self, epoch: int, message: str, symbol: str, timing: object) -> bool:
+        """Bound raw memory before parsing and retain one scheduled wakeup."""
+        size = len(message) * 4
         with self._ingress_lock:
-            if len(self._ingress) >= self.MAX_INGRESS_EVENTS:
+            if len(self._ingress) >= self.MAX_INGRESS_EVENTS or self._ingress_bytes + size > self.MAX_INGRESS_BYTES:
                 self._ingress.clear()
+                self._ingress_bytes = 0
                 self._ingress_overflow = True
-            self._ingress.append((int(epoch), str(message), str(symbol), timing))
+            if size <= self.MAX_INGRESS_BYTES:
+                self._ingress.append((int(epoch), str(message), str(symbol), timing))
+                self._ingress_bytes += size
+            else:
+                self._ingress_overflow = True
             if self._ingress_scheduled:
                 return False
             self._ingress_scheduled = True
@@ -535,20 +535,27 @@ class _DepthParserWorker(QtCore.QObject):
 
     @QtCore.Slot()
     def drain(self) -> None:
-        """Drain all currently queued depth frames on the worker thread."""
-        while True:
+        started = time.perf_counter()
+        count = 0
+        while count < self.DRAIN_BATCH_SIZE and (time.perf_counter() - started) * 1000 < self.DRAIN_BUDGET_MS:
             with self._ingress_lock:
-                if not self._ingress:
-                    self._ingress_scheduled = False
-                    return
-                batch = list(self._ingress)
-                self._ingress.clear()
                 overflow = self._ingress_overflow
                 self._ingress_overflow = False
+                item = self._ingress.popleft() if self._ingress else None
+                if item is not None:
+                    self._ingress_bytes -= len(item[1]) * 4
             if overflow:
                 self._request_resync("DEPTH INGRESS OVERFLOW", force=True)
-            for epoch, message, symbol, timing in batch:
-                self.parse(epoch, message, symbol, timing)
+            if item is None:
+                break
+            self.parse(*item)
+            count += 1
+        with self._ingress_lock:
+            more = bool(self._ingress or self._ingress_overflow)
+            if not more:
+                self._ingress_scheduled = False
+        if more:
+            QtCore.QTimer.singleShot(0, self, self.drain)
 
     def _reset_state(
         self,
@@ -1447,11 +1454,6 @@ class MarketDataHub(QtCore.QObject):
         self.universe_retry_timer.timeout.connect(self._load_universe)
 
     def _ensure_parser_thread(self) -> None:
-
-
-        if self.chart_only:
-            return
-
         if self._parser_thread is None:
             thread = QtCore.QThread()
             thread.setObjectName("nightwatch-market-parser")
@@ -1476,7 +1478,7 @@ class MarketDataHub(QtCore.QObject):
             self._parser_thread = thread
             self._parser_worker = worker
 
-        if self._depth_parser_thread is None:
+        if not self.chart_only and self._depth_parser_thread is None:
             depth_thread = QtCore.QThread()
             depth_thread.setObjectName("nightwatch-depth-parser")
             depth_worker = _DepthParserWorker()
@@ -1879,8 +1881,7 @@ class MarketDataHub(QtCore.QObject):
         self._socket_activity[kind] = now_mono
         self._socket_data_activity[kind] = now_mono
 
-        if not self.chart_only:
-            self._ensure_parser_thread()
+        self._ensure_parser_thread()
 
         if kind == "public":
             if not self.orderbook_streaming_enabled:
@@ -2988,6 +2989,10 @@ class MarketDataHub(QtCore.QObject):
             return
         self._load_depth_snapshot(self.depth_epoch)
 
+    def request_orderbook_resync(self, reason: str = 'ANALYSIS WORKER RECOVERY') -> None:
+        if not self.stopping and not self.chart_only and self.orderbook_streaming_enabled:
+            self._invalidate_depth_book(reason, freeze_worker=True, request_snapshot=True)
+
     def _schedule_depth_snapshot_retry(
         self, epoch: int, revision: int, reason: str
     ) -> None:
@@ -3274,6 +3279,8 @@ class MarketDataHub(QtCore.QObject):
 
     def _make_socket(self, kind: str, url: str, generation: int) -> QWebSocket:
         socket = QWebSocket()
+        socket.setMaxAllowedIncomingFrameSize(2 * 1024 * 1024)
+        socket.setMaxAllowedIncomingMessageSize(2 * 1024 * 1024)
         self._socket_generations[kind] = generation
         self._disconnect_tokens.pop(kind, None)
         def current():

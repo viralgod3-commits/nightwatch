@@ -7,6 +7,10 @@ import os
 import sys
 import time
 
+# Keep native numerical pools bounded before importing pyqtgraph/NumPy.
+for _name in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS", "NUMEXPR_NUM_THREADS"):
+    os.environ[_name] = os.environ.get("NIGHTWATCH_NUMERIC_THREADS", "1")
+
 import pyqtgraph as pg
 from PySide6 import QtCore, QtGui, QtWidgets
 from PySide6.QtCore import QTimer, Qt
@@ -435,7 +439,7 @@ class AppComposition:
 
     def create_database(self) -> AppDatabase:
         return AppDatabase(
-            os.path.join(application_data_directory(), "nightwatch.sqlite3")
+            os.path.join(application_data_directory(), "nightwatch-testnet.sqlite3" if self.testnet else "nightwatch-mainnet.sqlite3")
         )
 
     def create_trading_gateway(self) -> TradingGatewayPort:

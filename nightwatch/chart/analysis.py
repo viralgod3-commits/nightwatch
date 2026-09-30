@@ -250,6 +250,17 @@ import logging
 from PySide6 import QtCore
 
 log = logging.getLogger(__name__)
+_analysis_qt_pool = None
+
+
+def analysis_task_pool():
+    """Keep process-future waits out of the shared HTTP/SQLite task pool."""
+    global _analysis_qt_pool
+    if _analysis_qt_pool is None:
+        _analysis_qt_pool = QtCore.QThreadPool()
+        _analysis_qt_pool.setMaxThreadCount(analysis_worker_count() + 1)
+        _analysis_qt_pool.setExpiryTimeout(30_000)
+    return _analysis_qt_pool
 
 
 class _Signals(QtCore.QObject):
@@ -283,7 +294,7 @@ class LatestJob(QtCore.QObject):
 
     def __init__(self, pool, parent=None, *, accept_intermediate=False, priority=0):
         super().__init__(parent)
-        self.pool = pool
+        self.pool = analysis_task_pool() if pool is QtCore.QThreadPool.globalInstance() else pool
         self.running = None
         self.pending = None
         self.wanted = None
