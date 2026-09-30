@@ -4676,7 +4676,7 @@ class RotationBubbleChart(QtWidgets.QWidget):
         self.setMouseTracking(True)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.setAccessibleName("Rotation map: Improving top left, Leading top right, Lagging bottom left, Weakening bottom right")
-        self.setToolTip("X: selected-window return vs BTC. Y: change in 1H return vs BTC, in percentage points.\nFour symbols maximum. Each connected group shows three earlier hours and the latest hour, smallest to largest.\nTrail spacing is normalized when needed for readability; hover a bubble for the observed percentages. Latest position stays exact.\nLatest bubble area represents traded volume. Click to inspect; double-click to open a chart. Arrow keys select coins.")
+        self.setToolTip("X: selected-window return vs BTC. Y: change in 1H return vs BTC, in percentage points.\nFour symbols maximum. Each connected group shows three earlier hours and the latest hour, smallest to largest.\nTrail spacing is normalized when needed for readability; hover a bubble for the observed percentages. Display positions are normalized for readability.\nLatest bubble area represents traded volume. Click to inspect; double-click to open a chart. Arrow keys select coins.")
 
     def sizeHint(self):
         return QtCore.QSize(850, 430)
@@ -4744,70 +4744,116 @@ class RotationBubbleChart(QtWidgets.QWidget):
                              r.center().y() - y / self.y_extent * r.height() / 2)
 
     def _font(self, role, pixels=None):
-        font = typography_font(role)
-        if pixels:
-            font.setPixelSize(pixels)
+        family = getattr(self, "_graph_font_family", None)
+        if family is None:
+            available = set(QtGui.QFontDatabase.families())
+            preferred = (
+                "Inter", "Geist", "Manrope", "DM Sans",
+                "IBM Plex Sans", "Segoe UI", "Arial",
+            )
+            family = next((name for name in preferred if name in available), "")
+            self._graph_font_family = family
+        font = QtGui.QFont(family)
+        font.setStyleHint(QtGui.QFont.StyleHint.SansSerif)
+        font.setPixelSize(pixels or 12)
+        font.setKerning(True)
+        font.setHintingPreference(
+            QtGui.QFont.HintingPreference.PreferVerticalHinting
+        )
+        if (pixels or 12) >= 14 or role == TextRole.INSTRUMENT_SYMBOL:
+            font.setWeight(QtGui.QFont.Weight.DemiBold)
         return font
 
     def _trail_geometry(self, point, radius):
-        """Four chronological beads; normalize only their display spacing."""
+        """Readable chronological trail; hover retains observed percentages."""
         history = list(point.get("trail", [])[:-1])[-3:]
-        samples = [None] * (3 - len(history)) + history + [(point["x"], point["y"])]
-        radii = [radius * .18, radius * .32, radius * .52, radius]
-        raw = [self.map_point(*v) if v is not None and all(_rotation_finite(n) for n in v) else None
-               for v in samples]
-        positions = [None, None, None, raw[-1]]
-        normalized = False
-        direction = QtCore.QPointF(-1, .65)
-        bounds = self.plot_rect().adjusted(radius + 4, radius + 4, -radius - 4, -radius - 4)
-        for i in range(2, -1, -1):
-            if raw[i] is None:
-                continue
-            # A missing hour stays a gap; never connect across it.
-            following = i + 1 if raw[i + 1] is not None else 3
-            delta = raw[i] - raw[following]
-            distance = math.hypot(delta.x(), delta.y())
-            if distance > .001:
-                direction = delta / distance
-            else:
-                length = math.hypot(direction.x(), direction.y())
-                direction /= length
-            minimum = radii[i] + radii[following] + 3
-            maximum = max(minimum, (14, 18, 24)[i])
-            spacing = min(maximum, max(minimum, distance))
-            positions[i] = positions[following] + direction * spacing
-            # Backtracking or stationary prices must not hide the older beads
-            # underneath the latest one. Try the nearest clear display angle.
-            for angle in (0, .35, -.35, .7, -.7, 1.05, -1.05, 1.57, -1.57, 2.1, -2.1, math.pi):
-                cosine, sine = math.cos(angle), math.sin(angle)
-                rotated = QtCore.QPointF(direction.x() * cosine - direction.y() * sine,
-                                         direction.x() * sine + direction.y() * cosine)
-                candidate = positions[following] + rotated * spacing
-                if bounds.contains(candidate) and all(
-                    at is None or math.hypot((candidate - at).x(), (candidate - at).y()) >= radii[i] + radii[j] + 2.5
-                    for j, at in enumerate(positions) if j > i
-                ):
-                    positions[i] = candidate
-                    break
-            normalized |= math.hypot((positions[i] - raw[i]).x(), (positions[i] - raw[i]).y()) > .1
+        samples = [None] * (3 - len(history)) + history
+        samples.append((point["x"], point["y"]))
+        samples = [
+            value if isinstance(value, (tuple, list))
+            and len(value) == 2
+            and all(_rotation_finite(n) for n in value)
+            else None
+            for value in samples
+        ]
+        raw = [
+            self.map_point(*value) if value is not None else None
+            for value in samples
+        ]
 
-        # Fit the entire group inside the plot, including its earlier beads.
-        head = positions[-1]
-        scale = 1.0
-        for at in positions[:-1]:
-            if at is None:
+        # Each circle has exactly half the diameter of its successor.
+        radii = [radius / 8, radius / 4, radius / 2, radius]
+        visible_gap = 8.0
+        distances = [0.0] * 4
+        for i in range(2, -1, -1):
+            distances[i] = (
+                distances[i + 1] + radii[i] + radii[i + 1] + visible_gap
+            )
+
+        # Preserve the latest movement direction while regularizing spacing.
+        heading = math.atan2(.65, -1)
+        for earlier in reversed(raw[:-1]):
+            if earlier is None:
                 continue
-            delta = at - head
-            for value, origin, lower, upper in ((delta.x(), head.x(), bounds.left(), bounds.right()),
-                                                (delta.y(), head.y(), bounds.top(), bounds.bottom())):
-                if value > 0:
-                    scale = min(scale, max(0, (upper - origin) / value))
-                elif value < 0:
-                    scale = min(scale, max(0, (lower - origin) / value))
-        if scale < 1:
-            normalized = True
-            positions = [head + (at - head) * scale if at is not None else None for at in positions]
-        return dict(point=point, samples=samples, positions=positions, radii=radii, normalized=normalized)
+            delta = earlier - raw[-1]
+            if math.hypot(delta.x(), delta.y()) > .001:
+                heading = math.atan2(delta.y(), delta.x())
+                break
+
+        plot = self.plot_rect()
+        cx, cy = plot.center().x(), plot.center().y()
+        right, top = point["x"] > 0, point["y"] > 0
+        area = QtCore.QRectF(
+            cx if right else plot.left(),
+            plot.top() if top else cy,
+            plot.width() / 2,
+            plot.height() / 2,
+        ).adjusted(18, 34 if top else 14, -18, -14 if top else -34)
+
+        rotations = [0.0]
+        for k in (1, 2, 3, 4, 5, 6, 9, 12):
+            rotations.extend((k * math.pi / 12, -k * math.pi / 12))
+
+        best = None
+        valid = [i for i, value in enumerate(raw) if value is not None]
+        for turn in rotations:
+            angle = heading + turn
+            unit = QtCore.QPointF(math.cos(angle), math.sin(angle))
+            offsets = [unit * distance for distance in distances]
+            low_x = area.left() - min(
+                offsets[i].x() - radii[i] for i in valid
+            )
+            high_x = area.right() - max(
+                offsets[i].x() + radii[i] for i in valid
+            )
+            low_y = area.top() - min(
+                offsets[i].y() - radii[i] for i in valid
+            )
+            high_y = area.bottom() - max(
+                offsets[i].y() + radii[i] for i in valid
+            )
+            if low_x > high_x or low_y > high_y:
+                continue
+            head = QtCore.QPointF(
+                min(high_x, max(low_x, raw[-1].x())),
+                min(high_y, max(low_y, raw[-1].y())),
+            )
+            delta = head - raw[-1]
+            cost = delta.x() ** 2 + delta.y() ** 2 + (turn * 16) ** 2
+            positions = [
+                head + offsets[i] if raw[i] is not None else None
+                for i in range(4)
+            ]
+            if best is None or cost < best[0]:
+                best = cost, positions
+
+        if best is None:
+            raise RuntimeError("Rotation plot is too small for its bubbles")
+
+        return dict(
+            point=point, samples=samples, positions=best[1],
+            radii=radii, normalized=True, visible_gap=visible_gap,
+        )
 
     @staticmethod
     def _label_clear(box, occupied, circles, segments):
@@ -4838,17 +4884,18 @@ class RotationBubbleChart(QtWidgets.QWidget):
         r = self.plot_rect()
         self._plot = r
         p.setFont(self._font(TextRole.CHART_AXIS, 12))
-        p.setPen(QtGui.QColor(ROTATION_PALETTE["border"]))
-        p.drawRect(r)
         for n in (-2, -1, 0, 1, 2):
             x = self.map_point(n / 2 * self.x_extent, 0).x()
             y = self.map_point(0, n / 2 * self.y_extent).y()
-            pen = QtGui.QPen(QtGui.QColor("#4A4F57" if n == 0 else "#181A1D"), 1)
             if n == 0:
-                pen.setStyle(Qt.PenStyle.DashLine)
-            p.setPen(pen)
-            p.drawLine(QtCore.QPointF(x, r.top()), QtCore.QPointF(x, r.bottom()))
-            p.drawLine(QtCore.QPointF(r.left(), y), QtCore.QPointF(r.right(), y))
+                center_color = QtGui.QColor("#FFFFFF")
+                center_color.setAlpha(24)
+                pen = QtGui.QPen(center_color, .65)
+                pen.setCosmetic(True)
+                pen.setCapStyle(Qt.PenCapStyle.FlatCap)
+                p.setPen(pen)
+                p.drawLine(QtCore.QPointF(x, r.top()), QtCore.QPointF(x, r.bottom()))
+                p.drawLine(QtCore.QPointF(r.left(), y), QtCore.QPointF(r.right(), y))
             p.setPen(QtGui.QColor(ROTATION_PALETTE["muted"]))
             p.drawText(QtCore.QRectF(x - 32, r.bottom() + 6, 64, 18), Qt.AlignmentFlag.AlignCenter, f"{n / 2 * self.x_extent:.1f}%")
             p.drawText(QtCore.QRectF(6, y - 9, 55, 18), Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter, f"{n / 2 * self.y_extent:.1f}%")
@@ -4884,7 +4931,7 @@ class RotationBubbleChart(QtWidgets.QWidget):
         max_volume = max((v["volume"] for v in self.points), default=1) or 1
         # Large bubbles first; the selected bubble and its label always draw last.
         ordered = sorted(self.points, key=lambda v: (v["symbol"] == self.selected, -v["volume"], v["symbol"]))
-        self._geometry = [self._trail_geometry(point, max(6.5, 9 * math.sqrt(max(0, point["volume"]) / max_volume)))
+        self._geometry = [self._trail_geometry(point, max(10, 12 * math.sqrt(max(0, point["volume"]) / max_volume)))
                           for point in ordered]
         circles, segments = [], []
         p.save()
@@ -4896,10 +4943,21 @@ class RotationBubbleChart(QtWidgets.QWidget):
             pen = QtGui.QPen(color, .7)
             pen.setCosmetic(True)
             p.setPen(pen)
-            for start, stop in zip(group["positions"], group["positions"][1:]):
-                if start is not None and stop is not None:
-                    p.drawLine(start, stop)
-                    segments.append((start, stop))
+            pen.setCapStyle(Qt.PenCapStyle.FlatCap)
+            p.setPen(pen)
+            for i, (start, stop) in enumerate(zip(group["positions"], group["positions"][1:])):
+                if start is None or stop is None:
+                    continue
+                delta = stop - start
+                length = math.hypot(delta.x(), delta.y())
+                if length <= 0:
+                    continue
+                unit = delta / length
+                # Draw only the visible section outside both circle outlines.
+                edge_start = start + unit * group["radii"][i]
+                edge_stop = stop - unit * group["radii"][i + 1]
+                p.drawLine(edge_start, edge_stop)
+                segments.append((edge_start, edge_stop))
         for group in self._geometry:
             point = group["point"]
             color = QtGui.QColor(_bubble_color(point))
@@ -4907,28 +4965,17 @@ class RotationBubbleChart(QtWidgets.QWidget):
                 if at is None:
                     continue
                 latest = i == 3
-                if latest:
-                    halo = QtGui.QColor(color)
-                    halo.setAlpha(26)
-                    p.setPen(Qt.PenStyle.NoPen)
-                    p.setBrush(halo)
-                    p.drawEllipse(at, radius + 1.5, radius + 1.5)
-                highlight, fill, shadow = (QtGui.QColor(color.lighter(120)),
-                                           QtGui.QColor(color), QtGui.QColor(color.darker(130)))
-                alpha = (160, 195, 230, 255)[i]
-                for shade_color in (highlight, fill, shadow):
-                    shade_color.setAlpha(alpha)
-                shade = QtGui.QRadialGradient(at - QtCore.QPointF(radius * .25, radius * .3), radius * 1.5)
-                shade.setColorAt(0, highlight)
-                shade.setColorAt(.6, fill)
-                shade.setColorAt(1, shadow)
-                p.setPen(QtGui.QPen(highlight, .7 if latest else .4))
-                p.setBrush(QtGui.QBrush(shade))
-                p.drawEllipse(at, radius, radius)
-                if latest and point["symbol"] == self.selected:
-                    p.setBrush(Qt.BrushStyle.NoBrush)
-                    p.setPen(QtGui.QPen(color.lighter(120), 1))
-                    p.drawEllipse(at, radius + 2, radius + 2)
+                selected = latest and point["symbol"] == self.selected
+                stroke = 1.7 if selected else min(1.2, max(.45, radius * .2))
+                rim = QtGui.QColor(color)
+                rim.setAlpha((170, 195, 225, 255)[i])
+                fill = QtGui.QColor(color)
+                fill.setAlpha((18, 24, 30, 38)[i])
+                p.setPen(QtGui.QPen(rim, stroke))
+                p.setBrush(fill)
+                # Stroke remains inside the nominal circle boundary.
+                drawn_radius = max(.1, radius - stroke / 2)
+                p.drawEllipse(at, drawn_radius, drawn_radius)
                 circles.append((at, radius + (2 if latest else .5)))
                 hit = dict(point, _sample_index=i, _sample_value=group["samples"][i],
                            _trail_normalized=group["normalized"])
@@ -4996,7 +5043,7 @@ class RotationBubbleChart(QtWidgets.QWidget):
             if not ago:
                 text += f"\n{self.hours}H turnover: {_amount(point['volume'])}"
             if point.get("_trail_normalized"):
-                text += "\nTrail spacing normalized; values above are observed."
+                text += "\nDisplay spacing normalized; values above are observed."
             QtWidgets.QToolTip.showText(event.globalPosition().toPoint(), text, self)
         else:
             QtWidgets.QToolTip.hideText()
