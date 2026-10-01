@@ -299,10 +299,15 @@ def test_narrow_market_bar_collapses_favorites_before_hiding_data(qapp):
     assert bar.identity_control.isVisible()
     assert all(card.isVisible() for card in bar.metric_controls)
     order = [bar.row.itemAt(index).widget() for index in range(bar.row.count())]
-    assert order == [bar.context_slot, stats.cards['last'], *bar.metric_controls]
+    assert order == [bar.context_slot, bar.market_group]
+    assert [bar.market_row.itemAt(i).widget() for i in range(bar.market_row.count())] == [stats.cards['last'], *bar.metric_controls]
     bar.resize(1200, 42)
     qapp.processEvents()
     assert not bar.timeframes._collapsed
+    assert max(card.width() for card in bar.metric_controls) - min(card.width() for card in bar.metric_controls) <= 1
+    assert all(card.width() > 104 for card in bar.metric_controls)
+    assert bar.identity_control.width() < 300
+    assert bar.market_group.x() >= bar.context_slot.width() + 8
     stats.set_timeframes(('30m',), '30m')
     qapp.processEvents()
     assert bar.context_slot.width() == bar.timeframes.expandedWidth()
@@ -326,6 +331,8 @@ def test_hover_tooltip_uses_latest_value_and_cancels_on_leave(qapp, monkeypatch)
     controller.request(widget, 'New value < 2', point)
     assert shown == []
     assert controller._timer.isActive()
+    assert controller._timer.interval() == 150
+    assert qapp.style().styleHint(QtWidgets.QStyle.StyleHint.SH_ToolTip_WakeUpDelay) == 150
     controller._show_pending()
     assert shown[-1][1] == '<qt>New value &lt; 2</qt>'
     controller.eventFilter(widget, QtCore.QEvent(QtCore.QEvent.Type.Leave))
@@ -350,7 +357,7 @@ def test_tooltip_keeps_truncated_text_and_escapes_plain_content(qapp):
     assert controller._formatted('A < B & C') == '<qt>A &lt; B &amp; C</qt>'
     rich = '<table><tr><td>Funding</td></tr></table>'
     assert controller._formatted(rich) == rich
-    assert qapp.style().styleHint(QtWidgets.QStyle.StyleHint.SH_ToolTip_WakeUpDelay) == 500
+    assert qapp.style().styleHint(QtWidgets.QStyle.StyleHint.SH_ToolTip_WakeUpDelay) == 150
     assert qapp.style().styleHint(QtWidgets.QStyle.StyleHint.SH_ToolTip_FallAsleepDelay) == 0
     original_sheet = qapp.styleSheet()
     set_tooltip_theme(ui_palette(THEMES[DEFAULT_THEME_NAME]))

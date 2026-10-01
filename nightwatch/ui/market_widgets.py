@@ -1324,7 +1324,7 @@ class MetricCard(QtWidgets.QFrame):
             6 if self.identity else 5 if compact else 5,
             0 if compact else 5,
         )
-        layout.setSpacing(0 if self.identity else 0 if compact else 2)
+        layout.setSpacing(12 if self.identity else 0 if compact else 2)
 
 
         self.title = (
@@ -1368,7 +1368,7 @@ class MetricCard(QtWidgets.QFrame):
             )
             self.setFixedHeight(COMPACT_METRIC_HEIGHT)
             self.value.setAlignment(
-                (Qt.AlignmentFlag.AlignCenter if self.identity else Qt.AlignmentFlag.AlignLeft)
+                (Qt.AlignmentFlag.AlignLeft)
                 | Qt.AlignmentFlag.AlignVCenter
             )
             self.title.setAlignment(
@@ -1417,10 +1417,18 @@ class MetricCard(QtWidgets.QFrame):
 
 
         if self.compact:
-            self.setMinimumWidth(COMPACT_IDENTITY_WIDTH)
-            self.setMaximumWidth(
-                16777215 if self.property("instrumentFlexOwned") else COMPACT_IDENTITY_WIDTH * 2
-            )
+            margins = self.layout().contentsMargins()
+            width = max(COMPACT_IDENTITY_WIDTH,
+                        self.title.fontMetrics().horizontalAdvance(self.title.text())
+                        + self.value.fontMetrics().horizontalAdvance(self.value.text())
+                        + margins.left() + margins.right() + self.layout().spacing() + 4)
+            if self.property("instrumentFlexOwned"):
+                if self.width() != width or self.minimumWidth() != width:
+                    self.setFixedWidth(width)
+                    self.updateGeometry()
+            else:
+                self.setMinimumWidth(width)
+                self.setMaximumWidth(max(width, COMPACT_IDENTITY_WIDTH * 2))
             return
         margins = self.layout().contentsMargins()
         padding = margins.left() + margins.right() + 2

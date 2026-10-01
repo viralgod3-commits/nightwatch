@@ -161,6 +161,14 @@ def build_shell_stylesheet(theme_name: str, theme: dict[str, str], surfaces: dic
     t = theme
     market_caption_color = "rgba(%d, %d, %d, %d)" % alpha_color(t['text'], 153).getRgb()
     timeframe_controls = f"""
+        QFrame#instrumentMarketGroup {{
+            background: {t['panel']}; border: 1px solid {t['border']};
+        }}
+        QFrame#instrumentMarketGroup QFrame#topMarketIdentity {{ border: 0; }}
+        QFrame#instrumentMarketGroup QFrame#topMetricChip {{
+            border: 0; border-left: 1px solid {t['border']};
+        }}
+
         QPushButton#marketTimeframeChoice:checked,
         QPushButton#marketTimeframePreset:checked {{
             color: {t['cyan']}; background: {t['active']};

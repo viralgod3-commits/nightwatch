@@ -171,7 +171,7 @@ TYPOGRAPHY_DEFAULTS: dict[str, dict[str, Any]] = {
     # Keep their size terminal-dense while avoiding full numeric hinting, which
     # can make glyphs such as uppercase T appear disproportionately heavy.
     TextRole.INSTRUMENT_SYMBOL: _font_profile("ui", 9.5, 500, hinting="vertical"),
-    TextRole.TOP_TICKER_SYMBOL: _font_profile("ui", 9.25, 400, hinting="vertical"),
+    TextRole.TOP_TICKER_SYMBOL: {**_font_profile("ui", 10.0, 400, hinting="vertical"), "stretch": 112},
     TextRole.MARKET_VALUE: _font_profile("numeric", 9.0, 500, hinting="full", fixed_pitch=True),
     TextRole.MARKET_VALUE_EMPHASIZED: _font_profile("numeric", 9.0, 600, hinting="full", fixed_pitch=True),
     TextRole.MARKET_VALUE_LARGE: _font_profile("numeric", 13.0, 500, hinting="full", fixed_pitch=True, numeric_width="extended"),
@@ -748,7 +748,7 @@ class _TooltipStyle(QtWidgets.QProxyStyle):
 
     def styleHint(self, hint, option=None, widget=None, return_data=None):
         if hint == QtWidgets.QStyle.StyleHint.SH_ToolTip_WakeUpDelay:
-            return 500
+            return 150
         if hint == QtWidgets.QStyle.StyleHint.SH_ToolTip_FallAsleepDelay:
             return 0  # Disable Qt's nearly instant second-tooltip grace period.
         return super().styleHint(hint, option, widget, return_data)
@@ -768,7 +768,7 @@ class _TooltipController(QtCore.QObject):
         self._stylesheet = ""
         self._timer = QtCore.QTimer(self)
         self._timer.setSingleShot(True)
-        self._timer.setInterval(500)
+        self._timer.setInterval(150)
         self._timer.timeout.connect(self._show_pending)
         application.aboutToQuit.connect(self.hide)
         application.setStyle(_TooltipStyle(application.style().objectName()))
@@ -1135,15 +1135,28 @@ class InstrumentBar(QtWidgets.QFrame):
             self.timeframes.content_changed.connect(self._apply_responsive_layout)
             context_layout.addWidget(self.timeframes)
         self.row.addWidget(self.context_slot, 0)
+        self.market_group = QtWidgets.QFrame(self)
+        self.market_group.setObjectName("instrumentMarketGroup")
+        self.market_row = QtWidgets.QHBoxLayout(self.market_group)
+        self.market_row.setContentsMargins(0, 0, 0, 0)
+        self.market_row.setSpacing(0)
+        self.market_row.setSizeConstraint(QtWidgets.QLayout.SizeConstraint.SetNoConstraint)
+        self.row.setSpacing(8)
+        self.row.addWidget(self.market_group, 1)
         if self.identity_control is not None:
-            # The identity absorbs spare width; metric cards stay equally sized.
             self.identity_control.setProperty("instrumentFlexOwned", True)
-            self.identity_control.setMaximumWidth(16777215)
             self.identity_control.setSizePolicy(
-                QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Fixed)
-            self.row.addWidget(self.identity_control, 1)
+                QtWidgets.QSizePolicy.Policy.Fixed, QtWidgets.QSizePolicy.Policy.Fixed)
+            self.market_row.addWidget(self.identity_control)
+        self._metric_minimum_widths = []
         for card in self.metric_controls:
-            self.row.addWidget(card, 0)
+            minimum = card.minimumWidth()
+            self._metric_minimum_widths.append(minimum)
+            card.setMaximumWidth(16777215)
+            card.setMinimumWidth(minimum)
+            card.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding,
+                               QtWidgets.QSizePolicy.Policy.Fixed)
+            self.market_row.addWidget(card, 1)
         stats.setParent(self)
         stats.hide()
         self.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Fixed)
@@ -1181,13 +1194,13 @@ class InstrumentBar(QtWidgets.QFrame):
         try:
             left, right = self._normal_horizontal_margins
             identity_width = self._stable_widget_width(self.identity_control)
-            metric_widths = [self._stable_widget_width(card) for card in self.metric_controls]
+            metric_widths = self._metric_minimum_widths
             normal_width = self._timeframe_width(collapsed=False)
             tight_width = self._timeframe_width(collapsed=False, tight=True)
             collapsed_width = self._timeframe_width(collapsed=True)
-            compact = self.width() < left + right + normal_width + identity_width + sum(metric_widths)
+            compact = self.width() < left + right + normal_width + identity_width + sum(metric_widths) + 8
             timeframe_width = tight_width if compact else normal_width
-            required = (0 if compact else left + right) + timeframe_width + identity_width + sum(metric_widths)
+            required = (0 if compact else left + right) + timeframe_width + identity_width + sum(metric_widths) + 8
             # Collapse favorites before sacrificing ticker or market data.
             collapsed = self.width() < required and timeframe_width > collapsed_width
             if collapsed:
