@@ -1828,6 +1828,10 @@ class MainWindow(QtWidgets.QMainWindow):
         self.large_trades.mode_changed.connect(
             lambda mode: self.settings.setValue("trades/mode_v1", mode)
         )
+        self.large_trades.set_value_mode(self.settings.value("trades/value_mode_v1", "quote", str), emit=False)
+        self.large_trades.value_mode_changed.connect(
+            lambda mode: self.settings.setValue("trades/value_mode_v1", mode)
+        )
         self.watchlist_sidebar = WatchlistSidebarWidget(self.watchlist)
         self.watchlist_sidebar.symbol_selected.connect(self._open_watchlist_symbol)
         self.watchlist_sidebar.toggle_current_requested.connect(

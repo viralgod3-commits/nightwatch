@@ -99,6 +99,19 @@ def main():
     window.show()
     try:
         check_market_bar(window, app)
+        tape = window.large_trades
+        tape.units_button.click()
+        assert tape.value_mode() == 'base'
+        assert window.settings.value('trades/value_mode_v1', '', str) == 'base'
+        if window.orderbook._tape is not None:
+            window.orderbook._tape.set_value_mode('base')
+        window.orderbook.set_value_mode('quote', emit=False)
+        assert tape.value_mode() == 'base'
+        if window.orderbook._tape is not None:
+            assert window.orderbook._tape.value_mode() == 'base'
+        assert tape.table.horizontalHeader().isHidden()
+        assert tape.model.columnCount() == 4
+
     except BaseException:
         window.close()
         deadline = time.monotonic() + 5

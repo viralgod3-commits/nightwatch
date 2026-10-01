@@ -328,6 +328,7 @@ class OrderFlowTradePrint:
     reference_midpoint: float = 0.0
     outcome_threshold: float = 0.0
     outcome: str = 'UNRESOLVED'
+    outcome_direction: int = 0  # Observed midpoint direction at the outcome horizon.
 
 
 @dataclass(frozen=True, slots=True)

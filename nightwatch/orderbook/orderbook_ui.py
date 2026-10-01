@@ -465,6 +465,11 @@ from ..utilities import (
     typography_state_opacity,
 )
 
+def _format_tape_quote(value: float) -> str:
+    # Tiny fills retain their value instead of rounding to $0.00.
+    return '$' + format_book_price(value) if 0 < abs(value) < 0.01 else human_number(value, money=True)
+
+
 class _TradesTapeModel(QtCore.QAbstractTableModel):
     """Bounded rows; format only new/changed prints, paint only the viewport."""
 
@@ -487,12 +492,12 @@ class _TradesTapeModel(QtCore.QAbstractTableModel):
         return 0 if parent.isValid() else len(self.rows)
 
     def columnCount(self, parent=QtCore.QModelIndex()):
-        return 0 if parent.isValid() else 5
+        return 0 if parent.isValid() else 4
 
     def headerData(self, section, orientation, role=Qt.ItemDataRole.DisplayRole):
         if orientation == Qt.Orientation.Horizontal and role == Qt.ItemDataRole.DisplayRole:
-            return ('TIME', 'SIDE', 'PRICE', 'QTY' if self.value_mode == 'base' else 'VALUE', 'RESULT')[section]
-        if orientation == Qt.Orientation.Horizontal and section == 4 and role == Qt.ItemDataRole.TextAlignmentRole:
+            return ('PRICE', 'QTY' if self.value_mode == 'base' else 'SIZE', 'RESULT', 'TIME')[section]
+        if orientation == Qt.Orientation.Horizontal and section == 2 and role == Qt.ItemDataRole.TextAlignmentRole:
             return int(Qt.AlignmentFlag.AlignCenter)
         return None
 
@@ -505,26 +510,38 @@ class _TradesTapeModel(QtCore.QAbstractTableModel):
             return cells[column]
         if role == Qt.ItemDataRole.UserRole:
             return trade
+        if role == Qt.ItemDataRole.FontRole and column == 2:
+            return typography_font(TextRole.UI_GLYPH)
         if role == Qt.ItemDataRole.ForegroundRole:
-            return self.muted if column in (0, 4) else QtGui.QColor(ORDERBOOK_REFERENCE['text']) if column == 3 else (self.buy if trade.aggressor_side.upper() == 'BUY' else self.sell)
+            if column == 0:
+                return self.buy if trade.aggressor_side.upper() == 'BUY' else self.sell
+            if column == 1:
+                return QtGui.QColor(ORDERBOOK_REFERENCE['text'])
+            if column == 2 and trade.outcome in {'FOLLOW_THROUGH', 'REJECTED'}:
+                direction = trade.outcome_direction
+                if not direction and trade.outcome == 'FOLLOW_THROUGH':
+                    direction = 1 if trade.aggressor_side.upper() == 'BUY' else -1
+                return self.buy if direction > 0 else self.sell if direction < 0 else self.muted
+            return self.muted
         if role == Qt.ItemDataRole.TextAlignmentRole:
-            horizontal = (Qt.AlignmentFlag.AlignRight if column in (2, 3)
-                          else Qt.AlignmentFlag.AlignHCenter if column == 4
+            horizontal = (Qt.AlignmentFlag.AlignRight if column in (0, 1)
+                          else Qt.AlignmentFlag.AlignHCenter if column == 2
                           else Qt.AlignmentFlag.AlignLeft)
             return int(Qt.AlignmentFlag.AlignVCenter | horizontal)
         if role == Qt.ItemDataRole.ToolTipRole:
             outcome = self.OUTCOMES.get(trade.outcome, ('—', 'unknown'))[1]
-            return (f"{trade.aggressor_side.upper()} aggressor\nPrice: {cells[2]}\n"
-                    f"Quantity: {trade.quantity:g}\nValue: {human_number(trade.notional, money=True)}\n"
-                    f"Relative size: {trade.relative_size:.1f}×\n500 ms outcome: {outcome}")
+            direction = 'up' if trade.outcome_direction > 0 else 'down' if trade.outcome_direction < 0 else 'flat'
+            movement = f"\nPrice direction: {direction}" if trade.outcome in {'FOLLOW_THROUGH', 'REJECTED'} else ''
+            return (f"{trade.aggressor_side.upper()} aggressor\nPrice: {cells[0]}\n"
+                    f"Quantity: {format_book_price(trade.quantity)}\nValue: {_format_tape_quote(trade.notional)}\n"
+                    f"Relative size: {trade.relative_size:.1f}×\n500 ms outcome: {outcome}{movement}")
         return None
 
     def _row(self, trade):
         stamp = datetime.fromtimestamp(trade.event_time_ms / 1000.0, timezone.utc).strftime('%H:%M:%S') if trade.event_time_ms > 0 else '—'
-        return trade, (stamp, 'BUY' if trade.aggressor_side.upper() == 'BUY' else 'SELL',
-                       format_book_price(trade.price, self.decimals),
-                       human_number(trade.quantity) if self.value_mode == 'base' else human_number(trade.notional, money=True),
-                       self.OUTCOMES.get(trade.outcome, ('—', 'unknown'))[0])
+        size = format_book_price(trade.quantity) if self.value_mode == 'base' else _format_tape_quote(trade.notional)
+        return trade, (format_book_price(trade.price, self.decimals), size,
+                       self.OUTCOMES.get(trade.outcome, ('—', 'unknown'))[0], stamp)
 
     @staticmethod
     def identity(trade):
@@ -554,16 +571,17 @@ class _TradesTapeModel(QtCore.QAbstractTableModel):
         for row in range(prefix, len(trades)):
             if self.rows[row][0] != trades[row]:
                 self.rows[row] = self._row(trades[row])
-                self.dataChanged.emit(self.index(row, 4), self.index(row, 4))
+                self.dataChanged.emit(self.index(row, 2), self.index(row, 2))
 
 
 class _TradePriceDelegate(QtWidgets.QStyledItemDelegate):
-    """Dim the shared prefix; emphasize the changed suffix in the same trade hue."""
+    """Bounded text layouts for changed price suffixes and amount whole units."""
 
     LAYOUT_CACHE_LIMIT = 128
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, *, amount=False):
         super().__init__(parent)
+        self._amount = bool(amount)
         self._layouts = OrderedDict()
 
     @staticmethod
@@ -582,6 +600,13 @@ class _TradePriceDelegate(QtWidgets.QStyledItemDelegate):
             if '0' <= digit <= '9' and digit != older:
                 return (False,) * position + (True,) * (len(price) - position)
         return (False,) * len(price)
+
+    @staticmethod
+    def amount_emphasis_mask(text: str) -> tuple[bool, ...]:
+        """Kraken-style amount hierarchy: major units and point, quieter fractions."""
+        point = text.find('.') if '.' in text else len(text)
+        return tuple((position <= point and (digit.isdigit() or digit in '.,'))
+                     or digit in 'KMBT' for position, digit in enumerate(text))
 
     def _layout(self, text, mask, regular, changed, device, color):
         regular_opacity = typography_state_opacity('trade_price_regular')
@@ -625,7 +650,7 @@ class _TradePriceDelegate(QtWidgets.QStyledItemDelegate):
     def paint(self, painter, option, index):
         text = str(index.data() or '')
         previous = str(index.model().index(index.row() + 1, index.column()).data() or '')
-        mask = self.emphasis_mask(text, previous)
+        mask = self.amount_emphasis_mask(text) if self._amount else self.emphasis_mask(text, previous)
         rect = QtCore.QRectF(option.rect).adjusted(4, 0, -5, 0)
         if not text or rect.width() <= 0:
             return
@@ -671,6 +696,7 @@ class TradesTapeWidget(QtWidgets.QWidget):
     Visible presentation is coalesced to at most ten commits per second.
     """
     mode_changed = Signal(str)
+    value_mode_changed = Signal(str)
     CAPACITY = 500
 
     def __init__(self, theme: dict[str, str], parent: QtWidgets.QWidget | None = None):
@@ -698,11 +724,8 @@ class TradesTapeWidget(QtWidgets.QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
         controls = QtWidgets.QHBoxLayout()
-        controls.setContentsMargins(12, 10, 10, 10)
+        controls.setContentsMargins(8, 4, 8, 4)
         controls.setSpacing(6)
-        self.title = ElidedLabel('Trade tape')
-        set_text_role(self.title, TextRole.PANEL_TITLE)
-        controls.addWidget(self.title, 1)
         self.status = ElidedLabel('Waiting for trades')
         set_text_role(self.status, TextRole.UI_CAPTION)
         self.status.setToolTip('Adaptive minimum value from the existing trade analyzer. Times are UTC. History retains up to 500 prints per mode for the current market session.')
@@ -714,11 +737,21 @@ class TradesTapeWidget(QtWidgets.QWidget):
         self.mode_button.setToolTip('Switch between large trades and all trades')
         self.mode_button.clicked.connect(self.toggle_mode)
         controls.addWidget(self.mode_button)
+        self.units_button = QtWidgets.QToolButton(self)
+        self.units_button.setText('Value')
+        self.units_button.setCheckable(True)
+        self.units_button.setAutoRaise(True)
+        self.units_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.units_button.setAccessibleName('Trade size units: quote value or base quantity')
+        self.units_button.setToolTip('Show size as quote value or base quantity')
+        self.units_button.clicked.connect(self.toggle_value_mode)
+        controls.addWidget(self.units_button)
         layout.addLayout(controls)
         self.table = QtWidgets.QTableView(self)
         self.model = _TradesTapeModel(self.table)
         self.table.setModel(self.model)
-        self.table.setItemDelegateForColumn(2, _TradePriceDelegate(self.table))
+        self.table.setItemDelegateForColumn(0, _TradePriceDelegate(self.table))
+        self.table.setItemDelegateForColumn(1, _TradePriceDelegate(self.table, amount=True))
         set_text_role(self.table, TextRole.TABLE_VALUE)
         self.table.setShowGrid(False)
         self.table.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
@@ -732,11 +765,11 @@ class TradesTapeWidget(QtWidgets.QWidget):
         self.table.verticalHeader().setSectionResizeMode(QtWidgets.QHeaderView.ResizeMode.Fixed)
         self.table.verticalHeader().setDefaultSectionSize(28)
         header = self.table.horizontalHeader()
-        header.setMinimumSectionSize(22)
+        header.hide()
+        header.setMinimumSectionSize(0)
         header.setSectionResizeMode(QtWidgets.QHeaderView.ResizeMode.Fixed)
-        header.setSectionResizeMode(2, QtWidgets.QHeaderView.ResizeMode.Stretch)
         header.setStretchLastSection(False)
-        self.table.setToolTip('Newest first · times in UTC. Green: aggressive buy; rose: aggressive sell. Shared price prefixes are dim; the suffix from the first differing digit is bright and bold, compared with the preceding displayed trade. Result: ✓ follow-through; × no follow-through; … pending (500 ms). Scroll down to hold your place; scroll to the top to follow live trades.')
+        self.table.setToolTip('Newest first · times in UTC. Price colour shows aggressor side. Result: ✓ follow-through; × no follow-through; … pending (500 ms). Result colour shows observed price direction: green up, rose down, grey flat or pending. Amount whole units are bold; fractions are quieter. Scroll down to hold your place; scroll to the top to follow live trades.')
         self.empty = QtWidgets.QLabel('Waiting for large trades…', self.table.viewport())
         self.empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.empty.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
@@ -749,19 +782,22 @@ class TradesTapeWidget(QtWidgets.QWidget):
     def eventFilter(self, watched, event):
         if watched is self.table.viewport() and event.type() == QtCore.QEvent.Type.Resize:
             self.empty.setGeometry(self.table.viewport().rect())
+            self._size_columns()
         return super().eventFilter(watched, event)
 
     def _size_columns(self):
         metrics = self.table.fontMetrics()
         header = self.table.horizontalHeader()
-        for column, sample in ((0, '00:00:00'), (1, 'SELL'), (3, '$999.99M'), (4, '✓')):
-            # QStyledItemDelegate adds text insets inside the stylesheet padding.
-            # Reserve both so timestamps and abbreviated values remain complete.
-            label = self.model.headerData(column, Qt.Orientation.Horizontal)
-            width = max(metrics.horizontalAdvance(sample), header.fontMetrics().horizontalAdvance(label))
-            header.resizeSection(column, width + 20)
-        # Outcome remains available in the row tooltip when the panel is narrow.
-        self.table.setColumnHidden(4, self.width() < 410)
+        width = max(0, self.table.viewport().width())
+        result_width = max(28, metrics.horizontalAdvance('✓') + 12)
+        time_width = min(metrics.horizontalAdvance('00:00:00') + 20,
+                         max(0, width - result_width - 40))
+        numeric_width = max(0, width - result_width - time_width)
+        price_width = round(numeric_width * 0.5)
+        for column, size in enumerate((price_width, numeric_width - price_width,
+                                       result_width, time_width)):
+            header.resizeSection(column, size)
+        self.table.setColumnHidden(2, False)
         self.table.verticalHeader().setDefaultSectionSize(max(26, metrics.height() + 9))
 
     def resizeEvent(self, event):
@@ -828,7 +864,6 @@ class TradesTapeWidget(QtWidgets.QWidget):
             return
         self._mode = mode
         self.mode_button.setText('All' if mode == 'ALL' else 'Large')
-        self.title.setText('Trade tape')
         self.empty.setText('Waiting for trades…' if mode == 'ALL' else 'Waiting for large trades…')
         self._reformat = self._dirty = True
         self._schedule_refresh()
@@ -838,13 +873,24 @@ class TradesTapeWidget(QtWidgets.QWidget):
     def toggle_mode(self):
         self.set_mode('ALL' if self._mode == 'LARGE' else 'LARGE')
 
-    def set_value_mode(self, mode):
+    def value_mode(self):
+        return self._value_mode
+
+    def toggle_value_mode(self):
+        self.set_value_mode('quote' if self._value_mode == 'base' else 'base')
+
+    def set_value_mode(self, mode, *, emit=True):
         mode = 'base' if str(mode).lower() == 'base' else 'quote'
+        self.units_button.setText('Qty' if mode == 'base' else 'Value')
+        with QtCore.QSignalBlocker(self.units_button):
+            self.units_button.setChecked(mode == 'base')
         if mode != self._value_mode:
             self._value_mode = self.model.value_mode = mode
-            self.model.headerDataChanged.emit(Qt.Orientation.Horizontal, 3, 3)
+            self.model.headerDataChanged.emit(Qt.Orientation.Horizontal, 1, 1)
             self._reformat = self._dirty = True
             self._schedule_refresh()
+            if emit:
+                self.value_mode_changed.emit(mode)
 
     def set_order_flow_snapshot(self, snapshot):
         if not isinstance(snapshot, OrderFlowSnapshot) or snapshot.symbol != self.symbol:
@@ -6925,7 +6971,6 @@ class OrderBookWidget(QtWidgets.QWidget):
         self._tape_mode = 'LARGE'
         if self._tape is not None:
             self._tape.set_mode('LARGE', emit=False)
-            self._tape.set_value_mode('quote')
         self._sync_tape_visibility(force_sizes=True)
         self._sync_controls()
         self.column_preferences_changed.emit(self.canvas.column_preferences())
@@ -7003,7 +7048,6 @@ class OrderBookWidget(QtWidgets.QWidget):
         tape.setMinimumWidth(self.TAPE_MIN_WIDTH)
         tape.setMaximumWidth(self.TAPE_MAX_WIDTH)
         tape.set_mode(self._tape_mode, emit=False)
-        tape.set_value_mode(self.canvas.value_mode())
         tape.mode_changed.connect(self._tape_mode_changed)
         self.splitter.addWidget(tape)
         self.splitter.setStretchFactor(0, 1)
@@ -7196,8 +7240,6 @@ class OrderBookWidget(QtWidgets.QWidget):
 
     def set_value_mode(self, mode: str, *, emit: bool=True) -> None:
         self.canvas.set_value_mode(mode, emit=emit)
-        if self._tape is not None:
-            self._tape.set_value_mode(self.canvas.value_mode())
         self._sync_controls()
 
     def presentation_state(self) -> dict[str, object]:
@@ -7218,7 +7260,6 @@ class OrderBookWidget(QtWidgets.QWidget):
         self._tape_mode = 'ALL' if str(values.get('tape_mode', 'LARGE')).upper() == 'ALL' else 'LARGE'
         if self._tape is not None:
             self._tape.set_mode(self._tape_mode, emit=False)
-            self._tape.set_value_mode(self.canvas.value_mode())
         self._sync_tape_visibility(force_sizes=True)
         self._sync_controls()
         self._publish_depth_capacity()

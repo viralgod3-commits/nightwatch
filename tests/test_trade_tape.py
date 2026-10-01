@@ -13,12 +13,12 @@ from nightwatch.orderbook.orderbook_ui import (
 from nightwatch.utilities import TextRole, TypographyController, typography_font
 
 
-def trade(sequence, price, *, side='BUY', outcome='UNRESOLVED', salience=1):
+def trade(sequence, price, *, side='BUY', outcome='UNRESOLVED', salience=1, quantity=1, direction=0):
     return OrderFlowTradePrint(
         sequence=sequence, event_time_ms=1700000000000 + sequence * 1000,
-        received_monotonic=sequence / 10, price=price, quantity=1,
-        notional=price, aggressor_side=side, normal_notional=price,
-        rpi_notional=0, relative_size=1, salience_class=salience, outcome=outcome,
+        received_monotonic=sequence / 10, price=price, quantity=quantity,
+        notional=price * quantity, aggressor_side=side, normal_notional=price,
+        rpi_notional=0, relative_size=1, salience_class=salience, outcome=outcome, outcome_direction=direction,
     )
 
 
@@ -80,7 +80,7 @@ def test_results_are_compact_with_explanations_in_tooltips(qapp, outcome, symbol
     model = _TradesTapeModel()
     model.decimals = 2
     model.set_trades([trade(1, 2248.7, outcome=outcome)])
-    index = model.index(0, 4)
+    index = model.index(0, 2)
     assert index.data() == symbol
     assert explanation in index.data(Qt.ItemDataRole.ToolTipRole)
     assert 'Price: 2248.70' in index.data(Qt.ItemDataRole.ToolTipRole)
@@ -124,7 +124,7 @@ def test_price_painter_uses_one_side_color_and_clips_to_the_cell(qapp, width, pr
     option.rect = QtCore.QRect(10, 4, width, 28)
     painter = QtGui.QPainter(image)
     try:
-        delegate.paint(painter, option, model.index(0, 2))
+        delegate.paint(painter, option, model.index(0, 0))
     finally:
         painter.end()
     ink = [(x, y, image.pixelColor(x, y)) for y in range(image.height())
@@ -138,7 +138,7 @@ def test_price_painter_uses_one_side_color_and_clips_to_the_cell(qapp, width, pr
     layout, line = next(reversed(delegate._layouts.values()))
     assert layout.font().weight() == QtGui.QFont.Weight.Normal
     spans = [span for span in layout.formats() if span.format.fontWeight() == QtGui.QFont.Weight.Bold]
-    color = model.index(0, 2).data(Qt.ItemDataRole.ForegroundRole)
+    color = model.index(0, 0).data(Qt.ItemDataRole.ForegroundRole)
     assert all(span.format.foreground().color().getRgb()[:3] == color.getRgb()[:3] for span in layout.formats())
     for span in layout.formats():
         opacity = span.format.foreground().color().alphaF()
@@ -184,12 +184,12 @@ def test_prepend_and_outcome_updates_keep_model_rows_and_neighbor_comparison(qap
     model.set_trades(rows)
     assert [row[0].sequence for row in model.rows] == [4, 3, 2]
     assert not resets
-    assert _TradePriceDelegate.emphasis_mask(model.index(1, 2).data(), model.index(2, 2).data()) == (
+    assert _TradePriceDelegate.emphasis_mask(model.index(1, 0).data(), model.index(2, 0).data()) == (
         False, False, False, True, True, True, True,
     )
     model.set_trades([replace(rows[0], outcome='FOLLOW_THROUGH'), *rows[1:]])
-    assert model.index(0, 4).data() == '✓'
-    assert updates == [(0, 4, 4)] and not resets
+    assert model.index(0, 2).data() == '✓'
+    assert updates == [(0, 2, 2)] and not resets
 
 
 def test_all_and_large_modes_compare_preceding_displayed_trade_and_update_results(qapp):
@@ -204,19 +204,19 @@ def test_all_and_large_modes_compare_preceding_displayed_trade_and_update_result
     widget._refresh_table()
     qapp.processEvents()
     assert [row[0].sequence for row in widget.model.rows] == [3, 1]
-    mask = _TradePriceDelegate.emphasis_mask(widget.model.index(0, 2).data(), widget.model.index(1, 2).data())
+    mask = _TradePriceDelegate.emphasis_mask(widget.model.index(0, 0).data(), widget.model.index(1, 0).data())
     assert {i for i, changed in enumerate(mask) if changed} == {4, 5}
     widget.set_mode('ALL', emit=False)
     widget._refresh_table()
     assert [row[0].sequence for row in widget.model.rows] == [3, 2, 1]
-    mask = _TradePriceDelegate.emphasis_mask(widget.model.index(0, 2).data(), widget.model.index(1, 2).data())
+    mask = _TradePriceDelegate.emphasis_mask(widget.model.index(0, 0).data(), widget.model.index(1, 0).data())
     assert {i for i, changed in enumerate(mask) if changed} == {5}
     widget.set_order_flow_snapshot(snapshot([*rows[:-1], replace(rows[-1], outcome='FOLLOW_THROUGH')], sequence=2))
     widget._refresh_table()
-    assert widget.model.index(0, 4).data() == '✓'
+    assert widget.model.index(0, 2).data() == '✓'
     widget.set_mode('LARGE', emit=False)
     widget._refresh_table()
-    assert widget.model.index(0, 4).data() == '✓'
+    assert widget.model.index(0, 2).data() == '✓'
     widget.close()
     widget.deleteLater()
 
@@ -242,7 +242,7 @@ def test_changed_digit_is_visibly_brighter_in_rendered_pixels(qapp, monkeypatch,
         option.rect = QtCore.QRect(0, 0, 128, 28)
         painter = QtGui.QPainter(image)
         try:
-            delegate.paint(painter, option, model.index(0, 2))
+            delegate.paint(painter, option, model.index(0, 0))
         finally:
             painter.end()
         _, line = next(reversed(delegate._layouts.values()))
@@ -275,3 +275,103 @@ def test_cached_price_text_keeps_buy_and_sell_colors_separate(qapp):
     for layout, expected in ((buy_layout[0], buy), (sell_layout[0], sell)):
         assert all(span.format.foreground().color().getRgb()[:3] == expected.getRgb()[:3]
                    for span in layout.formats())
+
+
+@pytest.mark.parametrize('text,bright', [
+    ('0.2865753', {0, 1}), ('2.1916195', {0, 1}),
+    ('0.00000001', {0, 1}), ('250', {0, 1, 2}),
+    ('$12.34K', {1, 2, 3, 6}), ('$1,250.00', {1, 2, 3, 4, 5, 6}),
+])
+def test_size_hierarchy_matches_reference_whole_units_and_quieter_fractions(text, bright):
+    assert {i for i, value in enumerate(_TradePriceDelegate.amount_emphasis_mask(text)) if value} == bright
+
+
+@pytest.mark.parametrize('direction,side,outcome,expected', [
+    (1, 'BUY', 'FOLLOW_THROUGH', 'buy'),
+    (-1, 'SELL', 'FOLLOW_THROUGH', 'sell'),
+    (-1, 'BUY', 'REJECTED', 'sell'),
+    (1, 'SELL', 'REJECTED', 'buy'),
+    (1, 'BUY', 'REJECTED', 'buy'),  # Weak upward movement isn't a reversal.
+    (0, 'BUY', 'REJECTED', 'muted'),
+    (0, 'SELL', 'UNRESOLVED', 'muted'),
+])
+def test_result_color_uses_observed_direction(qapp, direction, side, outcome, expected):
+    model = _TradesTapeModel()
+    model.set_trades([trade(1, 100, direction=direction, side=side, outcome=outcome)])
+    assert model.index(0, 2).data(Qt.ItemDataRole.ForegroundRole) == getattr(model, expected)
+
+
+@pytest.mark.parametrize('width', [220, 300, 480])
+def test_tape_keeps_four_columns_result_and_independent_quantity_switch(qapp, width):
+    from PySide6.QtTest import QTest
+    widget = TradesTapeWidget({})
+    widget.set_market('ETHUSDT', tick_size=0.01)
+    widget.resize(width, 250)
+    widget.show()
+    widget.set_panel_active(True)
+    widget.set_order_flow_snapshot(snapshot([trade(1, 100, quantity=0.00000001, outcome='FOLLOW_THROUGH', direction=1)]))
+    widget._refresh_table()
+    qapp.processEvents()
+    assert widget.model.columnCount() == 4
+    assert [widget.model.headerData(i, Qt.Orientation.Horizontal) for i in range(4)] == ['PRICE', 'SIZE', 'RESULT', 'TIME']
+    assert not hasattr(widget, 'title')
+    assert widget.table.horizontalHeader().isHidden()
+    assert not widget.table.isColumnHidden(2)
+    assert widget.model.index(0, 1).data() == '$0.000001'
+    rect = widget.table.visualRect(widget.model.index(0, 2))
+    assert rect.width() >= 28 and widget.table.viewport().rect().contains(rect)
+    units = []
+    widget.value_mode_changed.connect(units.append)
+    QTest.mouseClick(widget.units_button, Qt.MouseButton.LeftButton)
+    widget._refresh_table()
+    assert widget.value_mode() == 'base'
+    assert widget.model.index(0, 0).data() == '100.00'
+    assert widget.model.index(0, 1).data() == '0.00000001'
+    assert widget.model.index(0, 2).data() == '✓'
+    assert widget.units_button.text() == 'Qty'
+    assert units == ['base']
+    QTest.mouseClick(widget.units_button, Qt.MouseButton.LeftButton)
+    widget._refresh_table()
+    assert widget.value_mode() == 'quote'
+    assert widget.units_button.text() == 'Value'
+    widget.close()
+    widget.deleteLater()
+
+
+def test_size_painter_keeps_whole_units_bright_and_fractions_dim(qapp):
+    model = _TradesTapeModel()
+    model.value_mode = 'base'
+    model.set_trades([trade(1, 100, quantity=0.2865753)])
+    delegate = _TradePriceDelegate(amount=True)
+    image = QtGui.QImage(128, 28, QtGui.QImage.Format.Format_ARGB32)
+    image.fill(Qt.GlobalColor.black)
+    option = QtWidgets.QStyleOptionViewItem()
+    option.rect = image.rect()
+    painter = QtGui.QPainter(image)
+    try:
+        delegate.paint(painter, option, model.index(0, 1))
+    finally:
+        painter.end()
+    layout, _line = next(reversed(delegate._layouts.values()))
+    bright = {i for span in layout.formats() if span.format.fontWeight() == QtGui.QFont.Weight.Bold
+              for i in range(span.start, span.start + span.length)}
+    assert bright == {0, 1}
+    assert layout.formats()[-1].format.foreground().color().alphaF() < 0.51
+
+
+@pytest.mark.parametrize('midpoint,outcome,direction', [(100.02, 'FOLLOW_THROUGH', 1),
+    (100.005, 'REJECTED', 1), (100, 'REJECTED', 0), (99.98, 'REJECTED', -1)])
+def test_outcome_snapshot_carries_actual_direction_for_result_color(midpoint, outcome, direction):
+    from nightwatch.orderbook.backend import OrderFlowAnalyzer
+    analyzer = OrderFlowAnalyzer('ETHUSDT', tick_size=0.01)
+    item = replace(trade(1, 100, side='buy'), received_monotonic=1,
+                   reference_midpoint=100, outcome_threshold=0.01)
+    analyzer._recent_prints.append(item)
+    analyzer._unresolved_prints.append(item)
+    analyzer._update_print_outcomes(1 + analyzer.PRINT_OUTCOME_SECONDS + 0.01,
+                                    midpoint - 0.005, midpoint + 0.005)
+    result = analyzer._recent_prints_snapshot(1 + analyzer.PRINT_OUTCOME_SECONDS + 0.01)[0]
+    assert result.outcome == outcome
+    assert result.outcome_direction == direction
+    analyzer.reset('ETHUSDT', tick_size=0.01)
+    assert not analyzer._print_outcome_directions

@@ -315,6 +315,7 @@ class OrderFlowAnalyzer:
         self._unresolved_prints: deque[OrderFlowTradePrint] = deque(maxlen=self.UNRESOLVED_PRINT_CAPACITY)
         self._unresolved_print_evictions = 0
         self._print_outcomes: dict[int, str] = {}
+        self._print_outcome_directions: dict[int, int] = {}
         self._print_revision = 0
         self._recent_prints_cache_revision = -1
         self._recent_prints_cache_expires = -math.inf
@@ -438,6 +439,7 @@ class OrderFlowAnalyzer:
         self._unresolved_prints.clear()
         self._unresolved_print_evictions = 0
         self._print_outcomes.clear()
+        self._print_outcome_directions.clear()
         self._print_revision += 1
         self._recent_prints_cache_revision = -1
         self._recent_prints_cache_expires = -math.inf
@@ -877,6 +879,7 @@ class OrderFlowAnalyzer:
         for sequence in tuple(self._print_outcomes):
             if sequence not in active_sequences:
                 self._print_outcomes.pop(sequence, None)
+                self._print_outcome_directions.pop(sequence, None)
         pending_cutoff = now - self.PENDING_EXECUTION_SECONDS
         for key, queue in tuple(self._pending_exec.items()):
             while queue and queue[0].time < pending_cutoff:
@@ -1063,6 +1066,7 @@ class OrderFlowAnalyzer:
             signed_move = midpoint - reference
             with_aggressor = signed_move if trade.aggressor_side == 'buy' else -signed_move
             self._print_outcomes[trade.sequence] = 'FOLLOW_THROUGH' if with_aggressor >= threshold else 'REJECTED'
+            self._print_outcome_directions[trade.sequence] = (signed_move > 0) - (signed_move < 0)
             price_key = self._price_key(trade.price)
             if self._print_outcomes[trade.sequence] == 'REJECTED':
                 stamp = self._window_bucket_time(trade.received_monotonic, self.LEVEL_ACTIVITY_BUCKET_SECONDS)
@@ -2594,7 +2598,8 @@ class OrderFlowAnalyzer:
                     continue
                 if mutable is None:
                     mutable = list(output)
-                mutable[index] = replace(trade, outcome=outcome)
+                mutable[index] = replace(trade, outcome=outcome,
+                                         outcome_direction=self._print_outcome_directions.get(sequence, 0))
             if mutable is not None:
                 output = tuple(mutable)
         self._recent_prints_cache = output
