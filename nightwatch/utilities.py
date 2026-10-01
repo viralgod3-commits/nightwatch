@@ -225,10 +225,13 @@ DEV_UI_STATUS_FONT_DEFAULTS: dict[str, str] = {
 
 TYPOGRAPHY_STATE_WEIGHTS: dict[str, int] = {
     "attention": 600,
+    "trade_price_regular": 400,
+    "trade_price_changed": 700,
 }
 
 TYPOGRAPHY_LIMITS: dict[str, dict[str, int]] = {
     TextRole.ORDERBOOK_PRICE: {"min_pixel_size": 9},
+    TextRole.TABLE_VALUE: {"min_pixel_size": 9},
 }
 
 TYPOGRAPHY_FONT_FILES: dict[str, str] = {
@@ -395,7 +398,7 @@ class TypographyController(QtCore.QObject):
         # database metadata. Keep one fully configured template per semantic
         # request and return a cheap implicitly-shared copy to callers so a
         # caller that mutates its font cannot poison the cached template.
-        self._font_cache: dict[tuple[str, bool], QtGui.QFont] = {}
+        self._font_cache: dict[tuple[str, bool, int | None], QtGui.QFont] = {}
 
     def configure(
         self,
@@ -481,9 +484,10 @@ class TypographyController(QtCore.QObject):
         self._font_cache.clear()
 
 
-    def font(self, role: str, *, emphasized: bool = False) -> QtGui.QFont:
+    def font(self, role: str, *, emphasized: bool = False, state: str | None = None) -> QtGui.QFont:
         resolved_role = role if role in self._profiles else TextRole.UI_BODY
-        cache_key = (resolved_role, bool(emphasized))
+        state_weight = TYPOGRAPHY_STATE_WEIGHTS.get(state)
+        cache_key = (resolved_role, bool(emphasized), state_weight)
         cached = self._font_cache.get(cache_key)
         if cached is not None:
             return QtGui.QFont(cached)
@@ -491,6 +495,8 @@ class TypographyController(QtCore.QObject):
         profile = dict(self._profiles[resolved_role])
         if emphasized:
             profile["weight"] = 600
+        if state_weight is not None:
+            profile["weight"] = state_weight
         numeric = profile["family"] == "numeric"
         family = (
             _numeric_font_family(
@@ -616,9 +622,9 @@ def typography_controller() -> TypographyController:
     return _TYPOGRAPHY_CONTROLLER
 
 
-def typography_font(role: str, *, emphasized: bool = False) -> QtGui.QFont:
+def typography_font(role: str, *, emphasized: bool = False, state: str | None = None) -> QtGui.QFont:
     """Return the centrally defined font for one semantic text role."""
-    return _TYPOGRAPHY_CONTROLLER.font(role, emphasized=emphasized)
+    return _TYPOGRAPHY_CONTROLLER.font(role, emphasized=emphasized, state=state)
 
 
 def typography_font_at_pixel_size(font: QtGui.QFont, pixel_size: int) -> QtGui.QFont:

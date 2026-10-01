@@ -453,16 +453,25 @@ def _decimal_places_from_step(value: object) -> int:
         return 0
     return min(16, _decimal_places_from_float(numeric))
 import time
-from collections import deque
+from collections import OrderedDict, deque
 from datetime import datetime, timezone
 from PySide6 import QtCore, QtGui, QtWidgets
 from PySide6.QtCore import Qt, Signal
 from ..models import OrderFlowSnapshot, OrderFlowTradePrint
 from ..models import human_number
-from ..utilities import ElidedLabel, TextRole, set_text_role
+from ..utilities import (
+    ElidedLabel, TextRole, apply_text_render_hints, set_text_role,
+    typography_font, typography_font_at_pixel_size, typography_min_pixel_size,
+)
 
 class _TradesTapeModel(QtCore.QAbstractTableModel):
     """Bounded rows; format only new/changed prints, paint only the viewport."""
+
+    OUTCOMES = {
+        'FOLLOW_THROUGH': ('✓', 'follow-through'),
+        'REJECTED': ('×', 'did not meet the follow-through threshold'),
+        'UNRESOLVED': ('…', 'pending'),
+    }
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -482,6 +491,8 @@ class _TradesTapeModel(QtCore.QAbstractTableModel):
     def headerData(self, section, orientation, role=Qt.ItemDataRole.DisplayRole):
         if orientation == Qt.Orientation.Horizontal and role == Qt.ItemDataRole.DisplayRole:
             return ('TIME', 'SIDE', 'PRICE', 'QTY' if self.value_mode == 'base' else 'VALUE', 'RESULT')[section]
+        if orientation == Qt.Orientation.Horizontal and section == 4 and role == Qt.ItemDataRole.TextAlignmentRole:
+            return int(Qt.AlignmentFlag.AlignCenter)
         return None
 
     def data(self, index, role=Qt.ItemDataRole.DisplayRole):
@@ -496,11 +507,15 @@ class _TradesTapeModel(QtCore.QAbstractTableModel):
         if role == Qt.ItemDataRole.ForegroundRole:
             return self.muted if column in (0, 4) else QtGui.QColor(ORDERBOOK_REFERENCE['text']) if column == 3 else (self.buy if trade.aggressor_side.upper() == 'BUY' else self.sell)
         if role == Qt.ItemDataRole.TextAlignmentRole:
-            return int(Qt.AlignmentFlag.AlignVCenter | (Qt.AlignmentFlag.AlignRight if column in (2, 3) else Qt.AlignmentFlag.AlignLeft))
+            horizontal = (Qt.AlignmentFlag.AlignRight if column in (2, 3)
+                          else Qt.AlignmentFlag.AlignHCenter if column == 4
+                          else Qt.AlignmentFlag.AlignLeft)
+            return int(Qt.AlignmentFlag.AlignVCenter | horizontal)
         if role == Qt.ItemDataRole.ToolTipRole:
+            outcome = self.OUTCOMES.get(trade.outcome, ('—', 'unknown'))[1]
             return (f"{trade.aggressor_side.upper()} aggressor\nPrice: {cells[2]}\n"
                     f"Quantity: {trade.quantity:g}\nValue: {human_number(trade.notional, money=True)}\n"
-                    f"Relative size: {trade.relative_size:.1f}×\n500 ms outcome: {trade.outcome.replace('_', ' ').lower()}")
+                    f"Relative size: {trade.relative_size:.1f}×\n500 ms outcome: {outcome}")
         return None
 
     def _row(self, trade):
@@ -508,7 +523,7 @@ class _TradesTapeModel(QtCore.QAbstractTableModel):
         return trade, (stamp, 'BUY' if trade.aggressor_side.upper() == 'BUY' else 'SELL',
                        format_book_price(trade.price, self.decimals),
                        human_number(trade.quantity) if self.value_mode == 'base' else human_number(trade.notional, money=True),
-                       {'FOLLOW_THROUGH': 'FOLLOW', 'REJECTED': 'REJECT'}.get(trade.outcome, '—'))
+                       self.OUTCOMES.get(trade.outcome, ('—', 'unknown'))[0])
 
     @staticmethod
     def identity(trade):
@@ -542,37 +557,97 @@ class _TradesTapeModel(QtCore.QAbstractTableModel):
 
 
 class _TradePriceDelegate(QtWidgets.QStyledItemDelegate):
-    """Mute the shared leading digits; color the changed suffix at equal weight."""
+    """Emphasize changed decimal places in bold, retaining one aggressor color."""
+
+    LAYOUT_CACHE_LIMIT = 128
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._layouts = OrderedDict()
 
     @staticmethod
-    def common_prefix(price: str, previous: str) -> int:
-        if len(price.partition('.')[0]) != len(previous.partition('.')[0]):
-            return 0
-        for index, (left, right) in enumerate(zip(price, previous)):
-            if left != right:
-                return index
-        return min(len(price), len(previous))
+    def changed_digits(price: str, previous: str) -> tuple[bool, ...]:
+        """Compare fixed-point strings by place value, including integer carries."""
+        if not previous:
+            return (False,) * len(price)
+        point = price.find('.') if '.' in price else len(price)
+        previous_point = previous.find('.') if '.' in previous else len(previous)
+        offset = previous_point - point
+        changed = []
+        for position, digit in enumerate(price):
+            reference = position + offset
+            older = previous[reference] if 0 <= reference < len(previous) else '0'
+            changed.append('0' <= digit <= '9' and digit != older)
+        return tuple(changed)
+
+    def _layout(self, text, mask, regular, changed, device):
+        key = (text, mask, regular.key(), changed.key(),
+               device.logicalDpiX(), device.logicalDpiY(), device.devicePixelRatioF())
+        cached = self._layouts.get(key)
+        if cached is not None:
+            self._layouts.move_to_end(key)
+            return cached
+        layout = QtGui.QTextLayout(text, regular, device)
+        layout.setCacheEnabled(True)
+        formats = []
+        start = None
+        for position, emphasized in enumerate((*mask, False)):
+            if emphasized and start is None:
+                start = position
+            elif not emphasized and start is not None:
+                span = QtGui.QTextLayout.FormatRange()
+                span.start, span.length = start, position - start
+                span.format.setFont(changed)
+                formats.append(span)
+                start = None
+        layout.setFormats(formats)
+        layout.beginLayout()
+        line = layout.createLine()
+        if line.isValid():
+            line.setLineWidth(1e9)
+        layout.endLayout()
+        cached = layout, line
+        self._layouts[key] = cached
+        if len(self._layouts) > self.LAYOUT_CACHE_LIMIT:
+            self._layouts.popitem(last=False)
+        return cached
 
     def paint(self, painter, option, index):
-        model = index.model()
         text = str(index.data() or '')
-        previous = str(model.index(index.row() + 1, index.column()).data() or '')
-        prefix = self.common_prefix(text, previous) if previous else 0
+        previous = str(index.model().index(index.row() + 1, index.column()).data() or '')
+        mask = self.changed_digits(text, previous)
         rect = QtCore.QRectF(option.rect).adjusted(4, 0, -5, 0)
-        metrics = QtGui.QFontMetricsF(option.font)
-        if metrics.horizontalAdvance(text) > rect.width():
-            return super().paint(painter, option, index)
+        if not text or rect.width() <= 0:
+            return
+        device = painter.device()
+        regular = typography_font(TextRole.TABLE_VALUE, state='trade_price_regular')
+        changed = typography_font(TextRole.TABLE_VALUE, state='trade_price_changed')
+        layout, line = self._layout(text, mask, regular, changed, device)
+        if line.naturalTextWidth() > rect.width():
+            pixels = regular.pixelSize() if regular.pixelSize() > 0 else round(regular.pointSizeF() * device.logicalDpiY() / 72)
+            size = max(typography_min_pixel_size(TextRole.TABLE_VALUE),
+                       int(pixels * rect.width() / line.naturalTextWidth()))
+            if size < pixels:
+                regular = typography_font_at_pixel_size(regular, size)
+                changed = typography_font_at_pixel_size(changed, size)
+                layout, line = self._layout(text, mask, regular, changed, device)
+            if line.naturalTextWidth() > rect.width():
+                shown = QtGui.QFontMetricsF(changed, device).elidedText(text, Qt.TextElideMode.ElideLeft, int(rect.width()))
+                suffix_length = len(shown) - 1 if shown.startswith('…') else 0
+                mask = (False,) + mask[-suffix_length:] if suffix_length > 0 else (False,) * len(shown)
+                layout, line = self._layout(shown, mask, regular, changed, device)
+        if not line.isValid():
+            return
         painter.save()
         try:
-            painter.setClipRect(option.rect)
-            painter.setFont(option.font)
+            painter.setClipRect(option.rect, Qt.ClipOperation.IntersectClip)
             painter.fillRect(option.rect, QtGui.QColor(ORDERBOOK_REFERENCE['bg']))
-            x = rect.right() - metrics.horizontalAdvance(text)
-            y = rect.top() + (rect.height() - metrics.height()) / 2 + metrics.ascent()
-            painter.setPen(model.muted)
-            painter.drawText(QtCore.QPointF(x, y), text[:prefix])
+            painter.setClipRect(rect, Qt.ClipOperation.IntersectClip)
+            apply_text_render_hints(painter)
             painter.setPen(index.data(Qt.ItemDataRole.ForegroundRole))
-            painter.drawText(QtCore.QPointF(x + metrics.horizontalAdvance(text[:prefix]), y), text[prefix:])
+            x = rect.right() - line.naturalTextWidth()
+            y = rect.top() + (rect.height() - line.height()) / 2
+            layout.draw(painter, QtCore.QPointF(x, y))
         finally:
             painter.restore()
 
@@ -650,7 +725,7 @@ class TradesTapeWidget(QtWidgets.QWidget):
         header.setSectionResizeMode(QtWidgets.QHeaderView.ResizeMode.Fixed)
         header.setSectionResizeMode(2, QtWidgets.QHeaderView.ResizeMode.Stretch)
         header.setStretchLastSection(False)
-        self.table.setToolTip('Newest first · times in UTC. Teal: aggressive buy; rose: aggressive sell. Shared leading price digits are dimmed against the preceding displayed trade. Scroll down to hold your place; scroll to the top to follow live trades.')
+        self.table.setToolTip('Newest first · times in UTC. Green: aggressive buy; rose: aggressive sell. Bold price digits changed from the preceding displayed trade. Result: ✓ follow-through; × no follow-through; … pending (500 ms). Scroll down to hold your place; scroll to the top to follow live trades.')
         self.empty = QtWidgets.QLabel('Waiting for large trades…', self.table.viewport())
         self.empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.empty.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
@@ -668,10 +743,12 @@ class TradesTapeWidget(QtWidgets.QWidget):
     def _size_columns(self):
         metrics = self.table.fontMetrics()
         header = self.table.horizontalHeader()
-        for column, sample in ((0, '00:00:00'), (1, 'SELL'), (3, '$999.99M'), (4, 'FOLLOW')):
+        for column, sample in ((0, '00:00:00'), (1, 'SELL'), (3, '$999.99M'), (4, '✓')):
             # QStyledItemDelegate adds text insets inside the stylesheet padding.
             # Reserve both so timestamps and abbreviated values remain complete.
-            header.resizeSection(column, metrics.horizontalAdvance(sample) + 20)
+            label = self.model.headerData(column, Qt.Orientation.Horizontal)
+            width = max(metrics.horizontalAdvance(sample), header.fontMetrics().horizontalAdvance(label))
+            header.resizeSection(column, width + 20)
         # Outcome remains available in the row tooltip when the panel is narrow.
         self.table.setColumnHidden(4, self.width() < 410)
         self.table.verticalHeader().setDefaultSectionSize(max(26, metrics.height() + 9))
