@@ -161,12 +161,36 @@ def build_shell_stylesheet(theme_name: str, theme: dict[str, str], surfaces: dic
     t = theme
     market_caption_color = "rgba(%d, %d, %d, %d)" % alpha_color(t['text'], 153).getRgb()
     timeframe_controls = f"""
-        QFrame#instrumentMarketGroup {{
-            background: {t['panel']}; border: 1px solid {t['border']};
+        QFrame#instrumentBar {{
+            background: {t['header']}; border: 0;
+            border-bottom: 1px solid {t['border']};
         }}
-        QFrame#instrumentMarketGroup QFrame#topMarketIdentity {{ border: 0; }}
+        QFrame#instrumentContextSlot {{
+            background: {t['panel2']}; border: 1px solid {t['border']};
+            border-radius: 4px;
+        }}
+        QFrame#instrumentMarketGroup {{ background: transparent; border: 0; }}
+        QFrame#instrumentMarketGroup QFrame#topMarketIdentity,
         QFrame#instrumentMarketGroup QFrame#topMetricChip {{
-            border: 0; border-left: 1px solid {t['border']};
+            background: transparent; border: 0; padding: 0; margin: 0;
+        }}
+        QFrame#instrumentMarketGroup QFrame#topMetricChip:hover {{
+            background: {t['control_hover']}; border: 0; border-radius: 3px;
+        }}
+        QFrame#marketBarDivider {{ background: {t['border']}; border: 0; }}
+        QFrame#instrumentMarketGroup QLabel {{ background: transparent; padding: 0; border: 0; }}
+        QFrame#instrumentMarketGroup QLabel#topMetricTitle {{ color: {t['muted']}; }}
+        QFrame#instrumentMarketGroup QLabel#topTickerSymbol {{ color: {t['text']}; }}
+        QFrame#instrumentBar QFrame#instrumentContextSlot QWidget#topTimeframeStrip QPushButton#timeframeStripButton {{
+            background: transparent; color: {t['muted']}; border: 0;
+            border-radius: 3px; padding: 0; margin: 0; min-height: 28px; max-height: 28px;
+        }}
+        QFrame#instrumentBar QFrame#instrumentContextSlot QWidget#topTimeframeStrip QPushButton#timeframeStripButton:hover {{
+            background: {t['control_hover']}; color: {t['text']}; border: 0;
+        }}
+        QFrame#instrumentBar QFrame#instrumentContextSlot QWidget#topTimeframeStrip QPushButton#timeframeStripButton:checked,
+        QFrame#instrumentBar QFrame#instrumentContextSlot QWidget#topTimeframeStrip QPushButton#timeframeStripButton:checked:hover {{
+            background: {t['active']}; color: {t['cyan']}; border: 0;
         }}
 
         QPushButton#marketTimeframeChoice:checked,

@@ -39,14 +39,14 @@ from ..models import (
 _WATCHLIST_ICON_CACHE: dict[tuple[str, int, str, str, str], QtGui.QIcon] = {}
 
 
-COMPACT_METRIC_HEIGHT = 42
+COMPACT_METRIC_HEIGHT = 48
 COMPACT_METRIC_GAP = 1
 
 
 COMPACT_EQUAL_METRIC_WIDTH = 104
 
 
-COMPACT_IDENTITY_WIDTH = 184
+COMPACT_IDENTITY_WIDTH = 160
 COMPACT_PRIMARY_METRICS = ("volume", "oi", "long_short", "funding")
 COMPACT_SECONDARY_METRICS: tuple[str, ...] = ("taker",)
 
@@ -62,7 +62,8 @@ class TimeframeStrip(QtWidgets.QWidget):
 
 
     BUTTON_WIDTH = 36
-    NORMAL_SPACING = 1
+    NORMAL_SPACING = 2
+    BUTTON_HEIGHT = 28
 
     def __init__(self, parent: QtWidgets.QWidget | None = None):
         super().__init__(parent)
@@ -86,7 +87,7 @@ class TimeframeStrip(QtWidgets.QWidget):
         self._collapsed_button.setCheckable(True)
         self._collapsed_button.setChecked(True)
         self._collapsed_button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        self._collapsed_button.setFixedSize(self.BUTTON_WIDTH, COMPACT_METRIC_HEIGHT)
+        self._collapsed_button.setFixedSize(self.BUTTON_WIDTH, self.BUTTON_HEIGHT)
         self._collapsed_button.setAccessibleName("Current chart timeframe")
         set_text_role(self._collapsed_button, TextRole.UI_CONTROL_COMPACT)
         self._collapsed_button.clicked.connect(self._show_collapsed_menu)
@@ -105,7 +106,7 @@ class TimeframeStrip(QtWidgets.QWidget):
         self._external_button.setObjectName("timeframeStripButton")
         self._external_button.setCheckable(True)
         self._external_button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        self._external_button.setFixedSize(self.BUTTON_WIDTH, COMPACT_METRIC_HEIGHT)
+        self._external_button.setFixedSize(self.BUTTON_WIDTH, self.BUTTON_HEIGHT)
         self._external_button.setProperty("informationalToolTip", True)
         set_text_role(self._external_button, TextRole.UI_CONTROL_COMPACT)
         self._external_button.clicked.connect(self._show_collapsed_menu)
@@ -121,7 +122,7 @@ class TimeframeStrip(QtWidgets.QWidget):
         button.setObjectName("timeframeStripButton")
         button.setCheckable(True)
         button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        button.setFixedSize(self.BUTTON_WIDTH, COMPACT_METRIC_HEIGHT)
+        button.setFixedSize(self.BUTTON_WIDTH, self.BUTTON_HEIGHT)
         button.setToolTip(f"{text} · Shortcut {index + 1}")
         button.setAccessibleName(f"{text} chart timeframe, shortcut {index + 1}")
         button.setProperty("informationalToolTip", True)
@@ -1289,6 +1290,8 @@ class TickerPriceLabel(QtWidgets.QLabel):
 
 
 class MetricCard(QtWidgets.QFrame):
+    width_changed = Signal()
+
     def __init__(
         self,
         title: str,
@@ -1317,15 +1320,9 @@ class MetricCard(QtWidgets.QFrame):
         )
         if compact:
             self.setProperty("instrumentClickable", not self.identity)
-        layout = (QtWidgets.QHBoxLayout if self.identity else QtWidgets.QVBoxLayout)(self)
-        layout.setContentsMargins(
-            9 if self.identity else 5 if compact else 5,
-            0 if compact else 5,
-            6 if self.identity else 5 if compact else 5,
-            0 if compact else 5,
-        )
-        layout.setSpacing(12 if self.identity else 0 if compact else 2)
-
+        layout = QtWidgets.QVBoxLayout(self)
+        layout.setContentsMargins(12 if compact else 5, 5, 12 if compact else 5, 5)
+        layout.setSpacing(1 if compact else 2)
 
         self.title = (
             QtWidgets.QLabel(title.upper())
@@ -1353,7 +1350,7 @@ class MetricCard(QtWidgets.QFrame):
         )
 
 
-        set_text_role(self.value, TextRole.ORDERBOOK_CENTER_PRICE if self.identity else TextRole.MARKET_VALUE)
+        set_text_role(self.value, TextRole.ORDERBOOK_CENTER_PRICE if self.identity else TextRole.TOP_MARKET_VALUE if compact else TextRole.MARKET_VALUE)
         self.title.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
         self.value.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
         if compact:
@@ -1391,23 +1388,11 @@ class MetricCard(QtWidgets.QFrame):
         for widget in (self, self.title, self.value):
             widget.setProperty("informationalToolTip", True)
         self.setToolTipDuration(8_000)
-        if self.identity:
-
-
-            layout.addWidget(self.title, 0)
-            layout.addWidget(self.value, 1)
-        else:
-            layout.addWidget(self.title)
-            layout.addWidget(self.value)
-            if self.compact:
-                layout.setAlignment(
-                    self.title,
-                    Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
-                )
-                layout.setAlignment(
-                    self.value,
-                    Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
-                )
+        layout.addWidget(self.title)
+        layout.addWidget(self.value)
+        if compact:
+            layout.setAlignment(self.title, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+            layout.setAlignment(self.value, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
         if self.identity:
             QtCore.QTimer.singleShot(0, self._sync_identity_width)
 
@@ -1419,13 +1404,14 @@ class MetricCard(QtWidgets.QFrame):
         if self.compact:
             margins = self.layout().contentsMargins()
             width = max(COMPACT_IDENTITY_WIDTH,
-                        self.title.fontMetrics().horizontalAdvance(self.title.text())
-                        + self.value.fontMetrics().horizontalAdvance(self.value.text())
-                        + margins.left() + margins.right() + self.layout().spacing() + 4)
+                        max(self.title.fontMetrics().horizontalAdvance(self.title.text()),
+                            self.value.fontMetrics().horizontalAdvance(self.value.text()))
+                        + margins.left() + margins.right() + 4)
             if self.property("instrumentFlexOwned"):
                 if self.width() != width or self.minimumWidth() != width:
                     self.setFixedWidth(width)
                     self.updateGeometry()
+                    self.width_changed.emit()
             else:
                 self.setMinimumWidth(width)
                 self.setMaximumWidth(max(width, COMPACT_IDENTITY_WIDTH * 2))
@@ -1573,11 +1559,11 @@ class MarketStatsWidget(QtWidgets.QWidget):
             card.metric_owner = self
         if compact:
             compact_titles = {
-                "volume": "24H VOLUME",
-                "taker": "TAKER",
-                "oi": "OPEN INTEREST",
-                "long_short": "LONG/SHORT",
-                "funding": "FUNDING RATE",
+                "volume": "24h volume",
+                "taker": "Taker volume",
+                "oi": "Open interest",
+                "long_short": "Long/short",
+                "funding": "Funding rate",
             }
             for name, title in compact_titles.items():
                 self.cards[name].title.setText(title)
@@ -1779,7 +1765,7 @@ class MarketStatsWidget(QtWidgets.QWidget):
                 details.append(("Status", "Last available sample"))
         self.long_short_series = cache
         card = self.cards["long_short"]
-        card.title.setText("LONG/SHORT" if self.compact else "LONG/SHORT RATIO")
+        card.title.setText("Long/short" if self.compact else "LONG/SHORT RATIO")
 
 
         samples = cache.get("All accounts", [])

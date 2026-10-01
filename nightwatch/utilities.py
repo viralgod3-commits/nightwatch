@@ -42,6 +42,7 @@ class TextRole:
     UI_GLYPH = "ui_glyph"
     INSTRUMENT_SYMBOL = "instrument_symbol"
     TOP_TICKER_SYMBOL = "top_ticker_symbol"
+    TOP_MARKET_VALUE = "top_market_value"
     MARKET_VALUE = "market_value"
     MARKET_VALUE_EMPHASIZED = "market_value_emphasized"
     MARKET_VALUE_LARGE = "market_value_large"
@@ -90,6 +91,7 @@ TYPOGRAPHY_ROLE_LABELS: dict[str, str] = {
     TextRole.UI_GLYPH: "UI glyph controls",
     TextRole.INSTRUMENT_SYMBOL: "Instrument / symbol identifiers",
     TextRole.TOP_TICKER_SYMBOL: "Top-bar ticker identifier",
+    TextRole.TOP_MARKET_VALUE: "Top-bar market values",
     TextRole.MARKET_VALUE: "Market / execution values",
     TextRole.MARKET_VALUE_EMPHASIZED: "Emphasized market values",
     TextRole.MARKET_VALUE_LARGE: "Large market / dashboard values",
@@ -171,7 +173,8 @@ TYPOGRAPHY_DEFAULTS: dict[str, dict[str, Any]] = {
     # Keep their size terminal-dense while avoiding full numeric hinting, which
     # can make glyphs such as uppercase T appear disproportionately heavy.
     TextRole.INSTRUMENT_SYMBOL: _font_profile("ui", 9.5, 500, hinting="vertical"),
-    TextRole.TOP_TICKER_SYMBOL: {**_font_profile("ui", 10.0, 400, hinting="vertical"), "stretch": 112},
+    TextRole.TOP_TICKER_SYMBOL: _font_profile("ui", 9.5, 500, hinting="vertical"),
+    TextRole.TOP_MARKET_VALUE: _font_profile("numeric", 10.5, 500, hinting="full", fixed_pitch=True, numeric_width="extended"),
     TextRole.MARKET_VALUE: _font_profile("numeric", 9.0, 500, hinting="full", fixed_pitch=True),
     TextRole.MARKET_VALUE_EMPHASIZED: _font_profile("numeric", 9.0, 600, hinting="full", fixed_pitch=True),
     TextRole.MARKET_VALUE_LARGE: _font_profile("numeric", 13.0, 500, hinting="full", fixed_pitch=True, numeric_width="extended"),
@@ -269,7 +272,7 @@ _LEGACY_TEXT_ROLES: dict[str, str] = {
     "leadershipSubtitle": TextRole.WORKSPACE_SUBTITLE,
     "framelessCloseButton": TextRole.UI_GLYPH,
     "watchlistGroupMenu": TextRole.UI_GLYPH,
-    "topMetricValue": TextRole.MARKET_VALUE,
+    "topMetricValue": TextRole.TOP_MARKET_VALUE,
     "metricValue": TextRole.MARKET_VALUE,
     "topTickerLast": TextRole.ORDERBOOK_CENTER_PRICE,
     "topTickerSymbol": TextRole.TOP_TICKER_SYMBOL,
@@ -1046,7 +1049,7 @@ def alpha_color(value: str, alpha: int) -> QtGui.QColor:
     return color
 
 
-INSTRUMENT_BAR_HEIGHT = 42
+INSTRUMENT_BAR_HEIGHT = 48
 
 
 class MainToolbar(QtWidgets.QFrame):
@@ -1108,7 +1111,7 @@ class InstrumentBar(QtWidgets.QFrame):
         self.row.setContentsMargins(0, 0, 0, 0)
         self.row.setSpacing(0)
         self.row.setAlignment(QtCore.Qt.AlignmentFlag.AlignVCenter)
-        self._normal_horizontal_margins = (0, 0)
+        self._normal_horizontal_margins = (8, 8)
         self._chart_context_visible = True
         self._responsive_layout_active = False
         self._responsive_state = None
@@ -1125,13 +1128,14 @@ class InstrumentBar(QtWidgets.QFrame):
                     stats_layout.removeWidget(control)
                 control.setParent(self)
 
-        self.context_slot = QtWidgets.QWidget(self)
+        self.context_slot = QtWidgets.QFrame(self)
         self.context_slot.setObjectName("instrumentContextSlot")
+        self.context_slot.setFixedHeight(36)
         context_layout = QtWidgets.QHBoxLayout(self.context_slot)
-        context_layout.setContentsMargins(0, 0, 0, 0)
+        context_layout.setContentsMargins(3, 3, 3, 3)
         context_layout.setSpacing(0)
         if self.timeframes is not None:
-            self.timeframes.setFixedHeight(INSTRUMENT_BAR_HEIGHT)
+            self.timeframes.setFixedHeight(28)
             self.timeframes.content_changed.connect(self._apply_responsive_layout)
             context_layout.addWidget(self.timeframes)
         self.row.addWidget(self.context_slot, 0)
@@ -1141,15 +1145,23 @@ class InstrumentBar(QtWidgets.QFrame):
         self.market_row.setContentsMargins(0, 0, 0, 0)
         self.market_row.setSpacing(0)
         self.market_row.setSizeConstraint(QtWidgets.QLayout.SizeConstraint.SetNoConstraint)
-        self.row.setSpacing(8)
+        self.row.setSpacing(12)
         self.row.addWidget(self.market_group, 1)
         if self.identity_control is not None:
             self.identity_control.setProperty("instrumentFlexOwned", True)
             self.identity_control.setSizePolicy(
                 QtWidgets.QSizePolicy.Policy.Fixed, QtWidgets.QSizePolicy.Policy.Fixed)
             self.market_row.addWidget(self.identity_control)
+            self.identity_control.width_changed.connect(self._apply_responsive_layout)
         self._metric_minimum_widths = []
+        self.metric_separators = []
         for card in self.metric_controls:
+            divider = QtWidgets.QFrame(self.market_group)
+            divider.setObjectName("marketBarDivider")
+            divider.setFixedSize(1, 28)
+            self.market_row.addWidget(divider, 0, QtCore.Qt.AlignmentFlag.AlignVCenter)
+            self.metric_separators.append(divider)
+
             minimum = card.minimumWidth()
             self._metric_minimum_widths.append(minimum)
             card.setMaximumWidth(16777215)
@@ -1165,7 +1177,7 @@ class InstrumentBar(QtWidgets.QFrame):
 
     def minimumSizeHint(self) -> QtCore.QSize:
         # Fixed-width children describe the expanded strip, not its minimum.
-        width = self._timeframe_width(collapsed=True)
+        width = self._timeframe_width(collapsed=True) + 8
         return QtCore.QSize(width, INSTRUMENT_BAR_HEIGHT)
 
     @staticmethod
@@ -1194,13 +1206,13 @@ class InstrumentBar(QtWidgets.QFrame):
         try:
             left, right = self._normal_horizontal_margins
             identity_width = self._stable_widget_width(self.identity_control)
-            metric_widths = self._metric_minimum_widths
+            metric_widths = [width + 1 for width in self._metric_minimum_widths]
             normal_width = self._timeframe_width(collapsed=False)
             tight_width = self._timeframe_width(collapsed=False, tight=True)
             collapsed_width = self._timeframe_width(collapsed=True)
-            compact = self.width() < left + right + normal_width + identity_width + sum(metric_widths) + 8
+            compact = self.width() < left + right + normal_width + 8 + identity_width + sum(metric_widths) + 12
             timeframe_width = tight_width if compact else normal_width
-            required = (0 if compact else left + right) + timeframe_width + identity_width + sum(metric_widths) + 8
+            required = left + right + timeframe_width + 8 + identity_width + sum(metric_widths) + 12
             # Collapse favorites before sacrificing ticker or market data.
             collapsed = self.width() < required and timeframe_width > collapsed_width
             if collapsed:
@@ -1218,18 +1230,19 @@ class InstrumentBar(QtWidgets.QFrame):
             if state == self._responsive_state:
                 return
             self._responsive_state = state
-            self.row.setContentsMargins(0 if compact else left, 0, 0 if compact else right, 0)
+            self.row.setContentsMargins(left, 0, right, 0)
             set_tight = getattr(self.timeframes, "setTightSpacing", None)
             if callable(set_tight):
                 set_tight(compact)
             set_collapsed = getattr(self.timeframes, "setCollapsed", None)
             if callable(set_collapsed):
                 set_collapsed(collapsed)
-            self.context_slot.setFixedWidth(timeframe_width)
+            self.context_slot.setFixedWidth(timeframe_width + 8)
             if self.identity_control is not None:
                 self.identity_control.setVisible(identity_visible)
             for index, card in enumerate(self.metric_controls):
                 card.setVisible(index < count)
+                self.metric_separators[index].setVisible(index < count)
             self.row.invalidate()
         finally:
             self._responsive_layout_active = False

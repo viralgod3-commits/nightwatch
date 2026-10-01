@@ -278,7 +278,7 @@ def test_market_bar_uses_midpoint_font_and_smaller_captions(qapp):
     stats = MarketStatsWidget(ui_palette(THEMES[DEFAULT_THEME_NAME]), compact=True)
     assert stats.cards['last'].value.font() == typography_font(TextRole.ORDERBOOK_CENTER_PRICE)
     assert stats.cards['volume'].title.font().pointSizeF() < stats.cards['volume'].value.font().pointSizeF()
-    assert stats.cards['funding'].title.full_text() == 'FUNDING RATE'
+    assert stats.cards['funding'].title.full_text() == 'Funding rate'
     theme = ui_palette(THEMES[DEFAULT_THEME_NAME])
     stats.setStyleSheet(build_shell_stylesheet(DEFAULT_THEME_NAME, theme))
     stats.ensurePolished()
@@ -300,7 +300,7 @@ def test_narrow_market_bar_collapses_favorites_before_hiding_data(qapp):
     assert all(card.isVisible() for card in bar.metric_controls)
     order = [bar.row.itemAt(index).widget() for index in range(bar.row.count())]
     assert order == [bar.context_slot, bar.market_group]
-    assert [bar.market_row.itemAt(i).widget() for i in range(bar.market_row.count())] == [stats.cards['last'], *bar.metric_controls]
+    assert [bar.market_row.itemAt(i).widget() for i in range(bar.market_row.count()) if bar.market_row.itemAt(i).widget() not in bar.metric_separators] == [stats.cards['last'], *bar.metric_controls]
     bar.resize(1200, 42)
     qapp.processEvents()
     assert not bar.timeframes._collapsed
@@ -310,7 +310,47 @@ def test_narrow_market_bar_collapses_favorites_before_hiding_data(qapp):
     assert bar.market_group.x() >= bar.context_slot.width() + 8
     stats.set_timeframes(('30m',), '30m')
     qapp.processEvents()
-    assert bar.context_slot.width() == bar.timeframes.expandedWidth()
+    assert bar.context_slot.width() == bar.timeframes.expandedWidth() + 8
+    bar.close()
+    bar.deleteLater()
+
+
+@pytest.mark.parametrize('intervals', [('30m',), ('1m', '3m', '5m', '15m', '30m', '1h', '2h', '4h', '1d')])
+def test_market_bar_keeps_padded_groups_and_click_targets(qapp, monkeypatch, intervals):
+    from PySide6.QtTest import QTest
+    from nightwatch.theme import DEFAULT_THEME_NAME, THEMES, ui_palette, build_shell_stylesheet
+    from nightwatch.ui.market_widgets import MarketStatsWidget
+    from nightwatch.utilities import InstrumentBar
+    theme = ui_palette(THEMES[DEFAULT_THEME_NAME])
+    stats = MarketStatsWidget(theme, compact=True)
+    bar = InstrumentBar(stats)
+    bar.setStyleSheet(build_shell_stylesheet(DEFAULT_THEME_NAME, theme))
+    stats.set_timeframes(intervals, intervals[0])
+    bar.resize(1312, bar.height())
+    bar.show()
+    qapp.processEvents()
+    stats.set_symbol('1000SHIBUSDT')
+    stats.cards['last'].set_value('0.000012345678')
+    qapp.processEvents()
+    opened = []
+    monkeypatch.setattr(stats, 'open_metric_detail', opened.append)
+    for card in bar.metric_controls:
+        assert card.layout().contentsMargins().left() == 12
+        assert card.title.geometry().left() == card.value.geometry().left()
+        QTest.mouseClick(card, Qt.MouseButton.LeftButton)
+    assert opened == ['volume', 'oi', 'long_short', 'funding']
+    identity = bar.identity_control
+    assert identity.value.width() >= identity.value.fontMetrics().horizontalAdvance(identity.value.text())
+    assert bar.timeframes.height() < bar.height()
+    assert all(button.height() == 28 for button in bar.timeframes._buttons)
+    assert all(divider.height() < bar.height() for divider in bar.metric_separators)
+    for width in (680, 380, 1312):
+        bar.resize(width, bar.height())
+        qapp.processEvents()
+        visible = [card for card in bar.metric_controls if card.isVisible()]
+        assert all(divider.isVisible() == card.isVisible() for divider, card in zip(bar.metric_separators, bar.metric_controls))
+        assert max(card.width() for card in visible) - min(card.width() for card in visible) <= 1
+    assert all(card.isVisible() for card in bar.metric_controls)
     bar.close()
     bar.deleteLater()
 
