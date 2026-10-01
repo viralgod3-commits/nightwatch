@@ -114,9 +114,6 @@ class AppDatabase:
             )
 
 
-
-
-
             unique_index = connection.execute(
                 """
                 SELECT 1 FROM sqlite_master
@@ -221,31 +218,6 @@ class AppDatabase:
                 (name, encoded),
             )
 
-    def coin_icon_record(self, base_symbol: str) -> dict | None:
-        base = str(base_symbol or "").upper().strip()
-        if not base:
-            return None
-        with self._connect() as connection:
-            row = connection.execute(
-                """
-                SELECT base_symbol, provider, provider_id, remote_symbol, name,
-                       filename, image_url, status, refreshed_at, attempted_at
-                FROM coin_icon_cache WHERE base_symbol = ?
-                """,
-                (base,),
-            ).fetchone()
-        return dict(row) if row is not None else None
-
-    def coin_icon_records(self) -> dict[str, dict]:
-        with self._connect() as connection:
-            rows = connection.execute(
-                """
-                SELECT base_symbol, provider, provider_id, remote_symbol, name,
-                       filename, image_url, status, refreshed_at, attempted_at
-                FROM coin_icon_cache
-                """
-            ).fetchall()
-        return {str(row["base_symbol"]): dict(row) for row in rows}
 
     def save_coin_icon(
         self,
@@ -363,18 +335,6 @@ class AppDatabase:
             int(row["rows"] or 0),
         )
 
-    def aggregate_candle_interval(
-        self,
-        symbol: str,
-        source_interval: str,
-        target_interval: str,
-    ) -> int:
-        """Materialize a larger UTC-aligned timeframe from a cached smaller one."""
-        return self.aggregate_candle_intervals(
-            symbol,
-            source_interval,
-            (target_interval,),
-        ).get(target_interval, 0)
 
     def aggregate_candle_intervals(
         self,
@@ -617,27 +577,6 @@ class AppDatabase:
                 ),
             )
 
-    def mark_event_download_complete(
-        self,
-        symbol: str,
-        event_type: str,
-        complete_from_listing: bool,
-    ) -> None:
-        with self._connect() as connection:
-            connection.execute(
-                """
-                UPDATE event_coverage
-                SET complete_from_listing = MAX(complete_from_listing, ?),
-                    updated_at = ?
-                WHERE symbol = ? AND event_type = ?
-                """,
-                (
-                    int(complete_from_listing),
-                    int(time.time() * 1000),
-                    symbol,
-                    event_type,
-                ),
-            )
 
     def load_market_events(
         self,

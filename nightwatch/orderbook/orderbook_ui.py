@@ -1,14 +1,13 @@
 """Order-book frontend: DOM, controls, presentation and Time & Sales."""
 from __future__ import annotations
 
-NIGHTWATCH_PATCH = "20260930-modern-orderbook-ui-v2/orderbook/orderbook_ui.py"
 
 # Order-book presentation contract. Background overrides live in this module;
 # analytical state vocabulary continues to come from the application's constants.
 from ..constants import (
-    DEFAULT_SYMBOL, ORDERBOOK_CONTROL_BAR_HEIGHT,
+    DEFAULT_SYMBOL,
     ORDERBOOK_FIXED_PALETTE as _LEGACY_ORDERBOOK_PALETTE, ORDERBOOK_STATE_ACRONYMS,
-    ORDERBOOK_STATE_COLORS, ORDERBOOK_STATE_FULL_LABEL_WIDTH, ORDERBOOK_STATE_LABELS,
+    ORDERBOOK_STATE_FULL_LABEL_WIDTH, ORDERBOOK_STATE_LABELS,
     ORDERBOOK_STATE_MIN_WIDTH,
 )
 
@@ -459,7 +458,7 @@ from datetime import datetime, timezone
 from PySide6 import QtCore, QtGui, QtWidgets
 from PySide6.QtCore import Qt, Signal
 from ..models import OrderFlowSnapshot, OrderFlowTradePrint
-from ..models import format_price, human_number
+from ..models import human_number
 from ..utilities import ElidedLabel, TextRole, set_text_role
 
 class _TradesTapeModel(QtCore.QAbstractTableModel):
@@ -879,7 +878,6 @@ class _OrderBookSurfaceButton(QtWidgets.QPushButton):
         self.set_theme(theme)
 
     def set_theme(self, theme):
-        self._theme = {}
         p = ORDERBOOK_REFERENCE
         self.setStyleSheet(
             f"QPushButton {{ background: transparent; color: {p['muted']}; "
@@ -902,7 +900,6 @@ class _OrderBookSurfaceButton(QtWidgets.QPushButton):
         return self.minimumSizeHint()
 
 
-
 class OrderBookControlBar(QtWidgets.QFrame):
     """One responsive strip for view, price step, units, and display options."""
     aggregation_selected = Signal(int)
@@ -917,7 +914,6 @@ class OrderBookControlBar(QtWidgets.QFrame):
     def __init__(self, theme, parent=None):
         super().__init__(parent)
         self.theme = {}
-        self._compact = False
         self._tick_size, self._aggregation = 0.0, 1
         self._book_depth, self._density, self._value_mode = False, 'normal', 'quote'
         self._tape_enabled, self._tape_mode = True, 'LARGE'
@@ -1048,9 +1044,6 @@ class OrderBookControlBar(QtWidgets.QFrame):
     def _toggle_value_mode(self):
         self.value_mode_selected.emit('base' if self._value_mode == 'quote' else 'quote')
 
-    def _cycle_density(self):
-        index = self._DENSITIES.index(self._density) if self._density in self._DENSITIES else 1
-        self.density_selected.emit(self._DENSITIES[(index + 1) % len(self._DENSITIES)])
 
     def _refresh_typography(self):
         for button in self.findChildren(_OrderBookSurfaceButton):
@@ -1076,8 +1069,6 @@ class OrderBookControlBar(QtWidgets.QFrame):
                 f"QMenu::separator {{ height: 1px; background: {p['grid']}; margin: 6px 8px; }}"
             )
 
-    def set_compact(self, compact):
-        self._compact = bool(compact)
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
@@ -1219,16 +1210,10 @@ class PreparedDomRow:
     consumed by the painter explicit and bounded.
     """
     level: OrderFlowDisplayLevel
-    state_label: str
     display_state: str
     liquidity_visual: float
-    delta_visual: float
-    trade_visual: float
-    depth_visual: float
     price_text: str
     notional_text: str
-    delta_text: str
-    flow_text: str
     event_text: str = ''
     event_kind: str = ''
     sell_large: bool = False
@@ -1237,11 +1222,6 @@ class PreparedDomRow:
     market_signal_color: QtGui.QColor | None = None
     market_signal_fill: QtGui.QColor | None = None
     delta_color: QtGui.QColor | None = None
-    delta_fill: QtGui.QColor | None = None
-    flow_color: QtGui.QColor | None = None
-    flow_fill: QtGui.QColor | None = None
-    visible_depth_intensity: float = 0.0
-    depth_bucket: int = 0
     change_cue: tuple[str, float, float] | None = None
     change_cue_color: QtGui.QColor | None = None
     is_native_touch: bool = False
@@ -1547,7 +1527,6 @@ class _DomRasterCanvas(QtWidgets.QWidget):
         self._row_density = 'normal'
         self._presentation_preset = 'execution'
         self._book_depth = False
-        self._profile_cache_key: tuple[object, ...] | None = None
         self._profile_paths: dict[str, tuple[QtGui.QPainterPath, QtGui.QPainterPath]] = {}
         self._profile_brushes: dict[str, QtGui.QBrush] = {}
         self._profile_totals = (0.0, 0.0)
@@ -1587,7 +1566,6 @@ class _DomRasterCanvas(QtWidgets.QWidget):
         self._snapshot_superseded_before_row_count = 0
         self._snapshot_build_samples: deque[float] = deque(maxlen=240)
         self._visual_scales = {'liquidity': 0.0, 'delta': 0.0, 'trade': 0.0, 'depth': 0.0}
-        self._visual_scale_stamp = 0.0
         self._state_latches: dict[tuple[str, int | float], dict[str, object]] = {}
         self.execution_context = DomExecutionContext(self.symbol)
         self._execution_text: list[tuple[str, QtGui.QColor]] = []
@@ -1611,8 +1589,6 @@ class _DomRasterCanvas(QtWidgets.QWidget):
         self._geometry = _compute_order_flow_dom_geometry(360.0, 520.0)
         self._prepared_sequence = -1
         self._prepared_size = (-1, -1)
-        self._last_prepare_reused_rows = False
-        self._last_prepare_scale_visuals_changed = False
         self._header_text: dict[str, tuple[str, QtGui.QColor]] = {}
         self._metric_items: list[tuple[str, str, QtGui.QColor]] = []
         self._footer_items: list[tuple[str, str, QtGui.QColor]] = []
@@ -1771,15 +1747,12 @@ class _DomRasterCanvas(QtWidgets.QWidget):
         self._metric_metrics = QtGui.QFontMetricsF(self._metric_font)
         self._symbol_metrics = QtGui.QFontMetricsF(self._symbol_font)
         self._label_metrics = QtGui.QFontMetricsF(self._label_font)
-        self._footer_metrics = QtGui.QFontMetricsF(self._footer_font)
         self._row_font_key = self._row_font.toString()
         self._price_font_key = self._price_font.toString()
         self._effective_price_font_key = self._effective_price_font.toString()
         self._metric_font_key = self._metric_font.toString()
         self._symbol_font_key = self._symbol_font.toString()
         self._label_font_key = self._label_font.toString()
-        self._footer_font_key = self._footer_font.toString()
-        self._execution_label_width = 0.0
         self._text_layout_cache.clear()
         self._price_metrics_cache.clear()
         self._price_fit_cache.clear()
@@ -1855,20 +1828,14 @@ class _DomRasterCanvas(QtWidgets.QWidget):
             self._profile_fills[side] = area
             self._profile_pens[side] = pen
             self._profile_in_bar_pens[side] = in_bar_pen
-        self._profile_cache_key = None
 
     def _refresh_theme_cache(self) -> None:
         p = ORDERBOOK_REFERENCE
         self._bg = QtGui.QColor(p['bg'])
-        self._panel = QtGui.QColor(p['bg'])
-        self._panel2 = QtGui.QColor(p['surface_top'])
         self._text = QtGui.QColor(p['text'])
         self._muted = QtGui.QColor(p['muted'])
-        self._value_text = QtGui.QColor(p['text'])
         self._badge_text = QtGui.QColor(p['text'])
         self._grid = QtGui.QColor(p['grid'])
-        self._bid_accent = QtGui.QColor(p['bid'])
-        self._ask_accent = QtGui.QColor(p['ask'])
         self._bid = QtGui.QColor(p['bid'])
         self._ask = QtGui.QColor(p['ask'])
         self._mid = QtGui.QColor(p['mid'])
@@ -1876,7 +1843,6 @@ class _DomRasterCanvas(QtWidgets.QWidget):
         self._purple = QtGui.QColor(p['purple'])
         self._surface_top = QtGui.QColor(p['surface_top'])
         self._surface_raised = QtGui.QColor(p['surface_raised'])
-        self._metric_card_fill = QtGui.QColor(p['surface_top'])
         self._price_axis_fill = QtGui.QColor(p['bg'])
         self._bid_zone_fill = QtGui.QColor(p['bid_fill'])
         self._bid_zone_fill.setAlpha(0)
@@ -1893,8 +1859,6 @@ class _DomRasterCanvas(QtWidgets.QWidget):
         self._hover_fill = QtGui.QColor(p['bg'])
         self._best_bid_row_fill = QtGui.QColor(p['bg'])
         self._best_ask_row_fill = QtGui.QColor(p['bg'])
-        self._best_bid_price_fill = QtGui.QColor(p['bg'])
-        self._best_ask_price_fill = QtGui.QColor(p['bg'])
         self._center_fill = QtGui.QColor(p['surface_center'])
         self._center_price_fill = QtGui.QColor(p['surface_center'])
         # Cell boundaries are structural guides only. Keep them intentionally
@@ -1934,31 +1898,16 @@ class _DomRasterCanvas(QtWidgets.QWidget):
         self._center_bid_pen.setCosmetic(True)
         self._center_ask_pen.setCosmetic(True)
         # History is gray with a colored recent tail in the reference.
-        self._memory_bid_colors = tuple(QtGui.QColor(p['bid_fill_strong']) for _ in range(9))
-        self._memory_ask_colors = tuple(QtGui.QColor(p['ask_fill_strong']) for _ in range(9))
-        self._memory_unknown = QtGui.QColor(p['grid'])
-        self._depth_bid_fill = QtGui.QColor(p['bid_fill_strong'])
-        self._depth_ask_fill = QtGui.QColor(p['ask_fill_strong'])
-        self._bid_persistence = QtGui.QColor(p['bid'])
-        self._ask_persistence = QtGui.QColor(p['ask'])
         self._state_absorbing = QtGui.QColor(_ORDERBOOK_SIGNAL_COLORS['ABSORBING'])
         self._state_stacking = QtGui.QColor(_ORDERBOOK_SIGNAL_COLORS['STACKING'])
         self._state_pulling = QtGui.QColor(_ORDERBOOK_SIGNAL_COLORS['PULLING'])
         self._state_depleting = QtGui.QColor(_ORDERBOOK_SIGNAL_COLORS['DEPLETING'])
         self._state_wall = QtGui.QColor(_ORDERBOOK_SIGNAL_COLORS['PERSISTENT'])
-        self._rpi = QtGui.QColor(p['purple'])
         self._execution_entry = QtGui.QColor(p['bid'])
         self._execution_tp = QtGui.QColor(p['bid'])
         self._execution_sl = QtGui.QColor(p['amber'])
         self._execution_liq = QtGui.QColor(p['ask'])
         self._execution_neutral = QtGui.QColor(p['text'])
-        self._status_live_fill = QtGui.QColor(0, 0, 0, 0)
-        self._status_degraded_fill = QtGui.QColor(0, 0, 0, 0)
-        self._status_stale_fill = QtGui.QColor(0, 0, 0, 0)
-        self._status_connecting_fill = QtGui.QColor(0, 0, 0, 0)
-        self._status_sync_fill = self._status_connecting_fill
-        self._row_bar_fills = {'bid': self._bid_fill, 'ask': self._ask_fill, 'amber': QtGui.QColor('#2B2418'), 'muted': QtGui.QColor(p['bg'])}
-        self._flow_bar_fills = {'bid': self._bid_fill, 'ask': self._ask_fill, 'muted': QtGui.QColor(p['bg'])}
         self._bid_signal_fill = QtGui.QColor(p['bg'])
         self._ask_signal_fill = QtGui.QColor(p['bg'])
         self._ltp_line_color = QtGui.QColor('#444444')
@@ -1977,14 +1926,11 @@ class _DomRasterCanvas(QtWidgets.QWidget):
         for state, color in self._state_colors.items():
             fill = QtGui.QColor(p['bg'])
             self._state_badge_fills[state] = fill
-        self._state_edge_colors = {state: color for state, color in self._state_colors.items()}
         self._center_bid_fill = QtGui.QColor(p['bg'])
         self._center_bid_fill.setAlpha(255)
         self._center_ask_fill = QtGui.QColor(p['bg'])
         self._center_ask_fill.setAlpha(255)
         self._center_price_fill = QtGui.QColor(p['bg'])
-        self._status_stale_rail = self._ask
-        self._status_connecting_rail = self._amber
         self._native_bid_accent = self._bid
         self._native_ask_accent = self._ask
         self._cue_colors = {'add': self._bid, 'pull': self._amber, 'trade': self._ask}
@@ -1992,7 +1938,6 @@ class _DomRasterCanvas(QtWidgets.QWidget):
         self._profile_mid_pen = QtGui.QPen(self._amber)
         self._profile_mid_pen.setCosmetic(True)
         self._profile_mid_pen.setWidthF(1.0)
-        self._profile_cache_key = None
         self._prepared_sequence = -1
         self._theme_cache_ready = True
         self._prepare_execution_display()
@@ -2009,7 +1954,6 @@ class _DomRasterCanvas(QtWidgets.QWidget):
         if self._book_depth:
             self._prepare_liquidity_profile()
             self.update()
-
 
 
     def set_execution_context(self, context: DomExecutionContext | None) -> None:
@@ -2175,8 +2119,6 @@ class _DomRasterCanvas(QtWidgets.QWidget):
         self._prepared_display_states.clear()
         self.aggregation_multiplier = resolved
         self._invalidate_aggregation()
-        if any((value > 0.0 for value in self._visual_scales.values())):
-            self._visual_scale_stamp = time.monotonic()
         self._row_change_cues.clear()
         self._suppress_change_cues_once = True
         if self.source_snapshot is not None:
@@ -2462,7 +2404,6 @@ class _DomRasterCanvas(QtWidgets.QWidget):
     def _reset_visual_scales(self) -> None:
         for key in self._visual_scales:
             self._visual_scales[key] = 0.0
-        self._visual_scale_stamp = 0.0
 
     def reset(self, *, preserve_execution: bool=False) -> None:
         self._snapshot_prepare_timer.stop()
@@ -2537,7 +2478,6 @@ class _DomRasterCanvas(QtWidgets.QWidget):
         self._hover_context = ''
         self._last_trade_price = 0.0
         self._last_trade_side = ''
-        self._profile_cache_key = None
         self._profile_paths.clear()
         self._reset_profile_animation()
         self._profile_totals = (0.0, 0.0)
@@ -2642,8 +2582,6 @@ class _DomRasterCanvas(QtWidgets.QWidget):
     def _row_frame_interval_ms(self) -> int:
         return display_frame_interval_ms(self)
 
-    def _state_frame_interval_ms(self) -> int:
-        return self._row_frame_interval_ms()
 
     def set_interaction_priority(self, active: bool) -> None:
         """Coalesce secondary row preparation to the display during chart input."""
@@ -3462,7 +3400,6 @@ class _DomRasterCanvas(QtWidgets.QWidget):
         values event-driven and current; temporal continuity is provided separately
         by change cues and liquidity-history rails.
         """
-        self._visual_scale_stamp = time.monotonic()
         targets = {
             'liquidity': max(0.0, float(snapshot.liquidity_scale)),
             'delta': max(0.0, float(snapshot.delta_scale)),
@@ -3788,7 +3725,6 @@ class _DomRasterCanvas(QtWidgets.QWidget):
         inference_allowed: bool | None=None,
     ) -> PreparedDomRow:
         delta = level.delta_notional_5s
-        flow = level.signed_trade_notional_5s
         price_left, price_right = self._geometry['columns']['price']
         price_text = self._fitted_price_text(level.price, self._effective_price_metrics, float(price_right) - float(price_left))
         display_state = self._display_state(
@@ -3798,16 +3734,11 @@ class _DomRasterCanvas(QtWidgets.QWidget):
         if delta > 0.0:
             # More bid liquidity is bid-supportive; more ask liquidity is ask-side.
             delta_color = self._bid if level.side == 'bid' else self._ask
-            delta_fill = self._row_bar_fills['bid' if level.side == 'bid' else 'ask']
         elif delta < 0.0:
             # Removal reverses the directional meaning of the resting side.
             delta_color = self._ask if level.side == 'bid' else self._bid
-            delta_fill = self._row_bar_fills['ask' if level.side == 'bid' else 'bid']
         else:
             delta_color = self._muted
-            delta_fill = self._row_bar_fills['muted']
-        flow_color = self._bid if flow > 0.0 else self._ask if flow < 0.0 else self._muted
-        flow_fill = self._flow_bar_fills['bid'] if flow > 0.0 else self._flow_bar_fills['ask'] if flow < 0.0 else self._flow_bar_fills['muted']
         marker_key = (level.side, self._marker_key(level.price))
         previous = (previous_metrics or {}).get(marker_key)
         if previous is not None:
@@ -3863,16 +3794,10 @@ class _DomRasterCanvas(QtWidgets.QWidget):
         is_native_touch, native_touch_fraction, is_ltp_row, ltp_fraction = self._row_market_anchor_state(level)
         return PreparedDomRow(
             level=level,
-            state_label=self._STATE_LABELS.get(display_state, display_state[:7]),
             display_state=display_state,
             liquidity_visual=self._visual_intensity(level.notional, 'liquidity'),
-            delta_visual=self._visual_intensity(level.delta_notional_5s, 'delta'),
-            trade_visual=self._visual_intensity(level.trade_notional_5s, 'trade'),
-            depth_visual=self._visual_intensity(level.cumulative_depth_notional, 'depth'),
             price_text=price_text,
             notional_text=self._row_amount(level.notional, level.price, quantity=level.quantity),
-            delta_text=self._row_amount(delta, level.price, signed=True),
-            flow_text=self._row_amount(flow, level.price, signed=True),
             event_text=event_text,
             event_kind=event_kind,
             sell_large=level.largest_sell_trade_5s >= threshold,
@@ -3885,9 +3810,6 @@ class _DomRasterCanvas(QtWidgets.QWidget):
                 else self._ask_signal_fill if market_signal_text else None
             ),
             delta_color=delta_color,
-            delta_fill=delta_fill,
-            flow_color=flow_color,
-            flow_fill=flow_fill,
             change_cue=cue_entry,
             change_cue_color=cue_color,
             is_native_touch=is_native_touch,
@@ -4098,8 +4020,6 @@ class _DomRasterCanvas(QtWidgets.QWidget):
 
     def _prepare_display(self, *, reuse_rows: bool=False) -> None:
         started = time.perf_counter()
-        self._last_prepare_reused_rows = False
-        self._last_prepare_scale_visuals_changed = False
         if not hasattr(self, '_row_metrics'):
             return
         width = max(1, self.width())
@@ -4148,7 +4068,6 @@ class _DomRasterCanvas(QtWidgets.QWidget):
             visible_levels, now, inference_allowed=state_inference_allowed
         )
         self._prune_state_latches(now, active_state_keys)
-        self._last_prepare_reused_rows = bool(reuse_rows)
         if not reuse_rows:
             previous_metrics: dict[tuple[str, int | float], tuple[float, float]] = {}
             if not self._suppress_change_cues_once:
@@ -4174,11 +4093,8 @@ class _DomRasterCanvas(QtWidgets.QWidget):
             ]
             self._sparsify_prepared_events()
             self._suppress_change_cues_once = False
-            if self._book_depth:
-                self._prepare_depth_geometry()
         elif scale_changed:
             self._refresh_row_visual_scales()
-            self._last_prepare_scale_visuals_changed = True
         if reuse_rows:
             self._refresh_prepared_row_levels(
                 inference_allowed=state_inference_allowed
@@ -4288,8 +4204,6 @@ class _DomRasterCanvas(QtWidgets.QWidget):
             timing = self._snapshot_pipeline_timing.get(sequence)
             if timing is not None:
                 timing['dom_prepare_completed_mono'] = completed
-        if elapsed > 8.0:
-            pass
 
     def _refresh_prepared_row_levels(self, *, inference_allowed: bool | None=None) -> None:
         """Refresh immutable level references without rebuilding row visuals.
@@ -4315,7 +4229,6 @@ class _DomRasterCanvas(QtWidgets.QWidget):
                 inference_allowed=inference_allowed,
             )
             prepared.display_state = display_state
-            prepared.state_label = self._STATE_LABELS.get(display_state, display_state[:7])
         for prepared, level in zip(self._ask_rows[:rows], snapshot.ask_levels[:rows]):
             prepared.level = level
             prepared.sell_large = level.largest_sell_trade_5s >= threshold
@@ -4325,7 +4238,6 @@ class _DomRasterCanvas(QtWidgets.QWidget):
                 inference_allowed=inference_allowed,
             )
             prepared.display_state = display_state
-            prepared.state_label = self._STATE_LABELS.get(display_state, display_state[:7])
 
     def _refresh_row_visual_scales(self) -> None:
         """Refresh only scale-dependent visuals that the active DOM paints."""
@@ -4335,26 +4247,7 @@ class _DomRasterCanvas(QtWidgets.QWidget):
             if not isinstance(level, OrderFlowDisplayLevel):
                 continue
             row.liquidity_visual = self._visual_intensity(level.notional, 'liquidity')
-            if self._book_depth:
-                row.depth_visual = self._visual_intensity(level.cumulative_depth_notional, 'depth')
-        if self._book_depth:
-            self._prepare_depth_geometry()
 
-    def _prepare_depth_geometry(self) -> None:
-        """Attach backend-provided cumulative-depth intensity to visible rows.
-
-        Revision A removes the standalone DEPTH column. The immutable analytics
-        snapshot already carries viewport-independent depth intensity, so the
-        renderer does not renormalize against whichever rows happen to fit today.
-        """
-        rows = int(self._geometry.get('rows_per_side', 0))
-        for row in (*self._bid_rows[:rows], *self._ask_rows[:rows]):
-            level = row.level
-            if not isinstance(level, OrderFlowDisplayLevel):
-                continue
-            intensity = max(0.0, min(1.0, float(row.depth_visual)))
-            row.visible_depth_intensity = intensity
-            row.depth_bucket = min(8, max(0, int(round(intensity * 8.0))))
 
     def _profile_animation_interval_ms(self) -> int:
         screen = self.screen()
@@ -4541,7 +4434,6 @@ class _DomRasterCanvas(QtWidgets.QWidget):
 
         size_targets: dict[tuple[str, float], float] = {}
         depth_targets: dict[tuple[str, float], float] = {}
-        signature = []
         for side, rows in sides.items():
             previous = 0.0
             for row, (amount, cumulative) in zip(rows, amounts[side]):
@@ -4552,10 +4444,7 @@ class _DomRasterCanvas(QtWidgets.QWidget):
                 key = (side, float(row.level.price))
                 size_targets[key] = row.profile_size
                 depth_targets[key] = row.profile_depth
-                signature.append((side, float(row.level.price), row.profile_depth))
 
-        lane = g['columns'].get('liquidity')
-        self._profile_cache_key = (lane, g['row_height'], g['center_top'], g['center_bottom'], tuple(signature))
         self._set_profile_animation_targets(size_targets, depth_targets)
 
     def _rebuild_hit_rows(self) -> None:
@@ -4883,10 +4772,6 @@ class _DomRasterCanvas(QtWidgets.QWidget):
             self._draw_text(painter, QtCore.QRectF(cell.left(), cell.top(), cell.width(), 18.0), label, self._muted, Qt.AlignmentFlag.AlignLeft, font=self._label_font, pad=8)
             self._draw_numeric_text(painter, QtCore.QRectF(cell.left(), cell.top() + 18, cell.width(), cell.height() - 18), value, color, Qt.AlignmentFlag.AlignLeft, font=self._metric_font, pad=8)
 
-    def _draw_metric_header(self, painter: QtGui.QPainter, bounds: QtCore.QRectF) -> None:
-        # Compatibility wrapper for callers that intentionally need the full band.
-        self._draw_header_title(painter, bounds)
-        self._draw_header_metrics(painter, bounds)
 
     def _draw_execution_band(self, painter: QtGui.QPainter, bounds: QtCore.QRectF) -> None:
         top = float(self._geometry['execution_top'])
@@ -5362,7 +5247,7 @@ class _DomRasterCanvas(QtWidgets.QWidget):
         painter.restore()
         self._draw_text(painter, badge, text, color, Qt.AlignmentFlag.AlignHCenter, font=self._label_font, pad=2.0)
 
-    def _draw_liquidity_memory(self, painter: QtGui.QPainter, level: OrderFlowDisplayLevel, rect: QtCore.QRectF, *, compact_strip: bool=False) -> None:
+    def _draw_liquidity_memory(self, painter: QtGui.QPainter, level: OrderFlowDisplayLevel, rect: QtCore.QRectF) -> None:
         history = tuple(value for value in level.liquidity_history_30s if math.isfinite(float(value)))
         if not history or rect.width() <= 2.0 or rect.height() <= 2.0:
             return
@@ -5909,11 +5794,6 @@ class _DomRasterCanvas(QtWidgets.QWidget):
                     self._has_end_to_end_sample = True
                     self._last_pipe_sample_at = time.monotonic()
                     self._latency_pipe_display_window.append((self._last_pipe_sample_at, total))
-        if self._paint_count % 120 == 0:
-            pass
-        if self._paint_count % 30 == 0:
-            if elapsed > 8.0:
-                pass
 
     @staticmethod
     def _rolling_rate(timestamps: deque[float], now: float, window: float=2.0) -> float:
@@ -6340,7 +6220,6 @@ from PySide6.QtCore import Qt, Signal
 from ..models import DomExecutionContext, OrderFlowPresentationFrame
 from ..models import ORDER_FLOW_AGGREGATION_MULTIPLIERS, OrderFlowSnapshot
 from ..models import safe_float
-
 
 
 class _DomRasterWorkerCanvas(_DomRasterCanvas):
@@ -6875,7 +6754,6 @@ class OrderBookWidget(QtWidgets.QWidget):
         self._tape_enabled = True
         self._tape_mode = 'LARGE'
         self._latest_snapshot: OrderFlowSnapshot | None = None
-        self._legacy_reference_preferences_pending = False
         self._last_depth_capacity = 0
         self.canvas = OrderFlowDomCanvas(theme, self)
         self.canvas.price_selected.connect(self.price_selected.emit)
@@ -6939,20 +6817,9 @@ class OrderBookWidget(QtWidgets.QWidget):
         self._sync_controls()
         self._emit_presentation_changed()
 
-    def _step_aggregation(self, step: int) -> None:
-        values = tuple((int(value) for value in ORDER_FLOW_AGGREGATION_MULTIPLIERS))
-        current = int(self.canvas.aggregation_multiplier)
-        try:
-            index = values.index(current)
-        except ValueError:
-            index = 0
-        target = values[max(0, min(len(values) - 1, index + int(step)))]
-        if target != current:
-            self.set_aggregation_multiplier(target, emit=True)
 
     def _sync_controls(self) -> None:
         state = self.canvas.presentation_state()
-        self.controls.set_compact(self.width() < 560)
         self.controls.set_state(aggregation=int(self.canvas.aggregation_multiplier), tick_size=float(self.price_tick_size), preset=str(state.get('preset', 'execution')), density=str(state.get('density', 'normal')), value_mode=str(state.get('values', 'quote')), tape_enabled=self._tape_enabled, tape_mode=self._tape_mode, book_depth=bool(state.get('book_depth', False)), overlays=self.canvas.column_preferences())
 
     def _reset_display_options(self) -> None:
@@ -7072,16 +6939,6 @@ class OrderBookWidget(QtWidgets.QWidget):
         if emit:
             self._emit_presentation_changed()
 
-    def set_tape_mode(self, mode: str, *, emit: bool=True) -> None:
-        normalized = 'ALL' if str(mode).upper() == 'ALL' else 'LARGE'
-        if normalized == self._tape_mode:
-            return
-        self._tape_mode = normalized
-        if self._tape is not None:
-            self._tape.set_mode(normalized, emit=False)
-        self._sync_controls()
-        if emit:
-            self._emit_presentation_changed()
 
     def _protected_canvas_width(self) -> int:
         """Minimum ladder width that tape auto-layout is not allowed to steal.
@@ -7207,11 +7064,6 @@ class OrderBookWidget(QtWidgets.QWidget):
 
     def set_column_preferences(self, preferences: dict[str, object] | None, *, emit: bool=False) -> None:
         values = dict(preferences or {})
-        if self._legacy_reference_preferences_pending:
-            self._legacy_reference_preferences_pending = False
-            present = [bool(values.get(key, False)) for key in ('state', 'memory', 'delta', 'flow') if key in values]
-            if present and not any(present):
-                values.update({'state': True, 'memory': True, 'delta': True, 'flow': True})
         self.canvas.set_column_preferences(values, emit=emit)
 
     def column_preferences(self) -> dict[str, object]:

@@ -2,8 +2,6 @@
 from __future__ import annotations
 
 
-
-
 import json
 import math
 from bisect import bisect_left, bisect_right, insort
@@ -160,7 +158,6 @@ def _decode_socket_payload(
     event = data.get("e")
 
 
-
     if event == "bookTicker" or stream_name.lower().endswith("@bookticker"):
         item_symbol = str(data.get("s") or stream_name.partition("@")[0]).upper()
         if item_symbol != str(symbol).upper():
@@ -168,8 +165,6 @@ def _decode_socket_payload(
         payload = dict(data)
         payload["s"] = item_symbol
         return (("book_ticker", payload),)
-
-
 
 
     if kind == "public" and (
@@ -229,14 +224,12 @@ class _SocketParserWorker(QtCore.QObject):
         self._trade_timer.timeout.connect(self._flush_trades)
 
 
-
         self._book_ticker_pending: tuple[str, int, dict[str, Any]] | None = None
         self._book_ticker_timer = QTimer(self)
         self._book_ticker_timer.setSingleShot(True)
         self._book_ticker_timer.setTimerType(QtCore.Qt.TimerType.PreciseTimer)
         self._book_ticker_timer.setInterval(16)
         self._book_ticker_timer.timeout.connect(self._flush_book_ticker)
-
 
 
         self._ingress_lock = threading.Lock()
@@ -424,7 +417,6 @@ class _SocketParserWorker(QtCore.QObject):
             return
 
 
-
         grouped: list[tuple[str, int, list[dict[str, Any]]]] = []
         current_kind = ""
         current_generation = -1
@@ -467,8 +459,6 @@ class _DepthParserWorker(QtCore.QObject):
     MAX_INGRESS_BYTES = 8 * 1024 * 1024
     DRAIN_BATCH_SIZE = 32
     DRAIN_BUDGET_MS = 4.0
-
-
 
 
     PUBLISH_LEVELS = 120
@@ -770,7 +760,6 @@ class _DepthParserWorker(QtCore.QObject):
         explicit_symbol = data.get("s") or stream_symbol
 
 
-
         if not explicit_symbol:
             return None
         event_symbol = str(explicit_symbol).upper()
@@ -878,7 +867,6 @@ class _DepthParserWorker(QtCore.QObject):
             return
 
 
-
         self._revision = revision
         self._request_resync(str(reason or "ORDER BOOK INVALID"), force=True)
 
@@ -929,7 +917,6 @@ class _DepthParserWorker(QtCore.QObject):
     def _emit_book(self, event: dict[str, Any] | None = None) -> None:
         if not self._ready or not self._bids or not self._asks:
             return
-
 
 
         if self._analysis_window_dirty or not self._published_analysis_bids or not self._published_analysis_asks:
@@ -1099,29 +1086,21 @@ class _DepthParserWorker(QtCore.QObject):
 
         buffered = list(self._buffer)
         self._buffer.clear()
-        bridge_started = time.perf_counter()
-        if buffered:
-            pass
-        try:
-            latest_applied: dict[str, Any] | None = None
-            for index, event in enumerate(buffered):
+        latest_applied: dict[str, Any] | None = None
+        for index, event in enumerate(buffered):
 
 
+            event["_worker_resume_mono_ms"] = time.perf_counter() * 1000.0
+            if self._accept_event(event):
+                latest_applied = event
+            if not self._seeded:
+                for remaining in buffered[index + 1 :]:
+                    if not self._buffer_event(remaining):
+                        break
+                return
 
-                event["_worker_resume_mono_ms"] = time.perf_counter() * 1000.0
-                if self._accept_event(event):
-                    latest_applied = event
-                if not self._seeded:
-                    for remaining in buffered[index + 1 :]:
-                        if not self._buffer_event(remaining):
-                            break
-                    return
-
-            if self._ready and latest_applied is not None:
-                self._emit_book(latest_applied)
-        finally:
-            if buffered:
-                pass
+        if self._ready and latest_applied is not None:
+            self._emit_book(latest_applied)
 
     @QtCore.Slot(int, str, str, object)
     def parse(
@@ -1139,21 +1118,14 @@ class _DepthParserWorker(QtCore.QObject):
             self._reset_state(epoch, 0, symbol)
 
         arrival_mono_ms = 0.0
-        enqueue_mono_ms = 0.0
         if isinstance(timing, (tuple, list)):
             if len(timing) >= 2:
                 arrival_mono_ms = safe_float(timing[1])
-            if len(timing) >= 4:
-                enqueue_mono_ms = safe_float(timing[3])
         queue_age_ms = 0.0
         if arrival_mono_ms > 0.0:
 
 
             queue_age_ms = max(0.0, worker_start_mono_ms - arrival_mono_ms)
-        if enqueue_mono_ms >= arrival_mono_ms > 0.0:
-            pass
-        if worker_start_mono_ms >= enqueue_mono_ms > 0.0:
-            pass
 
         event = self._decode_delta(message, symbol, timing)
         if event is None:
@@ -1170,9 +1142,6 @@ class _DepthParserWorker(QtCore.QObject):
 
         if self._accept_event(event):
             self._emit_book(event)
-
-
-
 
 
 import json
@@ -1208,8 +1177,6 @@ from ..models import Candle, shift_candle_time
 from ..networking.binance import ApiTask, launch_task
 from ..networking.binance import BINANCE_RATE_LIMITER
 from ..models import safe_float
-
-
 
 
 DEPTH_SNAPSHOT_RETRY_DELAYS_MS = (400, 800, 1600)
@@ -1316,12 +1283,9 @@ class MarketDataHub(QtCore.QObject):
         self.depth_epoch = 0
 
 
-
         self.depth_revision = 0
         self.market_epoch = 0
         self._socket_generations: dict[str, int] = {}
-
-
 
 
         self.orderbook_streaming_enabled = True
@@ -1364,7 +1328,6 @@ class MarketDataHub(QtCore.QObject):
         self.depth_snapshot_epoch: int | None = None
 
 
-
         self._depth_snapshot_seeded_epoch: int | None = None
         self._depth_snapshot_seeded_at = 0.0
         self._depth_force_refresh_epoch: int | None = None
@@ -1377,7 +1340,6 @@ class MarketDataHub(QtCore.QObject):
         self._clock_status_cache_mono = 0.0
         self._deferred_analysis_request: tuple[int, str, str] | None = None
         self.stopping = False
-        self.suspended = False
         self.started = False
         self.tasks: set[ApiTask] = set()
         self._lifecycle = 0
@@ -1400,8 +1362,6 @@ class MarketDataHub(QtCore.QObject):
         self._cache_prepare_job = LatestJob(QtCore.QThreadPool.globalInstance(), self, priority=1)
         self._cache_prepare_job.ready.connect(self._cache_prepared)
         self._cache_prepare_job.failed.connect(self._cache_prepare_failed)
-
-
 
 
         self.chart_prefetch_symbols: tuple[str, ...] = ()
@@ -1443,8 +1403,6 @@ class MarketDataHub(QtCore.QObject):
         self.subscription_timer.setSingleShot(True)
         self.subscription_timer.setInterval(500)
         self.subscription_timer.timeout.connect(self._resubscribe_kline)
-
-
 
 
         self.universe_loaded = False
@@ -1556,15 +1514,11 @@ class MarketDataHub(QtCore.QObject):
             return
 
 
-
-
         thread.requestInterruption()
         thread.quit()
         if thread.wait(1500):
             thread.deleteLater()
             return
-
-
 
 
         if thread not in self._retiring_threads:
@@ -1656,12 +1610,11 @@ class MarketDataHub(QtCore.QObject):
             current = self.market_epoch
         else:
             current = self.generation
-        if generation != current or self.stopping or self.suspended:
+        if generation != current or self.stopping:
             return
         reason = str(reason or "SOCKET PARSER BACKPRESSURE")
         if kind == 'market' and not self.chart_only:
             self._publish_trade_stream_status(False, reason)
-
 
 
         self._socket_error(kind, self.generation, reason)
@@ -1735,7 +1688,6 @@ class MarketDataHub(QtCore.QObject):
         if self.chart_only or self.depth_epoch <= 0:
             return
         reason = str(reason or "ORDER BOOK INVALID")
-
 
 
         if freeze_worker:
@@ -1873,7 +1825,6 @@ class MarketDataHub(QtCore.QObject):
             return
 
 
-
         arrival_wall_ms = time.time() * 1000.0
         arrival_mono_ms = time.perf_counter() * 1000.0
 
@@ -1889,10 +1840,6 @@ class MarketDataHub(QtCore.QObject):
             epoch = self.depth_epoch
             if epoch <= 0:
                 return
-
-
-
-
 
 
             wrapper_end = min(len(message), 256)
@@ -1928,7 +1875,6 @@ class MarketDataHub(QtCore.QObject):
             if self._depth_parser_worker is not None:
 
 
-
                 server_received_ms = self._server_clock_now_ms()
                 enqueue_mono_ms = time.perf_counter() * 1000.0
                 schedule_drain = self._depth_parser_worker.enqueue(
@@ -1945,11 +1891,6 @@ class MarketDataHub(QtCore.QObject):
                 if schedule_drain:
                     self._depth_drain_request.emit()
                 return
-
-
-
-
-
 
 
         parser_generation = (
@@ -2005,7 +1946,7 @@ class MarketDataHub(QtCore.QObject):
             epoch != self.depth_epoch
             or revision != self.depth_revision
             or self.stopping
-            or self.suspended
+
             or self.chart_only
             or not self.orderbook_streaming_enabled
         ):
@@ -2043,7 +1984,7 @@ class MarketDataHub(QtCore.QObject):
             return
         if (
             self.stopping
-            or self.suspended
+
             or not self.orderbook_streaming_enabled
             or not self.connected.get("public", False)
         ):
@@ -2082,24 +2023,16 @@ class MarketDataHub(QtCore.QObject):
         self.last_depth_event = time.monotonic()
         gui_dispatch_mono_ms = time.perf_counter() * 1000.0
         parser_done_mono_ms = safe_float(payload.get("_parser_done_mono_ms"))
-        if parser_done_mono_ms > 0.0 and gui_dispatch_mono_ms >= parser_done_mono_ms:
-            pass
         if self._depth_snapshot_retry_epoch == epoch:
             self._depth_snapshot_retry_epoch = None
             self._depth_snapshot_retry_count = 0
         payload["_gui_dispatch_mono_ms"] = gui_dispatch_mono_ms
 
 
-
         socket_mono_ms = safe_float(payload.get("_socket_received_mono_ms"))
         enqueue_mono_ms = safe_float(payload.get("_enqueue_mono_ms"))
         worker_start_mono_ms = safe_float(payload.get("_worker_start_mono_ms"))
         worker_resume_mono_ms = safe_float(payload.get("_worker_resume_mono_ms"))
-        processing_start_mono_ms = max(worker_start_mono_ms, worker_resume_mono_ms)
-        if processing_start_mono_ms > 0.0 and parser_done_mono_ms >= processing_start_mono_ms:
-            pass
-        if parser_done_mono_ms > 0.0 and gui_dispatch_mono_ms >= parser_done_mono_ms:
-            pass
 
         event_ms = safe_float(payload.get("E"))
         server_received_ms = safe_float(payload.get("_server_received_ms"))
@@ -2109,23 +2042,7 @@ class MarketDataHub(QtCore.QObject):
             candidate = server_received_ms - event_ms
             if -100.0 <= candidate < 60_000.0:
                 upstream_ms = max(0.0, candidate)
-            else:
-                pass
-        elif event_ms > 0.0:
-            pass
 
-        if clock_refreshed:
-            gauges = {
-                gauge_key: clock[source_key]
-                for gauge_key, source_key in (
-                    ("clock.offset_ms", "offset_ms"),
-                    ("clock.age_s", "age_s"),
-                    ("clock.rtt_ms", "rtt_ms"),
-                    ("clock.sync_count", "sync_count"),
-                    ("clock.last_error", "last_error"),
-                )
-                if source_key in clock and clock[source_key] is not None
-            }
 
         payload["_latency"] = {
             "event_ms": event_ms,
@@ -2153,7 +2070,7 @@ class MarketDataHub(QtCore.QObject):
         generation: int,
         packets: object,
     ) -> None:
-        if self.stopping or self.suspended:
+        if self.stopping:
             return
         if kind == "public":
             if not self.orderbook_streaming_enabled or generation != self.depth_epoch:
@@ -2345,7 +2262,7 @@ class MarketDataHub(QtCore.QObject):
         self._remember(self.chart_cache, key, payload, self._chart_cache_capacity())
         if request["timestamp"] is not None:
             self.chart_cache[key] = (request["timestamp"], payload)
-        active = (not self.suspended and key == (self.symbol, self.interval)
+        active = (key == (self.symbol, self.interval)
                   and request["generation"] == self.generation)
         if request["publish"] and active:
             self.bootstrap_ready.emit(self._chart_snapshot(payload))
@@ -2401,7 +2318,7 @@ class MarketDataHub(QtCore.QObject):
         def done(result: Any) -> None:
             self.tasks.discard(task)
             self._pending_reads.discard(request_key)
-            if not self.stopping and not self.suspended and (generation is None or generation == self.generation):
+            if not self.stopping and (generation is None or generation == self.generation):
                 finished(result)
             elif (
                 stale_finished is not None
@@ -2414,7 +2331,7 @@ class MarketDataHub(QtCore.QObject):
         def failed(message: str) -> None:
             self.tasks.discard(task)
             self._pending_reads.discard(request_key)
-            if on_failure is not None and not self.stopping and not self.suspended and (generation is None or generation == self.generation):
+            if on_failure is not None and not self.stopping and (generation is None or generation == self.generation):
                 on_failure(message)
             if (
                 report_failure
@@ -2440,7 +2357,7 @@ class MarketDataHub(QtCore.QObject):
 
     def _load_universe(self) -> None:
         """Load exchangeInfo and retry transient startup failures."""
-        if self.stopping or self.suspended or self.universe_loaded:
+        if self.stopping or self.universe_loaded:
             return
 
         def fetch() -> dict[str, Any]:
@@ -2450,7 +2367,7 @@ class MarketDataHub(QtCore.QObject):
                 return {"ok": False, "error": str(exc)}
 
         def loaded(result: dict[str, Any]) -> None:
-            if self.stopping or self.suspended:
+            if self.stopping:
                 return
             if result.get("ok"):
                 self.universe_loaded = True
@@ -2466,7 +2383,6 @@ class MarketDataHub(QtCore.QObject):
 
     def start(self, symbol: str, interval: str) -> None:
         self.stopping = False
-        self.suspended = False
         self.started = True
         self._ensure_parser_thread()
         self.watchdog_timer.start()
@@ -2476,8 +2392,6 @@ class MarketDataHub(QtCore.QObject):
 
         self.universe_loaded = False
         self._load_universe()
-
-
 
 
         self.refresh_market_overview()
@@ -2543,7 +2457,7 @@ class MarketDataHub(QtCore.QObject):
         if (
             self.started
             and not self.stopping
-            and not self.suspended
+
             and self._chart_prefetch_queue
             and not self._interaction_priority
             and self._chart_prefetch_active is None
@@ -2556,7 +2470,7 @@ class MarketDataHub(QtCore.QObject):
         if (
             self.chart_only
             or self.stopping
-            or self.suspended
+
             or self._interaction_priority
             or not self.started
             or self._chart_prefetch_active is not None
@@ -2588,7 +2502,7 @@ class MarketDataHub(QtCore.QObject):
 
             if (
                 not self.stopping
-                and not self.suspended
+
                 and payload.get("candles")
                 and key[0] in self.chart_prefetch_symbols
             ):
@@ -2598,10 +2512,9 @@ class MarketDataHub(QtCore.QObject):
             if (
                 self.started
                 and not self.stopping
-                and not self.suspended
+
                 and self._chart_prefetch_queue
             ):
-
 
 
                 self._chart_prefetch_timer.start(350)
@@ -2613,7 +2526,7 @@ class MarketDataHub(QtCore.QObject):
             if (
                 self.started
                 and not self.stopping
-                and not self.suspended
+
                 and self._chart_prefetch_queue
             ):
                 self._chart_prefetch_timer.start(700)
@@ -2621,7 +2534,7 @@ class MarketDataHub(QtCore.QObject):
         def fetch_prefetch() -> dict[str, Any]:
             if (
                 self.stopping
-                or self.suspended
+
                 or key[1] != self.interval
                 or key[0] == self.symbol
                 or key[0] not in self.chart_prefetch_symbols
@@ -2737,7 +2650,6 @@ class MarketDataHub(QtCore.QObject):
         if keep_connection:
 
 
-
             if not self.subscription_timer.isActive():
                 self.subscription_timer.start()
         else:
@@ -2774,7 +2686,6 @@ class MarketDataHub(QtCore.QObject):
                     key, local_payload, requested_at=local_requested_at,
                     publish=True, generation=generation, if_absent=True, timestamp=0.0,
                 )
-
 
 
             self._run(
@@ -2835,9 +2746,7 @@ class MarketDataHub(QtCore.QObject):
             if cached_now is not None and cached_now[0] >= requested_at:
 
 
-
                 return
-
 
 
             payload["oi_history"] = []
@@ -2846,7 +2755,7 @@ class MarketDataHub(QtCore.QObject):
             )
 
         def fetch_chart_snapshot() -> dict[str, Any]:
-            if generation != self.generation or self.stopping or self.suspended:
+            if generation != self.generation or self.stopping:
                 return {"_superseded": True}
             payload = self.rest.candles_snapshot(
                 selected_symbol,
@@ -2967,7 +2876,7 @@ class MarketDataHub(QtCore.QObject):
             self.chart_only
             or not self.orderbook_streaming_enabled
             or self.stopping
-            or self.suspended
+
             or self.depth_epoch <= 0
             or not self.connected.get("public", False)
         ):
@@ -3000,7 +2909,7 @@ class MarketDataHub(QtCore.QObject):
             epoch != self.depth_epoch
             or revision != self.depth_revision
             or self.stopping
-            or self.suspended
+
             or self.chart_only
             or not self.orderbook_streaming_enabled
         ):
@@ -3020,7 +2929,7 @@ class MarketDataHub(QtCore.QObject):
                 epoch != self.depth_epoch
                 or revision != self.depth_revision
                 or self.stopping
-                or self.suspended
+
                 or self.chart_only
                 or not self.orderbook_streaming_enabled
                 or not self.connected.get("public", False)
@@ -3071,7 +2980,6 @@ class MarketDataHub(QtCore.QObject):
         symbol = self.symbol
 
         def fetch() -> dict[str, Any]:
-            rest_started = time.perf_counter()
             try:
                 payload = self.rest.get(
                     "/fapi/v1/depth",
@@ -3101,12 +3009,11 @@ class MarketDataHub(QtCore.QObject):
             if self._depth_force_refresh_epoch == epoch:
 
 
-
                 self._depth_force_refresh_epoch = None
                 if (
                     epoch == self.depth_epoch
                     and not self.stopping
-                    and not self.suspended
+
                     and self.orderbook_streaming_enabled
                 ):
                     QTimer.singleShot(
@@ -3140,15 +3047,12 @@ class MarketDataHub(QtCore.QObject):
             self._depth_snapshot_seeded_at = time.monotonic()
 
 
-
             if self._depth_snapshot_retry_epoch == epoch:
                 self._depth_snapshot_retry_epoch = None
                 self._depth_snapshot_retry_count = 0
             if self._depth_parser_worker is not None:
                 self._depth_seed_request.emit(epoch, revision, payload)
                 return
-
-
 
 
             self._set_book_valid(False, "DEPTH WORKER UNAVAILABLE")
@@ -3169,7 +3073,7 @@ class MarketDataHub(QtCore.QObject):
     def _open_public_socket(self, generation: int) -> None:
         if (
             self.stopping
-            or self.suspended
+
             or self.chart_only
             or not self.orderbook_streaming_enabled
         ):
@@ -3188,7 +3092,7 @@ class MarketDataHub(QtCore.QObject):
         )
 
     def _open_market_socket(self, generation: int) -> None:
-        if self.stopping or self.suspended:
+        if self.stopping:
             return
         self._subscribed_interval = self.interval
         symbol = self.symbol.lower()
@@ -3213,14 +3117,14 @@ class MarketDataHub(QtCore.QObject):
         )
 
     def _open_market_sockets(self, generation: int) -> None:
-        if self.stopping or self.suspended:
+        if self.stopping:
             return
         if not self.chart_only and self.orderbook_streaming_enabled:
             self._open_public_socket(generation)
         self._open_market_socket(generation)
 
     def _open_ticker_socket(self) -> None:
-        if self.stopping or self.suspended:
+        if self.stopping:
             return
         streams = "!miniTicker@arr/!markPrice@arr@1s"
         self.ticker_socket = self._make_socket(
@@ -3230,7 +3134,7 @@ class MarketDataHub(QtCore.QObject):
         )
 
     def _resubscribe_kline(self) -> None:
-        if (self.stopping or self.suspended or not self.market_socket
+        if (self.stopping or not self.market_socket
                 or not self.connected["market"] or self._subscribed_interval == self.interval):
             return
         symbol = self.symbol.lower()
@@ -3310,9 +3214,8 @@ class MarketDataHub(QtCore.QObject):
             }.get(kind)
             if (
                 self.stopping
-                or self.suspended
-                or current_socket is not socket
 
+                or current_socket is not socket
 
 
                 or self._socket_generations.get(kind) != generation
@@ -3359,7 +3262,6 @@ class MarketDataHub(QtCore.QObject):
             if not self.chart_only and not self.book_valid:
 
 
-
                 self.book_validity.emit(False, self._book_invalid_reason)
             if self._chart_needs_repair:
                 self._repair_chart_history()
@@ -3380,7 +3282,7 @@ class MarketDataHub(QtCore.QObject):
         if kind == "ticker":
             if (
                 not self.stopping
-                and not self.suspended
+
                 and not self.ticker_reconnect_timer.isActive()
             ):
                 self._schedule_reconnect("ticker")
@@ -3396,7 +3298,7 @@ class MarketDataHub(QtCore.QObject):
             self._invalidate_depth_book(
                 "PUBLIC STREAM OFFLINE", freeze_worker=True, request_snapshot=False
             )
-        if self.stopping or self.suspended:
+        if self.stopping:
             return
         self.status.emit("RECONNECTING", False)
         if kind == "market":
@@ -3416,13 +3318,12 @@ class MarketDataHub(QtCore.QObject):
             "market": self.market_socket,
             "ticker": self.ticker_socket,
         }.get(kind)
-        if self.stopping or self.suspended:
+        if self.stopping:
             return
         if kind == "public" and not self.orderbook_streaming_enabled:
             return
 
         if kind == "ticker":
-
 
 
             if socket is not None and socket.state() != QtNetwork.QAbstractSocket.SocketState.UnconnectedState:
@@ -3441,7 +3342,6 @@ class MarketDataHub(QtCore.QObject):
             self._chart_needs_repair = True
 
 
-
         if socket is not None and socket.state() != QtNetwork.QAbstractSocket.SocketState.UnconnectedState:
             socket.abort()
         self._socket_disconnected(kind, generation, socket)
@@ -3457,7 +3357,7 @@ class MarketDataHub(QtCore.QObject):
         timer.start(int(min(30_000, 1000 * 2 ** attempt) + random.uniform(0, 500)))
 
     def _check_sockets(self) -> None:
-        if self.stopping or self.suspended:
+        if self.stopping:
             return
         now = time.monotonic()
         self._check_depth_progress_health(now)
@@ -3492,12 +3392,12 @@ class MarketDataHub(QtCore.QObject):
         self._chart_repair_revision += 1
         if start_time is not None:
             self._chart_gap_start = min(self._chart_gap_start, start_time) if self._chart_gap_start is not None else start_time
-        if not self._chart_repair_timer.isActive() and not self.stopping and not self.suspended:
+        if not self._chart_repair_timer.isActive() and not self.stopping:
             delay = min(30000, 1500 * (2 ** min(self._chart_repair_attempts, 5)))
             self._chart_repair_timer.start(delay)
 
     def _repair_chart_history(self):
-        if not self._chart_needs_repair or self.stopping or self.suspended or not self.connected.get("market", False):
+        if not self._chart_needs_repair or self.stopping or not self.connected.get("market", False):
             return
         generation, symbol, interval = self.generation, self.symbol, self.interval
         revision = self._chart_repair_revision
@@ -3526,7 +3426,7 @@ class MarketDataHub(QtCore.QObject):
             )
 
         def fetch_repair() -> dict[str, Any]:
-            if generation != self.generation or self.stopping or self.suspended:
+            if generation != self.generation or self.stopping:
                 return {"_superseded": True, "candles": []}
             payload = self.rest.candles_snapshot(symbol, interval, priority='repair')
             rows = payload.get("candles", [])
@@ -3562,7 +3462,7 @@ class MarketDataHub(QtCore.QObject):
                   report_failure=False, request_key=("repair", generation), on_failure=failed)
 
     def _reconnect_leg(self, kind: str) -> None:
-        if self.stopping or self.suspended:
+        if self.stopping:
             return
         if kind == "public":
             if (
@@ -3590,7 +3490,7 @@ class MarketDataHub(QtCore.QObject):
         )
 
     def _reconnect_tickers(self) -> None:
-        if not self.stopping and not self.suspended:
+        if not self.stopping:
             self._close_ticker_socket()
             self._open_ticker_socket()
 
@@ -3682,7 +3582,7 @@ class MarketDataHub(QtCore.QObject):
         enabled = bool(enabled)
         if enabled == self.orderbook_streaming_enabled:
 
-            if enabled and self.started and not self.stopping and not self.suspended:
+            if enabled and self.started and not self.stopping:
                 self._sync_agg_trade_subscription()
                 if self.public_socket is None:
                     epoch = self._begin_depth_epoch(self.symbol)
@@ -3690,7 +3590,6 @@ class MarketDataHub(QtCore.QObject):
                     self._load_depth_snapshot(epoch)
                     self.depth_fallback_timer.start()
             return
-
 
 
         self.market_epoch += 1
@@ -3712,7 +3611,7 @@ class MarketDataHub(QtCore.QObject):
             self._sync_agg_trade_subscription()
             return
 
-        if self.stopping or self.suspended or not self.started:
+        if self.stopping or not self.started:
             self._set_book_valid(False, "PAUSED")
             return
 
@@ -3734,7 +3633,6 @@ class MarketDataHub(QtCore.QObject):
         self.market_epoch += 1
         self.depth_epoch += 1
         self._pending_reads.clear()
-        self.suspended = False
         self.started = False
         self.oi_timer.stop()
         self.analysis_timer.stop()
@@ -3751,58 +3649,11 @@ class MarketDataHub(QtCore.QObject):
         self._close_ticker_socket()
         self._stop_parser_thread()
 
-    def suspend_for_history(self) -> None:
-        """Pause public live traffic while the modal research download owns bandwidth."""
-        if self.stopping or not self.started or self.suspended:
-            return
-        self.suspended = True
-        self.watchdog_timer.stop()
-        self.oi_timer.stop()
-        self.analysis_timer.stop()
-        self.overview_timer.stop()
-        self.depth_fallback_timer.stop()
-        self.public_reconnect_timer.stop()
-        self.market_reconnect_timer.stop()
-        self.ticker_reconnect_timer.stop()
-        self.universe_retry_timer.stop()
-        self._chart_prefetch_timer.stop()
-        self._close_market_sockets()
-        self._close_ticker_socket()
-        self.status.emit("HISTORY DOWNLOAD", False)
-
-    def resume_after_history(self) -> None:
-        if self.stopping or not self.started or not self.suspended:
-            return
-        self.suspended = False
-        self.watchdog_timer.start()
-        self.generation += 1
-        generation = self.generation
-        depth_epoch = (
-            self._begin_depth_epoch(self.symbol)
-            if not self.chart_only and self.orderbook_streaming_enabled
-            else 0
-        )
-        self.status.emit("CONNECTING", False)
-        self._open_market_sockets(generation)
-        if self.chart_only:
-            return
-        self._open_ticker_socket()
-        if depth_epoch:
-            self._load_depth_snapshot(depth_epoch)
-        if not self.universe_loaded:
-            self._load_universe()
-        self.refresh_market_overview()
-        self.oi_timer.start()
-        self.analysis_timer.start()
-        self.overview_timer.start()
-        if self.orderbook_streaming_enabled:
-            self.depth_fallback_timer.start()
-        self._rebuild_chart_prefetch_queue()
 
     def set_market_data_api_key(self, api_key: str) -> None:
         changed = self.rest.market_data_api_key != str(api_key or "").strip()
         self.rest.set_market_data_api_key(api_key)
         if changed:
             self.analysis_cache.clear()
-            if not self.chart_only and not self.suspended and self.chart_cache:
+            if not self.chart_only and self.chart_cache:
                 QTimer.singleShot(0, self.refresh_analysis)

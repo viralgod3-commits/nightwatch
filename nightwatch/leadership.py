@@ -38,8 +38,6 @@ LEADERS_REFRESH_MS = 300_000
 log = logging.getLogger(__name__)
 
 
-
-
 LEADERS_PALETTE: dict[str, str] = {
     "bg": "#000000",
     "panel": "#000000",
@@ -129,8 +127,6 @@ def _metrics(series: dict[int, Candle], btc: dict[int, Candle], end: int, high_b
     usd1 = (last.close / last.open - 1) * 100 if last and last.open > 0 else None
 
 
-
-
     score = None
     if rs4 is not None:
         score_value = 50.0
@@ -194,7 +190,6 @@ def _load_batch(rest: Any, db: Any, symbols: list[str], end: int,
             by_end.pop(end, None)
         result["series"][symbol] = {key: row for key, row in by_end.items() if start < key <= end}
         if symbol != BENCHMARK and not cancel.is_set():
-
 
 
             spot_interval = "spot:1h"
@@ -279,10 +274,6 @@ def _load_details(rest: Any, symbol: str, end: int, live: bool,
     return result
 
 
-
-
-
-
 class _LeaderAnalysis:
     """Snapshot of completed histories and filter values, without Qt controls."""
 
@@ -332,7 +323,6 @@ class _LeaderAnalysis:
             available.sort(key=lambda symbol: -(self.metrics.get(symbol, {}).get("score") or 0))
         available.sort(key=value, reverse=descending if mode != "state" else not descending)
         return available + missing
-
 
 
 def _prepare_leaders(state):
@@ -486,23 +476,6 @@ class LeadershipTimelineWidget(QtWidgets.QWidget):
     def _build_ui(self):
         build_leaders(self)
 
-    @staticmethod
-    def _panel(title: str, subtitle: str) -> tuple[QtWidgets.QFrame, QtWidgets.QVBoxLayout]:
-        panel = QtWidgets.QFrame()
-        panel.setObjectName("leadershipPanel")
-        panel.setMinimumHeight(270)
-        layout = QtWidgets.QVBoxLayout(panel)
-        layout.setContentsMargins(14, 12, 10, 10)
-        layout.setSpacing(5)
-        heading = QtWidgets.QLabel(title)
-        heading.setObjectName("leadershipPanelTitle")
-        set_text_role(heading, TextRole.PANEL_TITLE)
-        layout.addWidget(heading)
-        caption = ElidedLabel(subtitle)
-        caption.setObjectName("leadershipCaption")
-        set_text_role(caption, TextRole.UI_CAPTION)
-        layout.addWidget(caption)
-        return panel, layout
 
     @staticmethod
     def chart_icon() -> QtGui.QIcon:
@@ -621,7 +594,6 @@ class LeadershipTimelineWidget(QtWidgets.QWidget):
             self.refresh()
 
 
-
     def _cache_failed(self, error: str) -> None:
         log.warning("Could not restore Leaders snapshot: %s", error)
         self._cache_restored(None)
@@ -670,7 +642,6 @@ class LeadershipTimelineWidget(QtWidgets.QWidget):
         return []
 
     def set_tickers(self, tickers: dict[str, dict[str, Any]]) -> None:
-
 
 
         self.tickers = tickers
@@ -1100,7 +1071,6 @@ class LeadershipTimelineWidget(QtWidgets.QWidget):
         self.watch_button.setEnabled(bool(self.selected) and self.watchlist is not None)
         self.chart_button.setText("Open " + self.selected.removesuffix("USDT") if self.selected else "Open chart")
 
-        all_ordered = prepared["all_ordered"]
         for state, cards in self.cards.items():
             candidates = prepared["candidates"].get(state, [])
             self.empty[state].setVisible(not candidates)
@@ -2217,7 +2187,6 @@ def build_leaders(owner) -> None:
     header_layout.addWidget(venue, 0, Qt.AlignmentFlag.AlignVCenter)
 
 
-
     strip = QtWidgets.QFrame()
     strip.setObjectName("leadersContextStrip")
     strip_layout = QtWidgets.QHBoxLayout(strip)
@@ -2417,7 +2386,6 @@ def build_leaders(owner) -> None:
     outer.addWidget(owner.scope)
 
 
-
     support = QtWidgets.QWidget(owner)
     support.hide()
     support_layout = QtWidgets.QVBoxLayout(support)
@@ -2571,7 +2539,7 @@ def update_dashboard(owner, prepared) -> None:
 
     gainers, losers = prepared["gainers"], prepared["losers"]
 
-    def fill(rows, symbols, positive_side: bool) -> None:
+    def fill(rows, symbols) -> None:
         for index, widgets in enumerate(rows):
             symbol_label, name_label, change_label = widgets
             if index < len(symbols):
@@ -2602,8 +2570,8 @@ def update_dashboard(owner, prepared) -> None:
                 if change_label.styleSheet():
                     change_label.setStyleSheet("")
 
-    fill(owner.gainer_rows, gainers[:5], True)
-    fill(owner.loser_rows, losers[:5], False)
+    fill(owner.gainer_rows, gainers[:5])
+    fill(owner.loser_rows, losers[:5])
 
     counts = prepared["counts"]
     owner.distribution_bar.set_counts(dict(counts))
@@ -2627,7 +2595,6 @@ def update_dashboard(owner, prepared) -> None:
 
 def leaders_stylesheet(theme: dict[str, str] | None = None) -> str:
     """Neutral-black NEXUS-style chrome aligned to the shared Nightwatch theme."""
-    from . import constants
 
     theme = theme or {}
     bg = theme.get("bg", "#0B0D11")
@@ -2645,8 +2612,6 @@ def leaders_stylesheet(theme: dict[str, str] | None = None) -> str:
     active_line = theme.get("active_line", "#8AA9FF")
     green = theme.get("green", "#4DDFA4")
     red = theme.get("red", "#FF7A85")
-    font = constants.UI_FONT_FAMILY
-    number = constants.NUMERIC_FONT_FAMILY or font
 
     return f"""
         QWidget#leadershipTimeline, QWidget#leadershipBody, QScrollArea#leadershipScroll {{
@@ -2758,9 +2723,6 @@ def leaders_stylesheet(theme: dict[str, str] | None = None) -> str:
     """
 
 
-
-
-
 _SECTOR_OVERVIEW_MINUTE = 60_000
 _SECTOR_OVERVIEW_QUARTER = 15 * _SECTOR_OVERVIEW_MINUTE
 _SECTOR_OVERVIEW_HOUR = 60 * _SECTOR_OVERVIEW_MINUTE
@@ -2796,11 +2758,9 @@ def _sector_overview_sector_color(sector: str, theme: dict[str, str], *, for_tex
     surface = QtGui.QColor(theme.get("panel", theme.get("bg", "#0B0D11")))
 
 
-
     if surface.lightnessF() > 0.62:
         raw = raw.darker(165 if for_text else 145)
     return raw.name()
-
 
 
 _SECTOR_OVERVIEW_SECTOR_MEMBERSHIP: dict[str, str] = {
@@ -4163,7 +4123,6 @@ class SectorOverviewWidget(QtWidgets.QWidget):
             "spot_15m": symbol != _SECTOR_OVERVIEW_BENCHMARK and not spot15_ready and not attempted("spot_15m", self.end_15m),
 
 
-
             "futures_1h": not hourly_ready and not leader_pending and not attempted("futures_1h", self.end_hour),
             "spot_1h": symbol != _SECTOR_OVERVIEW_BENCHMARK and not spot_hourly_ready and not leader_pending and not attempted("spot_1h", self.end_hour),
             "daily": symbol != _SECTOR_OVERVIEW_BENCHMARK and not daily_ready and not attempted("daily", day_stamp),
@@ -4377,7 +4336,6 @@ class SectorOverviewWidget(QtWidgets.QWidget):
                 if _sector_overview_finite(value):
                     item.setForeground(QtGui.QColor(self.theme.get("green", "#4DDFA4") if value >= 0 else self.theme.get("red", "#FF7A85")))
                 self.table.setItem(row, column, item)
-            delta = sector_metrics.get("share_delta")
             current = sector_metrics.get("volume_share")
             previous = sector_metrics.get("previous_volume_share")
             share_text = (
@@ -4519,7 +4477,6 @@ class SectorOverviewWidget(QtWidgets.QWidget):
 
 
 import math
-
 
 
 def encode_histories(histories, end):
@@ -5217,7 +5174,6 @@ class RotationScannerWidget(LeadershipTimelineWidget):
 
     def __init__(self, _ignored_theme=None, parent=None):
         self.leadership = None
-        self._view_revision = 0
         self._rotation_revision = None
         self._filtered_points = []
         self._sort_column = 2
@@ -5523,7 +5479,6 @@ class RotationScannerWidget(LeadershipTimelineWidget):
     def _view_changed(self, *_):
         if self.closing:
             return
-        self._view_revision += 1
         context = (self.generation, self.cursor_end(), tuple(self.symbols), self.span.currentData())
         if self._prepared_analysis and context == self._rotation_revision and self.active and not self._interaction_paused:
             was_rendering = self._rendering
@@ -5782,7 +5737,6 @@ class RotationScannerWidget(LeadershipTimelineWidget):
             blocker = QtCore.QSignalBlocker(widget)
             widget.clear() if widget is self.search else widget.setChecked(False)
             del blocker
-        self._view_revision += 1
         self._filters_changed()
         self.render()
 
@@ -5970,5 +5924,3 @@ def rotation_stylesheet():
 
 
 # Host projects may use either naming convention; all expose the identical widget.
-RotationWidget = RotationScannerWidget
-RotationTimelineWidget = RotationScannerWidget

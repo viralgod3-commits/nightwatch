@@ -356,18 +356,9 @@ ORDERBOOK_STATE_ACRONYMS = {
     "NORMAL": "",
 }
 
-ORDERBOOK_STATE_COLORS = {
-    "ABSORBING": "#35C4B2",
-    "PULLING": "#D1A248",
-    "STACKING": "#8F7AC8",
-    "DEPLETING": "#F26B4B",
-    "PERSISTENT": "#B7A6E2",
-}
 
 ORDERBOOK_STATE_MIN_WIDTH = 30
 ORDERBOOK_STATE_FULL_LABEL_WIDTH = 54
-ORDERBOOK_CONTROL_BAR_HEIGHT = 42
-ORDERBOOK_CONTROL_BUTTON_HEIGHT = 30
 
 DIRECTIONAL_COLOR_MODE_OPTIONS = (
     ("theme", "Theme colors"),
@@ -516,7 +507,6 @@ DEV_UI_COLOR_PROFILE_FIELDS = DEV_UI_COLOR_FIELDS
 
 # Named developer color presets remain retired. A clean reset returns to the
 # currently selected base theme, preserving the resolver as the only color path.
-DEV_UI_COLOR_PRESETS: dict[str, dict[str, str]] = {}
 
 
 # Layout presets intentionally operate on the existing v1 geometry contract so

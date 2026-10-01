@@ -6,7 +6,6 @@ import html
 import json
 import math
 import os
-import sqlite3
 import time
 import threading
 from collections import deque
@@ -62,8 +61,6 @@ from ..constants import (
     DEFAULT_SYMBOL,
     DEFAULT_TRADING_HOTKEYS,
     LOW_PRIORITY_TRADING_HOTKEYS,
-    DEV_UI_COLOR_FIELDS,
-    DEV_UI_COLOR_PRESETS,
     DEV_UI_COLOR_PROFILE_FIELDS,
     DEV_UI_LAYOUT_DEFAULTS,
     DEV_UI_STATUS_COLOR_FIELDS,
@@ -76,7 +73,6 @@ from ..constants import (
     INITIAL_CHART_WARM_CANDLES,
     MARKET_SORT_MODES,
     MARKET_VOLUME_CACHE_SECONDS,
-    MAX_CHART_CANDLES,
     ORG_NAME,
     RIGHT_PANEL_DEFAULT_SIZES,
     RIGHT_PANEL_NAMES,
@@ -93,7 +89,6 @@ from ..models import (
     MicrostructureSnapshot,
     ORDER_FLOW_AGGREGATION_MULTIPLIERS,
     OrderFlowPresentationFrame,
-    OrderFlowSnapshot,
     TradingGatewayPort,
 )
 from ..leadership import LeadershipTimelineWidget, SectorOverviewWidget, RotationScannerWidget
@@ -135,7 +130,6 @@ from ..trading.trading_ui import (
     CompactOrdersWidget,
     OrderPanel,
     QuickTradingSettingsDialog,
-    TradingHotkeysDialog,
     TradingWorkspace,
 )
 from ..ui.developer_tools import (
@@ -436,9 +430,6 @@ def prepare_universe(payload: dict[str, Any]) -> UniversePreparation:
     )
 
 
-NIGHTWATCH_PATCH = "20260929-hotkey-timeframe-focus/app/main_window.py"
-
-
 class _TickerPreparation:
     """Single-consumer ingress; published ticker rows are never mutated again."""
 
@@ -539,7 +530,6 @@ class MainWindow(QtWidgets.QMainWindow):
         self._native_application_palette = (
             QtGui.QPalette(application.palette()) if application is not None else None
         )
-        self._native_window_palette = QtGui.QPalette(self.palette())
         self.settings = QSettings(ORG_NAME, APP_NAME)
         # Secondary shell presentation is dirty-driven. Chart navigation owns a
         # dedicated refresh-aware clock so ticker/UI work can never extend a
@@ -810,7 +800,6 @@ class MainWindow(QtWidgets.QMainWindow):
         # Right-rail geometry/visibility is loaded once by RightRailController
         # after the actual panel contents exist. These aliases are synchronized
         # from its authoritative state for legacy call sites and UI labels.
-        self.right_panel_columns = 1
         self.ticker_sort_mode = self.settings.value("ticker_sort_v2", "gainers", str)
         if self.ticker_sort_mode not in MARKET_SORT_MODES:
             self.ticker_sort_mode = "gainers"
@@ -842,7 +831,6 @@ class MainWindow(QtWidgets.QMainWindow):
         self._order_flow_depth_capacity = 120
         self._order_flow_depth_timing_counter = 0
         self._order_flow_diagnostic_state: dict[str, Any] = {}
-        self.latest_order_flow_snapshot = self._empty_order_flow_snapshot(self.current_symbol)
         self._order_flow_runtime_thread = QtCore.QThread(self)
         self._order_flow_runtime_thread.setObjectName("nightwatch-order-flow")
         self._order_flow_runtime = OrderFlowRuntime(
@@ -1006,7 +994,6 @@ class MainWindow(QtWidgets.QMainWindow):
         self.best_ask = 0.0
         self._armed_order_side = ""
         self._armed_order_deadline = 0.0
-        self._armed_order_expired = False
         self._armed_order_timer = QTimer(self)
         self._armed_order_timer.setSingleShot(True)
         self._armed_order_timer.setTimerType(Qt.TimerType.PreciseTimer)
@@ -1080,7 +1067,6 @@ class MainWindow(QtWidgets.QMainWindow):
         self.market_event_task: ApiTask | None = None
         self.last_recorded_depth = 0.0
         self.last_recorded_funding = 0.0
-        self.last_metric_detail_update = 0.0
         self._top_metrics_dirty = False
         self._top_metrics_timer = QTimer(self)
         self._top_metrics_timer.setSingleShot(True)
@@ -1095,7 +1081,6 @@ class MainWindow(QtWidgets.QMainWindow):
         self._latest_trading_snapshot: dict[str, Any] = {}
         self._dom_context_signature: tuple[Any, ...] | None = None
         self._chart_orders_signature: tuple[Any, ...] | None = None
-        trading_gateway_started = time.perf_counter()
         self.trading_gateway: TradingGatewayPort = self._composition.create_trading_gateway()
         # Session-only safety gate: the first attempted trade after arming is
         # confirmed once, then every later order in this app run is immediate.
@@ -1117,7 +1102,6 @@ class MainWindow(QtWidgets.QMainWindow):
         available = screen.availableGeometry() if screen else QtCore.QRect(0, 0, 1720, 1040)
         self.setMinimumHeight(min(600, max(320, available.height() - 80)))
         self.resize(min(1720, available.width()), min(1040, available.height()))
-        build_ui_started = time.perf_counter()
         self._build_ui()
         self._sync_shell_minimum_width()
         # Synchronize ChartWorkspace with the canonical restored/requested timeframe
@@ -1125,12 +1109,10 @@ class MainWindow(QtWidgets.QMainWindow):
         # requested with ``self.current_interval``; without this preparation the
         # chart keeps its constructor default interval and silently rejects the
         # first bootstrap snapshot/live klines when the persisted timeframe differs.
-        chart_prepare_started = time.perf_counter()
         self.chart.prepare_market(self.current_interval, reset_analysis=True)
         self._apply_developer_ui_layout()
         self._apply_developer_ui_status()
         QtWidgets.QApplication.instance().installEventFilter(self)
-        stylesheet_started = time.perf_counter()
         self._apply_stylesheet()
         self._reset_top_metrics()
         # Chart interaction priority protects direct manipulation frame time.
@@ -1238,7 +1220,6 @@ class MainWindow(QtWidgets.QMainWindow):
         self.watchlist.symbols_changed.connect(self._watchlist_changed)
         self.watchlist.groups_changed.connect(self._watchlist_groups_changed)
 
-        restore_layout_started = time.perf_counter()
         self._restore_layout()
         self._restore_current_symbol_drawings()
         self._apply_chart_visibility_mode(show_status=False)
@@ -1287,7 +1268,6 @@ class MainWindow(QtWidgets.QMainWindow):
     def _ensure_app_database(self) -> Any:
         db = self.app_db
         if db is None:
-            started = time.perf_counter()
             db = self._composition.create_database()
             self.app_db = db
             self._startup_mark("research database ready")
@@ -1304,7 +1284,6 @@ class MainWindow(QtWidgets.QMainWindow):
         hub = self.hub
         if hub is not None:
             return hub
-        started = time.perf_counter()
         db = self._ensure_app_database()
         hub = self._composition.create_market_data_hub(db)
         self.hub = hub
@@ -1321,11 +1300,11 @@ class MainWindow(QtWidgets.QMainWindow):
         )
         if self.market_board is not None:
             self.market_board.bind_sources(
-                hub.rest, db, self.watchlist, lambda: not hub.suspended
+                hub.rest, db, self.watchlist, lambda: True
             )
         if self.sector_overview is not None and self.market_board is not None:
             self.sector_overview.bind_sources(
-                hub.rest, db, self.market_board, lambda: not hub.suspended
+                hub.rest, db, self.market_board, lambda: True
             )
         hub.universe_ready.connect(self._on_universe)
         hub.bootstrap_ready.connect(self._on_bootstrap)
@@ -1367,7 +1346,6 @@ class MainWindow(QtWidgets.QMainWindow):
             # as an embedded peer of the order book.
             QTimer.singleShot(0, self._run_deferred_startup_stage)
         elif stage == 3:
-            crisp_started = time.perf_counter()
             self._configure_crisp_ui()
             self._startup_mark("deferred startup stages complete")
             # Settings is intentionally prewarmed only after the visible shell,
@@ -1508,7 +1486,6 @@ class MainWindow(QtWidgets.QMainWindow):
 
         toolbar_height = MainToolbar.HEIGHT
         news_ribbon_height = 40
-        self._toolbar_height = toolbar_height
         self._news_ribbon_height = news_ribbon_height
 
         # One-click panel layouts sit immediately to the left of Settings.
@@ -1675,7 +1652,6 @@ class MainWindow(QtWidgets.QMainWindow):
         outer.addWidget(self.main_toolbar)
         self.instrument_bar = InstrumentBar(self.stats)
 
-        chart_build_started = time.perf_counter()
         self.chart = ChartWorkspace(
             self.chart_theme,
             use_opengl=self.testing_flags["chart_opengl"],
@@ -1805,7 +1781,6 @@ class MainWindow(QtWidgets.QMainWindow):
         self.orderbook.presentation_changed.connect(
             self._persist_orderbook_presentation
         )
-        trading_build_started = time.perf_counter()
         self.trading_workspace = TradingWorkspace(
             self.ui_theme,
             self.trading_gateway,
@@ -1856,7 +1831,6 @@ class MainWindow(QtWidgets.QMainWindow):
         self.main_splitter.setContentsMargins(0, 0, 0, 0)
         self.main_splitter.setObjectName("mainChartSplitter")
 
-        right_rail_build_started = time.perf_counter()
         self.right_rail_controller = RightRailController(
             self.settings,
             [
@@ -1880,7 +1854,6 @@ class MainWindow(QtWidgets.QMainWindow):
         )
         self.right_rail_host = self.right_rail_controller.rail
         self.panel_sections = self.right_rail_controller.sections
-        self.right_panel_columns = self.right_rail_controller.column_mode
         self.right_layout_preset = self.right_rail_controller.state.active_preset
         self.right_rail_controller.state_changed.connect(self._right_rail_state_changed)
         self.right_rail_controller.composition_changed.connect(self._right_rail_composition_changed)
@@ -1990,7 +1963,6 @@ class MainWindow(QtWidgets.QMainWindow):
         # The legacy menus remain as internal QAction containers so keyboard
         # shortcuts and existing action wiring remain stable. They are never
         # shown; Settings is the sole visible configuration entry point.
-        menu_build_started = time.perf_counter()
         menu_bar = self.menuBar()
         self._legacy_menu_bar = menu_bar
         menu_bar.setNativeMenuBar(False)
@@ -2469,13 +2441,6 @@ class MainWindow(QtWidgets.QMainWindow):
         if container is not None:
             container.set_order_rail_lab_config(self.magnetic_rail_config)
 
-    def set_magnetic_rail_config_value(self, key: str, value: Any) -> None:
-        # Magnetic-rail customization is intentionally preset-level only.
-        if key not in ORDER_RAIL_USER_KEYS:
-            return
-        config = dict(self.magnetic_rail_config)
-        config[key] = value
-        self.set_magnetic_rail_config(config)
 
     def developer_ui_profile_snapshot(self) -> dict[str, Any]:
         """Return the complete effective visual profile in portable JSON form."""
@@ -2716,8 +2681,6 @@ class MainWindow(QtWidgets.QMainWindow):
         return True
 
 
-
-
     def _effective_ui_color_overrides(self) -> dict[str, str]:
         """Return explicit Developer overrides for the canonical base theme.
 
@@ -2791,8 +2754,6 @@ class MainWindow(QtWidgets.QMainWindow):
         self.orderbook_theme = orderbook_directional_palette(
             self.ui_theme, self.directional_color_modes.get("orderbook", "theme")
         )
-
-
 
 
     def _load_developer_ui_colors(self) -> dict[str, str]:
@@ -3051,31 +3012,12 @@ class MainWindow(QtWidgets.QMainWindow):
         if name == "Theme default":
             self.reset_developer_ui_colors()
             return
-        preset = DEV_UI_COLOR_PRESETS.get(name)
-        if preset is None:
-            return
         # Decorative presets leave advanced market/depth overrides intact.
-        self.developer_ui_colors.update({
-            key: str(value).upper()
-            for key, value in preset.items()
-            if key in {field for field, _label in DEV_UI_COLOR_FIELDS}
-        })
-        self.settings.setValue(
-            "developer/ui_color_overrides_v2",
-            json.dumps(self.developer_ui_colors, separators=(",", ":")),
-        )
-        self._refresh_developer_ui_colors()
 
     def current_developer_ui_color_preset(self) -> str:
         """Return the named palette matching the effective shell colors."""
         if not self.developer_ui_colors:
             return "Theme default"
-        for name, preset in DEV_UI_COLOR_PRESETS.items():
-            if all(
-                str(self.ui_theme.get(key, "")).upper() == str(value).upper()
-                for key, value in preset.items()
-            ):
-                return name
         return "Custom"
 
     def reset_developer_ui_colors(self) -> None:
@@ -3172,22 +3114,6 @@ class MainWindow(QtWidgets.QMainWindow):
             axis_width=v["axis_width"],
         )
 
-    def _show_ui_tuner(self) -> None:
-        self._show_settings_window("Developer")
-        if self.settings_dialog is not None:
-            self.settings_dialog.select_developer_tool("ui_tuner")
-
-    def _show_developer_panel(self) -> None:
-        self._show_settings_window("Developer")
-        if self.settings_dialog is not None:
-            app = QtWidgets.QApplication.instance()
-            enabled = bool(app is not None and app.property("nightwatchDiagnosticsEnabled"))
-            self.settings_dialog.select_developer_tool("diagnostics" if enabled else "ui_tuner")
-
-    def _show_magnetic_rail_lab(self) -> None:
-        self._show_settings_window("Developer")
-        if self.settings_dialog is not None:
-            self.settings_dialog.select_developer_tool("magnetic_rail")
 
     def _show_hotkeys_reference(self) -> None:
         dialog = QtWidgets.QDialog(self)
@@ -3551,7 +3477,7 @@ class MainWindow(QtWidgets.QMainWindow):
             ),
         )
         self.right_rail_controller.capture_geometry()
-        self.right_rail_controller.save_state(remove_legacy=True)
+        self.right_rail_controller.save_state()
         self.settings.remove("main_splitter_v4")
         self.settings.setValue("right_layout_preset", self.right_layout_preset)
         self.settings.setValue(
@@ -4093,7 +4019,7 @@ class MainWindow(QtWidgets.QMainWindow):
         ]
         symbols = list(dict.fromkeys(symbols))
         hub = self.hub
-        if not symbols or hub is None or hub.suspended:
+        if not symbols or hub is None:
             return
         if self.watchlist_hour_task is not None:
             if force:
@@ -4151,7 +4077,7 @@ class MainWindow(QtWidgets.QMainWindow):
     def _refresh_search_hour_changes(self, restart: bool = False) -> None:
         dialog = self.symbol_search_dialog
         hub = self.hub
-        if dialog is None or self.history_cancel_requested or hub is None or hub.suspended:
+        if dialog is None or self.history_cancel_requested or hub is None:
             return
         if restart:
             self.search_hour_queue = list(dialog.symbols)
@@ -4322,7 +4248,6 @@ class MainWindow(QtWidgets.QMainWindow):
         self._armed_order_timer.stop()
         self._armed_order_side = ""
         self._armed_order_deadline = 0.0
-        self._armed_order_expired = False
 
     def _expire_armed_order_sequence(self) -> None:
         if not self._armed_order_side:
@@ -4335,7 +4260,6 @@ class MainWindow(QtWidgets.QMainWindow):
         self._armed_order_timer.stop()
         self._armed_order_side = ""
         self._armed_order_deadline = 0.0
-        self._armed_order_expired = True
         self.statusBar().showMessage(
             f"QUICK {side} EXPIRED · PRESS {'B' if side == 'BUY' else 'S'} AGAIN",
             2200,
@@ -4357,7 +4281,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.lazy_chart_history_task is not None
             or self.market_history_dialog is not None
             or hub is None
-            or hub.suspended
+
             or not self.chart.candles
             # Daily/weekly/monthly charts keep their initial snapshot and page
             # on demand instead of prewarming 5,800 bars on every timeframe.
@@ -4406,8 +4330,6 @@ class MainWindow(QtWidgets.QMainWindow):
             fetched: list[Candle] = []
             exhausted = False
             superseded = False
-            if remaining == 0:
-                pass
             network_before_ms = (
                 int(round(local[0].time * 1000.0))
                 if local
@@ -4417,7 +4339,7 @@ class MainWindow(QtWidgets.QMainWindow):
             while remaining > 0:
                 if (
                     generation != hub.generation
-                    or hub.suspended
+
                     or hub.stopping
                 ):
                     superseded = True
@@ -4502,7 +4424,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.lazy_chart_history_task is not None
             or self.market_history_dialog is not None
             or hub is None
-            or hub.suspended
+
             or not self.chart.candles
         ):
             self.chart.history_request_failed()
@@ -4549,7 +4471,7 @@ class MainWindow(QtWidgets.QMainWindow):
             if remaining > 0:
                 if (
                     generation != hub.generation
-                    or hub.suspended
+
                     or hub.stopping
                 ):
                     superseded = True
@@ -4565,8 +4487,6 @@ class MainWindow(QtWidgets.QMainWindow):
                     if fetched:
                         db.cache_candles(symbol, interval, fetched)
                     exhausted = len(fetched) < remaining
-            else:
-                pass
 
             # At most 1,000 rows: small-page de-duplication is cheap and avoids
             # relying on perfect local/network boundary alignment.
@@ -4859,7 +4779,6 @@ class MainWindow(QtWidgets.QMainWindow):
             # Quick trading being unlocked must not monopolize timeframe keys.
             # Once the B/S prefix has expired (or was never entered), let this
             # exact key event continue to the existing numeric timeframe handler.
-            self._armed_order_expired = False
             return False
         if typed.isalpha():
             self._reset_armed_order_sequence()
@@ -5906,7 +5825,6 @@ class MainWindow(QtWidgets.QMainWindow):
         reference = self.stats.last_interest_reference
         open_interest = safe_float(interest.get("openInterest")) * reference
 
-        self.last_metric_detail_update = time.monotonic()
 
         premium = self.market_detail.get("premium") or {}
         funding_history = list(self.market_detail.get("funding_history") or [])
@@ -6065,7 +5983,6 @@ class MainWindow(QtWidgets.QMainWindow):
             self.trading_gateway.ensure_cross(symbol)
         self.alert_center.set_market(symbol, self.current_interval)
         self.market_detail = {}
-        self.last_metric_detail_update = 0.0
         self.stats.set_symbol(symbol)
         self.stats.reset()
         self._reset_top_metrics()
@@ -6153,7 +6070,7 @@ class MainWindow(QtWidgets.QMainWindow):
     def download_market_history(self) -> None:
         if self.history_task is not None or self.market_history_dialog is not None:
             return
-        hub = self._ensure_market_data_hub()
+        self._ensure_market_data_hub()
         db = self._ensure_app_database()
         active_symbols = sorted(
             symbol for symbol in self.valid_symbols if symbol.endswith("USDT")
@@ -6294,7 +6211,6 @@ class MainWindow(QtWidgets.QMainWindow):
                     self.current_interval,
                     payload.get("candles", []),
                 )
-                retained = min(total, MAX_CHART_CANDLES)
                 self.statusBar().showMessage(
                     f"History downloaded · {total:,} candles · preparing chart.",
                     10_000,
@@ -7089,7 +7005,6 @@ class MainWindow(QtWidgets.QMainWindow):
             if name not in self.panel_actions:
                 action = QtGui.QAction(name, self)
                 action.setCheckable(True)
-                section.visibility_action = action
                 self.panel_actions[name] = action
                 self.right_rail_controller.register_panel_action(name, action)
         if hasattr(self, "settings_dialog") and self.settings_dialog is not None:
@@ -7201,7 +7116,6 @@ class MainWindow(QtWidgets.QMainWindow):
         """Synchronize the authoritative right-rail state with actions/settings."""
         controller = getattr(self, "right_rail_controller", None)
         if controller is not None:
-            self.right_panel_columns = controller.column_mode
             self.right_layout_preset = controller.state.active_preset
         for name, action in getattr(self, "layout_actions", {}).items():
             blocker = QtCore.QSignalBlocker(action)
@@ -7228,7 +7142,6 @@ class MainWindow(QtWidgets.QMainWindow):
 
 
     def _right_rail_state_changed(self, state: object) -> None:
-        self.right_panel_columns = self.right_rail_controller.column_mode
         self.right_layout_preset = self.right_rail_controller.state.active_preset
         self.settings.setValue("right_layout_preset", self.right_layout_preset)
         self._sync_right_layout_actions()
@@ -7272,12 +7185,10 @@ class MainWindow(QtWidgets.QMainWindow):
             trading_section is None
             or not self.right_rail_controller.panel_enabled("Trading / positions")
         ):
-            self.trading_workspace.set_top_aligned(False)
             self.trading_workspace.set_bottom_panel(False)
             return
 
         placement = self.right_rail_controller.placement_context("trading")
-        self.trading_workspace.set_top_aligned(placement["spans_host_width"])
         self.trading_workspace.set_bottom_panel(placement["touches_host_bottom"])
 
     def _cycle_right_layout(self, step: int = 1) -> None:
@@ -7367,7 +7278,6 @@ class MainWindow(QtWidgets.QMainWindow):
         task: ApiTask
 
         def build() -> UniversePreparation:
-            started = time.perf_counter()
             prepared = prepare_universe(payload)
             return prepared
 
@@ -7393,7 +7303,6 @@ class MainWindow(QtWidgets.QMainWindow):
         prepared: UniversePreparation,
         requested_started: float,
     ) -> None:
-        apply_started = time.perf_counter()
         symbols = list(prepared.symbols)
         # TradingWorkspace receives this mapping by reference during construction.
         # Preserve object identity while installing the prepared rules.
@@ -7528,7 +7437,6 @@ class MainWindow(QtWidgets.QMainWindow):
         if payload.get("symbol") != self.current_symbol:
             return
         self.market_detail = dict(payload)
-        self.last_metric_detail_update = 0.0
         self._top_metrics_dirty = True
         self.chart.set_analysis_snapshot(payload)
         premium = payload.get("premium") or {}
@@ -7782,10 +7690,6 @@ class MainWindow(QtWidgets.QMainWindow):
         socket_mono_ms = safe_float(event.get("_socket_received_mono_ms"))
         if socket_mono_ms > 0:
             status_handler_mono_ms = time.perf_counter() * 1000.0
-            gui_dispatch_mono_ms = safe_float(event.get("_gui_dispatch_mono_ms"))
-            if gui_dispatch_mono_ms > 0.0 and status_handler_mono_ms >= gui_dispatch_mono_ms:
-                pass
-            status_started = time.perf_counter()
             self.statusBar().set_event_latency(
                 safe_float(event.get("E")),
                 safe_float(event.get("_server_received_ms")),
@@ -7798,7 +7702,6 @@ class MainWindow(QtWidgets.QMainWindow):
                     else None
                 ),
             )
-        chart_depth_started = time.perf_counter()
         analysis_bids = event.get("_analysis_bids")
         analysis_asks = event.get("_analysis_asks")
         bids, asks = self.chart.add_depth(event)
@@ -7859,20 +7762,6 @@ class MainWindow(QtWidgets.QMainWindow):
         if profile_started:
             _record_market_handler_profile("depth", profile_started, profile_interaction)
 
-    @staticmethod
-    def _empty_order_flow_snapshot(symbol: str) -> OrderFlowSnapshot:
-        return OrderFlowSnapshot(
-            symbol=str(symbol).upper(),
-            sequence=0,
-            data_revision=0,
-            generated_monotonic=time.monotonic(),
-            ready=False,
-            live=False,
-            bbo_source="none",
-            depth_age_seconds=None,
-            bbo_age_seconds=None,
-            trade_age_seconds=None,
-        )
 
     def _market_depth_should_stream(self) -> bool:
         """The DOM and trade history share one depth/BBO/trade transport."""
@@ -7938,7 +7827,6 @@ class MainWindow(QtWidgets.QMainWindow):
         if quote_volume is None:
             quote_volume = safe_float((self.tickers.get(self.current_symbol) or {}).get("q"))
         self._order_flow_generation += 1
-        self.latest_order_flow_snapshot = self._empty_order_flow_snapshot(self.current_symbol)
         tape = getattr(self, "large_trades", None)
         if tape is not None:
             tape.set_market(self.current_symbol, tick_size=self._order_flow_tick_size)
@@ -7990,7 +7878,6 @@ class MainWindow(QtWidgets.QMainWindow):
         if snapshot.symbol != self.current_symbol:
             return
         timing["gui_delivery_mono"] = time.perf_counter()
-        self.latest_order_flow_snapshot = snapshot
         if self._market_depth_active and self.right_rail_controller.panel_active("depth"):
             self.order_flow_snapshot_ready.emit((frame, timing))
         if self._order_flow_snapshot_active:
@@ -8329,19 +8216,6 @@ class MainWindow(QtWidgets.QMainWindow):
             shortcut = self.indicator_shortcuts.get(name, "") or "—"
             action.setText(f"{shortcut}   {name}")
 
-    def edit_trading_hotkeys(self) -> None:
-        dialog = TradingHotkeysDialog(
-            self.trading_hotkeys,
-            self,
-            reserved_shortcuts=self._reserved_trading_shortcuts(),
-        )
-        if dialog.exec() == QtWidgets.QDialog.DialogCode.Accepted:
-            self.trading_hotkeys = dialog.shortcuts()
-            self.settings.setValue(
-                "trading/hotkeys_v1", json.dumps(self.trading_hotkeys, sort_keys=True)
-            )
-            self.settings.sync()
-            self.statusBar().showMessage("Trading hotkeys updated.", 3000)
 
     def _show_alerts_panel(self) -> None:
         self.alerts_dialog.show()

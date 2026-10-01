@@ -278,17 +278,6 @@ def insert_panel(node, source, target, edge):
     return replace(node, children=children) if children != node.children else node
 
 
-def move_panel_tree(root, source, target, edge):
-    if edge not in ("left", "right", "above", "below"):
-        raise ValueError("Invalid drop edge")
-    names = panel_ids(root)
-    if source not in names or source == target or (target is not None and target not in names):
-        return root
-    result = insert_panel(detach_panel(root, source), PanelNode(source), target, edge)
-    validate_tree(result)
-    return result
-
-
 def replace_split_weights(node, split_id, values):
     if not isinstance(node, SplitNode):
         return node
@@ -531,20 +520,6 @@ class RightRailModel:
         self.state.layouts.clear()
         self.state.root = self.template(self.state.column_mode)
         self.state.active_preset = str(name)
-
-    def matching_preset(self, presets):
-        visible = set(self.visible_names())
-        return next((str(n) for n, p in presets.items()
-                     if visible == set(valid_panel_names(p.get("visible", ()), self.panel_names))), "Custom")
-
-    def move_panel(self, source, target, edge):
-        candidate = move_panel_tree(self.state.root, self.resolve(source),
-                                    None if target is None else self.resolve(target), edge)
-        if candidate == self.state.root:
-            return False
-        self.state.root = candidate
-        self.state.active_preset = "Custom"
-        return True
 
 
 if QtWidgets is not None:
@@ -1194,41 +1169,6 @@ if QtWidgets is not None:
             shell.hide()
             self.sections[spec.title] = shell
 
-        def register_panel(self, spec, *, enabled=False):
-            self._register_spec(spec)  # Factory failures leave the layout unchanged.
-            state = self.model.state
-            state.aliases[spec.title] = spec.panel_id
-            remembered = state.unresolved_panels.pop(spec.panel_id, {})
-            state.panels[spec.title] = PanelState(spec.panel_id in panel_ids(state.root),
-                max(1e-6, _safe_float(remembered.get("weight_one"), spec.preferred_height)))
-            self.model.panel_names = tuple(self.sections)
-            self.model.default_sizes[spec.title] = spec.preferred_height
-            if enabled and not state.panels[spec.title].enabled:
-                self.model.set_panel_enabled(spec.title, True)
-            self._changed()
-            self.registry_changed.emit()
-
-        def unregister_panel(self, name):
-            pid = self.model.resolve(name)
-            spec = self.registry.get(pid)
-            if spec is None:
-                return
-            self._cancel_interactions()
-            self.set_panel_enabled(pid, False)
-            shell = self.sections.pop(spec.title)
-            action = self._panel_actions.pop(spec.title, None)
-            slot = self._panel_action_slots.pop(spec.title, None)
-            if action is not None:
-                if slot is not None:
-                    action.toggled.disconnect(slot)
-                action.setEnabled(False)
-            shell.hide(); shell.deleteLater()
-            del self.registry[pid]
-            removed = self.model.state.panels.pop(spec.title, None)
-            if removed is not None:
-                self.model.state.unresolved_panels[pid] = {"enabled": False, "weight_one": removed.weight_one}
-            self.model.panel_names = tuple(self.sections)
-            self._changed(); self.registry_changed.emit()
 
         def _load_state(self, names, sizes, aliases):
             for key in (STATE_KEY, "right_rail/state_v4", LEGACY_STATE_KEY):
@@ -1258,7 +1198,7 @@ if QtWidgets is not None:
                 setattr(state, attr, max(0, _safe_int(self.settings.value(f"right_panel_rail_width_{mode}col_v1", getattr(state, attr)), getattr(state, attr))))
             return state
 
-        def save_state(self, *, remove_legacy=False):
+        def save_state(self):
             # Keep legacy payloads as rollback data; never overwrite a future schema.
             if self._future_schema:
                 return
@@ -1440,7 +1380,7 @@ if QtWidgets is not None:
         def panel_enabled(self, name):
             return self.model.resolve(name) in panel_ids(self.model.state.root)
 
-        def visible_names(self, _legacy_column=None):
+        def visible_names(self):
             return self.model.visible_names()
 
         def set_panel_enabled(self, name, enabled):
@@ -1454,26 +1394,6 @@ if QtWidgets is not None:
         def ensure_panel(self, name):
             self.set_panel_enabled(name, True)
 
-        def move_panel(self, source, target, edge):
-            candidate = move_panel_tree(self.model.state.root, self.model.resolve(source),
-                                        None if target is None else self.model.resolve(target), edge)
-            if candidate == self.model.state.root:
-                return False
-            minimum = self._tree_minimum(self._resolved_tree(candidate))
-            available_width = max(self._scroll.viewport().width(),
-                sum(self._main_splitter.sizes()) - self._chart_minimum_width if self._main_splitter is not None else self.rail.width())
-            if minimum.width() > available_width or minimum.height() > max(1, self._scroll.viewport().height()):
-                self.operation_rejected.emit("Not enough space for that arrangement. Expand the rail or move the panel above/below.")
-                return False
-            self.capture_geometry()
-            self.model.state.root = move_panel_tree(self.model.state.root, self.model.resolve(source),
-                None if target is None else self.model.resolve(target), edge)
-            self.model.state.active_preset = "Custom"
-            if minimum.width() > self._scroll.viewport().width() and self._main_splitter is not None:
-                self.model.state.set_rail_width(minimum.width())
-                self._outer_pending = True
-            self._changed()
-            return True
 
         def set_column_mode(self, columns):
             self.capture_geometry()

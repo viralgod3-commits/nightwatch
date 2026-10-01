@@ -192,9 +192,6 @@ def detect_auto_fibonacci_candidates(
                     pivots.append((index, "high", float(candle.high), score))
 
 
-
-
-
         terminal_start = max(start, count - 48)
         terminal_index = max(
             range(terminal_start, count),
@@ -399,8 +396,6 @@ def detect_auto_fibonacci_candidates(
             if (same_start and same_end) or same_prices:
                 return True
         return False
-
-
 
 
     primary_time_span = max(primary.end_time - primary.start_time, 1.0)
@@ -924,22 +919,6 @@ class PriceStudyCache:
             return "rolled"
         return None
 
-    def needs_full_rebuild(self, candles, name, settings):
-        if not candles:
-            return False
-        key = self.cache_key(candles, settings)
-        cached = self.entries.get(name)
-        if cached is None:
-            return True
-        if cached[0] == key:
-            return False
-        return self._incremental_mode(candles, key, cached) is None
-
-    def install_prefix(self, candles, name, settings, prefix_length, arrays, state):
-        key = self.cache_key(candles, settings, length=prefix_length)
-        if key is None:
-            return
-        self.entries[name] = (key, tuple(arrays), None if state is None else tuple(state))
 
     def values(self, candles, name, settings):
         if not candles:

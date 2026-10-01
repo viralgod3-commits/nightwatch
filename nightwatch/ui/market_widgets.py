@@ -75,8 +75,6 @@ class TimeframeStrip(QtWidgets.QWidget):
         self._group.setExclusive(True)
 
 
-
-
         self._collapsed_button = QtWidgets.QPushButton(self)
         self._collapsed_button.setObjectName("timeframeStripButton")
         self._collapsed_button.setCheckable(True)
@@ -184,8 +182,6 @@ class TimeframeStrip(QtWidgets.QWidget):
     def collapsedWidth(self) -> int:
         return self.BUTTON_WIDTH
 
-    def isCollapsed(self) -> bool:
-        return self._collapsed
 
     def setCollapsed(self, collapsed: bool) -> None:
         collapsed = bool(collapsed)
@@ -482,7 +478,6 @@ class MetricHistoryCanvas(QtWidgets.QWidget):
         )
 
     def _price_axis_visible(self) -> bool:
-
 
 
         return bool(self.price_enabled and self.width() >= 178)
@@ -857,7 +852,6 @@ class MetricDetailDialog(QtWidgets.QDialog):
         self.setObjectName("metricDetailDialog")
 
 
-
         self.setWindowModality(Qt.WindowModality.NonModal)
         self.setMinimumSize(680, 440)
         self.resize(760, 500)
@@ -1186,8 +1180,6 @@ class MetricDetailDialog(QtWidgets.QDialog):
         self._sync_header()
 
 
-
-
         super().show()
         self.raise_()
         self.activateWindow()
@@ -1218,7 +1210,6 @@ class MetricCard(QtWidgets.QFrame):
     ):
         super().__init__(parent)
         self.detail_title = title
-        self.detail_rows = []
         self.history = []
         self.history_options = []
         self.history_loader = None
@@ -1245,9 +1236,6 @@ class MetricCard(QtWidgets.QFrame):
             0 if compact else 5,
         )
         layout.setSpacing(0 if self.identity else 0 if compact else 2)
-
-
-
 
 
         self.title = (
@@ -1375,7 +1363,6 @@ class MetricCard(QtWidgets.QFrame):
         tooltip = f"<table cellspacing='0' cellpadding='0'>{body}</table>"
 
 
-
         actionable = (not self.identity) or bool(COMPACT_SECONDARY_METRICS)
         self.setCursor(
             Qt.CursorShape.PointingHandCursor
@@ -1433,7 +1420,6 @@ class MetricCard(QtWidgets.QFrame):
         super().mousePressEvent(event)
 
     def clear_detail(self) -> None:
-        self.detail_rows = []
         self.history_options = []
         self.history = []
         self.history_caption = ""
@@ -1466,7 +1452,6 @@ class MarketStatsWidget(QtWidgets.QWidget):
         theme: dict[str, str],
         parent: QtWidgets.QWidget | None = None,
         compact: bool = False,
-        news_widget: QtWidgets.QWidget | None = None,
     ):
         super().__init__(parent)
         self.setObjectName("topMarketStats" if compact else "marketStats")
@@ -1477,7 +1462,6 @@ class MarketStatsWidget(QtWidgets.QWidget):
         self.last_mark_payload: dict[str, Any] = {}
         self.last_interest_payload: dict[str, Any] = {}
         self.last_interest_reference = 0.0
-        self.last_tick_direction = 0
         self.last_taker_buy_pct = float("nan")
         self.compact = compact
         self.cards = {
@@ -1525,7 +1509,6 @@ class MarketStatsWidget(QtWidgets.QWidget):
             outer.addWidget(self.cards["last"])
 
 
-
             self.timeframe_selector = TimeframeStrip(self)
             self.timeframe_selector.setObjectName("topTimeframeStrip")
             self.timeframe_selector.setFixedHeight(COMPACT_METRIC_HEIGHT)
@@ -1538,7 +1521,6 @@ class MarketStatsWidget(QtWidgets.QWidget):
                     str(self.timeframe_selector.currentData() or "")
                 )
             )
-
 
 
             for name in COMPACT_PRIMARY_METRICS:
@@ -1636,8 +1618,6 @@ class MarketStatsWidget(QtWidgets.QWidget):
         if self.compact:
 
 
-
-
             identity_attached = self.cards["last"].parentWidget() is self
             metric_count = len(COMPACT_PRIMARY_METRICS)
             total_width = COMPACT_EQUAL_METRIC_WIDTH * metric_count
@@ -1654,9 +1634,7 @@ class MarketStatsWidget(QtWidgets.QWidget):
         self.last_mark_payload.clear()
         self.last_interest_payload.clear()
         self.last_interest_reference = 0.0
-        self.last_tick_direction = 0
         self.last_taker_buy_pct = float("nan")
-        self.long_short_rows = []
         self.long_short_series = {}
         for card in self.cards.values():
             card.set_value("—")
@@ -1712,7 +1690,6 @@ class MarketStatsWidget(QtWidgets.QWidget):
             if not valid or time.time() * 1000 - stamp > 900_000:
                 details.append(("Status", "Last available sample"))
         self.long_short_series = cache
-        self.long_short_rows = cache.get("All accounts", [])
         card = self.cards["long_short"]
         card.title.setText("LONG/SHORT" if self.compact else "LONG/SHORT RATIO")
 
@@ -1832,17 +1809,9 @@ class MarketStatsWidget(QtWidgets.QWidget):
         self.cards["last"].set_detail("MARKET PRICE", rows)
 
     def update_ticker(self, ticker: dict[str, Any]) -> None:
-        previous_price = safe_float(self.last_ticker.get("c"), float("nan"))
         self.last_ticker = dict(ticker)
         price = safe_float(ticker.get("c"), float("nan"))
         volume = safe_float(ticker.get("q"), float("nan"))
-        if math.isfinite(previous_price) and previous_price > 0 and math.isfinite(price) and price > previous_price:
-            self.last_tick_direction = 1
-        elif math.isfinite(previous_price) and previous_price > 0 and math.isfinite(price) and price < previous_price:
-            self.last_tick_direction = -1
-
-
-
         self.cards["last"].set_value(
             format_price(price) if math.isfinite(price) and price > 0 else "—",
             None,
@@ -2047,7 +2016,6 @@ class WatchlistWidget(QtWidgets.QWidget):
 
     def showEvent(self, event: QtGui.QShowEvent) -> None:
         super().showEvent(event)
-
 
 
         self.refresh(force=True)
@@ -2315,8 +2283,6 @@ class WatchlistWidget(QtWidgets.QWidget):
             self.hour_changes_changed.emit()
 
     def refresh(self, *, force: bool = False) -> None:
-
-
 
 
         if not force and not self.isVisible():

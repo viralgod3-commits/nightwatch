@@ -409,7 +409,6 @@ def launch_task(function: Callable[[], Any], finished: Callable[[Any], None], fa
     return task
 
 
-
 import asyncio
 import math
 import logging
@@ -1267,7 +1266,6 @@ class BinanceRest:
             state.last_rtt_ms = rtt_ms
             state.sync_count += 1
             state.last_error = ''
-            sync_count = state.sync_count
         return estimate
 
     async def _time_sync_loop(self) -> None:
@@ -1502,10 +1500,6 @@ class BinanceRest:
         return run_async(collect())
 
 
-    def order_book(self, symbol: str) -> dict[str, Any]:
-        payload = self.get('/fapi/v1/depth', {'symbol': symbol, 'limit': 20})
-        return {'s': symbol, 'u': payload.get('lastUpdateId', 0), 'E': payload.get('E', 0), 'b': payload.get('bids', []), 'a': payload.get('asks', [])}
-
     def watchlist_hour_changes(self, symbols: list[str]) -> dict[str, float]:
         """Return rolling ~1h last-price changes for a small watchlist."""
         requested = list(dict.fromkeys((str(symbol).upper() for symbol in symbols if symbol)))
@@ -1637,41 +1631,6 @@ class BinanceRest:
             cursor = next_cursor
         return rows
 
-    def premium_index_range(self, symbol: str, interval: str, start_ms: int, end_ms: int) -> list[dict[str, Any]]:
-        """Fetch historical mark-index premium candles for relative-value research."""
-        cursor = max(0, start_ms)
-        rows: list[list[Any]] = []
-        while cursor <= end_ms:
-            page = self.get('/fapi/v1/premiumIndexKlines', {'symbol': symbol, 'interval': interval, 'startTime': cursor, 'endTime': end_ms, 'limit': HISTORY_PAGE_LIMIT}, priority='background')
-            if not page:
-                break
-            rows.extend(page)
-            last_open = int(page[-1][0])
-            next_cursor = int(round(shift_candle_time(last_open / 1000.0, interval) * 1000.0))
-            if next_cursor <= cursor or len(page) < HISTORY_PAGE_LIMIT:
-                break
-            cursor = next_cursor
-        return [{'openTime': int(row[0]), 'premium': safe_float(row[4])} for row in rows if len(row) >= 5]
-
-    def open_interest_range(self, symbol: str, interval: str, start_ms: int, end_ms: int) -> list[dict[str, Any]]:
-        """Binance exposes approximately one month of historical OI."""
-        oldest_allowed = int(time.time() * 1000) - 30 * 86400000
-        if end_ms < oldest_allowed:
-            return []
-        cursor = max(start_ms, oldest_allowed)
-        period = api_period('1d' if interval == '1M' else interval)
-        rows: list[dict[str, Any]] = []
-        while cursor <= end_ms:
-            page = self.get('/futures/data/openInterestHist', {'symbol': symbol, 'period': period, 'startTime': cursor, 'endTime': end_ms, 'limit': 500}, priority='background')
-            if not page:
-                break
-            rows.extend(page)
-            last_time = int(page[-1].get('timestamp', 0))
-            next_cursor = last_time + 1
-            if next_cursor <= cursor or len(page) < 500:
-                break
-            cursor = next_cursor
-        return rows
 
     def download_history(self, symbol: str, interval: str, start_ms: int, end_ms: int, csv_path: str, progress: Callable[[int, int], None], should_cancel: Callable[[], bool], page_callback: Callable[[list[Candle]], None] | None=None) -> dict[str, Any]:
         if start_ms <= 0:

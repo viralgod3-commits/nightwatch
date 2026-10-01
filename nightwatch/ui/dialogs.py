@@ -2,8 +2,6 @@
 from __future__ import annotations
 
 
-
-
 from collections import deque
 from pathlib import Path
 import math
@@ -18,7 +16,6 @@ from ..utilities import device_pixel_value
 
 class MicrostructureNewsCard(QtWidgets.QFrame):
     clicked = Signal()
-
 
 
     _IDLE_LOGO_HEIGHT = 67
@@ -208,12 +205,9 @@ class MicrostructureNewsCard(QtWidgets.QFrame):
             return
 
 
-
         self._offset -= self._scroll_speed * elapsed
         left, _right = self._ticker_bounds()
         span = self._ticker_repeat_span()
-
-
 
 
         while self._passes_remaining > 1 and self._offset <= left:
@@ -269,7 +263,6 @@ class MicrostructureNewsCard(QtWidgets.QFrame):
         positions = [self._offset]
 
 
-
         if self._copies_started > 1:
             positions.append(self._offset - span)
 
@@ -286,9 +279,6 @@ class MicrostructureNewsCard(QtWidgets.QFrame):
             event.accept()
             return
         super().mouseReleaseEvent(event)
-
-
-
 
 
 from typing import Any
@@ -1098,8 +1088,6 @@ class NightwatchSettingsDialog(QtWidgets.QDialog):
         max_height = max(1, int(available.height()) - margin * 2)
 
 
-
-
         self.setMinimumSize(
             min(int(self._preferred_minimum_size.width()), max_width),
             min(int(self._preferred_minimum_size.height()), max_height),
@@ -1118,7 +1106,6 @@ class NightwatchSettingsDialog(QtWidgets.QDialog):
         target_height = max(int(self.minimumHeight()), target_height)
         if self.size() != QtCore.QSize(target_width, target_height):
             self.resize(target_width, target_height)
-
 
 
         frame = self.frameGeometry()
@@ -1220,7 +1207,6 @@ class NightwatchSettingsDialog(QtWidgets.QDialog):
                 first_match = index
             if page_match and index == current:
                 current_visible = True
-
 
 
             for group in page.findChildren(QtWidgets.QGroupBox):
@@ -1883,24 +1869,6 @@ class NightwatchSettingsDialog(QtWidgets.QDialog):
         if key is not None:
             QtCore.QTimer.singleShot(0, lambda k=key: self._ensure_developer_tool(k))
 
-    def select_developer_tool(self, tool: str) -> None:
-        advanced_index = self.CATEGORIES.index("Advanced")
-        self._ensure_page_built(advanced_index)
-        if self.developer_tabs is None:
-            return
-        if self._settings_search is not None:
-            self._settings_search.clear()
-        requested = str(tool)
-        if requested in {"diagnostics", "developer"} and "diagnostics" in self._developer_tab_keys:
-            key = "diagnostics"
-        elif requested in {"rail", "magnetic_rail"}:
-            key = "magnetic_rail"
-        else:
-            key = "ui_tuner"
-        self.categories.setCurrentRow(advanced_index)
-        index = self._developer_tab_keys.index(key)
-        self.developer_tabs.setCurrentIndex(index)
-        QtCore.QTimer.singleShot(0, lambda k=key: self._ensure_developer_tool(k))
 
     def _open_orderbook_guide(self) -> None:
         guide_path = Path(__file__).resolve().parent.parent / "orderbook_guide.html"

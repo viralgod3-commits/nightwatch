@@ -2,8 +2,6 @@
 from __future__ import annotations
 
 
-
-
 import hashlib
 import hmac
 import json
@@ -169,7 +167,6 @@ class TradingGateway(QtCore.QObject):
         self.tasks: set[ApiTask] = set()
 
 
-
         self.task_pool = QtCore.QThreadPool(self)
         self.task_pool.setMaxThreadCount(20)
         self.task_pool.setExpiryTimeout(30_000)
@@ -181,7 +178,6 @@ class TradingGateway(QtCore.QObject):
         self._last_snapshot_mono = 0.0
         self._last_snapshot_scope: tuple[str | None, bool] | None = None
         self.balance_cache: dict[str, dict[str, Any]] = {}
-        self.account_available_balance: float | None = None
         self.multi_assets_margin: bool | None = None
         self._refresh_events: list[dict[str, Any]] | None = None
         self._refresh_events_overflow = False
@@ -578,7 +574,6 @@ class TradingGateway(QtCore.QObject):
         self._bind_session_sockets()
         self.listen_key = ""
         self.balance_cache.clear()
-        self.account_available_balance = None
         self._collateral_reservations.clear()
         self.multi_assets_margin = None
         self._refresh_events = None
@@ -919,7 +914,6 @@ class TradingGateway(QtCore.QObject):
         if not uncertain:
             self._pop_request_details(request_id, None)
             self._mark_terminal(request_id)
-        method = str(details.get("method") or "request")
         self.request_failed.emit(request_id, message, uncertain)
 
     def _finish_request(self, request_id: str, result: Any) -> None:
@@ -1033,7 +1027,6 @@ class TradingGateway(QtCore.QObject):
         self.state_changed.emit("ARMED · ORDER LINK LIVE")
 
     def _trade_error(self, _error: object) -> None:
-        message = self.trade_socket.errorString().strip()
         self.state_changed.emit("ORDER LINK OFFLINE")
         if (
             not self.stopping
@@ -1046,8 +1039,6 @@ class TradingGateway(QtCore.QObject):
 
     def _trade_disconnected(self) -> None:
         self.trade_connected = False
-        if not self.stopping and self.has_credentials():
-            pass
         if self.pending:
             pending = list(self.pending.items())
             self.pending.clear()
@@ -1074,7 +1065,6 @@ class TradingGateway(QtCore.QObject):
         symbols = set(self.account_event_refresh_symbols)
         self.account_event_refresh_symbols.clear()
         symbol = next(iter(symbols)) if len(symbols) == 1 else None
-
 
 
         self.refresh_account(
@@ -1978,8 +1968,6 @@ class TradingGateway(QtCore.QObject):
             )
             if merged != self.pending_account_refresh:
                 self.pending_account_refresh = merged
-            else:
-                pass
             return
 
         if self.pending_account_refresh is not None:
@@ -2417,7 +2405,6 @@ class TradingGateway(QtCore.QObject):
                 self.user_reconnect.start()
 
     def _user_error(self, _error: object) -> None:
-        message = self.user_socket.errorString().strip()
         self.state_changed.emit("ACCOUNT STREAM OFFLINE")
         if (
             not self.stopping
@@ -2577,11 +2564,6 @@ class TradingGateway(QtCore.QObject):
             self.hedge_mode = (
                 value if isinstance(value, bool) else str(value).casefold() == "true"
             )
-        self.account_available_balance = (
-            max(0.0, safe_float(account.get("availableBalance")))
-            if "availableBalance" in account
-            else None
-        )
         self.multi_assets_margin = exchange_bool(config.get("multiAssetsMargin", account.get("multiAssetsMargin")))
         self.balance_cache = {
             str(row.get("asset")): dict(row)
@@ -2635,8 +2617,6 @@ class TradingGateway(QtCore.QObject):
             return
 
 
-
-        self.account_available_balance = None
         for balance in self.balance_cache.values():
             balance.pop("availableBalance", None)
         account = payload.get("a") or {}

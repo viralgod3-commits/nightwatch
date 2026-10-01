@@ -75,10 +75,6 @@ from ..indicators import AutoFibCandidate
 from ..models import ChartMarketDataFactory, ChartMarketDataPort
 
 
-
-
-
-
 def opaque_overlay_color(background: str, foreground: str, alpha: int) -> QtGui.QColor:
     """Preblend an overlay so the chart grid cannot bleed through its fill."""
     surface = QtGui.QColor(background)
@@ -196,8 +192,6 @@ def _log_price_axis_ticks(
     log_span = high_log - low_log
 
 
-
-
     if high_price / low_price <= 10.0:
         required = (high_price - low_price) * mark_pixels / axis_pixels
         step = _nice_price_step(required, minimum_move)
@@ -223,8 +217,6 @@ def _log_price_axis_ticks(
             if low_price - epsilon <= index * step <= high_price + epsilon
             and index * step > 0.0
         ]
-
-
 
 
     candidates: set[float] = set()
@@ -396,7 +388,6 @@ class StudyViewBox(pg.ViewBox):
     def wheelEvent(self, event: Any, axis: int | None = None) -> None:
 
 
-
         super().wheelEvent(event, axis=0 if axis is None else axis)
 
     def mouseDoubleClickEvent(self, event: Any) -> None:
@@ -517,18 +508,6 @@ class ProfileItem(pg.GraphicsObject):
 
     def boundingRect(self) -> QtCore.QRectF:
         return self.bounds
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 def _prepare_price_extrema(closed):
@@ -793,8 +772,6 @@ class _HistoryPrepareWorker(QtCore.QRunnable):
             matrix = _candle_matrix_from_objects(combined)
 
 
-
-
             matrix_size = len(matrix)
             storage = np.empty((candle_matrix_capacity(matrix_size), 7), dtype=np.float64)
             if matrix_size:
@@ -904,7 +881,6 @@ def _scaled_timeframe_x_range(
         or new_seconds <= 0.0
     ):
         return x0, x1
-
 
 
     visible_bars = span / old_seconds
@@ -1205,7 +1181,6 @@ class ChartWorkspace(QtWidgets.QWidget):
         self._active_order_rail_symbol = ""
 
 
-
         self.order_rail_value: float | None = None
         self.order_rail_tick_size = 0.0
         self.order_rail_tick_text = ""
@@ -1213,7 +1188,6 @@ class ChartWorkspace(QtWidgets.QWidget):
         self.order_rail_max_price = float("inf")
         self.order_rail_hud: MagneticOrderRailPanel | None = None
         self.order_rail_visual: MagneticRailLineOverlay | None = None
-
 
 
         self._parked_order_rails: list[dict[str, Any]] = []
@@ -1228,7 +1202,6 @@ class ChartWorkspace(QtWidgets.QWidget):
         self._active_order_rail_working_key = ""
         self._active_order_rail_working_order: dict[str, Any] = {}
         self._active_order_rail_matched_once = False
-
 
 
         self._active_order_rail_amend_origin: float | None = None
@@ -1247,12 +1220,8 @@ class ChartWorkspace(QtWidgets.QWidget):
         self._order_rail_last_frame = time.monotonic()
 
 
-
-
         self._interaction_priority_active = False
         self._interaction_render_active = False
-        self._interaction_priority_started_mono = 0.0
-        self._interaction_priority_activations = 0
         self._interaction_priority_release_timer = QTimer(self)
         self._interaction_priority_release_timer.setSingleShot(True)
         self._interaction_priority_release_timer.setTimerType(Qt.TimerType.PreciseTimer)
@@ -1286,13 +1255,11 @@ class ChartWorkspace(QtWidgets.QWidget):
         }
 
 
-
         self.volume_bar_height_percent = 30
         self.subplot_visibility = {1: True, 2: True, 3: True, 4: True}
 
         layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-
 
 
         pg.setConfigOption("mouseRateLimit", 0)
@@ -1320,7 +1287,6 @@ class ChartWorkspace(QtWidgets.QWidget):
                     self.use_opengl = False
 
         self.graphics.setBackground(theme["bg"])
-
 
 
         self.graphics.setViewportUpdateMode(self._normal_viewport_update_mode())
@@ -1431,7 +1397,6 @@ class ChartWorkspace(QtWidgets.QWidget):
 
 
                 view_box.setMouseEnabled(x=True, y=False)
-
 
 
                 view_box.enableAutoRange(axis=pg.ViewBox.YAxis, enable=False)
@@ -1566,7 +1531,6 @@ class ChartWorkspace(QtWidgets.QWidget):
         self._committed_volume_live_render_key: tuple[int, str] | None = None
 
 
-
         self._presentation_active = True
         self._hidden_presentation_dirty = False
         self._deferred_analysis_snapshot: dict[str, Any] | None = None
@@ -1608,8 +1572,6 @@ class ChartWorkspace(QtWidgets.QWidget):
 
         self._crosshair_axis_text = ""
         self._crosshair_axis_y_value: float | None = None
-
-
 
 
         self._pointer_over_price_plot = False
@@ -1722,7 +1684,6 @@ class ChartWorkspace(QtWidgets.QWidget):
         self.rsi_curve.setZValue(12)
 
 
-
         self.volume_overlay.setZValue(2)
         self.price_plot.addItem(self.volume_overlay, ignoreBounds=True)
         self.native_bar_composite = NativeBarCompositeItem(
@@ -1759,11 +1720,9 @@ class ChartWorkspace(QtWidgets.QWidget):
         self._navigation_last_activity = 0.0
 
 
-
         self._navigation_settle_seconds = 0.30
         if self._presentation_clock is not None:
             self._presentation_clock.frame.connect(self._flush_navigation_frame)
-
 
 
         self._navigation_settle_timer = QTimer(self)
@@ -1777,7 +1736,6 @@ class ChartWorkspace(QtWidgets.QWidget):
         self.detail_timer.timeout.connect(self._render_live_details)
 
 
-
         self._pending_crosshair_position: QtCore.QPointF | None = None
         self._last_crosshair_dispatch = 0.0
         self.price_plot.getViewBox().sigXRangeChanged.connect(self._range_changed)
@@ -1786,8 +1744,6 @@ class ChartWorkspace(QtWidgets.QWidget):
         )
         for plot, _label in self.study_name_labels.values():
             view = plot.getViewBox()
-
-
 
 
             view.sigRangeChanged.connect(self._schedule_overlay_frame)
@@ -1844,12 +1800,10 @@ class ChartWorkspace(QtWidgets.QWidget):
         viewport.setMouseTracking(True)
 
 
-
         viewport.setCursor(Qt.CursorShape.ArrowCursor)
         viewport.setAttribute(Qt.WidgetAttribute.WA_AcceptTouchEvents, True)
         viewport.setFocusPolicy(Qt.FocusPolicy.WheelFocus)
         viewport.installEventFilter(self)
-
 
 
         for overlay in (
@@ -1976,8 +1930,6 @@ class ChartWorkspace(QtWidgets.QWidget):
             return False
 
 
-
-
         view_rect = self.price_plot.getViewBox().sceneBoundingRect()
         if view_rect.width() < 32.0 or view_rect.height() < 32.0:
             return False
@@ -1985,8 +1937,6 @@ class ChartWorkspace(QtWidgets.QWidget):
         if self.use_opengl and not self._opengl_runtime_failed:
             is_valid = getattr(viewport, "isValid", None)
             context_getter = getattr(viewport, "context", None)
-
-
 
 
             if not callable(is_valid) or not callable(context_getter):
@@ -2088,8 +2038,6 @@ class ChartWorkspace(QtWidgets.QWidget):
         if self._interaction_priority_active:
             return
         self._interaction_priority_active = True
-        self._interaction_priority_started_mono = now
-        self._interaction_priority_activations += 1
 
 
         if not self._order_rail_dragging:
@@ -2126,13 +2074,8 @@ class ChartWorkspace(QtWidgets.QWidget):
         ):
             self._interaction_priority_release_timer.start()
             return
-        now = time.monotonic()
-        started = self._interaction_priority_started_mono
         self._interaction_priority_active = False
-        self._interaction_priority_started_mono = 0.0
         self._interaction_gc.set_active(id(self), False)
-        if started > 0.0:
-            pass
         self.interaction_priority_changed.emit(False)
 
         if self._navigation_work_pending():
@@ -2393,7 +2336,7 @@ class ChartWorkspace(QtWidgets.QWidget):
                 self._commit_snapshot(payload)
             if self._navigation_pending_viewport or self._bar_mailbox is not None:
                 self._navigation_pending_viewport = False
-                self._render_viewport(defer_indicators=moving)
+                self._render_viewport()
             if self._navigation_pending_live:
                 self._navigation_pending_live = False
                 self._render_live()
@@ -2443,7 +2386,6 @@ class ChartWorkspace(QtWidgets.QWidget):
         record_performance_timing("nav.flush_ms", (time.perf_counter()-started)*1000)
 
     def _queue_crosshair_move(self, position: QtCore.QPointF) -> None:
-
 
 
         if not self._scene_position_is_main_price_chart(position):
@@ -2654,10 +2596,6 @@ class ChartWorkspace(QtWidgets.QWidget):
             self.analysis_changed.emit(self.zones, self.profile_alert_levels())
 
 
-
-
-
-
         if not reset_analysis:
             self._rearm_order_rail_animation_after_transition()
         for kind, batches in self._history_batches.items():
@@ -2722,7 +2660,6 @@ class ChartWorkspace(QtWidgets.QWidget):
         if end >= len(self._candle_matrix_storage):
 
 
-
             self.set_snapshot({"interval": self.interval, "candles": self.candles.snapshot(),
                                "oi_history": self.oi_history, "_storage_roll": True})
             self._matrix_waiting = True
@@ -2763,7 +2700,6 @@ class ChartWorkspace(QtWidgets.QWidget):
             self._snapshot_live_updates.clear()
             return
         if self._snapshot_recovery_active:
-
 
 
             return
@@ -2852,9 +2788,7 @@ class ChartWorkspace(QtWidgets.QWidget):
             self.price_plot.getViewBox().setRange(xRange=restore[0], yRange=restore[1], padding=0)
 
 
-
-
-        self._render_viewport(force=True, defer_indicators=True)
+        self._render_viewport(force=True)
         self._schedule_render_work(
             oi=bool(self.oi_history),
             indicators=self._has_active_rendered_indicators(),
@@ -2865,9 +2799,6 @@ class ChartWorkspace(QtWidgets.QWidget):
         )
 
 
-
-
-
         self._rearm_order_rail_animation_after_transition(reposition=True)
         self._snapshot_loaded = True
         self._restore_view = None
@@ -2876,8 +2807,6 @@ class ChartWorkspace(QtWidgets.QWidget):
         self.history_candles.painted_once = False
         self.live_candle.painted_once = False
         self.graphics.request_redraw()
-
-
 
 
         self._snapshot_visibility_fit = restore is None
@@ -3000,7 +2929,6 @@ class ChartWorkspace(QtWidgets.QWidget):
                 self._history_prepare_pending = requested
 
 
-
         if self._history_prepared_mailbox is None:
             pending = self._history_prepare_pending
             self._history_prepare_pending = None
@@ -3029,7 +2957,6 @@ class ChartWorkspace(QtWidgets.QWidget):
                     resident_times = (self.candle_times[first], self.candle_times[last - 1], stride)
 
 
-
             if self.candles and matrix_size:
                 combined[-1] = self.candles[-1]
                 storage[matrix_size - 1] = self.candle_matrix[-1]
@@ -3052,9 +2979,7 @@ class ChartWorkspace(QtWidgets.QWidget):
             self._major_levels_dirty = True
 
 
-
-
-            self._render_viewport(defer_indicators=True)
+            self._render_viewport()
             self._navigation_pending_fit = self.auto_scale
             self._navigation_deferred_indicators = False
             self._schedule_history_indicator_refresh()
@@ -3096,7 +3021,6 @@ class ChartWorkspace(QtWidgets.QWidget):
             if generation != self._history_indicator_generation:
                 return
             self._schedule_render_work(indicators=True)
-
 
 
         QTimer.singleShot(360, self, refresh)
@@ -3171,7 +3095,6 @@ class ChartWorkspace(QtWidgets.QWidget):
         axis_geometry_changed = self._reserve_price_axis_for_text(self._current_price_text)
 
 
-
         self._refresh_current_price_label(position_overlay=False)
         if axis_geometry_changed:
 
@@ -3220,7 +3143,6 @@ class ChartWorkspace(QtWidgets.QWidget):
             return False
         self._last_price_event = event_time
         if price == self.current_price:
-
 
 
             return True
@@ -3513,7 +3435,6 @@ class ChartWorkspace(QtWidgets.QWidget):
             self._render_zones()
 
 
-
             if self.auto_fib_enabled and self.auto_fib_dirty:
                 self._navigation_deferred_auto_fib = True
             return
@@ -3524,8 +3445,6 @@ class ChartWorkspace(QtWidgets.QWidget):
         """O(1) identity key for immutable/replaced multi-timeframe snapshots."""
         if not candles:
             return (0,)
-
-
 
 
         last = candles[-1]
@@ -3584,9 +3503,6 @@ class ChartWorkspace(QtWidgets.QWidget):
             )
 
 
-
-
-
         half_slot = max(0.5, float(INTERVAL_SECONDS[self.interval]) * 0.5)
         if abs(float(x_value) - float(self.candle_times[nearest])) > half_slot:
             return None
@@ -3613,13 +3529,10 @@ class ChartWorkspace(QtWidgets.QWidget):
         if candle_index is None:
 
 
-
             crosshair_x = float(raw_x)
         else:
             candle = self.candles[candle_index]
             crosshair_x = float(candle.time)
-
-
 
 
         self.crosshair_vertical.setValue(crosshair_x)
@@ -3666,7 +3579,6 @@ class ChartWorkspace(QtWidgets.QWidget):
         else:
             self._apply_price_axis_width(width)
         grid.invalidate()
-
 
 
         self._position_price_axis_focus_overlay()
@@ -3764,7 +3676,6 @@ class ChartWorkspace(QtWidgets.QWidget):
         if self.candles:
 
 
-
             if self._hidden_presentation_dirty:
                 self._refresh_analysis_after_close()
             self._render_viewport(force=True)
@@ -3819,7 +3730,6 @@ class ChartWorkspace(QtWidgets.QWidget):
         viewport = self.graphics.viewport()
         is_valid = getattr(viewport, "isValid", None)
         context_getter = getattr(viewport, "context", None)
-
 
 
         if not callable(is_valid) or not callable(context_getter):
@@ -3924,7 +3834,6 @@ class ChartWorkspace(QtWidgets.QWidget):
             and not self.order_rail_placement_mode
             and not self._order_rail_dragging
         ):
-
 
 
             scene_position = self.graphics.mapToScene(event.position().toPoint())
@@ -4048,7 +3957,6 @@ class ChartWorkspace(QtWidgets.QWidget):
                     self._order_rail_dragging = True
                     self._order_rail_drag_start_value = self.order_rail_value
                     self._order_rail_pending_drag_position = QtCore.QPointF(position)
-
 
 
                     self._set_crosshair_visible(False)
@@ -4744,8 +4652,6 @@ class ChartWorkspace(QtWidgets.QWidget):
             return QtGui.QColor(self.theme.get(key, self.theme.get("cyan", "#65b7d5")))
         return QtGui.QColor(self.theme.get("rail_neutral", self.theme.get("cyan", self.theme.get("text", "#65b7d5"))))
 
-    def _order_rail_visual_color(self) -> QtGui.QColor:
-        return self._order_rail_visual_color_for_hud(self.order_rail_hud)
 
     def _apply_order_rail_theme(self) -> None:
         if self.order_rail_hud is not None:
@@ -4821,7 +4727,6 @@ class ChartWorkspace(QtWidgets.QWidget):
             self._schedule_order_rail_animation_frame()
             return
         if not working:
-
 
 
             self._remove_active_order_rail()
@@ -4955,7 +4860,6 @@ class ChartWorkspace(QtWidgets.QWidget):
             return
 
 
-
         self._order_rail_last_frame = time.monotonic()
         self._schedule_order_rail_animation_frame()
 
@@ -4977,7 +4881,6 @@ class ChartWorkspace(QtWidgets.QWidget):
             self._order_rail_pending_drag_position = None
             self._move_order_rail_from_viewport(pending)
         now = time.monotonic()
-
 
 
         if (
@@ -5134,8 +5037,6 @@ class ChartWorkspace(QtWidgets.QWidget):
                 pass
 
 
-
-
         previous = self._last_price_axis_text_band
         if previous is not None:
             left, right = previous
@@ -5162,7 +5063,6 @@ class ChartWorkspace(QtWidgets.QWidget):
     ) -> None:
         rail_price_text = self._order_rail_price_text_for(float(price))
         if self._reserve_price_axis_for_text(rail_price_text):
-
 
 
             QTimer.singleShot(0, self, self._position_order_rail_hud)
@@ -5199,9 +5099,6 @@ class ChartWorkspace(QtWidgets.QWidget):
         desired = hud.desired_size(available_width, available_height)
         if hud.size() != desired:
             hud.resize(desired)
-
-
-
 
 
         original_compact_width = 164.0
@@ -5349,10 +5246,8 @@ class ChartWorkspace(QtWidgets.QWidget):
         if self.order_rail_value is None or self._order_rail_dragging:
             return
         self._begin_interaction_priority()
-        position = self._order_rail_hud_viewport_position(global_position)
         self._order_rail_dragging = True
         self._order_rail_drag_start_value = self.order_rail_value
-
 
 
         self._set_crosshair_visible(False)
@@ -5406,9 +5301,6 @@ class ChartWorkspace(QtWidgets.QWidget):
         view = self.price_plot.getViewBox()
         scene_position = self.graphics.mapToScene(position.toPoint())
         view_scene = view.sceneBoundingRect()
-
-
-
 
 
         if not (view_scene.top() <= scene_position.y() <= view_scene.bottom()):
@@ -5927,8 +5819,6 @@ class ChartWorkspace(QtWidgets.QWidget):
         }
 
 
-
-
         active_parked = self._active_parked_order_rails()
         known_identity_keys = {
             str(parked.get("working_key") or "")
@@ -5962,7 +5852,6 @@ class ChartWorkspace(QtWidgets.QWidget):
                     self._active_order_rail_matched_once
                     and self._active_order_rail_working_key not in keyed
                 ):
-
 
 
                     if active_hud.cancellation_pending:
@@ -6879,7 +6768,6 @@ class ChartWorkspace(QtWidgets.QWidget):
             return
 
 
-
         if (
             not math.isfinite(line_y)
             or line_y < plot_rect.top() - 0.75
@@ -6926,8 +6814,6 @@ class ChartWorkspace(QtWidgets.QWidget):
         )
         if overlay.geometry() != geometry:
             overlay.setGeometry(geometry)
-
-
 
 
         axis_text_band = self._native_price_axis_text_band(axis_rect)
@@ -6993,7 +6879,6 @@ class ChartWorkspace(QtWidgets.QWidget):
             overlay.raise_()
 
 
-
             for parked in self._active_parked_order_rails():
                 hud = parked.get("hud")
                 if isinstance(hud, MagneticOrderRailPanel) and hud.isVisible():
@@ -7005,7 +6890,6 @@ class ChartWorkspace(QtWidgets.QWidget):
         """Move only overlays that must remain attached during camera motion."""
         x_range = self.price_plot.viewRange()[0]
         self._position_current_price_line_overlay()
-
 
 
         self._position_order_rail_hud()
@@ -7174,16 +7058,10 @@ class ChartWorkspace(QtWidgets.QWidget):
         else:
 
 
-
-
-
             visual_limit = max(
                 160,
                 min(8192, int(physical_width)),
             )
-
-
-
 
 
         density = max(
@@ -7193,7 +7071,6 @@ class ChartWorkspace(QtWidgets.QWidget):
         required = max(1, math.ceil(density))
         stride = 1 << (required - 1).bit_length()
         previous = max(1, int(self._lod_stride_hint))
-
 
 
         if (
@@ -7258,8 +7135,6 @@ class ChartWorkspace(QtWidgets.QWidget):
     def _render_viewport(
         self,
         force: bool = False,
-        *,
-        defer_indicators: bool = False,
     ) -> None:
         if self._matrix_waiting:
             return
@@ -7302,7 +7177,6 @@ class ChartWorkspace(QtWidgets.QWidget):
         if right <= left:
 
 
-
             return
         visible_count = max(1, right - left)
 
@@ -7338,7 +7212,6 @@ class ChartWorkspace(QtWidgets.QWidget):
         if native_resident:
 
 
-
             visible_instances = max(
                 1,
                 int(math.ceil(visible_count / max(1, history_stride))),
@@ -7356,7 +7229,6 @@ class ChartWorkspace(QtWidgets.QWidget):
                     and cached_start <= max(0, left - guard)
                     and cached_end >= min(history_count, right + guard)
                 ):
-
 
 
                     safe_guard = max(1024 * history_stride, (visible_slots + 1) * 4)
@@ -7546,7 +7418,6 @@ class ChartWorkspace(QtWidgets.QWidget):
             return
 
 
-
         self._indicator_display_async_pending = payload
 
     @QtCore.Slot(object, object, object)
@@ -7696,8 +7567,6 @@ class ChartWorkspace(QtWidgets.QWidget):
             self._commit_indicator_display(mailbox[1], display_stride)
             self._indicator_committed_key = display_key
             return
-
-
 
 
         self._request_indicator_display_worker(
@@ -7893,7 +7762,6 @@ class ChartWorkspace(QtWidgets.QWidget):
         )
         x_range = self.price_plot.viewRange()[0]
         if signature == self._zone_render_signature and len(self.zone_graphics) == len(self.zones):
-
 
 
             for _region, label, zone in self.zone_graphics:
@@ -8577,7 +8445,7 @@ class ChartWorkspace(QtWidgets.QWidget):
         self.lod_aggregation_enabled = enabled
         self._invalidate_lod_cache()
         self.rendered_window = None
-        self._render_viewport(force=True, defer_indicators=True)
+        self._render_viewport(force=True)
         self._schedule_render_work(indicators=True, profiles=True, study_scale=True)
 
     def set_magnetic_order_rail_enabled(self, enabled: bool) -> None:
@@ -8658,13 +8526,12 @@ class ChartWorkspace(QtWidgets.QWidget):
         view = self.price_plot.getViewBox()
 
 
-
         if y_range is None:
             view.setRange(xRange=x_range, padding=0)
         else:
             view.setRange(xRange=x_range, yRange=y_range, padding=0)
         self.rendered_window = None
-        self._render_viewport(force=True, defer_indicators=True)
+        self._render_viewport(force=True)
         self._schedule_render_work(
             indicators=True, profiles=True, study_scale=True, history=True
         )
@@ -8702,8 +8569,6 @@ class ChartWorkspace(QtWidgets.QWidget):
             return
         self._resize_expensive_deferred = True
         self.detail_timer.stop()
-
-
 
 
         self._schedule_render_work(viewport=True, live=True, immediate=False)
@@ -8810,11 +8675,6 @@ class ChartWorkspace(QtWidgets.QWidget):
             self._set_current_price(self.current_price, self.current_rising)
         if 0 <= self.auto_fib_index < len(self.auto_fib_candidates):
             self._render_auto_fibonacci()
-
-
-
-
-
 
 
 CHART_LAYOUTS = (
@@ -9023,7 +8883,6 @@ class AuxiliaryChartPane(QtWidgets.QFrame):
             self._start_attempt += 1
             if self._start_attempt == 120:
                 self.status_label.setText("SURFACE PENDING")
-
 
 
             retry_ms = 25 if self._start_attempt < 120 else 250

@@ -5,7 +5,7 @@ from typing import Any
 from PySide6 import QtCore, QtGui, QtWidgets
 from PySide6.QtCore import Qt
 from ..models import UiTunerHostPort
-from ..constants import DEV_UI_COLOR_FIELDS, DEV_UI_COLOR_PROFILE_FIELDS, DEV_UI_COLOR_PRESETS, DEV_UI_LAYOUT_DEFAULTS, DEV_UI_LAYOUT_PRESETS, DEV_UI_SURFACE_DEFAULTS, DEV_UI_STATUS_COLOR_FIELDS, DEV_UI_STATUS_PRESETS
+from ..constants import DEV_UI_COLOR_FIELDS, DEV_UI_COLOR_PROFILE_FIELDS, DEV_UI_LAYOUT_DEFAULTS, DEV_UI_LAYOUT_PRESETS, DEV_UI_SURFACE_DEFAULTS, DEV_UI_STATUS_COLOR_FIELDS, DEV_UI_STATUS_PRESETS
 from ..utilities import DEV_UI_STATUS_FONT_DEFAULTS, TYPOGRAPHY_DEFAULTS, TYPOGRAPHY_ROLE_LABELS, TextRole, typography_controller, typography_font
 
 class UiTunerDialog(QtWidgets.QWidget):
@@ -38,8 +38,6 @@ class UiTunerDialog(QtWidgets.QWidget):
         self.color_preset = QtWidgets.QComboBox()
         self.color_preset.addItem('Custom', 'Custom')
         self.color_preset.addItem('Theme default', 'Theme default')
-        for name in DEV_UI_COLOR_PRESETS:
-            self.color_preset.addItem(name, name)
         self._set_combo_data(self.color_preset, host.current_developer_ui_color_preset())
         self.color_preset.currentIndexChanged.connect(lambda _index: self._color_preset_changed())
         color_preset_layout.addRow('Color style', self.color_preset)
@@ -110,7 +108,6 @@ class UiTunerDialog(QtWidgets.QWidget):
         status_layout.setVerticalSpacing(7)
         self._status_color_edits: dict[str, QtWidgets.QLineEdit] = {}
         self._status_color_buttons: dict[str, QtWidgets.QPushButton] = {}
-        self._status_spins: dict[str, QtWidgets.QSpinBox] = {}
         self._status_font_combos: dict[str, QtWidgets.QComboBox] = {}
         for key, label in DEV_UI_STATUS_COLOR_FIELDS:
             row = QtWidgets.QWidget()
@@ -429,7 +426,7 @@ class UiTunerDialog(QtWidgets.QWidget):
 
     def _color_preset_changed(self) -> None:
         name = str(self.color_preset.currentData() or '')
-        if name == 'Theme default' or name in DEV_UI_COLOR_PRESETS:
+        if name == 'Theme default':
             self.host.apply_developer_ui_color_preset(name)
             self.sync_from_owner()
 
@@ -542,10 +539,6 @@ class UiTunerDialog(QtWidgets.QWidget):
         for key, edit in getattr(self, '_status_color_edits', {}).items():
             edit.setText(str(self.host.developer_ui_status[key]))
             self._update_status_color_button(key)
-        for key, spin in getattr(self, '_status_spins', {}).items():
-            blocker = QtCore.QSignalBlocker(spin)
-            spin.setValue(int(self.host.developer_ui_status[key]))
-            del blocker
         for key, combo in getattr(self, '_status_font_combos', {}).items():
             blocker = QtCore.QSignalBlocker(combo)
             self._set_combo_data(combo, self.host.developer_ui_status[key])
@@ -1356,7 +1349,6 @@ class HistoryDownloadDialog(QtWidgets.QDialog):
         return int(self.range_combo.currentData()), self.save_csv.isChecked()
 
 
-
 class MarketDataOptionsDialog(QtWidgets.QDialog):
     """Choose reusable market-history datasets without simulation-specific semantics."""
 
@@ -1797,8 +1789,6 @@ class MarketHistoryDownloadDialog(QtWidgets.QDialog):
             event.ignore()
             return
         event.accept()
-
-
 
 
 class DataCacheDialog(QtWidgets.QDialog):

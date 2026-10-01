@@ -556,7 +556,6 @@ void main() {
                 return False
 
 
-
             capacity = max(int(resources.get("capacity", 0)), 1 << max(5, (required-1).bit_length()))
             vbo.allocate(capacity)
             vbo.write(0, payload, required)
@@ -718,9 +717,6 @@ void main() {
             return False
 
 
-
-
-
         if (
             not transform.isAffine()
             or abs(float(transform.m12())) > 1e-12
@@ -845,7 +841,6 @@ void main() {
             down_color = state["down"]
 
 
-
             up_body = state["up_body"]
             down_body = state["down_body"]
             count = int(resources.get("count", 0))
@@ -885,7 +880,6 @@ void main() {
                     6,
                     count,
                 )
-
 
 
             up_glow = state["glow_up"]
@@ -974,8 +968,6 @@ class PixelBarBatch:
         return QtCore.QRectF(*prepared.bounds)
 
     def _draw_cpu_batches(self, painter):
-
-
 
 
         if self._rect_batch_source is not self.batches:
@@ -1072,7 +1064,6 @@ class PixelBarBatch:
                 try:
                     add_rects(rects)
                 except (TypeError, AttributeError):
-
 
 
                     add_rect = target.addRect
@@ -1509,11 +1500,7 @@ class PixelBarBatch:
             return True
 
 
-
-
-
         stable_style_key = style_key if style_key is not None else id(style)
-
 
 
         if self._paint_native_gl(
@@ -1835,7 +1822,6 @@ class PixelBarBatch:
                 if bloom_brush is not None and bloom_radius:
 
 
-
                     one = np.ones(len(indices), dtype=np.float64)
                     self._append_rect_path(
                         bloom_path,
@@ -1846,7 +1832,6 @@ class PixelBarBatch:
                         build_screen,
                         expand=bloom_radius,
                     )
-
 
 
                 if bloom_brush is not None and not bloom_path.isEmpty():
@@ -1918,7 +1903,6 @@ class CandlestickItem(pg.GraphicsObject):
         self.style_name = style_name if style_name in CANDLE_STYLES else "Inked"
 
 
-
         self._style_key = tuple(CANDLE_STYLES[self.style_name].items())
         if self._native_composite is not None:
             self._native_composite.update()
@@ -1929,16 +1913,6 @@ class CandlestickItem(pg.GraphicsObject):
     def set_gpu_enabled(self, enabled: bool) -> None:
         self.pixel_batch.set_gpu_enabled(enabled)
 
-    def _body_color(self, color: QtGui.QColor, alpha: int) -> QtGui.QColor:
-        """Blend into the chart surface so no grid or wick can bleed through a body."""
-        surface = QtGui.QColor(self.background)
-        mix = max(0.0, min(1.0, alpha / 255.0))
-        return QtGui.QColor(
-            round(surface.red() * (1.0 - mix) + color.red() * mix),
-            round(surface.green() * (1.0 - mix) + color.green() * mix),
-            round(surface.blue() * (1.0 - mix) + color.blue() * mix),
-            255,
-        )
 
     def set_data(self, candles, previous_close: float | None = None, slots=None) -> None:
         del previous_close
@@ -2171,14 +2145,12 @@ class VolumeOverlayItem(pg.GraphicsObject):
         right = min(len(xs), int(np.searchsorted(xs, high, side="right")) + 1)
 
 
-
         if left < right and data[left, 0] + data[left, 6] * .5 < low:
             left += 1
         if left < right and data[right - 1, 0] - data[right - 1, 6] * .5 > high:
             right -= 1
         if right <= left:
             return 0.0
-
 
 
         _low, maximum = batch.prepared.extrema.query(left, right)
@@ -2366,16 +2338,12 @@ class NativeBarCompositeItem(pg.GraphicsObject):
             self._bounds = updated
 
 
-
-
         if dirty_rect is not None and not dirty_rect.isEmpty():
             view = self.getViewBox()
             if view is not None:
                 x0, x1 = view.viewRange()[0]
                 margin = (x1 - x0) * 16 / max(1.0, view.width())
                 if dirty_rect.right() < x0 - margin or dirty_rect.left() > x1 + margin:
-
-
 
 
                     return
@@ -2597,8 +2565,6 @@ class ChartGraphicsView(pg.GraphicsLayoutWidget):
         self._sync_viewport_opacity()
 
     def mouseMoveEvent(self, event):
-
-
 
 
         record_performance_count("input.pointer_received")

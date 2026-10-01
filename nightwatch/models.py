@@ -2,8 +2,6 @@
 from __future__ import annotations
 
 
-
-
 import math
 from collections.abc import Sequence
 from datetime import datetime, timezone
@@ -134,9 +132,6 @@ def validate_step(value: str, step: str, label: str) -> str:
         raise ValueError(f"Enter a valid positive {label.lower()}.")
 
 
-
-
-
 from dataclasses import dataclass
 from typing import Any
 
@@ -211,9 +206,6 @@ class PriceAlert:
     level: float
     direction: str
     active: bool = True
-
-
-
 
 
 from typing import Any
@@ -291,11 +283,9 @@ def book_data_is_fresh(depth_age: float | None, bbo_age: float | None) -> bool:
 class MicrostructureSnapshot:
     symbol: str
     ready: bool
-    headline: str
     buy_notional: float = 0.0
     sell_notional: float = 0.0
     imbalance_pct: float = 0.0
-    pressure: str = 'CALIBRATING'
     flow_intensity: float = 0.0
     bid_absorption: int = 0
     ask_absorption: int = 0
@@ -306,15 +296,12 @@ class MicrostructureSnapshot:
     bid_depth_change_pct: float = 0.0
     ask_depth_change_pct: float = 0.0
     price_change_bps: float = 0.0
-    best_bid_move_bps: float = 0.0
-    best_ask_move_bps: float = 0.0
     signal_id: int = 0
     signal_key: str = ''
     signal_sentence: str = ''
     signal_score: int = 0
     signal_anchor_side: str = ''
     signal_anchor_price: float = 0.0
-    signal_anchor_midpoint: float = 0.0
     depth_age_seconds: float | None = None
     live: bool = False
 
@@ -328,7 +315,6 @@ class OrderFlowTradePrint:
     classification or aggressor side.
     """
     sequence: int
-    trade_id: int
     event_time_ms: int
     received_monotonic: float
     price: float
@@ -354,10 +340,6 @@ class OrderFlowLevelMetrics:
     age_seconds: float
     max_notional: float
     persistence_ratio: float
-    recent_added_notional: float
-    recent_cancelled_notional: float
-    recent_executed_notional: float
-    recent_rpi_executed_notional: float
     recent_replenished_notional: float
     recent_restacked_notional: float
     trade_reload_count: int
@@ -389,8 +371,6 @@ class OrderFlowDisplayLevel:
     trade_notional_5s: float
     signed_trade_notional_5s: float
     rpi_trade_notional_5s: float
-
-
 
 
     age_seconds: float = field(compare=False)
@@ -437,7 +417,6 @@ class OrderFlowSnapshot:
     """
     symbol: str
     sequence: int
-    data_revision: int
     generated_monotonic: float
     ready: bool
     live: bool
@@ -463,7 +442,6 @@ class OrderFlowSnapshot:
     buy_notional_15s: float = 0.0
     sell_notional_15s: float = 0.0
     aggressor_imbalance_5s_pct: float = 0.0
-    normal_notional_5s: float = 0.0
     rpi_notional_5s: float = 0.0
     rpi_share_5s_pct: float = 0.0
     added_notional_5s: float = 0.0
@@ -523,7 +501,6 @@ class MarketDataHubPort(Protocol):
     def execution_book_is_fresh(self, now: float | None = None) -> bool: ...
 
     rest: Any
-    suspended: bool
     universe_ready: Any
     bootstrap_ready: Any
     analysis_ready: Any
@@ -653,8 +630,6 @@ class TradingGatewayPort(Protocol):
     def reconcile_unknown_orders(self) -> None:
         ...
 
-    def reset_account(self, balance: float=10000.0) -> None:
-        ...
 
     def stop(self) -> None:
         ...

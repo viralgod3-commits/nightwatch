@@ -92,8 +92,6 @@ def _reset_performance_diagnostics(started_at: float, duration_s: float) -> None
     _PROFILE_PAINT_REQUEST_LATENCIES.clear()
 
 
-
-
 def record_frame_request(source: object, timestamp: float | None = None) -> None:
     """Mark the first outstanding request that should result in a viewport paint.
 
@@ -173,7 +171,6 @@ class PresentationClock(QtCore.QObject):
         self._requested = False
         self._flushing = False
         self._frame_timestamps: deque[float] = deque()
-        self._last_frame_timestamp = 0.0
         self._next_frame_deadline = 0.0
         self._pacing_source = None
         self._pacing_window = None
@@ -206,7 +203,6 @@ class PresentationClock(QtCore.QObject):
         self._timer.setSingleShot(True)
         self._timer.setTimerType(Qt.TimerType.PreciseTimer)
         self._timer.timeout.connect(self._flush)
-
 
 
         self._profile_probe_timer = QtCore.QTimer(self)
@@ -266,7 +262,6 @@ class PresentationClock(QtCore.QObject):
             elif not self.frame_pending():
                 if self.presentation_required():
                     self._requested |= self._final_frame_requested
-
 
 
                     if source.isVisible() and not source.window().isMinimized():
@@ -619,8 +614,6 @@ class PresentationClock(QtCore.QObject):
         active = now - started < duration
 
 
-
-
         paint_items = list(self._profile_paint_timestamps.items())
         if paint_items:
             source_key, frames = max(paint_items, key=lambda item: len(item[1]))
@@ -717,7 +710,6 @@ class PresentationClock(QtCore.QObject):
 
     def _commit_frame(self, frame_time: float) -> None:
         self._requested = False
-        self._last_frame_timestamp = frame_time
         self._frame_timestamps.append(frame_time)
         if (
             self._profile_started_at > 0.0

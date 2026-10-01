@@ -143,7 +143,6 @@ class _OrderFlowLevelState:
     liquidity_history_revision: int = 0
 
 
-
     activity_added_notional: float = 0.0
     activity_cancelled_notional: float = 0.0
     activity_executed_notional: float = 0.0
@@ -191,7 +190,6 @@ class OrderFlowMetrics:
     add_cancel_pressure_5s_pct: float = 0.0
     bid_liquidity_delta_5s: float = 0.0
     ask_liquidity_delta_5s: float = 0.0
-    tracked_levels: int = 0
 
 class OrderFlowAnalyzer:
     """Bounded temporal model for one symbol's visible order flow.
@@ -218,7 +216,6 @@ class OrderFlowAnalyzer:
     CANCEL_RECONCILIATION_SECONDS = 0.35
     MAX_LEVEL_STATES = 2048
     BBO_STALE_SECONDS = BOOK_BBO_FRESH_SECONDS
-    DEPTH_STALE_SECONDS = BOOK_DEPTH_FRESH_SECONDS
     DEFAULT_SNAPSHOT_LEVEL_LIMIT = 80
     SNAPSHOT_LEVEL_LIMIT = 1000
     SNAPSHOT_LEVEL_REFRESH_SECONDS = 0.25
@@ -236,8 +233,6 @@ class OrderFlowAnalyzer:
     PRINT_OUTCOME_NOISE_MULTIPLIER = 1.5
     UNRESOLVED_PRINT_CAPACITY = 512
     METRICS_CACHE_SECONDS = 0.05
-
-
 
 
     STATE_STACK_PULL_MEDIAN_FLOOR_RATIO = 0.50
@@ -369,8 +364,6 @@ class OrderFlowAnalyzer:
         symbol_changed = normalized_symbol != self.symbol
         self.symbol = normalized_symbol
         if symbol_changed:
-
-
 
 
             self._quote_volume_24h = 0.0
@@ -505,12 +498,6 @@ class OrderFlowAnalyzer:
         self._large_trade_threshold = max(floor, percentile, median * 6.0, median + deviation * 6.0)
         return self._large_trade_threshold
 
-    def set_tick_size(self, tick_size: Any) -> None:
-        """Adopt exchange tick precision before temporal state is accumulated."""
-        value = self._tick_value(tick_size)
-        if math.isclose(value, self.tick_size, rel_tol=0.0, abs_tol=1e-15):
-            return
-        self.reset(self.symbol, tick_size=value)
 
     def _price_key(self, price: float) -> int | float:
         if self.tick_size > 0.0:
@@ -1149,8 +1136,6 @@ class OrderFlowAnalyzer:
     def _record_print_notional_sample(self, value: float) -> None:
 
 
-
-
         self._print_notional_samples.append(max(0.0, float(value)))
 
     def _touch_recent_price_key(self, price_key: int | float, now: float) -> None:
@@ -1215,7 +1200,7 @@ class OrderFlowAnalyzer:
         reference_midpoint = (bbo_bid + bbo_ask) * 0.5 if bbo_bid > 0.0 and bbo_ask > bbo_bid else price
         reference_spread = bbo_ask - bbo_bid if bbo_bid > 0.0 and bbo_ask > bbo_bid else self._last_bbo_spread
         outcome_threshold = max(self.tick_size, reference_spread * 0.5, self._bbo_noise_ema * self.PRINT_OUTCOME_NOISE_MULTIPLIER, max(reference_midpoint, 1e-12) * 2e-05)
-        trade_print = OrderFlowTradePrint(sequence=self._print_sequence, trade_id=trade_id, event_time_ms=event_time_ms, received_monotonic=current, price=price, quantity=total_quantity, notional=total_notional, aggressor_side=aggressor_side, normal_notional=normal_notional, rpi_notional=rpi_notional, relative_size=relative_size, salience_class=salience_class, reference_midpoint=reference_midpoint, outcome_threshold=outcome_threshold)
+        trade_print = OrderFlowTradePrint(sequence=self._print_sequence, event_time_ms=event_time_ms, received_monotonic=current, price=price, quantity=total_quantity, notional=total_notional, aggressor_side=aggressor_side, normal_notional=normal_notional, rpi_notional=rpi_notional, relative_size=relative_size, salience_class=salience_class, reference_midpoint=reference_midpoint, outcome_threshold=outcome_threshold)
         self._recent_prints.append(trade_print)
         if salience_class >= 1:
             self._queue_unresolved_print(trade_print)
@@ -1283,9 +1268,6 @@ class OrderFlowAnalyzer:
             self._trim(current)
         return True
 
-    def add_trade(self, event: dict[str, Any], now: float | None=None) -> bool:
-        current = time.monotonic() if now is None else float(now)
-        return self._add_trade(event, current, trim=True)
 
     def add_trade_batch(self, events: Any, now: float | None=None) -> bool:
         current = time.monotonic() if now is None else float(now)
@@ -1518,8 +1500,6 @@ class OrderFlowAnalyzer:
             observed_values.append(sample.notional)
 
 
-
-
             if index > 0:
                 boundary = sample.time + seconds - index * bin_width
             else:
@@ -1705,7 +1685,6 @@ class OrderFlowAnalyzer:
         if resolved_source_revision > 0:
 
 
-
             if resolved_source_revision != self._source_depth_update_id:
                 self._source_depth_bids = bids
                 self._source_depth_asks = asks
@@ -1817,7 +1796,6 @@ class OrderFlowAnalyzer:
         current = time.monotonic() if now is None else float(now)
 
 
-
         self._finalize_pending_cancellations(current)
         self._trim(current)
         if (
@@ -1846,7 +1824,6 @@ class OrderFlowAnalyzer:
             result = OrderFlowMetrics(
                 symbol=self.symbol,
                 ready=False,
-                tracked_levels=len(self._current_keys['bid']) + len(self._current_keys['ask']),
             )
             self._metrics_cache = result
             self._metrics_cache_revision = self._revision
@@ -1902,7 +1879,6 @@ class OrderFlowAnalyzer:
             replenished_notional_5s=replenished, add_cancel_pressure_5s_pct=add_cancel_pressure,
             bid_liquidity_delta_5s=bid_added - bid_cancelled,
             ask_liquidity_delta_5s=ask_added - ask_cancelled,
-            tracked_levels=len(self._current_keys['bid']) + len(self._current_keys['ask']),
         )
         self._metrics_cache = result
         self._metrics_cache_revision = self._revision
@@ -1960,10 +1936,6 @@ class OrderFlowAnalyzer:
         execution_floor = median_notional * self.STATE_EXEC_MEDIAN_FLOOR_RATIO
 
 
-
-
-
-
         new_passive_added = max(0.0, added - replenished - restacked - pending_restack)
         effective_cancelled = max(0.0, cancelled - restacked_cancelled)
 
@@ -1995,7 +1967,6 @@ class OrderFlowAnalyzer:
         stacking = stacking_base and new_passive_added >= stack_pull_floor
         depleting = depleting_base and executed >= execution_floor
         persistent = persistent_base
-
 
 
         state_flags = tuple(
@@ -2084,10 +2055,7 @@ class OrderFlowAnalyzer:
         return OrderFlowLevelMetrics(
             side=state.side, price=state.price, quantity=state.quantity,
             notional=state.notional, age_seconds=age, max_notional=state.max_notional,
-            persistence_ratio=persistence, recent_added_notional=added,
-            recent_cancelled_notional=cancelled, recent_executed_notional=executed,
-            recent_rpi_executed_notional=rpi_executed,
-            recent_replenished_notional=replenished, recent_restacked_notional=restacked,
+            persistence_ratio=persistence,             recent_replenished_notional=replenished, recent_restacked_notional=restacked,
             trade_reload_count=trade_reload_count, restack_count=restack_count,
             replenishments=state.replenishments, state=label, state_flags=state_flags,
             persistent=persistent, analysis_revision=self._analysis_revision,
@@ -2157,21 +2125,6 @@ class OrderFlowAnalyzer:
         self._local_median_cache_revision = self._current_level_value_revision
         return output
 
-    def level_metrics(self, now: float | None=None, *, limit_per_side: int=40) -> tuple[OrderFlowLevelMetrics, ...]:
-        current = time.monotonic() if now is None else float(now)
-        self._finalize_pending_cancellations(current)
-        self._trim(current)
-        limit = max(1, min(int(limit_per_side), self.DEPTH_LEVEL_LIMIT))
-        current_states, side_medians = self._current_level_states(limit)
-        local_medians = self._local_state_medians(side_medians)
-        output: list[OrderFlowLevelMetrics] = []
-        for side in ('ask', 'bid'):
-            for state in current_states[side]:
-                key = (side, self._price_key(state.price))
-                output.append(self._level_metric_for_state(
-                    state, current, local_medians.get(key, side_medians[side])
-                ))
-        return tuple(output)
 
     @staticmethod
     def _age(now: float, stamp: float) -> float | None:
@@ -2280,10 +2233,6 @@ class OrderFlowAnalyzer:
             age_seconds=0.0,
             max_notional=0.0,
             persistence_ratio=0.0,
-            recent_added_notional=0.0,
-            recent_cancelled_notional=0.0,
-            recent_executed_notional=normal_trade,
-            recent_rpi_executed_notional=rpi_trade,
             recent_replenished_notional=0.0,
             recent_restacked_notional=0.0,
             trade_reload_count=0,
@@ -2531,7 +2480,6 @@ class OrderFlowAnalyzer:
                 if not cache_fresh:
 
 
-
                     self._snapshot_dirty_price_keys.update(self._snapshot_analyzed_price_keys)
                 result = self._partial_refresh_snapshot_levels(now)
                 if not cache_fresh:
@@ -2621,8 +2569,6 @@ class OrderFlowAnalyzer:
         cutoff = now - self.PRINT_HISTORY_SECONDS
 
 
-
-
         output = tuple(self._recent_prints)
         start = 0
         output_count = len(output)
@@ -2678,34 +2624,10 @@ class OrderFlowAnalyzer:
         bbo_source = 'bookTicker' if using_book else 'depth' if self._depth_initialized else 'none'
         bbo_age = book_age if using_book else depth_age
         live = bool(metrics.ready and book_data_is_fresh(depth_age, bbo_age))
-        normal_5s = max(0.0, metrics.buy_notional_5s + metrics.sell_notional_5s - metrics.rpi_notional_5s)
         recent_activity = any((value > 1e-09 for value in (metrics.buy_notional_15s, metrics.sell_notional_15s, metrics.added_notional_5s, metrics.cancelled_notional_5s, metrics.replenished_notional_5s)))
         self._snapshot_sequence += 1
-        return OrderFlowSnapshot(symbol=self.symbol, sequence=self._snapshot_sequence, data_revision=self._revision, generated_monotonic=current, ready=metrics.ready, live=live, bbo_source=bbo_source, depth_age_seconds=depth_age, bbo_age_seconds=bbo_age, trade_age_seconds=trade_age, best_bid=metrics.best_bid, best_ask=metrics.best_ask, best_bid_quantity=metrics.best_bid_quantity, best_ask_quantity=metrics.best_ask_quantity, midpoint=metrics.midpoint, spread=max(0.0, metrics.best_ask - metrics.best_bid), spread_bps=metrics.spread_bps, microprice=metrics.microprice, microprice_bias_bps=metrics.microprice_bias_bps, near_pressure_pct=metrics.near_pressure_pct, touch_imbalance_pct=metrics.touch_imbalance_pct, buy_notional_1s=metrics.buy_notional_1s, sell_notional_1s=metrics.sell_notional_1s, buy_notional_5s=metrics.buy_notional_5s, sell_notional_5s=metrics.sell_notional_5s, buy_notional_15s=metrics.buy_notional_15s, sell_notional_15s=metrics.sell_notional_15s, aggressor_imbalance_5s_pct=metrics.aggressor_imbalance_5s_pct, normal_notional_5s=normal_5s, rpi_notional_5s=metrics.rpi_notional_5s, rpi_share_5s_pct=metrics.rpi_share_5s_pct, added_notional_5s=metrics.added_notional_5s, cancelled_notional_5s=metrics.cancelled_notional_5s, replenished_notional_5s=metrics.replenished_notional_5s, add_cancel_pressure_5s_pct=metrics.add_cancel_pressure_5s_pct, bid_liquidity_delta_5s=metrics.bid_liquidity_delta_5s, ask_liquidity_delta_5s=metrics.ask_liquidity_delta_5s, has_recent_activity=recent_activity, liquidity_scale=scales[0], delta_scale=scales[1], trade_scale=scales[2], cumulative_depth_scale=max(bids[-1].cumulative_depth_notional if bids else 0.0, asks[-1].cumulative_depth_notional if asks else 0.0), large_trade_threshold=max(1.0, self._adaptive_print_threshold(current)), recent_prints=self._recent_prints_snapshot(current), bid_levels=bids, ask_levels=asks)
+        return OrderFlowSnapshot(symbol=self.symbol, sequence=self._snapshot_sequence, generated_monotonic=current, ready=metrics.ready, live=live, bbo_source=bbo_source, depth_age_seconds=depth_age, bbo_age_seconds=bbo_age, trade_age_seconds=trade_age, best_bid=metrics.best_bid, best_ask=metrics.best_ask, best_bid_quantity=metrics.best_bid_quantity, best_ask_quantity=metrics.best_ask_quantity, midpoint=metrics.midpoint, spread=max(0.0, metrics.best_ask - metrics.best_bid), spread_bps=metrics.spread_bps, microprice=metrics.microprice, microprice_bias_bps=metrics.microprice_bias_bps, near_pressure_pct=metrics.near_pressure_pct, touch_imbalance_pct=metrics.touch_imbalance_pct, buy_notional_1s=metrics.buy_notional_1s, sell_notional_1s=metrics.sell_notional_1s, buy_notional_5s=metrics.buy_notional_5s, sell_notional_5s=metrics.sell_notional_5s, buy_notional_15s=metrics.buy_notional_15s, sell_notional_15s=metrics.sell_notional_15s, aggressor_imbalance_5s_pct=metrics.aggressor_imbalance_5s_pct, rpi_notional_5s=metrics.rpi_notional_5s, rpi_share_5s_pct=metrics.rpi_share_5s_pct, added_notional_5s=metrics.added_notional_5s, cancelled_notional_5s=metrics.cancelled_notional_5s, replenished_notional_5s=metrics.replenished_notional_5s, add_cancel_pressure_5s_pct=metrics.add_cancel_pressure_5s_pct, bid_liquidity_delta_5s=metrics.bid_liquidity_delta_5s, ask_liquidity_delta_5s=metrics.ask_liquidity_delta_5s, has_recent_activity=recent_activity, liquidity_scale=scales[0], delta_scale=scales[1], trade_scale=scales[2], cumulative_depth_scale=max(bids[-1].cumulative_depth_notional if bids else 0.0, asks[-1].cumulative_depth_notional if asks else 0.0), large_trade_threshold=max(1.0, self._adaptive_print_threshold(current)), recent_prints=self._recent_prints_snapshot(current), bid_levels=bids, ask_levels=asks)
 
-    def state_calibration_snapshot(self) -> dict[str, Any]:
-        """Return bounded event-count telemetry for offline threshold calibration.
-
-        Counters increment on observed episode changes, never on every poll.
-        Short episodes between analyses can still be missed; compare calibration
-        runs at a consistent analysis cadence.
-        """
-        return {
-            'signal_entries': dict(self._state_signal_counts),
-            'signal_exits': dict(self._state_exit_counts),
-            'suppression_episodes': dict(self._state_significance_suppressed),
-
-            'signal_transitions': dict(self._state_signal_counts),
-            'significance_suppressed': dict(self._state_significance_suppressed),
-            'stack_pull_median_floor_ratio': self.STATE_STACK_PULL_MEDIAN_FLOOR_RATIO,
-            'execution_median_floor_ratio': self.STATE_EXEC_MEDIAN_FLOOR_RATIO,
-            'local_median_radius': self.STATE_LOCAL_MEDIAN_RADIUS,
-            'reference_peak_half_life_seconds': self.LIQUIDITY_HISTORY_SECONDS,
-            'overlap_entries': dict(self._state_overlap_counts),
-            'event_schema_version': 2,
-            'activity_bucket_seconds': self.LEVEL_ACTIVITY_BUCKET_SECONDS,
-            'recent_events': tuple(self._state_calibration_events),
-        }
 
     def diagnostic_state(self) -> dict[str, Any]:
         """Small deterministic state summary used by tests and diagnostics."""
@@ -2719,7 +2641,6 @@ from dataclasses import dataclass
 from typing import Any, Iterable
 
 from ..models import MicrostructureSnapshot
-
 
 
 @dataclass
@@ -2809,12 +2730,6 @@ class MicrostructureAnalyzer:
             bucket.buy += notional
         return True
 
-    def add_trade(self, event: dict[str, Any], now: float | None=None) -> MicrostructureSnapshot | None:
-        current = time.monotonic() if now is None else float(now)
-        if not self._add_trade(event, current):
-            return None
-        self._trim(current)
-        return self._evaluate_if_due(current)
 
     def add_trade_batch(self, events: Iterable[dict[str, Any]], now: float | None=None) -> MicrostructureSnapshot | None:
         current = time.monotonic() if now is None else float(now)
@@ -2977,7 +2892,6 @@ class MicrostructureAnalyzer:
             return MicrostructureSnapshot(
                 symbol=self.symbol,
                 ready=False,
-                headline='',
                 buy_notional=buy,
                 sell_notional=sell,
                 imbalance_pct=imbalance,
@@ -2993,15 +2907,6 @@ class MicrostructureAnalyzer:
         buy_to_ask_depth = buy / max(ask_start, 1e-09)
         sell_to_bid_depth = sell / max(bid_start, 1e-09)
         flow_to_depth = total / max((bid_start + ask_start) * 0.5, 1e-09)
-        active_flow = intensity >= 0.55 or flow_to_depth >= 0.05
-        pressure_threshold = max(14.0, min(22.0, 22.0 - 4.0 * math.log(max(intensity, 1.0))))
-        pressure = 'CALIBRATING'
-        if baseline_seconds >= 15.0:
-            pressure = 'NEUTRAL'
-            if active_flow and imbalance >= pressure_threshold:
-                pressure = 'BULLISH'
-            elif active_flow and imbalance <= -pressure_threshold:
-                pressure = 'BEARISH'
 
         bid_absorption_raw = self._absorption_score(sell_share, sell_to_bid_depth, bid_drawdown, bid_recovery, max(0.0, -price_move), tolerance)
         ask_absorption_raw = self._absorption_score(buy_share, buy_to_ask_depth, ask_drawdown, ask_recovery, max(0.0, price_move), tolerance)
@@ -3013,8 +2918,6 @@ class MicrostructureAnalyzer:
         relative_volume_high = baseline_seconds >= 15.0 and intensity >= self.RELATIVE_VOLUME_MIN
         minimum_response = max(tolerance * 1.25, spread_bps * 0.9, 0.35)
         reversal_response = max(tolerance * 0.35, spread_bps * 0.35, 0.18)
-
-
 
 
         bullish_breakout = (
@@ -3063,7 +2966,6 @@ class MicrostructureAnalyzer:
         signal_score = 0
         signal_anchor_side = ''
         signal_anchor_price = 0.0
-        signal_anchor_midpoint = 0.0
         if qualified:
             score, name = max(qualified)
             if name != self.candidate_key:
@@ -3080,7 +2982,6 @@ class MicrostructureAnalyzer:
                 latest_depth = samples[-1]
                 signal_anchor_side = 'bid' if name in {'BID ABSORPTION', 'BEARISH BREAKDOWN'} else 'ask'
                 signal_anchor_price = float(latest_depth.best_bid) if signal_anchor_side == 'bid' else float(latest_depth.best_ask)
-                signal_anchor_midpoint = float(latest_depth.midpoint)
                 symbol = f'{self.symbol}.P'
                 if name == 'BID ABSORPTION':
                     signal_sentence = f'{symbol} · BULLISH ABSORPTION · aggressive selling was absorbed, bids refilled and price reversed · {intensity:.1f}× activity'
@@ -3100,11 +3001,9 @@ class MicrostructureAnalyzer:
         return MicrostructureSnapshot(
             symbol=self.symbol,
             ready=True,
-            headline=signal_sentence,
             buy_notional=buy,
             sell_notional=sell,
             imbalance_pct=imbalance,
-            pressure=pressure,
             flow_intensity=intensity,
             bid_absorption=bid_absorption,
             ask_absorption=ask_absorption,
@@ -3115,15 +3014,12 @@ class MicrostructureAnalyzer:
             bid_depth_change_pct=(bid_end / bid_start - 1.0) * 100.0,
             ask_depth_change_pct=(ask_end / ask_start - 1.0) * 100.0,
             price_change_bps=price_move,
-            best_bid_move_bps=bid_move,
-            best_ask_move_bps=ask_move,
             signal_id=self.signal_id if signal_sentence else 0,
             signal_key=signal_key,
             signal_sentence=signal_sentence,
             signal_score=signal_score,
             signal_anchor_side=signal_anchor_side,
             signal_anchor_price=signal_anchor_price,
-            signal_anchor_midpoint=signal_anchor_midpoint,
             depth_age_seconds=depth_age,
             live=True,
         )
@@ -3352,7 +3248,6 @@ class _LocalOrderFlowRuntime(QtCore.QObject):
             return
 
 
-
         if self._snapshot_timer.isActive():
             self._snapshot_timer.stop()
         self._schedule_snapshot()
@@ -3415,7 +3310,6 @@ class _LocalOrderFlowRuntime(QtCore.QObject):
         self._last_build_mono = completed
 
 
-
         frame = OrderFlowPresentationFrame(
             snapshot=snapshot,
             build_started_mono=started,
@@ -3423,7 +3317,6 @@ class _LocalOrderFlowRuntime(QtCore.QObject):
         )
         depth_timing = dict(self._latest_depth_timing)
         if depth_timing:
-
 
 
             self.snapshot_ready.emit(generation, (frame, depth_timing))
@@ -3440,7 +3333,6 @@ class _LocalOrderFlowRuntime(QtCore.QObject):
             self._decay_timer.start(decay_ms)
 
 
-
         if self._dirty:
             self._schedule_snapshot()
 
@@ -3451,7 +3343,6 @@ class _LocalOrderFlowRuntime(QtCore.QObject):
         self._mark_dirty()
 
     def _emit_diagnostic_state(self, *, force: bool=False) -> None:
-
 
 
         now = time.perf_counter()
@@ -3467,8 +3358,6 @@ class _LocalOrderFlowRuntime(QtCore.QObject):
             return
         self._last_diagnostic_emit_mono = now
         self.diagnostic_ready.emit(self._generation, state)
-
-
 
 
 import multiprocessing

@@ -341,21 +341,6 @@ class PriceAxisFocusOverlay(QtWidgets.QWidget):
         if visible:
             self.update()
 
-    def _draw_focus_veil(self, painter: QtGui.QPainter, y: float, *, strength: int) -> None:
-        radius = self.FOCUS_RADIUS
-        top = max(0.0, y - radius)
-        bottom = min(float(self.height()), y + radius)
-        if bottom <= top:
-            return
-        bg = self._bg_color
-        gradient = QtGui.QLinearGradient(0.0, top, 0.0, bottom)
-        gradient.setColorAt(0.0, self._alpha(bg, 0))
-        gradient.setColorAt(0.24, self._alpha(bg, max(18, int(strength * 0.32))))
-        gradient.setColorAt(0.42, self._alpha(bg, strength))
-        gradient.setColorAt(0.58, self._alpha(bg, strength))
-        gradient.setColorAt(0.76, self._alpha(bg, max(18, int(strength * 0.32))))
-        gradient.setColorAt(1.0, self._alpha(bg, 0))
-        painter.fillRect(QtCore.QRectF(0.0, top, float(self.width()), bottom - top), QtGui.QBrush(gradient))
 
     def _draw_axis_value(self, painter: QtGui.QPainter, y_value: float, value: str, accent: QtGui.QColor, text_color: QtGui.QColor, text_width: float) -> None:
         y = max(self.BADGE_HEIGHT * 0.5, min(float(self.height()) - self.BADGE_HEIGHT * 0.5, y_value))
@@ -656,7 +641,6 @@ class MagneticRailLineOverlay(QtWidgets.QWidget):
             shift = self.phase * spacing % spacing
 
 
-
             painter.save()
             painter.setClipRect(QtCore.QRectF(x0, y - 5.0, max(0.0, x1 - x0), 10.0))
             x = x0 + shift - spacing
@@ -830,11 +814,8 @@ class MagneticRailLineOverlay(QtWidgets.QWidget):
         if x1 > x0 + 1.0:
 
 
-
-
             body_end = min(x1, arc_start)
             body_mode = str(cfg.get('body_animation', 'ray'))
-
 
 
             animation_start = x0 if body_mode in {'vector', 'ray'} else x0 + max(0.0, body_end - x0) * 0.20
@@ -899,17 +880,10 @@ class MagneticOrderRailPanel(QtWidgets.QWidget):
     """
 
 
-
-
-
-
-
-
     COMPACT_WIDTH = 244
     COMPACT_HEIGHT = 51
     BODY_WIDTH = 242.2
     BODY_HEIGHT = 45.9
-
 
 
     CONTROL_BOX_HEIGHT = 24.0
@@ -975,9 +949,7 @@ class MagneticOrderRailPanel(QtWidgets.QWidget):
         self._body_dragging = False
         self._body_click_pending = False
         self._body_press_global: QtCore.QPointF | None = None
-        self._body_press_local: QtCore.QPointF | None = None
         self._arm_visual_progress = 0.0
-
 
 
         self._arm_submission_preview = False
@@ -987,11 +959,9 @@ class MagneticOrderRailPanel(QtWidgets.QWidget):
         self._commit_flash = False
         self._commit_started = 0.0
 
-        self._rail_label_font = typography_font(TextRole.RAIL_LABEL)
         self._axis_font = _chart_axis_font()
         self._paint_text_color = QtGui.QColor()
         self._paint_muted_color = QtGui.QColor()
-        self._paint_border_color = QtGui.QColor()
         self._paint_surface_color = QtGui.QColor()
         self._paint_green_color = QtGui.QColor()
         self._paint_red_color = QtGui.QColor()
@@ -1011,8 +981,6 @@ class MagneticOrderRailPanel(QtWidgets.QWidget):
         self.hide()
 
 
-
-
         self._arm_animation_running = False
         self._arm_animation_started = 0.0
         self._arm_animation_from = 0.0
@@ -1026,7 +994,6 @@ class MagneticOrderRailPanel(QtWidgets.QWidget):
         return out
 
     def _refresh_typography_cache(self) -> None:
-        self._rail_label_font = typography_font(TextRole.RAIL_LABEL)
         self._axis_font = _chart_axis_font()
         self.update()
 
@@ -1034,7 +1001,6 @@ class MagneticOrderRailPanel(QtWidgets.QWidget):
         t = self.theme
         self._paint_text_color = QtGui.QColor(t.get('text', '#d4dbe1'))
         self._paint_muted_color = QtGui.QColor(t.get('muted', '#7f8b95'))
-        self._paint_border_color = QtGui.QColor(t.get('control_border', t.get('border', '#28343d')))
         self._paint_surface_color = QtGui.QColor(t.get('control', '#0a1014'))
         self._paint_green_color = QtGui.QColor(t.get('rail_buy', t.get('green', '#13d88a')))
         self._paint_red_color = QtGui.QColor(t.get('candle_down', t.get('red', '#E60028')))
@@ -1200,7 +1166,6 @@ class MagneticOrderRailPanel(QtWidgets.QWidget):
         target = 1.0 if armed else 0.0
 
 
-
         if armed and self._arm_submission_preview:
             self._arm_submission_preview = False
             self.armed = True
@@ -1278,8 +1243,6 @@ class MagneticOrderRailPanel(QtWidgets.QWidget):
 
         del enabled, animated
 
-    def active_contract_progress(self) -> float:
-        return self.arm_visual_progress()
 
     def set_implosion_progress(self, progress: float) -> None:
         progress = max(0.0, min(1.0, float(progress)))
@@ -1328,8 +1291,6 @@ class MagneticOrderRailPanel(QtWidgets.QWidget):
         price = QtCore.QRectF(left, top, max(1.0, right - left), price_h)
 
 
-
-
         empty = QtCore.QRectF()
         size_rect = leverage_rect = reduce_rect = empty
         controls_blocked = bool(
@@ -1359,7 +1320,6 @@ class MagneticOrderRailPanel(QtWidgets.QWidget):
             x_leverage = x_size + box_w + self.SIZE_LEVERAGE_GAP
             x_reduce = x_leverage + box_w + self.LEVERAGE_REDUCE_GAP
             controls_end = x_reduce + reduce_w
-
 
 
             max_end = divider_x - 8.0
@@ -1515,7 +1475,6 @@ class MagneticOrderRailPanel(QtWidgets.QWidget):
         self._pressed_key = ''
         self._body_click_pending = True
         self._body_press_global = QtCore.QPointF(event.globalPosition())
-        self._body_press_local = QtCore.QPointF(position)
         try:
             self.grabMouse()
         except RuntimeError:
@@ -1538,7 +1497,6 @@ class MagneticOrderRailPanel(QtWidgets.QWidget):
             self.body_drag_finished.emit(True)
             self._pressed_key = ''
             self._body_press_global = None
-            self._body_press_local = None
             self.update()
             event.accept()
             return
@@ -1547,7 +1505,6 @@ class MagneticOrderRailPanel(QtWidgets.QWidget):
                 self._show_working_order_details()
             self._body_click_pending = False
             self._body_press_global = None
-            self._body_press_local = None
             try:
                 if QtWidgets.QWidget.mouseGrabber() is self:
                     self.releaseMouse()
@@ -1586,7 +1543,6 @@ class MagneticOrderRailPanel(QtWidgets.QWidget):
         cancel = popup.addAction('Cancel order')
         cancel.setEnabled(bool(order) and not self.cancellation_pending and not self.submission_pending)
         cancel.triggered.connect(self.remove_requested.emit)
-        self._order_details_popup = popup
         popup.popup(self.mapToGlobal(self.rect().bottomLeft()))
 
     def mouseDoubleClickEvent(self, event: QtGui.QMouseEvent) -> None:
@@ -1613,7 +1569,6 @@ class MagneticOrderRailPanel(QtWidgets.QWidget):
             self._body_dragging = False
             self._body_click_pending = False
             self._body_press_global = None
-            self._body_press_local = None
             self._pressed_key = ''
             self.set_external_dragging(False)
             if was_dragging:
@@ -1626,7 +1581,6 @@ class MagneticOrderRailPanel(QtWidgets.QWidget):
         self._body_dragging = False
         self._body_click_pending = False
         self._body_press_global = None
-        self._body_press_local = None
         self._pressed_key = ''
         try:
             if QtWidgets.QWidget.mouseGrabber() is self:
@@ -1694,7 +1648,6 @@ class MagneticOrderRailPanel(QtWidgets.QWidget):
         painter.fillRect(rect, entrance)
 
 
-
         top_glint = QtGui.QLinearGradient(rect.left(), rect.top(), rect.right(), rect.top())
         top_glint.setColorAt(0.0, self._alpha(cyan, 155))
         top_glint.setColorAt(0.20, self._alpha(cyan, 95))
@@ -1718,7 +1671,6 @@ class MagneticOrderRailPanel(QtWidgets.QWidget):
         if rect.isEmpty():
             return
         cyan = self._paint_cyan_color
-        accent = self._paint_muted_color if disabled else cyan
         hovered = (self._hover_key == key) and not disabled
         pressed = (self._pressed_key == key) and not disabled
 
@@ -1740,7 +1692,6 @@ class MagneticOrderRailPanel(QtWidgets.QWidget):
             painter.setPen(cyan if active else self._paint_text_color)
             painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, label)
             return
-
 
 
         radius = rect.height() * 0.5
@@ -1787,7 +1738,6 @@ class MagneticOrderRailPanel(QtWidgets.QWidget):
         painter.setBrush(self._paint_opaque_color)
         painter.drawPath(self._shape_path(price_rect))
         self._draw_shell(painter, price_rect, compact_accent)
-
 
 
         if not visually_armed:

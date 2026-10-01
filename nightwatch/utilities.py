@@ -12,22 +12,8 @@ from PySide6 import QtCore, QtGui, QtWidgets
 from . import constants
 
 
-
-
 # Shared order-book design tokens. The canvas and trade tape use the same
 # directional colors so switching views never changes the meaning of color.
-ORDERBOOK_DESIGN_TOKENS: dict[str, str] = {
-    "bg": "#0D131D", "surface_top": "#111A27",
-    "surface_raised": "#172231", "surface_center": "#1B2A3D",
-    "control": "#111A27", "control_hover": "#22334A",
-    "control_pressed": "#293F59", "control_border": "#2A3B51",
-    "control_hover_line": "#5982AC", "grid": "#233247",
-    "grid_strong": "#344B65", "text": "#E6EDF7", "muted": "#95A6BB",
-    "bid": "#48D5B0", "ask": "#FF8393", "mid": "#9ABDFF",
-    "amber": "#E7BE77", "purple": "#B5A2E8",
-    "bid_fill": "#1F574C", "ask_fill": "#59313E",
-    "bid_fill_strong": "#2F8570", "ask_fill_strong": "#A64F64",
-}
 
 
 class TextRole:
@@ -263,7 +249,6 @@ _LEGACY_TEXT_ROLES: dict[str, str] = {
     "metricTitle": TextRole.UI_LABEL,
     "tradeFieldLabel": TextRole.UI_LABEL,
     "tradingSectionLabel": TextRole.UI_LABEL,
-    "sectionTitle": TextRole.UI_LABEL,
     "subtleLabel": TextRole.UI_CAPTION,
     "metricHoverName": TextRole.UI_LABEL,
     "metricHoverStamp": TextRole.UI_CAPTION,
@@ -273,29 +258,20 @@ _LEGACY_TEXT_ROLES: dict[str, str] = {
     "leadershipSubtitle": TextRole.WORKSPACE_SUBTITLE,
     "framelessCloseButton": TextRole.UI_GLYPH,
     "watchlistGroupMenu": TextRole.UI_GLYPH,
-    "infoBubble": TextRole.UI_GLYPH,
     "topMetricValue": TextRole.MARKET_VALUE,
     "metricValue": TextRole.MARKET_VALUE,
     "topTickerLast": TextRole.MARKET_VALUE,
     "topTickerSymbol": TextRole.TOP_TICKER_SYMBOL,
-    "tickerSymbol": TextRole.INSTRUMENT_SYMBOL,
-    "tickerButton": TextRole.INSTRUMENT_SYMBOL,
-    "tickerDropdown": TextRole.INSTRUMENT_SYMBOL,
-    "tickerSearchEdit": TextRole.INSTRUMENT_SYMBOL,
     "globalSymbolSearch": TextRole.INSTRUMENT_SYMBOL,
     "metricHoverValue": TextRole.MARKET_VALUE_EMPHASIZED,
     "tradeAccountSummary": TextRole.MARKET_VALUE,
     "tradingDeskStatus": TextRole.UI_CAPTION,
-    "marketTilePair": TextRole.INSTRUMENT_SYMBOL,
     "terminalLatency": TextRole.STATUS_LATENCY,
     "statusMessage": TextRole.STATUS_MESSAGE,
     "connectionStatus": TextRole.STATUS_TEXT,
-    "orderBookImbalance": TextRole.ORDERBOOK_METRIC,
-    "orderBookMetric": TextRole.ORDERBOOK_METRIC,
     "accountCardPnl": TextRole.MARKET_VALUE_EMPHASIZED,
     "accountTotalPnl": TextRole.MARKET_VALUE_LARGE,
     "leadershipTitle": TextRole.WORKSPACE_TITLE,
-    "leadershipPanelTitle": TextRole.PANEL_TITLE,
     "leadersMetricTitle": TextRole.UI_CAPTION,
     "leadersMetricSub": TextRole.UI_CAPTION,
     "leadersSideTitle": TextRole.PANEL_TITLE,
@@ -309,10 +285,6 @@ _LEGACY_TEXT_ROLES: dict[str, str] = {
     "leadersRank": TextRole.MARKET_VALUE,
     "leadersRankChange": TextRole.MARKET_VALUE,
     "leadersDistributionValue": TextRole.MARKET_VALUE,
-    "leadershipPrice": TextRole.MARKET_VALUE,
-    "leadershipReturn": TextRole.MARKET_VALUE,
-    "leadershipStatValue": TextRole.MARKET_VALUE,
-    "leadershipCardValue": TextRole.MARKET_VALUE,
     "sectorTitle": TextRole.WORKSPACE_TITLE,
     "sectorPanelTitle": TextRole.PANEL_TITLE,
     "sectorMuted": TextRole.UI_CAPTION,
@@ -322,38 +294,19 @@ _LEGACY_TEXT_ROLES: dict[str, str] = {
     "sectorTilePerformance": TextRole.MARKET_VALUE_HERO,
     "sectorTileShare": TextRole.MARKET_VALUE,
     "sectorDetailMetric": TextRole.MARKET_VALUE_LARGE,
-    "sectorList": TextRole.UI_BODY,
     "sectorTimeframe": TextRole.UI_CONTROL_COMPACT,
     "timeframeStripButton": TextRole.UI_CONTROL_COMPACT,
-    "positionCloseSize": TextRole.MARKET_VALUE,
-    "marketMetricLabel": TextRole.UI_LABEL,
     "metricDialogHeading": TextRole.UI_HEADING,
     "metricDialogSubheading": TextRole.UI_CAPTION,
     "metricControlLabel": TextRole.UI_LABEL,
     "metricHoverNote": TextRole.UI_CAPTION,
-    "executionBadge": TextRole.UI_LABEL,
-    "toolbarGroupLabel": TextRole.UI_CAPTION,
     "lastPrice": TextRole.MARKET_VALUE_EMPHASIZED,
-    "priceChange": TextRole.MARKET_VALUE,
-    "topFunding": TextRole.MARKET_VALUE,
-    "tradeMode": TextRole.UI_LABEL,
-    "tradeModeChip": TextRole.UI_LABEL,
     "searchResultCount": TextRole.MARKET_VALUE,
-    "marketBoardSummary": TextRole.UI_CAPTION,
-    "marketBoardSearch": TextRole.UI_BODY,
-    "orderBookStatus": TextRole.UI_CAPTION,
-    "orderBookContext": TextRole.UI_CAPTION,
-    "selectedMarketCount": TextRole.UI_LABEL,
     "settingsHeading": TextRole.UI_HEADING,
     "settingsPageHeading": TextRole.UI_HEADING,
     "settingsSubheading": TextRole.UI_LABEL,
     "auxChartStatus": TextRole.UI_CAPTION,
     "timeInForceCycle": TextRole.UI_CONTROL_COMPACT,
-    "tradingShortcutButton": TextRole.UI_CONTROL_COMPACT,
-    "orderBookGroupingButton": TextRole.UI_CONTROL_COMPACT,
-    "chartViewControl": TextRole.UI_CONTROL_COMPACT,
-    "chartCornerControl": TextRole.UI_CONTROL_COMPACT,
-    "signalNewsList": TextRole.NEWS_TEXT,
 }
 
 
@@ -443,8 +396,6 @@ class TypographyController(QtCore.QObject):
         # request and return a cheap implicitly-shared copy to callers so a
         # caller that mutates its font cannot poison the cached template.
         self._font_cache: dict[tuple[str, bool], QtGui.QFont] = {}
-        self._font_cache_hits = 0
-        self._font_cache_misses = 0
 
     def configure(
         self,
@@ -535,10 +486,8 @@ class TypographyController(QtCore.QObject):
         cache_key = (resolved_role, bool(emphasized))
         cached = self._font_cache.get(cache_key)
         if cached is not None:
-            self._font_cache_hits += 1
             return QtGui.QFont(cached)
 
-        self._font_cache_misses += 1
         profile = dict(self._profiles[resolved_role])
         if emphasized:
             profile["weight"] = 600
@@ -1102,7 +1051,6 @@ class ChartSurfaceHost(QtWidgets.QFrame):
         layout.addWidget(content)
 
 
-
 def ensure_frameless_close_button(window: QtWidgets.QWidget) -> QtWidgets.QAbstractButton | None:
     """Ensure a frameless top-level window has Nightwatch's standard X control.
 
@@ -1496,10 +1444,6 @@ class DiagnosticsHub:
         with self._lock:
             self._timings[str(key)].append(value)
 
-    def gauge(self, key: str, value: Any) -> None:
-        """Record the latest scalar observability value."""
-        with self._lock:
-            self._gauges[str(key)] = value
 
     def gauges(self, values: dict[str, Any]) -> None:
         """Record several telemetry gauges under one lock acquisition."""
