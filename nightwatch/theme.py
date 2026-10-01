@@ -152,7 +152,41 @@ def theme_style_family(name: str) -> str:
 def is_nightwatch_dark_theme(name: str) -> bool:
     """Compatibility helper for the dense dark-terminal shell family."""
     return theme_style_family(name) == 'dark_terminal'
-RIGHT_LAYOUT_PRESETS = {'Depth + Watchlist': {'visible': ('Market depth', 'Watchlist'), 'sections': (430, 0, 0, 290, 0), 'watch_tab': 0}, 'Depth + Trading': {'visible': ('Market depth', 'Trading / positions'), 'sections': (300, 440, 0, 0, 0), 'watch_tab': 0}, 'Market Watch': {'visible': ('Market depth', 'Large trades', 'Watchlist'), 'sections': (300, 0, 260, 260, 0), 'watch_tab': 0}, 'Trading + Orders': {'visible': ('Trading / positions', 'Orders'), 'sections': (0, 440, 0, 0, 240), 'watch_tab': 0}, 'Trading + Watchlist': {'visible': ('Trading / positions', 'Watchlist'), 'sections': (0, 440, 0, 260, 0), 'watch_tab': 0}, 'Depth + Trading + Order Panel': {'visible': ('Market depth', 'Trading / positions', 'Orders'), 'sections': (300, 440, 0, 0, 240), 'watch_tab': 0}}
+def _desk_layout(name, columns, row_weights, width):
+    """Independent column splits; account activity belongs to Trading."""
+    titles = {"depth": "Market depth", "trading": "Trading / positions",
+              "trades": "Large trades", "watchlist": "Watchlist"}
+    children = []
+    for index, (panels, weights) in enumerate(zip(columns, row_weights)):
+        leaves = [{"kind": "panel", "id": panel} for panel in panels]
+        total = sum(weights)
+        children.append(leaves[0] if len(leaves) == 1 else {
+            "kind": "split", "id": f"preset-{name}-{index}", "axis": "v",
+            "children": leaves, "weights": [weight / total for weight in weights],
+        })
+    tree = children[0] if len(children) == 1 else {
+        "kind": "split", "id": f"preset-{name}", "axis": "h",
+        "children": children, "weights": [1 / len(children)] * len(children),
+    } if children else None
+    visible = tuple(titles[panel] for column in columns for panel in column)
+    return {"visible": visible, "sections": (300, 440, 260, 220),
+            "watch_tab": 0, "tree": tree,
+            "column_mode": 2 if len(columns) > 1 else 1, "rail_width": width}
+
+
+RIGHT_LAYOUT_PRESETS = {
+    "Balanced": _desk_layout("balanced", (("depth", "trades"), ("watchlist", "trading")),
+                             ((55, 45), (28, 72)), 660),
+    "Book focus": _desk_layout("book", (("depth",), ("trades", "trading")),
+                               ((1,), (35, 65)), 660),
+    "Tape focus": _desk_layout("tape", (("trades",), ("depth", "trading")),
+                               ((1,), (40, 60)), 660),
+    "Wide desk": _desk_layout("wide", (("depth",), ("trades",), ("watchlist", "trading")),
+                              ((1,), (1,), (28, 72)), 960),
+    "Compact": _desk_layout("compact", (("depth", "trading"),), ((40, 60),), 360),
+    "Chart only": _desk_layout("chart", (), (), 360),
+}
+
 from pathlib import Path
 from .constants import DEV_UI_SURFACE_DEFAULTS, DEV_UI_STATUS_GEOMETRY_DEFAULTS
 from .utilities import alpha_color, tooltip_stylesheet, typography_state_weight

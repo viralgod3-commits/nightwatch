@@ -67,6 +67,37 @@ def check_market_bar(window, app):
     assert window._informational_tooltip_allowed(window.settings_button)
 
 
+def check_trading_layouts(window, app):
+    from PySide6 import QtCore, QtTest
+    from nightwatch.theme import RIGHT_LAYOUT_PRESETS
+    from nightwatch.ui.panels import panel_ids
+    window._switch_workspace(0)
+    for name, preset in RIGHT_LAYOUT_PRESETS.items():
+        window._apply_right_layout_preset(name)
+        for _ in range(4):
+            app.processEvents()
+            QtTest.QTest.qWait(10)
+        assert window.right_layout_preset == name
+        assert set(window.right_rail_controller.visible_names()) == set(preset['visible'])
+        assert 'orders' not in panel_ids(window.right_rail_controller.state.root)
+    window._apply_right_layout_preset('Balanced')
+    for _ in range(4):
+        app.processEvents()
+        QtTest.QTest.qWait(10)
+    assert 'Orders' not in window.panel_sections
+    workspace = window.trading_workspace
+    assert workspace.account_frame.parentWidget() is workspace.pages
+    if app.focusWidget() is not None:
+        app.focusWidget().clearFocus()
+    QtTest.QTest.keyClick(window, QtCore.Qt.Key.Key_O, QtCore.Qt.KeyboardModifier.ControlModifier)
+    app.processEvents()
+    assert workspace.current_page() == 1 and workspace.account_frame.isVisible()
+    assert workspace.view_tabs.isVisible()
+    QtTest.QTest.keyClick(window, QtCore.Qt.Key.Key_O, QtCore.Qt.KeyboardModifier.ControlModifier)
+    app.processEvents()
+    assert workspace.current_page() == 0 and workspace.ticket.isVisible()
+
+
 def main():
     from PySide6 import QtCore, QtWidgets
     from nightwatch.constants import APP_NAME, ORG_NAME
@@ -99,6 +130,7 @@ def main():
     window.show()
     try:
         check_market_bar(window, app)
+        check_trading_layouts(window, app)
         tape = window.large_trades
         tape.units_button.click()
         assert tape.value_mode() == 'base'

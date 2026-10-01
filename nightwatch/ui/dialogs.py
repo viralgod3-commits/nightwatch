@@ -740,12 +740,13 @@ class RightPanelPresetsDialog(QtWidgets.QDialog):
             label.setAlignment(Qt.AlignmentFlag.AlignCenter)
             label.setObjectName("subtleLabel")
             self.grid.addWidget(label, 0, column)
+        self._definitions = {}
         self.rows: list[tuple[QtWidgets.QLineEdit, dict[str, QtWidgets.QCheckBox]]] = []
         self.remove_buttons: dict[QtWidgets.QLineEdit, QtWidgets.QPushButton] = {}
         self.scroll.setWidget(content)
         layout.addWidget(self.scroll, 1)
         for name, preset in presets.items():
-            self._add_row(name, preset.get("visible", ()))
+            self._add_row(name, preset.get("visible", ()), preset)
         add = QtWidgets.QPushButton("ADD PRESET")
         add.setAutoDefault(False)
         add.clicked.connect(self._add_preset)
@@ -762,9 +763,10 @@ class RightPanelPresetsDialog(QtWidgets.QDialog):
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
 
-    def _add_row(self, name: str, visible: tuple[str, ...]) -> None:
+    def _add_row(self, name: str, visible: tuple[str, ...], definition=None) -> None:
         name_edit = QtWidgets.QLineEdit(name)
         name_edit.setMaxLength(32)
+        self._definitions[name_edit] = dict(definition or {})
         from .panels import valid_panel_names
         allowed = set(valid_panel_names(visible, self.panel_names))
         checks = {}
@@ -823,9 +825,10 @@ class RightPanelPresetsDialog(QtWidgets.QDialog):
                 widget.hide()
                 widget.deleteLater()
         self.rows.clear()
+        self._definitions.clear()
         self.remove_buttons.clear()
         for name, preset in RIGHT_LAYOUT_PRESETS.items():
-            self._add_row(name, preset["visible"])
+            self._add_row(name, preset["visible"], preset)
 
     def accept(self) -> None:
         names = [name_edit.text().strip() for name_edit, _checks in self.rows]
@@ -856,6 +859,12 @@ class RightPanelPresetsDialog(QtWidgets.QDialog):
             )
             for name_edit, checks in self.rows
         }
+
+
+    def definitions(self) -> dict[str, dict[str, Any]]:
+        return {edit.text().strip(): {**self._definitions.get(edit, {}),
+                "visible": tuple(name for name, check in checks.items() if check.isChecked())}
+                for edit, checks in self.rows}
 
 
 class NightwatchSettingsDialog(QtWidgets.QDialog):
@@ -1680,7 +1689,7 @@ class NightwatchSettingsDialog(QtWidgets.QDialog):
         layout_box, layout_controls = self._group("Panel layout")
         mode_group = QtWidgets.QButtonGroup(self)
         mode_group.setExclusive(True)
-        for mode, label in ((1, "Single column"), (2, "Two-column template")):
+        for mode, label in ((1, "Stacked panels"), (2, "Independent columns")):
             radio = QtWidgets.QRadioButton(label)
             radio.toggled.connect(
                 lambda checked, value=mode: (

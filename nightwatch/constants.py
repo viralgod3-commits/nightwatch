@@ -252,7 +252,6 @@ RIGHT_PANEL_NAMES = (
     "Trading / positions",
     "Large trades",
     "Watchlist",
-    "Orders",
 )
 
 RIGHT_PANEL_LABELS = {
@@ -260,7 +259,6 @@ RIGHT_PANEL_LABELS = {
     "Trading / positions": "TRADING",
     "Large trades": "LARGE TRADES",
     "Watchlist": "WATCHLIST",
-    "Orders": "ORDER PANEL",
 }
 
 RIGHT_PANEL_DEFAULT_SIZES = {
@@ -268,7 +266,6 @@ RIGHT_PANEL_DEFAULT_SIZES = {
     "Trading / positions": 440,
     "Large trades": 260,
     "Watchlist": 220,
-    "Orders": 240,
 }
 
 # Default template and legacy migration order; custom trees have no fixed order.
@@ -276,7 +273,6 @@ RIGHT_PANEL_ONE_COLUMN_ORDER = (
     "Market depth",
     "Large trades",
     "Trading / positions",
-    "Orders",
     "Watchlist",
 )
 
@@ -287,7 +283,6 @@ RIGHT_PANEL_TWO_COLUMN_FULL_WIDTH = (
 )
 RIGHT_PANEL_TWO_COLUMN_SECONDARY_ORDER = (
     "Trading / positions",
-    "Orders",
     "Watchlist",
     "Large trades",
 )
@@ -297,9 +292,8 @@ RIGHT_PANEL_TWO_COLUMN_SECONDARY_ORDER = (
 RIGHT_RAIL_CHART_MIN_WIDTH = 520
 RIGHT_PANEL_SINGLE_MIN_WIDTH = 360
 RIGHT_PANEL_TWO_COLUMN_CELL_MIN_WIDTH = 300
-# Trading is deliberately width-stable in a paired two-column row; extra rail
-# width belongs to information surfaces such as Watchlist / Large trades / Orders.
-RIGHT_PANEL_TRADING_TWO_COLUMN_WIDTH = 330
+# Execution and account controls share one responsive rail surface.
+RIGHT_PANEL_TRADING_TWO_COLUMN_WIDTH = 300
 
 # Shell-owned usability floors. Enabled panels can never become zero-height
 # slivers, but their internal feature widgets remain geometry-neutral.
@@ -308,7 +302,6 @@ RIGHT_PANEL_MIN_HEIGHTS = {
     "Trading / positions": 150,
     "Large trades": 130,
     "Watchlist": 90,
-    "Orders": 90,
 }
 
 # Adjacent chart/panel windows use the same minimal black splitter gap.

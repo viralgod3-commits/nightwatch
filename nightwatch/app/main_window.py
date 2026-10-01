@@ -128,7 +128,6 @@ from ..trading.orders import (
     protection_quantities,
 )
 from ..trading.trading_ui import (
-    CompactOrdersWidget,
     OrderPanel,
     QuickTradingSettingsDialog,
     TradingWorkspace,
@@ -153,7 +152,8 @@ from ..ui.market_widgets import (
     WatchlistSidebarWidget,
     WatchlistWidget,
 )
-from ..ui.panels import PanelSplitter, PanelSpec, RightRailController, valid_panel_names
+from ..ui.panels import (PanelSplitter, PanelSpec, RightRailController, valid_panel_names,
+                         decode_tree, encode_tree, panel_ids, detach_panel, insert_panel, PanelNode, validate_tree)
 from ..utilities import (
     DEV_UI_STATUS_FONT_DEFAULTS,
     TYPOGRAPHY_DEFAULTS,
@@ -722,88 +722,32 @@ class MainWindow(QtWidgets.QMainWindow):
                 used_shortcuts.add(shortcut)
             else:
                 self.indicator_shortcuts[name] = ""
-        self.right_layout_presets = {
-            name: {
-                "visible": tuple(preset["visible"]),
-                "sections": tuple(preset["sections"]),
-                "watch_tab": int(preset["watch_tab"]),
-            }
-            for name, preset in RIGHT_LAYOUT_PRESETS.items()
-        }
-        stored_layout_presets = self.settings.value(
-            "right_layout_presets_v1", "", str
-        )
-        if stored_layout_presets:
-            try:
-                decoded_layout_presets = json.loads(stored_layout_presets)
-            except (TypeError, json.JSONDecodeError):
-                decoded_layout_presets = {}
-            if isinstance(decoded_layout_presets, dict) and decoded_layout_presets:
-                restored_layout_presets: dict[str, dict[str, Any]] = {}
-                for preset_name, visible_panels in decoded_layout_presets.items():
-                    name = str(preset_name).strip()
-                    if name == "Full Desk":
-                        name = "Depth + Trading + Order Panel"
-                    visible_panels = ["Large trades" if panel == "Alerts" else panel for panel in visible_panels] if isinstance(visible_panels, list) else ()
-                    visible = valid_panel_names(visible_panels, visible_panels)
-                    if (not name or name.casefold() == "custom"
-                            or name.casefold() in {key.casefold() for key in restored_layout_presets}):
-                        restored_layout_presets = {}
-                        break
-                    restored_layout_presets[name] = {
-                        "visible": visible,
-                        "sections": tuple(
-                            RIGHT_PANEL_DEFAULT_SIZES[panel_name]
-                            if panel_name in visible
-                            else 0
-                            for panel_name in RIGHT_PANEL_NAMES
-                        ),
-                        "watch_tab": 0,
-                    }
-                if restored_layout_presets:
-                    self.right_layout_presets = restored_layout_presets
-        # Saved user presets predate new built-ins and used to replace the
-        # defaults wholesale. Keep the execution-desk composition available to
-        # existing installations without disturbing their custom presets.
-        execution_desk_name = "Depth + Trading + Order Panel"
-        execution_desk = RIGHT_LAYOUT_PRESETS.get(execution_desk_name)
-        if execution_desk is not None:
-            self.right_layout_presets.setdefault(
-                execution_desk_name,
-                {
-                    "visible": tuple(execution_desk["visible"]),
-                    "sections": tuple(execution_desk["sections"]),
-                    "watch_tab": int(execution_desk["watch_tab"]),
-                },
-            )
-        self.right_layout_presets.setdefault("Depth + Large Trades", {
-            "visible": ("Market depth", "Large trades"),
-            "sections": (430, 0, 290, 0, 0), "watch_tab": 0,
-        })
-        self.right_layout_preset = self.settings.value(
-            "right_layout_preset", "Depth + Watchlist", str
-        )
-        self.right_layout_preset = {
-            "Balanced": "Depth + Trading",
-            "Depth Focus": "Depth + Trading",
-            "Depth": "Depth + Watchlist",
-            "Market Watch": "Market Watch",
-            "Watchlist + Depth": "Market Watch",
-            "Stats + News": "Market Watch",
-            "Flow + Alerts": "Market Watch",
-            "Signals + Alerts": "Market Watch",
-            "Trade Desk": "Depth + Trading",
-            "Flow + Trading": "Depth + Trading",
-            "Watchlist + Depth + Alerts": "Market Watch",
-            "Watchlist + Trading": "Trading + Watchlist",
-            "Trading + Orders": "Trading + Orders",
-            "Full Desk": "Depth + Trading + Order Panel",
-        }.get(self.right_layout_preset, self.right_layout_preset)
-        if (
-            self.right_layout_preset != "Custom"
-            and self.right_layout_preset not in self.right_layout_presets
-        ):
-            self.right_layout_preset = next(iter(self.right_layout_presets))
+        self.right_layout_presets = json.loads(json.dumps(RIGHT_LAYOUT_PRESETS))
+        # The new presets persist actual splitter trees, not panel membership.
+        try:
+            configured = json.loads(self.settings.value("right_layout_presets_v2", "", str) or "{}")
+            if isinstance(configured, dict):
+                restored_presets = {}
+                for name, preset in configured.items():
+                    if not isinstance(preset, dict) or not str(name).strip() or name == "Custom":
+                        continue
+                    visible = valid_panel_names(preset.get("visible", ()), RIGHT_PANEL_NAMES)
+                    tree = decode_tree(preset.get("tree"))
+                    validate_tree(tree)
+                    aliases = dict(zip(RIGHT_PANEL_NAMES, ("depth", "trading", "trades", "watchlist")))
+                    if set(panel_ids(tree)) != {aliases[n] for n in visible}:
+                        continue
+                    restored_presets[name] = {**preset, "visible": visible}
+                if restored_presets:
+                    self.right_layout_presets = restored_presets
+        except (ValueError, TypeError, RecursionError):
+            pass
+        self.right_layout_preset = self.settings.value("right_layout_preset", "Balanced", str)
+        self._migrate_desk_layout = self.settings.value("right_rail/desk_layout_generation", 0, int) < 2
+        if self._migrate_desk_layout:
+            self.right_layout_presets.setdefault("Balanced", json.loads(json.dumps(RIGHT_LAYOUT_PRESETS["Balanced"])))
+        if self._migrate_desk_layout or self.right_layout_preset not in (*self.right_layout_presets, "Custom"):
+            self.right_layout_preset = "Balanced" if "Balanced" in self.right_layout_presets else next(iter(self.right_layout_presets))
         # Right-rail geometry/visibility is loaded once by RightRailController
         # after the actual panel contents exist. These aliases are synchronized
         # from its authoritative state for legacy call sites and UI labels.
@@ -1799,15 +1743,6 @@ class MainWindow(QtWidgets.QMainWindow):
         )
         self.trading_workspace.position_trade_requested.connect(self._reduce_position_in_trade)
         self.order_panel = self.trading_workspace.ticket
-        self.orders_panel = CompactOrdersWidget(
-            self.trading_gateway,
-            theme=self.ui_theme,
-            account_owner=self.trading_workspace,
-        )
-        self.orders_panel.set_symbol(
-            self.current_symbol,
-            self.symbol_rules.get(self.current_symbol, SymbolRules()),
-        )
         # Keep alert delivery, history and management available without occupying
         # a right-side panel. All existing alert/protection signal wiring remains.
         self.alerts_dialog = QtWidgets.QDialog(self)
@@ -1853,20 +1788,21 @@ class MainWindow(QtWidgets.QMainWindow):
                           300, 110, RIGHT_PANEL_DEFAULT_SIZES["Market depth"],
                           self.orderbook.set_panel_active),
                 PanelSpec("trading", "Trading / positions", lambda: self.trading_workspace,
-                          330, 150, RIGHT_PANEL_DEFAULT_SIZES["Trading / positions"]),
+                          300, 240, RIGHT_PANEL_DEFAULT_SIZES["Trading / positions"]),
                 PanelSpec("trades", "Large trades", lambda: self.large_trades,
                           300, 130, RIGHT_PANEL_DEFAULT_SIZES["Large trades"],
                           self.large_trades.set_panel_active),
                 PanelSpec("watchlist", "Watchlist", lambda: self.watchlist_sidebar,
                           300, 90, RIGHT_PANEL_DEFAULT_SIZES["Watchlist"]),
-                PanelSpec("orders", "Orders", lambda: self.orders_panel,
-                          300, 90, RIGHT_PANEL_DEFAULT_SIZES["Orders"]),
             ],
             self.right_layout_presets,
             initial_preset=self.right_layout_preset,
             parent=self,
             clock=self.presentation_clock,
         )
+        if self._migrate_desk_layout:
+            self.right_rail_controller.reset("Balanced", self.right_layout_presets["Balanced"])
+            self.settings.setValue("right_rail/desk_layout_generation", 2)
         self.right_rail_host = self.right_rail_controller.rail
         self.panel_sections = self.right_rail_controller.sections
         self.right_layout_preset = self.right_rail_controller.state.active_preset
@@ -1894,25 +1830,6 @@ class MainWindow(QtWidgets.QMainWindow):
         chart_column_layout.setSpacing(0)
         chart_column_layout.addWidget(self.instrument_bar)
         chart_column_layout.addWidget(self.chart_surface, 1)
-        self.orders_drawer = QtWidgets.QFrame(central)
-        self.orders_drawer.setObjectName("tradingOrdersDrawer")
-        self.orders_drawer.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-        orders_drawer_layout = QtWidgets.QVBoxLayout(self.orders_drawer)
-        orders_drawer_layout.setContentsMargins(8, 8, 8, 8)
-        orders_drawer_layout.setSpacing(0)
-        orders_drawer_layout.addWidget(self.trading_workspace.account_frame)
-        self.trading_workspace.account_frame.show()
-        self.orders_drawer.hide()
-        self.trading_workspace.orders_drawer_toggled.connect(
-            self._sync_orders_drawer
-        )
-        self.main_splitter.splitterMoved.connect(
-            lambda _position, _index: self._request_orders_drawer_position()
-        )
-        self.right_rail_controller.register_overlay(
-            "trading", self.orders_drawer,
-            lambda: self.trading_workspace.current_page() == 1,
-        )
         # Build the shells once; Leaders restores its snapshot in a worker and
         # Sectors starts history work only when its workspace is visible.
         self.market_board = LeadershipTimelineWidget(self.ui_theme)
@@ -3003,7 +2920,6 @@ class MainWindow(QtWidgets.QMainWindow):
         if self.sector_overview is not None:
             self.sector_overview.apply_theme(self.ui_theme)
         self.trading_workspace.apply_theme(self.ui_theme)
-        self.orders_panel.apply_theme(self.ui_theme)
         if self.symbol_search_dialog is not None:
             self.symbol_search_dialog.apply_theme(self.ui_theme)
         self._sync_top_metrics()
@@ -3399,8 +3315,7 @@ class MainWindow(QtWidgets.QMainWindow):
         # Legacy splitter/panel keys are migrated once into right_rail/state_v5.
         self.right_rail_controller.refresh_geometry_constraints()
         self._sync_right_panel_alignment()
-        # Account/orders is a transient drawer and always starts collapsed.
-        # Ignore the legacy bottom_tab value from earlier releases.
+        # The unified trading panel starts on the execution ticket.
         self.trading_workspace.set_page(0)
         self._sync_right_panel_alignment()
         # Leaders/Sectors restore their own state when lazily materialized.
@@ -3411,7 +3326,6 @@ class MainWindow(QtWidgets.QMainWindow):
             stored_workspace = 0
         self._switch_workspace(stored_workspace)
         self._sync_right_layout_actions()
-        QTimer.singleShot(0, self._sync_orders_drawer)
 
     def _save_layout(self) -> None:
         self._store_current_symbol_drawings()
@@ -3496,16 +3410,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.right_rail_controller.save_state()
         self.settings.remove("main_splitter_v4")
         self.settings.setValue("right_layout_preset", self.right_layout_preset)
-        self.settings.setValue(
-            "right_layout_presets_v1",
-            json.dumps(
-                {
-                    name: list(preset["visible"])
-                    for name, preset in self.right_layout_presets.items()
-                },
-                separators=(",", ":"),
-            ),
-        )
+        self.settings.setValue("right_layout_presets_v2", json.dumps(self.right_layout_presets, separators=(",", ":")))
         if self.market_board is not None:
             self.market_board.save_ui_state(self.settings)
         if self.sector_overview is not None:
@@ -3557,11 +3462,6 @@ class MainWindow(QtWidgets.QMainWindow):
             if hasattr(self, "right_rail_controller"):
                 QTimer.singleShot(0, self.right_rail_controller.refresh_geometry_constraints)
                 QTimer.singleShot(0, self.right_rail_controller.sync_interaction_surfaces)
-        if hasattr(self, "orders_drawer"):
-            if not chart_workspace:
-                self.orders_drawer.hide()
-            QTimer.singleShot(0, self._sync_orders_drawer)
-
     def _refresh_chart_workspace_presentations(self) -> None:
         """Catch visible chart/right-rail surfaces up from canonical latest state."""
         watchlist_latest = [
@@ -3591,51 +3491,11 @@ class MainWindow(QtWidgets.QMainWindow):
         if self.watchlist_hour_refresh_pending:
             self._refresh_watchlist_hour_changes(force=True)
 
-    def _toggle_attached_orders_drawer(self) -> bool:
-        section = self.panel_sections.get("Trading / positions")
-        if (
-            self.workspace_stack.currentIndex() != 0
-            or section is None
-            or section.isHidden()
-            or not self.right_rail_controller.panel_active("trading")
-        ):
+    def _toggle_trading_account_view(self) -> bool:
+        if self.workspace_stack.currentIndex() != 0 or not self.right_rail_controller.panel_active("trading"):
             return False
-        self.trading_workspace.set_orders_drawer_open(
-            self.trading_workspace.current_page() != 1
-        )
-        self._sync_orders_drawer()
+        self.trading_workspace.set_page(1 - self.trading_workspace.current_page())
         return True
-
-    def _sync_orders_drawer(self, _opened: object = None) -> None:
-        section = self.panel_sections.get("Trading / positions")
-        visible = (
-            self.trading_workspace.current_page() == 1
-            and self.workspace_stack.currentIndex() == 0
-            and section is not None
-            and not section.isHidden()
-        )
-        if not visible:
-            self.orders_drawer.hide()
-            return
-        self._position_orders_drawer()
-
-    def _request_orders_drawer_position(self) -> None:
-        if hasattr(self, "orders_drawer"):
-            self.right_rail_controller.request_overlay_positions()
-
-    def _position_orders_drawer(self) -> None:
-        if not hasattr(self, "orders_drawer"):
-            return
-        section = self.panel_sections.get("Trading / positions")
-        if (
-            self.trading_workspace.current_page() != 1
-            or self.workspace_stack.currentIndex() != 0
-            or section is None
-            or section.isHidden()
-        ):
-            self.orders_drawer.hide()
-            return
-        self.right_rail_controller.position_overlay("trading", self.orders_drawer)
 
     def _show_trading_sidebar(self) -> None:
         self._switch_workspace(0)
@@ -5348,7 +5208,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 and key == int(Qt.Key.Key_O)
                 and shortcut_modifiers == Qt.KeyboardModifier.ControlModifier
                 and not event.isAutoRepeat()
-                and self._toggle_attached_orders_drawer()
+                and self._toggle_trading_account_view()
             ):
                 return True
             if (
@@ -6003,7 +5863,6 @@ class MainWindow(QtWidgets.QMainWindow):
         self.chart.set_order_rail_market_symbol(symbol)
         self.chart.set_symbol_rules(rules)
         self.trading_workspace.set_symbol(symbol, rules)
-        self.orders_panel.set_symbol(symbol, rules)
         if self.trading_gateway.has_credentials():
             self.trading_gateway.ensure_cross(symbol)
         self.alert_center.set_market(symbol, self.current_interval)
@@ -6992,17 +6851,16 @@ class MainWindow(QtWidgets.QMainWindow):
         if announce:
             columns = self.right_rail_controller.column_mode
             self.statusBar().showMessage(
-                f"Right panels · {columns} column{'s' if columns == 2 else ''}",
+                "Right panels · independent columns" if columns == 2 else "Right panels · stacked",
                 1800,
             )
 
 
     def _reset_right_panel_layout(self) -> None:
-        default_name = (
-            "Depth + Watchlist"
-            if "Depth + Watchlist" in self.right_layout_presets
-            else next(iter(self.right_layout_presets))
-        )
+        default_name = "Balanced"
+        self.right_layout_presets[default_name] = json.loads(json.dumps(RIGHT_LAYOUT_PRESETS[default_name]))
+        self.right_rail_controller.update_presets(self.right_layout_presets)
+        self._rebuild_layout_menu()
         self.right_rail_controller.reset(
             default_name, self.right_layout_presets[default_name]
         )
@@ -7050,30 +6908,27 @@ class MainWindow(QtWidgets.QMainWindow):
         dialog = RightPanelPresetsDialog(self.right_layout_presets, self, panel_names=tuple(self.panel_sections))
         if dialog.exec() != QtWidgets.QDialog.DialogCode.Accepted:
             return
-        configured = dialog.values()
-        self.right_layout_presets = {
-            name: {
-                "visible": visible,
-                "sections": tuple(
-                    RIGHT_PANEL_DEFAULT_SIZES.get(panel_name, 160)
-                    if panel_name in visible
-                    else 0
-                    for panel_name in self.panel_sections
-                ),
-                "watch_tab": 0,
-            }
-            for name, visible in configured.items()
-        }
-        self.settings.setValue(
-            "right_layout_presets_v1",
-            json.dumps(
-                {
-                    name: list(preset["visible"])
-                    for name, preset in self.right_layout_presets.items()
-                },
-                separators=(",", ":"),
-            ),
-        )
+        configured = dialog.definitions()
+        self.right_layout_presets = {}
+        aliases = self.right_rail_controller.state.aliases
+        for name, definition in configured.items():
+            visible = tuple(definition["visible"])
+            tree = decode_tree(definition.get("tree", encode_tree(self.right_rail_controller.state.root)))
+            wanted = {aliases[n] for n in visible}
+            for pid in tuple(panel_ids(tree)):
+                if pid not in wanted:
+                    tree = detach_panel(tree, pid)
+            for panel in visible:
+                pid = aliases[panel]
+                if pid not in panel_ids(tree):
+                    leaves = panel_ids(tree)
+                    tree = insert_panel(tree, PanelNode(pid), leaves[-1] if leaves else None, "below")
+            self.right_layout_presets[name] = {**definition, "visible": visible,
+                                               "tree": encode_tree(tree),
+                                               "column_mode": definition.get("column_mode", self.right_rail_controller.column_mode),
+                                               "rail_width": definition.get("rail_width", self.right_rail_controller.state.rail_width()),
+                                               "sections": tuple(RIGHT_PANEL_DEFAULT_SIZES[n] for n in self.panel_sections)}
+        self.settings.setValue("right_layout_presets_v2", json.dumps(self.right_layout_presets, separators=(",", ":")))
         previous_active = self.right_layout_preset
         self.right_rail_controller.update_presets(self.right_layout_presets)
         self._rebuild_layout_menu()
@@ -7087,16 +6942,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.settings.sync()
         self._sync_settings_window()
 
-    @staticmethod
-    def _quick_panel_layouts() -> tuple[tuple[str, int, tuple[str, ...]], ...]:
-        return (
-            ("Depth + Watchlist", 1, ("Market depth", "Watchlist")),
-            ("Depth + Large Trades", 1, ("Market depth", "Large trades")),
-            ("Depth + Trading", 1, ("Market depth", "Trading / positions")),
-            ("Full desk", 2, ("Market depth", "Trading / positions", "Orders", "Watchlist", "Large trades")),
-            ("Large Trades", 1, ("Large trades",)),
-            ("Chart only", 1, ()),
-        )
+    def _quick_panel_layouts(self) -> tuple[str, ...]:
+        return tuple(self.right_layout_presets)
 
     def _sync_panel_layout_button(self) -> None:
         button = getattr(self, "panel_layout_button", None)
@@ -7104,8 +6951,8 @@ class MainWindow(QtWidgets.QMainWindow):
             return
         layouts = self._quick_panel_layouts()
         index = self._quick_panel_layout_index()
-        current = "Custom" if index is None else layouts[index][0]
-        following = layouts[0 if index is None else (index + 1) % len(layouts)][0]
+        current = "Custom" if index is None else layouts[index]
+        following = layouts[0 if index is None else (index + 1) % len(layouts)]
         button.setToolTip(f"Layout: {current}\nClick for {following}\nIndividual panels and presets: Settings → Workspace")
         button.setAccessibleName(f"Panel layout: {current}. Next: {following}")
 
@@ -7113,40 +6960,14 @@ class MainWindow(QtWidgets.QMainWindow):
         controller = getattr(self, "right_rail_controller", None)
         if controller is None:
             return None
-        visible = set(controller.visible_names())
-        columns = int(controller.column_mode)
-        for index, (_label, mode, names) in enumerate(self._quick_panel_layouts()):
-            if columns == mode and visible == set(names):
-                return index
-        return None
+        name = controller.state.active_preset
+        layouts = self._quick_panel_layouts()
+        return layouts.index(name) if name in layouts else None
 
     def _cycle_quick_panel_layout(self, _checked: bool = False) -> None:
-        controller = getattr(self, "right_rail_controller", None)
-        if controller is None:
-            return
         layouts = self._quick_panel_layouts()
         current = self._quick_panel_layout_index()
-        index = 0 if current is None else (current + 1) % len(layouts)
-        label, columns, visible = layouts[index]
-        visible_set = set(visible)
-        preset = {
-            "visible": visible,
-            "sections": tuple(
-                RIGHT_PANEL_DEFAULT_SIZES[name] if name in visible_set else 0
-                for name in RIGHT_PANEL_NAMES
-            ),
-            "watch_tab": 0,
-        }
-        controller.apply_preset(
-            "Custom",
-            preset,
-            column_mode=columns,
-        )
-        if "Trading / positions" in visible_set:
-            self.trading_workspace.set_page(0)
-        self._sync_right_panel_alignment()
-        self._sync_orders_drawer()
-        self.statusBar().showMessage(f"Right panel layout · {label}", 1800)
+        self._apply_right_layout_preset(layouts[0 if current is None else (current + 1) % len(layouts)])
 
     def _sync_right_layout_actions(self) -> None:
         """Synchronize the authoritative right-rail state with actions/settings."""
@@ -7168,7 +6989,6 @@ class MainWindow(QtWidgets.QMainWindow):
         self.trading_workspace.set_page(0)
         self.settings.setValue("right_layout_preset", name)
         self._sync_right_panel_alignment()
-        self._sync_orders_drawer()
         self.statusBar().showMessage(f"Right panel layout · {name}", 1800)
 
     def _apply_preset_containing(self, panel_name: str) -> None:
@@ -7192,9 +7012,6 @@ class MainWindow(QtWidgets.QMainWindow):
         if hasattr(self, "workspace_stack") and self.workspace_stack.currentIndex() != 0:
             self.right_rail_controller.set_host_active(False)
         QTimer.singleShot(0, self._sync_market_depth_networking)
-        if hasattr(self, "orders_drawer"):
-            QTimer.singleShot(0, self._sync_orders_drawer)
-
     def _right_rail_geometry_changed(self) -> None:
         signature = (
             int(self.width()),
@@ -7298,7 +7115,6 @@ class MainWindow(QtWidgets.QMainWindow):
         if self.sector_overview is not None:
             self.sector_overview.apply_theme(self.ui_theme)
         self.trading_workspace.apply_theme(self.ui_theme)
-        self.orders_panel.apply_theme(self.ui_theme)
         if self.symbol_search_dialog is not None:
             self.symbol_search_dialog.apply_theme(self.ui_theme)
         self._sync_top_metrics()
@@ -7418,10 +7234,6 @@ class MainWindow(QtWidgets.QMainWindow):
         self._apply_auxiliary_symbol_rules()
         self._sync_ticker_streams()
         self.trading_workspace.set_symbol(
-            self.current_symbol,
-            self.symbol_rules.get(self.current_symbol, SymbolRules()),
-        )
-        self.orders_panel.set_symbol(
             self.current_symbol,
             self.symbol_rules.get(self.current_symbol, SymbolRules()),
         )
@@ -7992,7 +7804,6 @@ class MainWindow(QtWidgets.QMainWindow):
         mark = safe_float(payload.get("p"))
         if mark:
             self.trading_workspace.set_mark_price(mark, symbol)
-            self.orders_panel.set_mark_price(mark, symbol)
             if (symbol == self.current_symbol and self._market_depth_active
                     and self.right_rail_controller.panel_active("depth")):
                 self.orderbook.set_mark_price(mark)
@@ -8959,7 +8770,6 @@ class MainWindow(QtWidgets.QMainWindow):
             and (
                 self.trading_workspace.current_page() == 1
                 or self.order_panel.reduce_only.isChecked()
-                or (self.orders_panel.isVisible() and self.orders_panel.desk.position_area.isVisible())
             )
         ):
             position = self.trading_workspace.selected_position()
@@ -10214,8 +10024,6 @@ class MainWindow(QtWidgets.QMainWindow):
         super().resizeEvent(event)
         if hasattr(self, "right_rail_controller"):
             self.right_rail_controller.refresh_geometry_constraints()
-        if hasattr(self, "orders_drawer"):
-            self._request_orders_drawer_position()
         if (
             hasattr(self, "resize_settle_timer")
             and hasattr(self, "chart")
@@ -10267,7 +10075,6 @@ class MainWindow(QtWidgets.QMainWindow):
         self._sync_background_priority()
         self.right_rail_controller.capture_geometry()
         self.right_rail_controller.sync_interaction_surfaces()
-        self._request_orders_drawer_position()
         self.chart.end_interactive_resize()
         if self.pending_ticker_symbols or self.ticker_rank_dirty:
             self.presentation_clock.request(immediate=True)

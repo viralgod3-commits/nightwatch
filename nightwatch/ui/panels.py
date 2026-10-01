@@ -134,7 +134,7 @@ def _row_default_size(row: Iterable[str], default_sizes: Mapping[str, int]) -> f
 
 # Display names are compatibility aliases only; saved topology uses stable IDs.
 PANEL_IDS = {"Market depth": "depth", "Trading / positions": "trading",
-             "Large trades": "trades", "Watchlist": "watchlist", "Orders": "orders"}
+             "Large trades": "trades", "Watchlist": "watchlist"}
 
 
 @dataclass(frozen=True, slots=True)
@@ -387,6 +387,12 @@ class RightRailState:
                 old = raw_panels["Alerts"]
                 if isinstance(old, Mapping):
                     state.panels["Large trades"].enabled = bool(old.get("enabled", False))
+        # Retire the known Orders panel while retaining unrelated plugin IDs.
+        if "orders" not in aliases.values():
+            state.root = detach_panel(state.root, "orders")
+            state.layouts = {k: detach_panel(v, "orders") for k, v in state.layouts.items()}
+            state.unresolved_panels.pop("orders", None)
+            state.hidden.pop("orders", None)
         model = RightRailModel(state, panel_names, default_sizes)
         if version < 5:
             state.layouts = {str(mode): model.template(mode) for mode in (1, 2)}
@@ -452,9 +458,15 @@ class RightRailModel:
 
     def template(self, mode):
         if mode == 2:
-            rows = self.legacy_rows()
-            return split_node("v", [split_node("h", [PanelNode(self.resolve(n)) for n in row]) for row in rows],
-                              [_row_default_size(row, self.default_sizes) for row in rows])
+            visible = {n for n, p in self.state.panels.items() if p.enabled}
+            market = [n for n in ("Market depth", "Large trades") if n in visible]
+            utility = [n for n in ("Watchlist", "Trading / positions") if n in visible]
+            utility.extend(n for n in self.panel_names if n in visible and n not in market + utility)
+            columns = [column for column in (market, utility) if column]
+            if len(columns) == 1 and len(columns[0]) > 1:
+                columns = [[n] for n in columns[0]]
+            return split_node("h", [split_node("v", [PanelNode(self.resolve(n)) for n in column],
+                              [self.default_sizes.get(n, 100) for n in column]) for column in columns])
         names = [n for n in RIGHT_PANEL_ONE_COLUMN_ORDER if n in self.state.panels and self.state.panels[n].enabled]
         names.extend(n for n in self.panel_names if self.state.panels[n].enabled and n not in names)
         return split_node("v", [PanelNode(self.resolve(n)) for n in names],
@@ -509,16 +521,21 @@ class RightRailModel:
             candidate = self.template(mode)
         self.state.column_mode = mode
         self.state.root = candidate
+        self.state.active_preset = "Custom"
         return True
 
-    def apply_preset(self, name, visible_names, section_sizes=None, *, reset_geometry=False):
+    def apply_preset(self, name, visible_names, section_sizes=None, *, reset_geometry=False, tree=None):
         visible = set(valid_panel_names(visible_names, self.panel_names))
+        if tree is not None:
+            validate_tree(tree)
+            if set(panel_ids(tree)) != {self.resolve(n) for n in visible}:
+                raise ValueError("Preset tree must contain exactly its visible panels")
         for n, panel in self.state.panels.items():
             panel.enabled = n in visible
             if reset_geometry:
                 panel.weight_one = max(1, (section_sizes or {}).get(n, self.default_sizes.get(n, 100)))
         self.state.layouts.clear()
-        self.state.root = self.template(self.state.column_mode)
+        self.state.root = tree if tree is not None else self.template(self.state.column_mode)
         self.state.active_preset = str(name)
 
 
@@ -1193,7 +1210,10 @@ if QtWidgets is not None:
                     f"panel/{n}", self.settings.value("panel/Alerts", False, bool) if n == "Large trades" else False, bool
                 ))
             state = default_state(names, sizes, visible_names=visible, active_preset=preset_name,
-                                  column_mode=_safe_int(self.settings.value("right_panel_columns_v1", 1), 1), aliases=aliases)
+                                  column_mode=_safe_int(preset.get("column_mode", self.settings.value("right_panel_columns_v1", 1)), 1), aliases=aliases)
+            if "tree" in preset and set(visible) == set(preset.get("visible", ())):
+                RightRailModel(state, names, sizes).apply_preset(preset_name, visible, tree=decode_tree(preset["tree"]))
+                state.set_rail_width(_safe_int(preset.get("rail_width"), state.rail_width()))
             for mode, attr in ((1, "rail_width_one"), (2, "rail_width_two")):
                 setattr(state, attr, max(0, _safe_int(self.settings.value(f"right_panel_rail_width_{mode}col_v1", getattr(state, attr)), getattr(state, attr))))
             return state
@@ -1402,11 +1422,20 @@ if QtWidgets is not None:
                 self._changed()
 
         def apply_preset(self, name, preset, *, reset_geometry=False, column_mode=None):
+            tree = decode_tree(preset.get("tree"))
+            validate_tree(tree)
+            visible = valid_panel_names(preset.get("visible", ()), self.model.panel_names)
+            if tree is not None and set(panel_ids(tree)) != {self.model.resolve(n) for n in visible}:
+                raise ValueError("Preset tree must contain exactly its visible panels")
             self.capture_geometry()
+            if column_mode is None:
+                column_mode = preset.get("column_mode")
             if column_mode is not None:
                 self.model.state.column_mode = 2 if column_mode == 2 else 1
             sizes = dict(zip(self.model.panel_names, preset.get("sections", ())))
-            self.model.apply_preset(name, preset.get("visible", ()), sizes, reset_geometry=reset_geometry)
+            self.model.apply_preset(name, visible, sizes, reset_geometry=reset_geometry, tree=tree)
+            if "rail_width" in preset:
+                self.model.state.set_rail_width(_safe_int(preset["rail_width"], 660))
             self._outer_pending = True
             self._changed()
 
