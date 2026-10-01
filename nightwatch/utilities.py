@@ -233,11 +233,15 @@ TYPOGRAPHY_STATE_WEIGHTS: dict[str, int] = {
     "attention": 600,
     "trade_price_regular": 400,
     "trade_price_changed": 700,
+    "trade_amount_fraction": 400,
+    "trade_amount_units": 700,
 }
 
 TYPOGRAPHY_STATE_OPACITIES: dict[str, float] = {
     "trade_price_regular": 0.5,
     "trade_price_changed": 1.0,
+    "trade_amount_fraction": 0.5,
+    "trade_amount_units": 1.0,
 }
 
 TYPOGRAPHY_LIMITS: dict[str, dict[str, int]] = {
@@ -1760,3 +1764,4 @@ def get_diagnostics() -> DiagnosticsHub:
     if _DIAGNOSTICS is None:
         _DIAGNOSTICS = DiagnosticsHub()
     return _DIAGNOSTICS
+

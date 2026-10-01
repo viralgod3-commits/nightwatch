@@ -484,6 +484,7 @@ class _TradesTapeModel(QtCore.QAbstractTableModel):
         self.rows: list[tuple[OrderFlowTradePrint, tuple[str, ...]]] = []
         self.decimals: int | None = None
         self.value_mode = 'quote'
+        self.amount_decimals = {'base': 0, 'quote': 2}
         self.buy = QtGui.QColor(ORDERBOOK_REFERENCE['bid'])
         self.sell = QtGui.QColor(ORDERBOOK_REFERENCE['ask'])
         self.muted = QtGui.QColor(ORDERBOOK_REFERENCE['muted'])
@@ -540,7 +541,9 @@ class _TradesTapeModel(QtCore.QAbstractTableModel):
 
     def _row(self, trade):
         stamp = datetime.fromtimestamp(trade.event_time_ms / 1000.0, timezone.utc).strftime('%H:%M:%S') if trade.event_time_ms > 0 else '—'
-        size = format_book_price(trade.quantity) if self.value_mode == 'base' else _format_tape_quote(trade.notional)
+        amount = trade.quantity if self.value_mode == 'base' else trade.notional
+        prefix = '' if self.value_mode == 'base' else '$'
+        size = prefix + format_book_price(amount, self.amount_decimals[self.value_mode])
         return trade, (format_book_price(trade.price, self.decimals), size,
                        self.OUTCOMES.get(trade.outcome, ('—', 'unknown'))[0], stamp)
 
@@ -552,6 +555,18 @@ class _TradesTapeModel(QtCore.QAbstractTableModel):
     def set_trades(self, trades, *, reformat=False):
         # Normal updates prepend a batch and trim the tail; don't reset scroll or
         # allocate thousands of QTableWidgetItems on each depth frame.
+        # Keep one fixed precision per market/unit mode, including trailing
+        # zeros. A precision increase must also reformat the retained rows.
+        mode = self.value_mode
+        precision = self.amount_decimals[mode]
+        for trade in trades:
+            amount = trade.quantity if mode == 'base' else trade.notional
+            fraction = format_book_price(amount).partition('.')[2]
+            required = len(fraction) if mode == 'base' or 0 < abs(amount) < .01 else 2
+            precision = max(precision, required)
+        if precision != self.amount_decimals[mode]:
+            self.amount_decimals[mode] = precision
+            reformat = True
         previous = [self.identity(row[0]) for row in self.rows]
         sequences = [self.identity(trade) for trade in trades]
         prefix = sequences.index(previous[0]) if previous and previous[0] in sequences else len(sequences)
@@ -571,12 +586,16 @@ class _TradesTapeModel(QtCore.QAbstractTableModel):
             self.endInsertRows()
         for row in range(prefix, len(trades)):
             if self.rows[row][0] != trades[row]:
+                old_cells = self.rows[row][1]
                 self.rows[row] = self._row(trades[row])
-                self.dataChanged.emit(self.index(row, 2), self.index(row, 2))
+                numeric_change = self.rows[row][1][:2] != old_cells[:2]
+                first_column = 0 if numeric_change else 2
+                last_column = 3 if numeric_change else 2
+                self.dataChanged.emit(self.index(row, first_column), self.index(row, last_column))
 
 
 class _TradePriceDelegate(QtWidgets.QStyledItemDelegate):
-    """Bounded text layouts for changed price suffixes and amount whole units."""
+    """Bounded layouts for changed prices and fixed amount unit hierarchy."""
 
     LAYOUT_CACHE_LIMIT = 128
 
@@ -610,8 +629,8 @@ class _TradePriceDelegate(QtWidgets.QStyledItemDelegate):
                      or digit in 'KMBT' for position, digit in enumerate(text))
 
     def _layout(self, text, mask, regular, changed, device, color):
-        regular_opacity = typography_state_opacity('trade_price_regular')
-        changed_opacity = typography_state_opacity('trade_price_changed')
+        regular_opacity = typography_state_opacity('trade_amount_fraction' if self._amount else 'trade_price_regular')
+        changed_opacity = typography_state_opacity('trade_amount_units' if self._amount else 'trade_price_changed')
         key = (text, mask, regular.key(), changed.key(),
                device.logicalDpiX(), device.logicalDpiY(), device.devicePixelRatioF(),
                color.rgba(), regular_opacity, changed_opacity)
@@ -657,21 +676,25 @@ class _TradePriceDelegate(QtWidgets.QStyledItemDelegate):
             return
         device = painter.device()
         color = index.data(Qt.ItemDataRole.ForegroundRole)
-        regular = typography_font(TextRole.TABLE_VALUE, state='trade_price_regular')
-        changed = typography_font(TextRole.TABLE_VALUE, state='trade_price_changed')
+        regular = typography_font(TextRole.TABLE_VALUE, state='trade_amount_fraction' if self._amount else 'trade_price_regular')
+        changed = typography_font(TextRole.TABLE_VALUE, state='trade_amount_units' if self._amount else 'trade_price_changed')
         layout, line = self._layout(text, mask, regular, changed, device, color)
         if line.naturalTextWidth() > rect.width():
             pixels = regular.pixelSize() if regular.pixelSize() > 0 else round(regular.pointSizeF() * device.logicalDpiY() / 72)
             size = max(typography_min_pixel_size(TextRole.TABLE_VALUE),
                        int(pixels * rect.width() / line.naturalTextWidth()))
-            if size < pixels:
+            if size < pixels and not self._amount:
                 regular = typography_font_at_pixel_size(regular, size)
                 changed = typography_font_at_pixel_size(changed, size)
                 layout, line = self._layout(text, mask, regular, changed, device, color)
             if line.naturalTextWidth() > rect.width():
-                shown = QtGui.QFontMetricsF(changed, device).elidedText(text, Qt.TextElideMode.ElideLeft, int(rect.width()))
-                suffix_length = len(shown) - 1 if shown.startswith('…') else 0
-                mask = (False,) + mask[-suffix_length:] if suffix_length > 0 else (False,) * len(shown)
+                elide_mode = Qt.TextElideMode.ElideRight if self._amount else Qt.TextElideMode.ElideLeft
+                shown = QtGui.QFontMetricsF(changed, device).elidedText(text, elide_mode, int(rect.width()))
+                if self._amount:
+                    mask = self.amount_emphasis_mask(shown)
+                else:
+                    suffix_length = len(shown) - 1 if shown.startswith('…') else 0
+                    mask = (False,) + mask[-suffix_length:] if suffix_length > 0 else (False,) * len(shown)
                 layout, line = self._layout(shown, mask, regular, changed, device, color)
         if not line.isValid():
             return
@@ -844,6 +867,7 @@ class TradesTapeWidget(QtWidgets.QWidget):
             self._history.clear()
             self._large_history.clear()
             self.current_threshold = 1000.0
+            self.model.amount_decimals = {'base': 0, 'quote': 2}
             self.model.set_trades([])
             self.status.setText('Waiting for trades')
             self.empty.setText('Waiting for large trades…' if self._mode == 'LARGE' else 'Waiting for trades…')
@@ -6681,3 +6705,4 @@ class OrderBookWidget(QtWidgets.QWidget):
         state['value_mode'] = self.canvas.value_mode()
         state['book_depth'] = int(bool(self.canvas.presentation_state().get('book_depth', False)))
         return state
+
