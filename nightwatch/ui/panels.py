@@ -542,7 +542,7 @@ class RightRailModel:
 if QtWidgets is not None:
 
     class PanelSplitterHandle(QtWidgets.QSplitterHandle):
-        """Physical inter-panel gap; interaction is handled by an overlay."""
+        """Physical inter-panel gap; extended input is routed without painting."""
 
         def sizeHint(self) -> QtCore.QSize:
             hint = super().sizeHint()
@@ -553,25 +553,214 @@ if QtWidgets is not None:
             return hint
 
 
-    class SplitterGrabSurface(QtWidgets.QWidget):
-        """Transparent oversized mouse target centered on a thin splitter edge."""
+    class _SplitterHitRouter(QtCore.QObject):
+        """One input filter per window; no widget overlaps a chart viewport."""
+
+        _pointer_events = frozenset({
+            QtCore.QEvent.Type.MouseMove,
+            QtCore.QEvent.Type.MouseButtonPress,
+            QtCore.QEvent.Type.MouseButtonRelease,
+            QtCore.QEvent.Type.MouseButtonDblClick,
+        })
+
+        def __init__(self, window: QtWidgets.QWidget) -> None:
+            super().__init__(window)
+            self.setObjectName("splitterHitRouter")
+            self._window = window
+            self._surfaces: list[SplitterGrabSurface] = []
+            self._drag_surface: SplitterGrabSurface | None = None
+            self._hover_widget: QtWidgets.QWidget | None = None
+            self._hover_cursor: QtGui.QCursor | None = None
+            self._hover_had_cursor = False
+            QtWidgets.QApplication.instance().installEventFilter(self)
+
+        def remove_surface(self, surface: "SplitterGrabSurface") -> None:
+            if self._drag_surface is surface:
+                self._drag_surface = None
+            if surface in self._surfaces:
+                self._surfaces.remove(surface)
+            self.clear_hover()
+
+        def clear_hover(self) -> None:
+            widget, cursor = self._hover_widget, self._hover_cursor
+            self._hover_widget = self._hover_cursor = None
+            if widget is None:
+                return
+            try:
+                if self._hover_had_cursor:
+                    widget.setCursor(cursor)
+                else:
+                    widget.unsetCursor()
+            except RuntimeError:  # The previous input recipient may be deleted.
+                pass
+
+        def hit_at(self, position: QtCore.QPoint) -> "SplitterGrabSurface | None":
+            if not self._window.isVisible():
+                return None
+            local = self._window.mapFromGlobal(position)
+            for surface in reversed(self._surfaces):
+                if surface._enabled and surface.geometry().contains(local):
+                    return surface
+            return None
+
+        def _track_hover(self, widget, surface) -> None:
+            if surface is None:
+                self.clear_hover()
+                return
+            if self._hover_widget is not widget:
+                self.clear_hover()
+                self._hover_widget = widget
+                self._hover_cursor = QtGui.QCursor(widget.cursor())
+                self._hover_had_cursor = widget.testAttribute(Qt.WidgetAttribute.WA_SetCursor)
+            if widget.cursor().shape() != surface.cursor().shape():
+                widget.setCursor(surface.cursor())
+
+        def eventFilter(self, watched: QtCore.QObject, event: QtCore.QEvent) -> bool:
+            kind = event.type()
+            if kind == QtCore.QEvent.Type.WindowDeactivate and watched is self._window:
+                if self._drag_surface is not None:
+                    self._drag_surface._cancel_drag()
+                    self._drag_surface = None
+                self.clear_hover()
+            elif kind == QtCore.QEvent.Type.UngrabMouse:
+                surface = self._drag_surface
+                if surface is not None and watched is surface._mouse_grabber:
+                    surface._cancel_drag()
+                    self._drag_surface = None
+            elif kind == QtCore.QEvent.Type.Leave and watched is self._hover_widget:
+                self.clear_hover()
+            if kind not in self._pointer_events:
+                return False
+
+            # Observe native motion for cursor feedback even over child widgets
+            # without mouse tracking. Leave native dispatch/button state intact.
+            if watched is self._window.windowHandle():
+                if kind == QtCore.QEvent.Type.MouseMove and self._drag_surface is None:
+                    if event.buttons() != Qt.MouseButton.NoButton or QtWidgets.QWidget.mouseGrabber() is not None:
+                        self.clear_hover()
+                        return False
+                    widget = QtWidgets.QApplication.widgetAt(event.globalPosition().toPoint())
+                    if widget is not None and widget.window() is self._window:
+                        self._track_hover(widget, self.hit_at(event.globalPosition().toPoint()))
+                    else:
+                        self.clear_hover()
+                return False
+            if not isinstance(watched, QtWidgets.QWidget):
+                return False
+
+            surface = self._drag_surface
+            if surface is not None:
+                if kind == QtCore.QEvent.Type.MouseMove:
+                    surface.mouseMoveEvent(event)
+                elif kind == QtCore.QEvent.Type.MouseButtonRelease and event.button() == Qt.MouseButton.LeftButton:
+                    surface.mouseReleaseEvent(event)
+                    self._drag_surface = None
+                return True
+            if watched.window() is not self._window:
+                self.clear_hover()
+                return False
+            # A chart/control drag that started elsewhere owns its motion, even
+            # when it crosses the cached grip rectangle or leaves the window.
+            if kind == QtCore.QEvent.Type.MouseMove and (
+                event.buttons() != Qt.MouseButton.NoButton
+                or QtWidgets.QWidget.mouseGrabber() is not None
+            ):
+                self.clear_hover()
+                return False
+            surface = self.hit_at(event.globalPosition().toPoint())
+            if kind == QtCore.QEvent.Type.MouseMove:
+                self._track_hover(watched, surface)
+                return surface is not None
+            if surface is not None and kind in {
+                QtCore.QEvent.Type.MouseButtonPress, QtCore.QEvent.Type.MouseButtonDblClick,
+            } and event.button() == Qt.MouseButton.LeftButton:
+                self.clear_hover()
+                self._drag_surface = surface
+                surface.mousePressEvent(event)
+                return True
+            return False
+
+
+    class SplitterGrabSurface(QtCore.QObject):
+        """Cached oversized hit rectangle, deliberately absent from composition."""
 
         def __init__(self, splitter: "PanelSplitter", index: int):
-            # Parent to the top-level window, not QSplitter. Arbitrary direct
-            # children of QSplitter may otherwise be treated as splitter panes.
             super().__init__(splitter.window())
             self.splitter = splitter
             self.index = int(index)
             self._start_global: QtCore.QPointF | None = None
             self._start_sizes: list[int] = []
-            self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-            self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, True)
-            self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
-            self.setCursor(
+            self._geometry = QtCore.QRect()
+            self._enabled = False
+            self._router: _SplitterHitRouter | None = None
+            self._mouse_grabber: QtWidgets.QWidget | None = None
+            self._cursor = QtGui.QCursor(
                 Qt.CursorShape.SplitHCursor
                 if splitter.orientation() == Qt.Orientation.Horizontal
                 else Qt.CursorShape.SplitVCursor
             )
+            splitter.destroyed.connect(self._splitter_destroyed)
+
+        def parentWidget(self) -> QtWidgets.QWidget:
+            return self.parent()
+
+        def geometry(self) -> QtCore.QRect:
+            return QtCore.QRect(self._geometry)
+
+        def setGeometry(self, *args) -> None:
+            self._geometry = QtCore.QRect(*args)
+
+        def cursor(self) -> QtGui.QCursor:
+            return self._cursor
+
+        def set_hit_active(self, enabled: bool) -> None:
+            self._enabled = bool(enabled)
+            if not enabled and self._router is None:
+                self._cancel_drag()
+                return
+            window = self.parentWidget()
+            if self._router is None or self._router.parent() is not window:
+                if self._router is not None:
+                    self._cancel_drag()
+                    self._router.remove_surface(self)
+                router = window.findChild(_SplitterHitRouter, "splitterHitRouter", Qt.FindChildOption.FindDirectChildrenOnly)
+                self._router = router if router is not None else _SplitterHitRouter(window)
+                self._router._surfaces.append(self)
+            if not enabled:
+                self._cancel_drag()
+                if self._router._drag_surface is self:
+                    self._router._drag_surface = None
+                self._router.clear_hover()
+
+        def hide(self) -> None:
+            self.set_hit_active(False)
+
+        def _splitter_destroyed(self) -> None:
+            self._enabled = False
+            self._cancel_drag()
+            if self._router is not None:
+                self._router.remove_surface(self)
+            super().deleteLater()
+
+        def grabMouse(self) -> None:
+            self._mouse_grabber = self.splitter.handle(self.index)
+            if self._mouse_grabber is not None:
+                self._mouse_grabber.grabMouse()
+
+        def releaseMouse(self) -> None:
+            grabber, self._mouse_grabber = self._mouse_grabber, None
+            if grabber is not None:
+                try:
+                    if QtWidgets.QWidget.mouseGrabber() is grabber:
+                        grabber.releaseMouse()
+                except RuntimeError:
+                    pass
+
+        def deleteLater(self) -> None:
+            self.hide()
+            if self._router is not None:
+                self._router.remove_surface(self)
+            super().deleteLater()
 
         def mousePressEvent(self, event: QtGui.QMouseEvent) -> None:
             if event.button() != Qt.MouseButton.LeftButton:
@@ -626,17 +815,11 @@ if QtWidgets is not None:
                 return
             self._start_global = None
             self._start_sizes = []
-            self.splitter.cancel_grab_drag()
-
-        def hideEvent(self, event: QtGui.QHideEvent) -> None:
-            self._cancel_drag()
-            super().hideEvent(event)
-
-        def event(self, event: QtCore.QEvent) -> bool:
-            event_type = event.type()
-            if event_type in {QtCore.QEvent.Type.UngrabMouse, QtCore.QEvent.Type.ParentChange, QtCore.QEvent.Type.WindowDeactivate}:
-                self._cancel_drag()
-            return super().event(event)
+            try:
+                self.splitter.cancel_grab_drag()
+            except RuntimeError:  # Splitter destruction also cancels capture.
+                pass
+            self.releaseMouse()
 
 
     class PanelSplitter(QtWidgets.QSplitter):
@@ -852,10 +1035,7 @@ if QtWidgets is not None:
                     viewport = owner._scroll.viewport()
                     clip = QtCore.QRect(viewport.mapTo(overlay_parent, QtCore.QPoint()), viewport.size())
                     surface.setGeometry(surface.geometry().intersected(clip))
-                visible = not surface.geometry().isEmpty()
-                if surface.isHidden() == visible:
-                    surface.setVisible(visible)
-                surface.raise_()
+                surface.set_hit_active(not surface.geometry().isEmpty())
 
         def resizeEvent(self, event: QtGui.QResizeEvent) -> None:
             super().resizeEvent(event)
