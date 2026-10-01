@@ -4749,7 +4749,6 @@ class RotationBubbleChart(QtWidgets.QWidget):
         self.setMouseTracking(True)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.setAccessibleName("Rotation map: Improving top left, Leading top right, Lagging bottom left, Weakening bottom right")
-        self.setToolTip("X: selected-window return vs BTC. Y: change in 1H return vs BTC, in percentage points.\nFour symbols maximum. Each connected group shows three earlier hours and the latest hour, smallest to largest.\nTrail spacing is normalized when needed for readability; hover a bubble for the observed percentages. Display positions are normalized for readability.\nLatest bubble area represents traded volume. Click to inspect; double-click to open a chart. Arrow keys select coins.")
 
     def sizeHint(self):
         return QtCore.QSize(850, 430)
@@ -4809,7 +4808,7 @@ class RotationBubbleChart(QtWidgets.QWidget):
         self.update()
 
     def plot_rect(self):
-        return QtCore.QRectF(70, 22, max(1, self.width() - 92), max(1, self.height() - 82))
+        return QtCore.QRectF(20, 20, max(1, self.width() - 40), max(1, self.height() - 40))
 
     def map_point(self, x, y):
         r = self.plot_rect()
@@ -4956,50 +4955,30 @@ class RotationBubbleChart(QtWidgets.QWidget):
         p.fillRect(self.rect(), QtGui.QColor("#000000"))
         r = self.plot_rect()
         self._plot = r
-        p.setFont(self._font(TextRole.CHART_AXIS, 12))
-        for n in (-2, -1, 0, 1, 2):
-            x = self.map_point(n / 2 * self.x_extent, 0).x()
-            y = self.map_point(0, n / 2 * self.y_extent).y()
-            if n == 0:
-                center_color = QtGui.QColor("#FFFFFF")
-                center_color.setAlpha(24)
-                pen = QtGui.QPen(center_color, .65)
-                pen.setCosmetic(True)
-                pen.setCapStyle(Qt.PenCapStyle.FlatCap)
-                p.setPen(pen)
-                p.drawLine(QtCore.QPointF(x, r.top()), QtCore.QPointF(x, r.bottom()))
-                p.drawLine(QtCore.QPointF(r.left(), y), QtCore.QPointF(r.right(), y))
-            p.setPen(QtGui.QColor(ROTATION_PALETTE["muted"]))
-            p.drawText(QtCore.QRectF(x - 32, r.bottom() + 6, 64, 18), Qt.AlignmentFlag.AlignCenter, f"{n / 2 * self.x_extent:.1f}%")
-            p.drawText(QtCore.QRectF(6, y - 9, 55, 18), Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter, f"{n / 2 * self.y_extent:.1f}%")
+        center_color = QtGui.QColor("#FFFFFF")
+        center_color.setAlpha(24)
+        pen = QtGui.QPen(center_color, .65)
+        pen.setCosmetic(True)
+        pen.setCapStyle(Qt.PenCapStyle.FlatCap)
+        p.setPen(pen)
+        p.drawLine(QtCore.QPointF(r.center().x(), r.top()), QtCore.QPointF(r.center().x(), r.bottom()))
+        p.drawLine(QtCore.QPointF(r.left(), r.center().y()), QtCore.QPointF(r.right(), r.center().y()))
         quadrant_font = self._font(TextRole.UI_LABEL, 15)
         quadrant_font.setWeight(QtGui.QFont.Weight.DemiBold)
         p.setFont(quadrant_font)
         headings = []
         for label, where in (("Improving", "tl"), ("Leading", "tr"), ("Lagging", "bl"), ("Weakening", "br")):
-            p.setPen(QtGui.QColor({"Improving": "#42C9E8", "Leading": "#53DD7B", "Lagging": "#F57579", "Weakening": "#E7B955"}[label]))
+            p.setPen(QtGui.QColor({"Improving": "#42C9E8", "Leading": QUADRANT_COLORS["Leading"], "Lagging": QUADRANT_COLORS["Lagging"], "Weakening": "#E7B955"}[label]))
             box = QtCore.QRectF(r.left() + 14, r.top() + 10 if where[0] == "t" else r.bottom() - 30, r.width() - 28, 20)
             alignment = Qt.AlignmentFlag.AlignLeft if where[1] == "l" else Qt.AlignmentFlag.AlignRight
             p.drawText(box, alignment | Qt.AlignmentFlag.AlignVCenter, label.upper())
             width = p.fontMetrics().horizontalAdvance(label.upper())
             headings.append(QtCore.QRectF(box.left() if where[1] == "l" else box.right() - width,
                                          box.top(), width, box.height()))
-        p.setPen(QtGui.QColor(ROTATION_PALETTE["muted"]))
-        p.setFont(self._font(TextRole.UI_LABEL, 12))
-        p.drawText(QtCore.QRectF(r.left(), r.bottom() + 32, r.width(), 22), Qt.AlignmentFlag.AlignCenter, f"{self.hours}H return vs BTC")
-        p.save()
-        p.translate(18, r.center().y())
-        p.rotate(-90)
-        p.setFont(self._font(TextRole.UI_LABEL, 12 if r.height() >= 300 else 10))
-        p.drawText(QtCore.QRectF(-r.height() / 2, -12, r.height(), 24), Qt.AlignmentFlag.AlignCenter, "1H change in relative strength")
-        p.restore()
         self._hits = []
         self._geometry = []
         self._labels = []
         if not self.points:
-            p.setFont(self._font(TextRole.UI_BODY, 13))
-            p.drawText(r.adjusted(20, 35, -20, -35), Qt.AlignmentFlag.AlignCenter,
-                       "No major rotation moves\nWaiting for meaningful relative strength or momentum")
             return
         max_volume = max((v["volume"] for v in self.points), default=1) or 1
         # Large bubbles first; the selected bubble and its label always draw last.
@@ -5107,24 +5086,7 @@ class RotationBubbleChart(QtWidgets.QWidget):
     def mouseMoveEvent(self, event):
         point = self._hit(event.position())
         self.setCursor(Qt.CursorShape.PointingHandCursor if point else Qt.CursorShape.ArrowCursor)
-        if point:
-            x, y = point.get("_sample_value", (point["x"], point["y"]))
-            ago = 3 - point.get("_sample_index", 3)
-            age = f"{ago}H ago" if ago else "Latest completed hour"
-            text = (f"{point['symbol']} · {age}\n{self.hours}H vs BTC: {_pct(x)}\n"
-                    f"1H change in RS: {y:+.2f} pp")
-            if not ago:
-                text += f"\n{self.hours}H turnover: {_amount(point['volume'])}"
-            if point.get("_trail_normalized"):
-                text += "\nDisplay spacing normalized; values above are observed."
-            show_hover_tooltip(self, text, event.globalPosition().toPoint())
-        else:
-            hide_hover_tooltip(self)
         super().mouseMoveEvent(event)
-
-    def leaveEvent(self, event):
-        hide_hover_tooltip(self)
-        super().leaveEvent(event)
 
     def keyPressEvent(self, event):
         symbols = sorted(p["symbol"] for p in self.points)
@@ -5338,9 +5300,6 @@ class RotationScannerWidget(LeadershipTimelineWidget):
         self.coverage.setWordWrap(False)
         filters.addSpacing(12)
         filters.addWidget(self.coverage)
-        self.book_note = _rotation_label("Uses cached Leaders details only.\nUnverified books stay visible.", TextRole.UI_CAPTION, "rotationMuted")
-        self.book_note.setWordWrap(False)
-        filters.addWidget(self.book_note)
         filters.addStretch(1)
         columns.addWidget(self.filter_panel)
 
@@ -5348,19 +5307,11 @@ class RotationScannerWidget(LeadershipTimelineWidget):
         center_layout = QtWidgets.QVBoxLayout(center)
         center_layout.setContentsMargins(18, 20, 18, 16)
         center_layout.setSpacing(12)
-        center_layout.addWidget(_rotation_label("Rotation scanner", TextRole.WORKSPACE_TITLE))
-        center_layout.addWidget(_rotation_label("See strength improving before it becomes crowded", TextRole.UI_BODY, "rotationMuted"))
         chart_panel = QtWidgets.QFrame()
-        chart_panel.setObjectName("rotationPanel")
+        chart_panel.setObjectName("rotationMapPanel")
         chart_layout = QtWidgets.QVBoxLayout(chart_panel)
-        chart_layout.setContentsMargins(12, 10, 12, 8)
-        chart_layout.setSpacing(2)
-        chart_head = QtWidgets.QHBoxLayout()
-        chart_head.addWidget(_rotation_label("Relative strength vs BTC", TextRole.PANEL_TITLE))
-        chart_head.addStretch(1)
-        self.chart_caption = _rotation_label("Size: traded volume · Trail: last 3 hours", TextRole.UI_CAPTION, "rotationMuted")
-        chart_head.addWidget(self.chart_caption)
-        chart_layout.addLayout(chart_head)
+        chart_layout.setContentsMargins(0, 0, 0, 0)
+        chart_layout.setSpacing(0)
         self.bubbles = RotationBubbleChart()
         self.bubbles.chosen.connect(self.select_symbol)
         self.bubbles.opened.connect(self.symbol_selected.emit)
@@ -5478,9 +5429,6 @@ class RotationScannerWidget(LeadershipTimelineWidget):
         self.open_selected = _rotation_button("↗  OPEN CHART", "rotationPrimary")
         self.open_selected.clicked.connect(lambda: self.symbol_selected.emit(self.selected) if self.selected else None)
         info.addWidget(self.open_selected)
-        note = _rotation_label("Momentum candidates; no predicted pump score.", TextRole.UI_CAPTION, "rotationMuted")
-        note.setWordWrap(False)
-        info.addWidget(note)
         columns.addWidget(self.inspector)
 
         footer = QtWidgets.QFrame()
@@ -5598,7 +5546,6 @@ class RotationScannerWidget(LeadershipTimelineWidget):
         self.summary_count.setText(f"Candidates  {len(self._filtered_points)} / {len(self.symbols)}")
         self.coverage.setText(f"{len(self.symbols)} liquid pairs\n{len(self._filtered_points)} showing · {covered} comparable")
         self.coverage.setToolTip("\n".join(f"{s}: {e}" for s, e in self.errors.items()) or "Only comparable completed hourly candles are plotted.")
-        self.chart_caption.setText(f"Size: {prepared['hours']}H volume · Trail: last 3 hours")
         self.asof.setText(("Latest completed hour · " if self.replay.value() == 24 else "Replay · ") + (_stamp(prepared["end"], True) if prepared["end"] else "Waiting for history"))
         self._populate_candidates()
         self._render_facts()
@@ -5662,7 +5609,8 @@ class RotationScannerWidget(LeadershipTimelineWidget):
                     table.selectRow(row)
             if self.selected not in {p["symbol"] for p in points}:
                 table.clearSelection()
-            self.empty_candidates.setText("No improving candidates. Switch to All plotted coins or relax the filters." if not points else "OI and spread load on selection · Click headers to sort")
+            self.empty_candidates.setText("No improving candidates. Switch to All plotted coins or relax the filters." if not points else "")
+            self.empty_candidates.setVisible(not points)
         finally:
             table.setUpdatesEnabled(True)
             table.verticalScrollBar().setValue(scroll)
@@ -5967,6 +5915,7 @@ def rotation_stylesheet():
     QFrame#rotationFilters {{ border-right: 1px solid {p['border']}; }}
     QFrame#rotationInspector {{ border-left: 1px solid {p['border']}; }}
     QFrame#rotationPanel {{ border: 1px solid {p['border']}; border-radius: 5px; }}
+    QFrame#rotationMapPanel {{ border: 0; }}
     QFrame#rotationFact {{ border-bottom: 1px solid {p['separator']}; }}
     QWidget#rotationScanner QScrollArea {{ border: 0; background: #000000; }}
     QWidget#rotationScanner QComboBox, QWidget#rotationScanner QLineEdit {{
