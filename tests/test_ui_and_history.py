@@ -292,7 +292,7 @@ def test_narrow_market_bar_collapses_favorites_before_hiding_data(qapp):
     from nightwatch.utilities import InstrumentBar
     stats = MarketStatsWidget(ui_palette(THEMES[DEFAULT_THEME_NAME]), compact=True)
     bar = InstrumentBar(stats)
-    bar.resize(680, 42)
+    bar.resize(840, 48)
     bar.show()
     qapp.processEvents()
     assert bar.timeframes._collapsed
@@ -306,7 +306,7 @@ def test_narrow_market_bar_collapses_favorites_before_hiding_data(qapp):
     assert not bar.timeframes._collapsed
     assert max(card.width() for card in bar.metric_controls) - min(card.width() for card in bar.metric_controls) <= 1
     assert all(card.width() > 104 for card in bar.metric_controls)
-    assert bar.identity_control.width() < 300
+    assert bar.identity_control.width() < bar.width() // 2
     assert bar.market_group.x() >= bar.context_slot.width() + 8
     stats.set_timeframes(('30m',), '30m')
     qapp.processEvents()
@@ -342,6 +342,12 @@ def test_market_bar_keeps_padded_groups_and_click_targets(qapp, monkeypatch, int
     identity = bar.identity_control
     assert identity.value.width() >= identity.value.fontMetrics().horizontalAdvance(identity.value.text())
     assert identity.title.geometry().right() < identity.value.geometry().left()
+    title_left = identity.title.mapTo(bar, QtCore.QPoint()).x()
+    timeframe_right = bar.context_slot.x() + bar.context_slot.width()
+    price_right = identity.value.mapTo(bar, QtCore.QPoint(identity.value.width(), 0)).x()
+    divider_left = bar.metric_separators[0].mapTo(bar, QtCore.QPoint()).x()
+    assert title_left - timeframe_right == 96
+    assert divider_left - price_right == 96
     assert abs(identity.title.geometry().center().y() - identity.value.geometry().center().y()) <= 1
     assert bar.timeframes.height() < bar.height()
     assert all(button.height() == 28 for button in bar.timeframes._buttons)

@@ -1321,7 +1321,9 @@ class MetricCard(QtWidgets.QFrame):
         if compact:
             self.setProperty("instrumentClickable", not self.identity)
         layout = (QtWidgets.QHBoxLayout if self.identity else QtWidgets.QVBoxLayout)(self)
-        layout.setContentsMargins(12 if compact else 5, 5, 12 if compact else 5, 5)
+        # The instrument row supplies the other 12 px of the 96 px left gap.
+        layout.setContentsMargins(84 if self.identity else 12 if compact else 5,
+                                  5, 96 if self.identity else 12 if compact else 5, 5)
         layout.setSpacing(12 if self.identity else 1 if compact else 2)
 
         self.title = (
@@ -1404,9 +1406,9 @@ class MetricCard(QtWidgets.QFrame):
         if self.compact:
             margins = self.layout().contentsMargins()
             width = max(COMPACT_IDENTITY_WIDTH,
-                        self.title.fontMetrics().horizontalAdvance(self.title.text())
-                        + self.value.fontMetrics().horizontalAdvance(self.value.text())
-                        + self.layout().spacing() + margins.left() + margins.right() + 4)
+                        max(self.title.sizeHint().width(), self.title.fontMetrics().horizontalAdvance(self.title.text()))
+                        + max(self.value.sizeHint().width(), self.value.fontMetrics().horizontalAdvance(self.value.text()))
+                        + self.layout().spacing() + margins.left() + margins.right())
             if self.property("instrumentFlexOwned"):
                 if self.width() != width or self.minimumWidth() != width:
                     self.setFixedWidth(width)
