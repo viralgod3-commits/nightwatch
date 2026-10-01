@@ -1667,6 +1667,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self._set_chart_interaction_priority
         )
         self.orderbook = OrderBookWidget(self.orderbook_theme)
+        self.orderbook.set_presentation_clock(self.presentation_clock)
         self.orderbook.set_symbol(self.current_symbol)
         self.orderbook.set_aggregation_multiplier(
             self.settings.value("orderbook/aggregation_multiplier_v1", 1, int)
@@ -1749,6 +1750,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.alerts_panel = AlertsPanel(self.alerts_dialog)
         alert_layout.addWidget(self.alerts_panel)
         self.large_trades = TradesTapeWidget(self.orderbook_theme)
+        self.large_trades.set_presentation_clock(self.presentation_clock)
         self.large_trades.set_market(
             self.current_symbol,
             tick_size=safe_float(
@@ -7344,6 +7346,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._chart_interaction_priority_active = active
         self._sync_background_priority()
         self.orderbook.set_interaction_priority(active)
+        self.large_trades.set_interaction_priority(active)
         self._order_flow_interaction_priority_requested.emit(
             self._order_flow_generation, active
         )

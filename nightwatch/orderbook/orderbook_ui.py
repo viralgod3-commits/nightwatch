@@ -555,23 +555,31 @@ class _TradesTapeModel(QtCore.QAbstractTableModel):
     def set_trades(self, trades, *, reformat=False):
         # Normal updates prepend a batch and trim the tail; don't reset scroll or
         # allocate thousands of QTableWidgetItems on each depth frame.
-        # Keep one fixed precision per market/unit mode, including trailing
-        # zeros. A precision increase must also reformat the retained rows.
-        mode = self.value_mode
-        precision = self.amount_decimals[mode]
-        for trade in trades:
-            amount = trade.quantity if mode == 'base' else trade.notional
-            fraction = format_book_price(amount).partition('.')[2]
-            required = len(fraction) if mode == 'base' or 0 < abs(amount) < .01 else 2
-            precision = max(precision, required)
-        if precision != self.amount_decimals[mode]:
-            self.amount_decimals[mode] = precision
-            reformat = True
         previous = [self.identity(row[0]) for row in self.rows]
         sequences = [self.identity(trade) for trade in trades]
         prefix = sequences.index(previous[0]) if previous and previous[0] in sequences else len(sequences)
         retained = len(sequences) - prefix
-        if reformat or (previous and sequences[prefix:] != previous[:retained]):
+        same_tail = sequences[prefix:] == previous[:retained]
+        # Keep one fixed precision per market/unit mode, including trailing
+        # zeros. Only new/changed amounts can increase retained precision;
+        # outcome-only updates must not reformat the entire 500-print history.
+        mode = self.value_mode
+        precision = self.amount_decimals[mode]
+        for row, trade in enumerate(trades):
+            amount = trade.quantity if mode == 'base' else trade.notional
+            if mode == 'quote' and not 0 < abs(amount) < .01:
+                continue
+            if not reformat and same_tail and row >= prefix:
+                old = self.rows[row - prefix][0]
+                old_amount = old.quantity if mode == 'base' else old.notional
+                if amount == old_amount:
+                    continue
+            fraction = format_book_price(amount).partition('.')[2]
+            precision = max(precision, len(fraction))
+        if precision != self.amount_decimals[mode]:
+            self.amount_decimals[mode] = precision
+            reformat = True
+        if reformat or (previous and not same_tail):
             self.beginResetModel()
             self.rows = [self._row(trade) for trade in trades]
             self.endResetModel()
@@ -586,9 +594,16 @@ class _TradesTapeModel(QtCore.QAbstractTableModel):
             self.endInsertRows()
         for row in range(prefix, len(trades)):
             if self.rows[row][0] != trades[row]:
-                old_cells = self.rows[row][1]
-                self.rows[row] = self._row(trades[row])
-                numeric_change = self.rows[row][1][:2] != old_cells[:2]
+                old, cells = self.rows[row]
+                trade = trades[row]
+                numeric_change = any(getattr(old, name) != getattr(trade, name) for name in (
+                    'price', 'quantity', 'notional', 'event_time_ms', 'aggressor_side',
+                ))
+                if numeric_change:
+                    self.rows[row] = self._row(trade)
+                else:
+                    tag = self.OUTCOMES.get(trade.outcome, ('—', 'unknown'))[0]
+                    self.rows[row] = trade, (cells[0], cells[1], tag, cells[3])
                 first_column = 0 if numeric_change else 2
                 last_column = 3 if numeric_change else 2
                 self.dataChanged.emit(self.index(row, first_column), self.index(row, last_column))
@@ -731,6 +746,9 @@ class TradesTapeWidget(QtWidgets.QWidget):
         self.current_threshold = 1000.0
         self._mode, self._value_mode = 'LARGE', 'quote'
         self._active = False
+        self._presentation_clock = None
+        self._interaction_priority_active = False
+        self._frame_refresh_pending = False
         self._last_snapshot_print_sequence = 0
         self._snapshot_sequence = 0
         self._epoch = 0
@@ -858,6 +876,7 @@ class TradesTapeWidget(QtWidgets.QWidget):
 
     def reset(self, *, preserve_history=False):
         self._refresh_timer.stop()
+        self._frame_refresh_pending = False
         self._epoch += 1
         self._unresolved.clear()
         self._latest_snapshot_prints = ()
@@ -877,6 +896,7 @@ class TradesTapeWidget(QtWidgets.QWidget):
         self._active = bool(active)
         if not self._active:
             self._refresh_timer.stop()
+            self._frame_refresh_pending = False
         else:
             self._schedule_refresh()
 
@@ -886,7 +906,30 @@ class TradesTapeWidget(QtWidgets.QWidget):
 
     def hideEvent(self, event):
         self._refresh_timer.stop()
+        self._frame_refresh_pending = False
         super().hideEvent(event)
+
+    def set_presentation_clock(self, clock):
+        if clock is self._presentation_clock:
+            return
+        if self._presentation_clock is not None:
+            self._presentation_clock.interaction_frame.disconnect(self._commit_frame_refresh)
+        self._presentation_clock = clock
+        if clock is not None:
+            clock.interaction_frame.connect(self._commit_frame_refresh)
+        elif self._frame_refresh_pending:
+            self._commit_frame_refresh()
+
+    def set_interaction_priority(self, active):
+        self._interaction_priority_active = bool(active)
+        if not active and self._frame_refresh_pending:
+            self._commit_frame_refresh()
+
+    def _commit_frame_refresh(self, _frame_time=0.0):
+        if not self._frame_refresh_pending:
+            return
+        self._frame_refresh_pending = False
+        self._commit_table_refresh()
 
     def mode(self):
         return self._mode
@@ -980,12 +1023,23 @@ class TradesTapeWidget(QtWidgets.QWidget):
         self._schedule_refresh()
 
     def _schedule_refresh(self):
-        if self._dirty and self._active and self.isVisible() and not self._refresh_timer.isActive():
+        if (self._dirty and self._active and self.isVisible()
+                and not self._frame_refresh_pending and not self._refresh_timer.isActive()):
             self._refresh_timer.start()
 
     def _refresh_table(self):
         if not self._active or not self.isVisible() or not self._dirty:
             return
+        if self._interaction_priority_active and self._presentation_clock is not None:
+            self._frame_refresh_pending = True
+            self._presentation_clock.request()
+            return
+        self._commit_table_refresh()
+
+    def _commit_table_refresh(self):
+        if not self._active or not self.isVisible() or not self._dirty:
+            return
+        self._refresh_timer.stop()
         history = self._large_history if self._mode == 'LARGE' else self._history
         trades = list(reversed(history.values()))
         bar = self.table.verticalScrollBar()
@@ -5814,6 +5868,9 @@ class _DomRasterWorkerCanvas(_DomRasterCanvas):
     def _profile_animation_interval_ms(self):
         return self._frame_interval
 
+    def _row_frame_interval_ms(self):
+        return self._frame_interval
+
 
 class _DomRasterProcess:
     def __init__(self, options):
@@ -5858,6 +5915,7 @@ class _DomRasterProcess:
             if old.get(key) != config[key]:
                 setter(config[key])
         canvas._frame_interval = config['interval']
+        canvas.set_interaction_priority(config.get('interaction_priority', False))
         canvas._raster_dpr = config['dpr']
         if old.get('size') != config['size'] or old.get('dpr') != config['dpr']:
             canvas.resize(*config['size'])
@@ -5918,8 +5976,9 @@ class _DomRasterProcess:
             elif name == 'snapshot':
                 if args is not None:
                     canvas.set_snapshot(args)
-                    canvas._snapshot_prepare_timer.stop()
-                    canvas._flush_pending_snapshot()
+                    if not canvas._interaction_priority_active:
+                        canvas._snapshot_prepare_timer.stop()
+                        canvas._flush_pending_snapshot()
             elif name in ('set_microstructure_snapshot',
                           'set_book_validity', 'set_trade_stream_status'):
                 getattr(canvas, name)(*args)
@@ -6024,6 +6083,8 @@ class OrderFlowDomCanvas(_DomRasterCanvas):
     def __init__(self, theme, parent=None):
         self._process_link = None
         self._display_frame = None
+        self._pending_raster = None
+        self._presentation_clock = None
         self._raster_ack_pending = False
         self._display_epoch = 0
         self._market_epoch = 0
@@ -6053,6 +6114,7 @@ class OrderFlowDomCanvas(_DomRasterCanvas):
                       columns=self.column_preferences(), widths=self.column_width_state(),
                       size=(max(1,self.width()), max(1,self.height())), dpr=self.devicePixelRatioF(),
                       interval=display_frame_interval_ms(self), theme=self._bar_theme,
+                      interaction_priority=self._interaction_priority_active,
                       typography=self._remote_typography)
         if config == self._sent_config:
             return
@@ -6116,11 +6178,28 @@ class OrderFlowDomCanvas(_DomRasterCanvas):
         self._send('set_trade_stream_status', (active, reason))
 
     def set_interaction_priority(self, active):
-        # No row preparation or raster work runs here during chart interaction.
-        self._interaction_priority_active = bool(active)
+        active = bool(active)
+        if active == self._interaction_priority_active:
+            return
+        self._interaction_priority_active = active
+        self._queue_configuration()
+        if not active:
+            self._commit_pending_raster()
+
+    def set_presentation_clock(self, clock):
+        if clock is self._presentation_clock:
+            return
+        if self._presentation_clock is not None:
+            self._presentation_clock.interaction_frame.disconnect(self._commit_pending_raster)
+        self._presentation_clock = clock
+        if clock is not None:
+            clock.interaction_frame.connect(self._commit_pending_raster)
+        else:
+            self._commit_pending_raster()
 
     def reset(self):
         self._market_epoch += 1
+        self._pending_raster = None
         self._display_frame = None
         self._latest_received_sequence = -1
         self._queue_configuration()
@@ -6145,6 +6224,7 @@ class OrderFlowDomCanvas(_DomRasterCanvas):
     def hideEvent(self, event):
         if self._process_link is not None:
             self._process_link.enable(False)
+            self._pending_raster = None
             self._release_raster()
         QtWidgets.QWidget.hideEvent(self, event)
 
@@ -6156,6 +6236,24 @@ class OrderFlowDomCanvas(_DomRasterCanvas):
     @QtCore.Slot(object)
     def _adopt_raster(self, result):
         self._raster_ack_pending = True
+        if (result.get('frame') is not None
+                and result['market_epoch'] == self._market_epoch
+                and self.isVisible()
+                and self._interaction_priority_active
+                and self._presentation_clock is not None):
+            # The leased image stays immutable until the shared frame's paint
+            # acknowledges it. Only derived pixels wait; ingestion stays live.
+            self._pending_raster = result
+            self._presentation_clock.request()
+            return
+        self._commit_raster(result)
+
+    def _commit_pending_raster(self, _frame_time=0.0):
+        result, self._pending_raster = self._pending_raster, None
+        if result is not None:
+            self._commit_raster(result)
+
+    def _commit_raster(self, result):
         self._remote_diagnostics['worker_pid'] = result['worker_pid']
         repaint = False
         if result['market_epoch'] == self._market_epoch:
@@ -6172,7 +6270,9 @@ class OrderFlowDomCanvas(_DomRasterCanvas):
             self._release_raster()
 
     def _release_raster(self):
-        if not self._raster_ack_pending:
+        # A paint of the previous image (for example during a window resize)
+        # must not release the incoming image before its shared-frame adoption.
+        if not self._raster_ack_pending or self._pending_raster is not None:
             return
         self._raster_ack_pending = False
         frame = self._display_frame
@@ -6184,6 +6284,7 @@ class OrderFlowDomCanvas(_DomRasterCanvas):
         import logging
         logging.getLogger(__name__).error('DOM rendering process: %s', message)
         self._remote_error = 'Order book renderer unavailable'
+        self._pending_raster = None
         self._display_frame = None
         QtWidgets.QWidget.update(self)
 
@@ -6445,6 +6546,8 @@ class OrderBookWidget(QtWidgets.QWidget):
         self._tape = tape
         if tape is None:
             return
+        tape.set_presentation_clock(self.canvas._presentation_clock)
+        tape.set_interaction_priority(self.canvas._interaction_priority_active)
         tape.setParent(self.splitter)
         tape.set_market(self.symbol, 0.0, tick_size=self.price_tick_size)
         tape.set_panel_active(True)
@@ -6565,6 +6668,13 @@ class OrderBookWidget(QtWidgets.QWidget):
 
     def set_interaction_priority(self, active: bool) -> None:
         self.canvas.set_interaction_priority(active)
+        if self._tape is not None:
+            self._tape.set_interaction_priority(active)
+
+    def set_presentation_clock(self, clock) -> None:
+        self.canvas.set_presentation_clock(clock)
+        if self._tape is not None:
+            self._tape.set_presentation_clock(clock)
 
     def set_book_validity(self, valid: bool, reason: str='') -> None:
         self.canvas.set_book_validity(valid, reason)
