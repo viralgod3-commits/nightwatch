@@ -951,7 +951,7 @@ class DeveloperDialog(QtWidgets.QWidget):
             name = QtWidgets.QLabel(label)
             name.setObjectName('subtleLabel')
             value = QtWidgets.QLabel('—')
-            if key in {'orderflow_cost', 'orderflow_cache', 'microstructure_cost', 'aggregation_cost', 'orderflow_state', 'depth_pipeline'}:
+            if key in {'orderflow_cost', 'orderflow_cache', 'microstructure_cost', 'aggregation_cost', 'orderflow_state', 'depth_pipeline', 'chart_path', 'renderer'}:
                 value.setWordWrap(True)
             value.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
             summary_grid.addWidget(name, row, column)
@@ -1076,7 +1076,7 @@ class DeveloperDialog(QtWidgets.QWidget):
         state_getter = getattr(self.host.chart, 'diagnostic_state', None)
         if callable(state_getter):
             render_path = state_getter().get('render_path', {})
-            self._last_chart_metrics = {key: int(render_path.get(key, 0)) for key in ('native_draws', 'native_failures', 'cpu_paints', 'cpu_rebuilds')}
+            self._last_chart_metrics = {key: int(render_path.get(key, 0)) for key in ('native_draws', 'native_failures', 'fallback_frames', 'cpu_paints')}
         else:
             self._last_chart_metrics = {}
         self._last_refresh = time.monotonic()
@@ -1118,6 +1118,76 @@ class DeveloperDialog(QtWidgets.QWidget):
             index = int(round((len(ordered) - 1) * fraction))
             return ordered[max(0, min(len(ordered) - 1, index))]
         return f'p50 {percentile(0.5):.{precision}f} · p95 {percentile(0.95):.{precision}f} · max {ordered[-1]:.{precision}f} ms'
+
+    @staticmethod
+    def _chart_gpu_detail(render_path: dict[str, Any], native_rate: float) -> str:
+        batches = render_path.get('gpu_batches', {})
+        if not isinstance(batches, dict):
+            batches = {}
+
+        requested = render_path.get('requested_opengl')
+        if requested is None:
+            requested = render_path.get('native_renderer_requested')
+        if requested is None and batches:
+            requested = any(bool(batch.get('requested_native')) for batch in batches.values() if isinstance(batch, dict))
+        request_text = 'viewport GL requested' if requested is True else 'viewport software selected' if requested is False else 'viewport request unknown'
+        native_requested = render_path.get('requested_native')
+        if native_requested is not None:
+            request_text += ' · native bars requested' if native_requested else ' · native bars disabled'
+
+        actual = str(render_path.get('gpu_status', render_path.get('actual_render_path', 'unverified')) or 'unverified')
+        viewport = render_path.get('actual_viewport', '')
+        if isinstance(viewport, bool):
+            viewport = 'OpenGL viewport' if viewport else 'raster viewport'
+        viewport_text = f' · {viewport}' if viewport else ''
+        native_draws = int(render_path.get('native_draws', sum(int(batch.get('native_draws', 0)) for batch in batches.values() if isinstance(batch, dict))))
+        failures = int(render_path.get('native_failures', sum(int(batch.get('native_failures', 0)) for batch in batches.values() if isinstance(batch, dict))))
+        fallback_frames = int(render_path.get('fallback_frames', sum(int(batch.get('fallback_frames', 0)) for batch in batches.values() if isinstance(batch, dict))))
+        cpu_paints = int(render_path.get('cpu_paints', sum(int(batch.get('cpu_paints', 0)) for batch in batches.values() if isinstance(batch, dict))))
+        detail = f'{request_text}{viewport_text} · actual {actual} · native {native_rate:.0f}/s ({native_draws} total) · fallback {fallback_frames} frames / {failures} failures · CPU {cpu_paints} paints'
+
+        context = render_path.get('last_context', {})
+        if not isinstance(context, dict) or not context:
+            context = next(
+                (batch.get('last_context', {}) for batch in batches.values()
+                 if isinstance(batch, dict) and batch.get('last_context')),
+                {},
+            )
+        if isinstance(context, dict):
+            hardware = ' · '.join(str(context.get(key, '')).strip() for key in ('vendor', 'renderer', 'version') if context.get(key))
+            if hardware:
+                detail += f" · {'last context ' if context.get('current') is False else ''}{hardware}"
+            context_format = str(context.get('context_format', '') or '')
+            if context_format:
+                detail += f' · {context_format}'
+        requested_format = str(render_path.get('requested_context_format', '') or '')
+        if requested_format and requested_format != 'disabled':
+            detail += f' · requested {requested_format}'
+
+        batch_details = []
+        for name, batch in batches.items():
+            if not isinstance(batch, dict):
+                continue
+            profile = str(batch.get('profile', name))
+            batch_details.append(
+                f"{profile} {batch.get('observed_path', 'unverified')} "
+                f"N{int(batch.get('native_draws', 0))}/F{int(batch.get('fallback_frames', 0))}"
+            )
+        if batch_details:
+            detail += ' · ' + ', '.join(batch_details[:4])
+
+        reasons = render_path.get('fallback_reasons', {})
+        if isinstance(reasons, dict):
+            active_reasons = [f'{reason} {int(count)}' for reason, count in reasons.items() if int(count) > 0]
+            if active_reasons:
+                detail += ' · reasons ' + ', '.join(active_reasons[:2])
+        failure = str(render_path.get('last_native_failure', '') or '')
+        if failure and failure not in detail and actual == 'fallback':
+            detail += f' · {failure}'
+        runtime_failure = str(render_path.get('runtime_fallback_reason', '') or '')
+        if runtime_failure and runtime_failure not in detail:
+            detail += f' · viewport: {runtime_failure}'
+        return detail
 
     def _refresh(self) -> None:
         self._refresh_frame_profile()
@@ -1227,20 +1297,14 @@ class DeveloperDialog(QtWidgets.QWidget):
                 previous = int(self._last_chart_metrics.get(key, current))
                 return max(0.0, (current - previous) / elapsed)
             native_rate = chart_rate('native_draws')
-            cpu_rate = chart_rate('cpu_paints')
-            rebuild_rate = chart_rate('cpu_rebuilds')
-            failure = str(render_path.get('last_native_failure', ''))
-            failures = int(render_path.get('native_failures', 0))
-            if cpu_rate > 0.0 or failure:
-                detail = f"native {native_rate:.0f}/s · CPU {cpu_rate:.0f}/s · rebuild {rebuild_rate:.1f}/s · rebuild {float(render_path.get('last_rebuild_ms', 0.0)):.1f} ms (max {float(render_path.get('max_rebuild_ms', 0.0)):.1f}) · {int(render_path.get('last_rebuild_bars', 0))} bars · CPU paint {float(render_path.get('last_cpu_paint_ms', 0.0)):.1f} ms"
-                if failure:
-                    detail += f' · {failure}'
-            else:
-                detail = f"native {native_rate:.0f}/s · CPU 0/s · rebuild 0/s · GL submit {float(render_path.get('last_gl_submit_ms', 0.0)):.2f} ms (max {float(render_path.get('max_gl_submit_ms', 0.0)):.2f})"
-            if failures:
-                detail += f' · fallbacks {failures}'
-            self.summary_labels['chart_path'].setText(detail)
-            self._last_chart_metrics = {key: int(render_path.get(key, 0)) for key in ('native_draws', 'native_failures', 'cpu_paints', 'cpu_rebuilds')}
+            gpu_path_detail = dict(render_path)
+            for key in ('requested_opengl', 'requested_native', 'actual_render_path', 'gpu_status', 'runtime_fallback_reason', 'gpu_batches'):
+                if key in state:
+                    gpu_path_detail[key] = state[key]
+            gpu_path_detail.setdefault('actual_viewport', state.get('viewport', ''))
+            gpu_path_detail.setdefault('requested_context_format', state.get('requested_context_format', ''))
+            self.summary_labels['chart_path'].setText(self._chart_gpu_detail(gpu_path_detail, native_rate))
+            self._last_chart_metrics = {key: int(render_path.get(key, 0)) for key in ('native_draws', 'native_failures', 'fallback_frames', 'cpu_paints')}
         else:
             self.summary_labels['renderer'].setText('—')
             self.summary_labels['chart_path'].setText('—')

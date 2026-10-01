@@ -18,6 +18,7 @@ from PySide6.QtCore import Qt
 
 from ..theme import CANDLE_STYLES
 from .preparation import PreparedBars, prepare_bars
+from .gpu_diagnostics import GPUPathDiagnostics, context_gpu_info, gl_context_key, same_gl_context
 from ..presentation import (
     performance_profile_active,
     record_performance_count,
@@ -949,9 +950,13 @@ class PixelBarBatch:
         self._data_revision = 0
         self._gl_resources: dict[int, dict[str, Any]] = {}
         self._gl_disabled_contexts: set[int] = set()
+        self._gl_disabled_reasons: dict[int, str] = {}
         self._reported_native_failures: set[str] = set()
         self._gl_cleanup_callbacks: dict[int, Any] = {}
         self._gl_orphaned_resources: list[dict[str, Any]] = []
+        self._gpu_diagnostics = GPUPathDiagnostics()
+        self._gpu_diagnostics.reset_current(False)
+        self._diagnostic_context_key: int | None = None
         self.prepared = prepare_bars([])
 
     def set_data(self, candles, slots, logarithmic=False, volume=False):
@@ -1118,7 +1123,15 @@ class PixelBarBatch:
         )
 
     def set_gpu_enabled(self, enabled: bool) -> None:
-        self.gpu_enabled = bool(enabled)
+        enabled = bool(enabled)
+        if enabled == self.gpu_enabled:
+            return
+        self.gpu_enabled = enabled
+        self._gpu_diagnostics.reset_current(enabled)
+
+    def gpu_diagnostic_state(self) -> dict[str, Any]:
+        """Return persistent per-batch GPU state without touching the GL driver."""
+        return self._gpu_diagnostics.snapshot(self.profile_name, self.gpu_enabled)
 
     @staticmethod
     def _framebuffer_size(
@@ -1168,13 +1181,17 @@ class PixelBarBatch:
     ) -> None:
         resources = self._gl_resources.pop(context_key, None)
         self._gl_disabled_contexts.discard(context_key)
+        self._gl_disabled_reasons.pop(context_key, None)
         self._gl_cleanup_callbacks.pop(context_key, None)
+        if self._diagnostic_context_key == context_key:
+            self._gpu_diagnostics.context_destroyed(self.gpu_enabled)
+            self._diagnostic_context_key = None
         if resources is None:
             return
 
         made_current = False
         try:
-            if QtGui.QOpenGLContext.currentContext() is not context:
+            if not same_gl_context(QtGui.QOpenGLContext.currentContext(), context):
                 surface = context.surface()
                 if surface is None or not context.makeCurrent(surface):
 
@@ -1232,7 +1249,23 @@ class PixelBarBatch:
 
             pass
 
-    def _record_native_failure(self, reason: str, *, warning: bool = False) -> bool:
+    @staticmethod
+    def _is_offline_image_target(painter: QtGui.QPainter) -> bool:
+        """Image exports and offscreen tests cannot exercise a chart GL viewport."""
+        try:
+            device = painter.device()
+            return isinstance(device, (QtGui.QImage, QtGui.QPixmap))
+        except (AttributeError, RuntimeError, TypeError):
+            return False
+
+    def _record_native_failure(
+        self,
+        reason: str,
+        *,
+        warning: bool = False,
+        context_info: dict[str, Any] | None = None,
+    ) -> bool:
+        self._gpu_diagnostics.native_failure(reason, context_info)
         record_performance_count("gl.fallback." + reason.replace(" ", "_"))
         if warning and reason not in self._reported_native_failures:
             self._reported_native_failures.add(reason)
@@ -1261,22 +1294,31 @@ class PixelBarBatch:
     ) -> bool:
         if not self.gpu_enabled:
             return False
+        if not self._is_opengl_painter(painter):
+            if self._is_offline_image_target(painter):
+                self._gpu_diagnostics.note_offline_target()
+                return False
+            return self._record_native_failure("non-OpenGL paint engine")
         if QtOpenGL is None:
             return self._record_native_failure("QtOpenGL unavailable", warning=True)
-        if not self._is_opengl_painter(painter):
-
-
-            return self._record_native_failure("non-OpenGL paint engine")
 
         context = QtGui.QOpenGLContext.currentContext()
         if context is None or not context.isValid():
             return self._record_native_failure("invalid OpenGL context", warning=True)
-        context_key = id(context)
+        context_info = context_gpu_info(context)
+        context_key = gl_context_key(context)
+        self._diagnostic_context_key = context_key
+        self._register_gl_context(context_key, context)
         if context_key in self._gl_disabled_contexts:
-            return self._record_native_failure("OpenGL context disabled after resource failure")
+            reason = self._gl_disabled_reasons.get(
+                context_key,
+                "OpenGL context disabled after resource failure",
+            )
+            self._gpu_diagnostics.repeat_failure(reason, context_info)
+            return False
 
         resources = self._gl_resources.get(context_key)
-        if resources is not None and resources.get("context") is not context:
+        if resources is not None and not same_gl_context(resources.get("context"), context):
 
             self._gl_orphaned_resources.append(resources)
             self._gl_resources.pop(context_key, None)
@@ -1286,9 +1328,14 @@ class PixelBarBatch:
             resources = _NativeBarGL.create_resources(context)
             if resources is None:
                 self._gl_disabled_contexts.add(context_key)
-                return self._record_native_failure("OpenGL resource creation failed", warning=True)
+                reason = "OpenGL resource creation failed"
+                self._gl_disabled_reasons[context_key] = reason
+                return self._record_native_failure(
+                    reason,
+                    warning=True,
+                    context_info=context_info,
+                )
             self._gl_resources[context_key] = resources
-            self._register_gl_context(context_key, context)
         resources["profile_name"] = self.profile_name
         resources["prepared"] = self.prepared
         try:
@@ -1327,9 +1374,18 @@ class PixelBarBatch:
                     painter.endNativePainting()
                 except (RuntimeError, TypeError):
                     pass
-            return self._record_native_failure("native OpenGL draw exception", warning=True)
+            return self._record_native_failure(
+                "native OpenGL draw exception",
+                warning=True,
+                context_info=context_info,
+            )
         if not drawn:
-            return self._record_native_failure("native OpenGL draw rejected", warning=True)
+            return self._record_native_failure(
+                "native OpenGL draw rejected",
+                warning=True,
+                context_info=context_info,
+            )
+        self._gpu_diagnostics.native_success(context_info)
         return True
 
     def _paint_volume_overlay_cpu(
@@ -1476,6 +1532,7 @@ class PixelBarBatch:
         volume_overlay_fraction: float = 0.0,
         volume_overlay_screen: QtCore.QRectF | None = None,
         native_painting_active: bool = False,
+        force_cpu: bool = False,
     ):
         if not self.data.size:
             return
@@ -1503,25 +1560,28 @@ class PixelBarBatch:
         stable_style_key = style_key if style_key is not None else id(style)
 
 
-        if self._paint_native_gl(
-            painter,
-            transform,
-            gl_screen,
-            framebuffer_size,
-            style,
-            stable_style_key,
-            background,
-            up,
-            down,
-            volume=volume,
-            volume_overlay_max=volume_overlay_max,
-            volume_overlay_fraction=volume_overlay_fraction,
-            volume_overlay_screen=volume_overlay_screen,
-            native_painting_active=native_painting_active,
-        ):
-            return True
-        if native_painting_active:
-            return False
+        if not force_cpu:
+            if self.gpu_enabled:
+                self._gpu_diagnostics.begin_native_attempt()
+            if self._paint_native_gl(
+                painter,
+                transform,
+                gl_screen,
+                framebuffer_size,
+                style,
+                stable_style_key,
+                background,
+                up,
+                down,
+                volume=volume,
+                volume_overlay_max=volume_overlay_max,
+                volume_overlay_fraction=volume_overlay_fraction,
+                volume_overlay_screen=volume_overlay_screen,
+                native_painting_active=native_painting_active,
+            ):
+                return True
+            if native_painting_active:
+                return False
 
         if (
             volume
@@ -1540,6 +1600,10 @@ class PixelBarBatch:
                 down,
                 float(volume_overlay_max),
                 float(volume_overlay_fraction),
+            )
+            self._gpu_diagnostics.cpu_paint(
+                self.gpu_enabled,
+                offline_target=self._is_offline_image_target(painter),
             )
             return
 
@@ -1864,6 +1928,10 @@ class PixelBarBatch:
         self._draw_cpu_batches(painter)
 
         painter.restore()
+        self._gpu_diagnostics.cpu_paint(
+            self.gpu_enabled,
+            offline_target=self._is_offline_image_target(painter),
+        )
 
 
 class CandlestickItem(pg.GraphicsObject):
@@ -2253,6 +2321,9 @@ class VolumeOverlayItem(pg.GraphicsObject):
                     painter.endNativePainting()
                 except (RuntimeError, TypeError):
                     pass
+                for batch in batches:
+                    if batch.gpu_enabled:
+                        batch._record_native_failure("native painting block exception")
                 native_results = None
 
         for index, batch in enumerate(batches):
@@ -2270,6 +2341,7 @@ class VolumeOverlayItem(pg.GraphicsObject):
                 volume_overlay_max=maximum,
                 volume_overlay_fraction=self._height_fraction,
                 volume_overlay_screen=overlay_screen,
+                force_cpu=shared_native,
             )
         self.painted_once = bool(batches)
 
@@ -2469,6 +2541,9 @@ class NativeBarCompositeItem(pg.GraphicsObject):
                         (time.perf_counter() - native_started) * 1000.0,
                     )
                     record_performance_count("gl.native_block_failures")
+                for _kind, _owner, batch in candidates:
+                    if batch.gpu_enabled:
+                        batch._record_native_failure("native painting block exception")
                 native_results = None
 
         result_index = 0
@@ -2492,6 +2567,7 @@ class NativeBarCompositeItem(pg.GraphicsObject):
                         volume_overlay_max=maximum,
                         volume_overlay_fraction=self.volume_overlay._height_fraction,
                         volume_overlay_screen=overlay_screen,
+                        force_cpu=shared_native,
                     )
             self.volume_overlay.painted_once = bool(volume_batches)
 
@@ -2509,6 +2585,7 @@ class NativeBarCompositeItem(pg.GraphicsObject):
                     item.down,
                     exposed_rect=option.exposedRect,
                     style_key=item._style_key,
+                    force_cpu=shared_native,
                 )
             item.painted_once = True
 

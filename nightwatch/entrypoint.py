@@ -36,26 +36,20 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def _configure_chart_surface_format() -> None:
-    """Request the native GPU chart context before QApplication is created."""
+def _configure_chart_surface_format() -> dict[str, object]:
+    """Request the native GPU chart context and return the request for diagnostics."""
     settings = QtCore.QSettings(ORG_NAME, APP_NAME)
-    if not settings.value("testing/chart_opengl_v2", True, bool):
-        return
-
-    surface_format = QtGui.QSurfaceFormat.defaultFormat()
-    renderable = surface_format.renderableType()
-    if renderable == QtGui.QSurfaceFormat.RenderableType.OpenGLES:
-
-        if (
-            surface_format.majorVersion(),
-            surface_format.minorVersion(),
-        ) < (3, 0):
-            surface_format.setVersion(3, 0)
-    else:
-
-
-
-        if (
+    requested = bool(settings.value("testing/chart_opengl_v2", True, bool))
+    if requested:
+        surface_format = QtGui.QSurfaceFormat.defaultFormat()
+        renderable = surface_format.renderableType()
+        if renderable == QtGui.QSurfaceFormat.RenderableType.OpenGLES:
+            if (
+                surface_format.majorVersion(),
+                surface_format.minorVersion(),
+            ) < (3, 0):
+                surface_format.setVersion(3, 0)
+        elif (
             surface_format.majorVersion(),
             surface_format.minorVersion(),
         ) < (3, 3):
@@ -63,9 +57,26 @@ def _configure_chart_surface_format() -> None:
             surface_format.setProfile(
                 QtGui.QSurfaceFormat.OpenGLContextProfile.NoProfile
             )
-    if surface_format.alphaBufferSize() < 8:
-        surface_format.setAlphaBufferSize(8)
-    QtGui.QSurfaceFormat.setDefaultFormat(surface_format)
+        if surface_format.alphaBufferSize() < 8:
+            surface_format.setAlphaBufferSize(8)
+        QtGui.QSurfaceFormat.setDefaultFormat(surface_format)
+    else:
+        surface_format = QtGui.QSurfaceFormat.defaultFormat()
+
+    renderable = surface_format.renderableType()
+    api = (
+        "OpenGL ES"
+        if renderable == QtGui.QSurfaceFormat.RenderableType.OpenGLES
+        else "OpenGL"
+    )
+    requested_format = (
+        f"{api} {surface_format.majorVersion()}.{surface_format.minorVersion()} "
+        f"{getattr(surface_format.profile(), 'name', surface_format.profile())}"
+    )
+    return {
+        "requested": requested,
+        "format": requested_format if requested else "disabled",
+    }
 
 
 class _BorderlessWindowFilter(QtCore.QObject):
@@ -289,7 +300,7 @@ def main() -> int:
             diagnostics.verbose("STARTUP", line)
 
     _install_exception_diagnostics(diagnostics)
-    _configure_chart_surface_format()
+    chart_gl_request = _configure_chart_surface_format()
 
 
 
@@ -345,6 +356,14 @@ def main() -> int:
     application.aboutToQuit.connect(shutdown_analysis)
     application.setProperty("nightwatchStartupStartedMono", bootstrap_started)
     application.setProperty("nightwatchDiagnosticsEnabled", bool(arguments.diagnostics))
+    application.setProperty(
+        "nightwatchChartOpenGLRequestedAtStartup",
+        bool(chart_gl_request["requested"]),
+    )
+    application.setProperty(
+        "nightwatchChartOpenGLRequestedFormat",
+        str(chart_gl_request["format"]),
+    )
     borderless_window_filter = _BorderlessWindowFilter(application)
     application.installEventFilter(borderless_window_filter)
     application.setApplicationName(APP_NAME)

@@ -5,6 +5,7 @@ import gc
 import math
 import time
 from copy import deepcopy
+from contextlib import contextmanager
 import numpy as np
 import pyqtgraph as pg
 from typing import Any
@@ -996,6 +997,8 @@ class ChartWorkspace(QtWidgets.QWidget):
         super().__init__(parent)
         self.theme = theme
         self.use_opengl = bool(use_opengl)
+        self._requested_opengl = self.use_opengl
+        self._opengl_runtime_failure_reason = ""
         self.opengl_full_viewport = bool(opengl_full_viewport)
         self.native_bar_renderer_enabled = bool(native_bar_renderer)
         self.lod_aggregation_enabled = bool(lod_aggregation)
@@ -1223,6 +1226,9 @@ class ChartWorkspace(QtWidgets.QWidget):
 
         self._interaction_priority_active = False
         self._interaction_render_active = False
+        self._overlay_frame_geometry = None
+        self._price_axis_measurement_metrics = None
+        self._price_axis_text_widths = OrderedDict()
         self._interaction_priority_release_timer = QTimer(self)
         self._interaction_priority_release_timer.setSingleShot(True)
         self._interaction_priority_release_timer.setTimerType(Qt.TimerType.PreciseTimer)
@@ -1284,8 +1290,9 @@ class ChartWorkspace(QtWidgets.QWidget):
             if callable(use_gl):
                 try:
                     use_gl(True)
-                except (RuntimeError, TypeError):
+                except (RuntimeError, TypeError) as error:
                     self.use_opengl = False
+                    self._opengl_runtime_failure_reason = f"viewport setup: {type(error).__name__}"
 
         self.graphics.setBackground(theme["bg"])
 
@@ -2282,8 +2289,9 @@ class ChartWorkspace(QtWidgets.QWidget):
         self._start_navigation_scheduler()
 
     def _commit_price_overlay(self) -> None:
-        self._position_current_price_line_overlay()
-        self._position_price_axis_focus_overlay()
+        with self._overlay_geometry_transaction():
+            self._position_current_price_line_overlay()
+            self._position_price_axis_focus_overlay()
 
     def _commit_y_overlay(self) -> None:
         """Reposition only price-view overlays whose pixel anchors depend on Y."""
@@ -3057,6 +3065,8 @@ class ChartWorkspace(QtWidgets.QWidget):
         if width == getattr(self, "_effective_axis_width", 66):
             return False
         self._effective_axis_width = width
+        if self._overlay_frame_geometry is not None:
+            self._overlay_frame_geometry.clear()
         for plot in (
             self.price_plot,
             self.oi_plot,
@@ -3075,7 +3085,17 @@ class ChartWorkspace(QtWidgets.QWidget):
         if text == self._last_reserved_price_axis_text:
             return False
         self._last_reserved_price_axis_text = text
-        required = int(math.ceil(self._chart_axis_metrics.horizontalAdvance(text) + 14.0))
+        if self._price_axis_measurement_metrics is not self._chart_axis_metrics:
+            self._price_axis_measurement_metrics = self._chart_axis_metrics
+            self._price_axis_text_widths.clear()
+        required = self._price_axis_text_widths.get(text)
+        if required is None:
+            required = int(math.ceil(self._chart_axis_metrics.horizontalAdvance(text) + 14.0))
+            self._price_axis_text_widths[text] = required
+            if len(self._price_axis_text_widths) > 256:
+                self._price_axis_text_widths.popitem(last=False)
+        else:
+            self._price_axis_text_widths.move_to_end(text)
         target = max(int(getattr(self, "_axis_base_width", 66)), required)
 
 
@@ -3734,7 +3754,7 @@ class ChartWorkspace(QtWidgets.QWidget):
 
 
         if not callable(is_valid) or not callable(context_getter):
-            self._fallback_to_raster_viewport()
+            self._fallback_to_raster_viewport("viewport has no OpenGL context")
             return
 
         if not self.isVisible() or not viewport.isVisible():
@@ -3750,12 +3770,13 @@ class ChartWorkspace(QtWidgets.QWidget):
             QTimer.singleShot(50, self, self._verify_opengl_viewport)
             return
 
-        self._fallback_to_raster_viewport()
+        self._fallback_to_raster_viewport("OpenGL context invalid after startup verification")
 
-    def _fallback_to_raster_viewport(self) -> None:
+    def _fallback_to_raster_viewport(self, reason: str = "OpenGL viewport unavailable") -> None:
         if self._opengl_runtime_failed:
             return
         self._opengl_runtime_failed = True
+        self._opengl_runtime_failure_reason = str(reason)[:160]
         self.use_opengl = False
 
         for item in (
@@ -4959,19 +4980,44 @@ class ChartWorkspace(QtWidgets.QWidget):
         else:
             self._navigation_pending_rail = False
 
+    @contextmanager
+    def _overlay_geometry_transaction(self):
+        """Share immutable geometry within one overlay commit, never across frames."""
+        outermost = self._overlay_frame_geometry is None
+        if outermost:
+            self._overlay_frame_geometry = {}
+        try:
+            yield
+        finally:
+            if outermost:
+                self._overlay_frame_geometry = None
+
+    def _overlay_price_view_geometry(self):
+        cache = self._overlay_frame_geometry
+        if cache is not None and "price_view" in cache:
+            return cache["price_view"]
+        view = self.price_plot.getViewBox()
+        scene_rect = view.sceneBoundingRect()
+        if scene_rect.isEmpty():
+            result = None
+        else:
+            top_left = self.graphics.mapFromScene(scene_rect.topLeft())
+            bottom_right = self.graphics.mapFromScene(scene_rect.bottomRight())
+            plot_rect = QtCore.QRectF(QtCore.QPointF(top_left), QtCore.QPointF(bottom_right)).normalized()
+            result = (view, plot_rect, float(self.price_plot.viewRange()[0][0]))
+        if cache is not None:
+            cache["price_view"] = result
+        return result
+
     def _order_rail_view_geometry(self, price: float | None = None) -> tuple[QtCore.QRectF, float] | None:
         """Return price-plot geometry in viewport logical pixels."""
         rail_price = self.order_rail_value if price is None else float(price)
         if rail_price is None or float(rail_price) <= 0.0:
             return None
-        view = self.price_plot.getViewBox()
-        scene_rect = view.sceneBoundingRect()
-        if scene_rect.isEmpty():
+        geometry = self._overlay_price_view_geometry()
+        if geometry is None:
             return None
-        top_left = self.graphics.mapFromScene(scene_rect.topLeft())
-        bottom_right = self.graphics.mapFromScene(scene_rect.bottomRight())
-        plot_rect = QtCore.QRectF(QtCore.QPointF(top_left), QtCore.QPointF(bottom_right)).normalized()
-        x0 = float(self.price_plot.viewRange()[0][0])
+        view, plot_rect, x0 = geometry
         shown = chart_y(float(rail_price), self.logarithmic)
         scene_point = view.mapViewToScene(QtCore.QPointF(x0, shown))
         viewport_point = self.graphics.mapFromScene(scene_point)
@@ -4979,6 +5025,9 @@ class ChartWorkspace(QtWidgets.QWidget):
 
     def _order_rail_axis_view_rect(self) -> QtCore.QRectF | None:
         """Return the visible right price-axis strip in viewport logical pixels."""
+        cache = self._overlay_frame_geometry
+        if cache is not None and "axis_view" in cache:
+            return cache["axis_view"]
         try:
             scene_rect = self.price_axis.sceneBoundingRect()
         except (AttributeError, RuntimeError):
@@ -4988,7 +5037,10 @@ class ChartWorkspace(QtWidgets.QWidget):
         top_left = self.graphics.mapFromScene(scene_rect.topLeft())
         bottom_right = self.graphics.mapFromScene(scene_rect.bottomRight())
         rect = QtCore.QRectF(QtCore.QPointF(top_left), QtCore.QPointF(bottom_right)).normalized()
-        return rect if not rect.isEmpty() else None
+        result = rect if not rect.isEmpty() else None
+        if cache is not None:
+            cache["axis_view"] = result
+        return result
 
     def _native_price_axis_text_band(
         self,
@@ -5010,6 +5062,10 @@ class ChartWorkspace(QtWidgets.QWidget):
                 axis_rect = axis_rect.intersected(QtCore.QRectF(self.graphics.rect()))
 
         if axis_rect is not None and not axis_rect.isEmpty():
+            cache = self._overlay_frame_geometry
+            cache_key = ("axis_text_band", axis_rect.x(), axis_rect.y(), axis_rect.width(), axis_rect.height())
+            if cache is not None and cache_key in cache:
+                return cache[cache_key]
             try:
                 axis_line_scene = self.price_axis.mapToScene(QtCore.QPointF(0.0, 0.0))
                 axis_line_view = self.graphics.mapFromScene(axis_line_scene)
@@ -5033,6 +5089,8 @@ class ChartWorkspace(QtWidgets.QWidget):
                 if all(math.isfinite(value) for value in (text_left, text_right)):
                     band = (text_left, text_right)
                     self._last_price_axis_text_band = band
+                    if cache is not None:
+                        cache[cache_key] = band
                     return band
             except (AttributeError, IndexError, RuntimeError, TypeError, ValueError):
                 pass
@@ -5051,6 +5109,36 @@ class ChartWorkspace(QtWidgets.QWidget):
             ):
                 return previous
         return None
+
+    def _overlay_order_rail_layout_geometry(self, plot_view: QtCore.QRectF):
+        cache = self._overlay_frame_geometry
+        if cache is not None and "rail_layout" in cache:
+            return cache["rail_layout"]
+        offset = QtCore.QPointF(self.graphics.viewport().pos())
+        parent_bounds = QtCore.QRectF(self.graphics.rect())
+        plot_rect = plot_view.translated(offset).intersected(parent_bounds)
+        axis_view = self._order_rail_axis_view_rect()
+        axis_rect = axis_view.translated(offset) if axis_view is not None else QtCore.QRectF()
+        if not axis_rect.isEmpty():
+            axis_rect = axis_rect.intersected(parent_bounds)
+        if plot_rect.isEmpty():
+            result = None
+        else:
+            axis_text_band = self._native_price_axis_text_band(
+                axis_rect if not axis_rect.isEmpty() else None
+            )
+            axis_right = axis_rect.right() if not axis_rect.isEmpty() else (
+                axis_text_band[1] if axis_text_band is not None else plot_rect.right()
+            )
+            hud_right = min(parent_bounds.right() - 1.0, max(plot_rect.right(), axis_right))
+            result = (
+                offset, parent_bounds, plot_rect, axis_rect, axis_text_band, hud_right,
+                max(1, int(hud_right - plot_rect.left() - 3.0)),
+                max(1, int(plot_rect.height()) - 6),
+            )
+        if cache is not None:
+            cache["rail_layout"] = result
+        return result
 
 
     def _position_order_rail_pair(
@@ -5072,31 +5160,14 @@ class ChartWorkspace(QtWidgets.QWidget):
             visual.hide()
             hud.hide()
             return
-        viewport = self.graphics.viewport()
         plot_view, line_y_view = geometry
-        axis_view = self._order_rail_axis_view_rect()
-        offset = QtCore.QPointF(viewport.pos())
-        plot_rect = plot_view.translated(offset)
-        axis_rect = axis_view.translated(offset) if axis_view is not None else QtCore.QRectF()
-        line_y = line_y_view + offset.y()
-        parent_bounds = QtCore.QRectF(self.graphics.rect())
-        plot_rect = plot_rect.intersected(parent_bounds)
-        if not axis_rect.isEmpty():
-            axis_rect = axis_rect.intersected(parent_bounds)
-        if plot_rect.isEmpty():
+        layout_geometry = self._overlay_order_rail_layout_geometry(plot_view)
+        if layout_geometry is None:
             visual.hide()
             hud.hide()
             return
-
-        axis_text_band = self._native_price_axis_text_band(
-            axis_rect if not axis_rect.isEmpty() else None
-        )
-        axis_right = axis_rect.right() if not axis_rect.isEmpty() else (
-            axis_text_band[1] if axis_text_band is not None else plot_rect.right()
-        )
-        hud_right = min(parent_bounds.right() - 1.0, max(plot_rect.right(), axis_right))
-        available_width = max(1, int(hud_right - plot_rect.left() - 3.0))
-        available_height = max(1, int(plot_rect.height()) - 6)
+        offset, parent_bounds, plot_rect, axis_rect, axis_text_band, hud_right, available_width, available_height = layout_geometry
+        line_y = line_y_view + offset.y()
         desired = hud.desired_size(available_width, available_height)
         if hud.size() != desired:
             hud.resize(desired)
@@ -5188,12 +5259,16 @@ class ChartWorkspace(QtWidgets.QWidget):
             hud.move(target)
         hud.set_line_anchor(visible_anchor - y, offscreen)
 
-        hud.set_price(float(price), self._order_rail_price_text_for(float(price)))
+        hud.set_price(float(price), rail_price_text)
         if not hud.isVisible():
             hud.show()
         hud.raise_()
 
     def _position_order_rail_hud(self) -> None:
+        with self._overlay_geometry_transaction():
+            self._position_order_rail_hud_commit()
+
+    def _position_order_rail_hud_commit(self) -> None:
         active_visible = (self.working_orders_visible or not (self.order_rail_hud and self.order_rail_hud.armed)) and (
             not self._active_order_rail_symbol
             or not self.order_rail_market_symbol
@@ -6733,18 +6808,11 @@ class ChartWorkspace(QtWidgets.QWidget):
             overlay.hide()
             return
 
-        view = self.price_plot.getViewBox()
-        scene_rect = view.sceneBoundingRect()
-        if scene_rect.isEmpty():
+        view_geometry = self._overlay_price_view_geometry()
+        if view_geometry is None:
             overlay.hide()
             return
-
-        top_left = self.graphics.mapFromScene(scene_rect.topLeft())
-        bottom_right = self.graphics.mapFromScene(scene_rect.bottomRight())
-        plot_view = QtCore.QRectF(
-            QtCore.QPointF(top_left),
-            QtCore.QPointF(bottom_right),
-        ).normalized()
+        view, plot_view, x0 = view_geometry
 
         viewport = self.graphics.viewport()
         offset = QtCore.QPointF(viewport.pos())
@@ -6756,7 +6824,6 @@ class ChartWorkspace(QtWidgets.QWidget):
             return
 
         try:
-            x0 = float(view.viewRange()[0][0])
             shown = chart_y(price, self.logarithmic)
             if not math.isfinite(shown):
                 overlay.hide()
@@ -6890,10 +6957,9 @@ class ChartWorkspace(QtWidgets.QWidget):
     def _position_interaction_overlays(self) -> tuple[float, float]:
         """Move only overlays that must remain attached during camera motion."""
         x_range = self.price_plot.viewRange()[0]
-        self._position_current_price_line_overlay()
-
-
-        self._position_order_rail_hud()
+        with self._overlay_geometry_transaction():
+            self._position_current_price_line_overlay()
+            self._position_order_rail_hud()
         return float(x_range[0]), float(x_range[1])
 
     def _position_overlay_labels(self, *, force_full: bool = False) -> None:
@@ -8438,6 +8504,62 @@ class ChartWorkspace(QtWidgets.QWidget):
         for item in (self.history_candles, self.live_candle, self.volume_overlay):
             item.set_gpu_enabled(active)
         self.graphics.request_redraw()
+
+    def diagnostic_state(self) -> dict[str, Any]:
+        """Read observed render paths without querying GL or requesting a paint."""
+        batches = {
+            "history_candles": self.history_candles.pixel_batch,
+            "live_candle": self.live_candle.pixel_batch,
+            "volume_history": self.volume_overlay.history_batch,
+            "volume_live": self.volume_overlay.live_batch,
+        }
+        states = {name: batch.gpu_diagnostic_state() for name, batch in batches.items()}
+        counters = (
+            "native_draws", "native_failures", "fallback_frames", "cpu_paints", "intentional_cpu_paints",
+        )
+        render_path = {key: sum(int(state.get(key, 0)) for state in states.values()) for key in counters}
+        reasons: dict[str, int] = {}
+        last_context: dict[str, Any] = {}
+        last_failure = ""
+        for state in states.values():
+            for reason, count in state.get("fallback_reasons", {}).items():
+                reasons[reason] = reasons.get(reason, 0) + int(count)
+            if state.get("last_context"):
+                last_context = state["last_context"]
+            if state.get("last_native_failure"):
+                last_failure = str(state["last_native_failure"])
+        render_path.update(fallback_reasons=reasons, last_native_failure=last_failure, last_context=last_context)
+        paths = {state.get("observed_path", "unverified") for state in states.values()}
+        if self._requested_opengl and (self._opengl_runtime_failed or not self.use_opengl):
+            actual_path = "fallback"
+        elif not self.use_opengl or not self.native_bar_renderer_enabled:
+            actual_path = "software"
+        elif "fallback" in paths:
+            actual_path = "fallback"
+        elif "native" in paths:
+            actual_path = "native"
+        else:
+            actual_path = "unverified"
+        statuses = {"native": "native verified", "fallback": "CPU fallback", "software": "software selected", "unverified": "unverified"}
+        viewport = self.graphics.viewport()
+        application = QtWidgets.QApplication.instance()
+        mode = self.graphics.viewportUpdateMode()
+        return {
+            "renderer": "OpenGL" if self.use_opengl else "Raster",
+            "viewport": type(viewport).__name__,
+            "viewport_update_mode": getattr(mode, "name", str(mode)),
+            "size": (int(viewport.width()), int(viewport.height())),
+            "device_pixel_ratio": float(viewport.devicePixelRatioF()),
+            "ready": bool(self._initial_snapshot_painted),
+            "requested_opengl": self._requested_opengl,
+            "requested_native": self.native_bar_renderer_enabled,
+            "actual_render_path": actual_path,
+            "gpu_status": statuses[actual_path],
+            "runtime_fallback_reason": self._opengl_runtime_failure_reason,
+            "requested_context_format": str(application.property("nightwatchChartOpenGLRequestedFormat") or "") if application is not None else "",
+            "gpu_batches": states,
+            "render_path": render_path,
+        }
 
     def set_lod_aggregation_enabled(self, enabled: bool) -> None:
         enabled = bool(enabled)

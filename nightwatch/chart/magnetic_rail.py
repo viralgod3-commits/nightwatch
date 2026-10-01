@@ -439,14 +439,25 @@ class MagneticRailLineOverlay(QtWidgets.QWidget):
         self.arm_progress = arm_progress
         self.implosion_progress = implosion_progress
         interactive = bool(armed and arm_progress >= 0.999 and implosion_progress <= 0)
-        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, not interactive)
+        transparent = Qt.WidgetAttribute.WA_TransparentForMouseEvents
+        if self.testAttribute(transparent) == interactive:
+            self.setAttribute(transparent, not interactive)
         if interactive:
-            self.setMask(QtGui.QRegion(0, int(self.line_y) - 5, self.width(), 11))
+            # Updating a QWidget mask can trigger native window-system work.
+            # Keep exactly the same hit area without reinstalling it every frame.
+            mask = QtGui.QRegion(0, int(self.line_y) - 5, self.width(), 11)
+            if self.mask() != mask:
+                self.setMask(mask)
 
 
-            self.setCursor(Qt.CursorShape.ArrowCursor)
+            if (
+                not self.testAttribute(Qt.WidgetAttribute.WA_SetCursor)
+                or self.cursor().shape() != Qt.CursorShape.ArrowCursor
+            ):
+                self.setCursor(Qt.CursorShape.ArrowCursor)
         else:
-            self.clearMask()
+            if not self.mask().isEmpty():
+                self.clearMask()
         if changed:
             self.update()
 

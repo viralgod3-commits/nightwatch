@@ -4840,6 +4840,15 @@ class MainWindow(QtWidgets.QMainWindow):
             lines.append(f"[F3 count] {name}: {int(value)}")
         for name, value in sorted(sums.items()):
             lines.append(f"[F3 sum] {name}: {float(value):.0f}")
+        charts = [self.chart]
+        container = getattr(self, "chart_container", None)
+        if container is not None:
+            charts.extend(
+                pane.chart for pane in tuple(getattr(container, "auxiliary", ()))
+                if pane.isVisible() and pane.chart.isVisible()
+            )
+        for index, chart in enumerate(charts, 1):
+            lines.append(f"[F3 GPU] chart={index} " + json.dumps(chart.diagnostic_state(), sort_keys=True))
         print("\n".join(lines), flush=True)
         self.statusBar().showMessage(lines[0], 12000)
 

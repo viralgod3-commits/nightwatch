@@ -5,6 +5,7 @@ from __future__ import annotations
 import html
 import math
 import time
+from bisect import bisect_left, insort_left
 from collections import deque
 from datetime import datetime, timezone
 from typing import Any
@@ -37,6 +38,266 @@ from ..models import (
 
 
 _WATCHLIST_ICON_CACHE: dict[tuple[str, int, str, str, str], QtGui.QIcon] = {}
+
+
+_WATCHLIST_WIDTH_ENVIRONMENT_EVENTS = frozenset(
+    event_type
+    for name in (
+        "FontChange",
+        "ApplicationFontChange",
+        "StyleChange",
+        "ScreenChangeInternal",
+        "DevicePixelRatioChange",
+        "LayoutDirectionChange",
+        "ApplicationLayoutDirectionChange",
+    )
+    if (event_type := getattr(QtCore.QEvent.Type, name, None)) is not None
+)
+
+
+def _watchlist_width_environment_changed(event: QtCore.QEvent) -> bool:
+    return event.type() in _WATCHLIST_WIDTH_ENVIRONMENT_EVENTS
+
+
+class _WatchlistMoveHistory:
+    """Cached five-minute history used by the watchlist move detector.
+
+    Appends and updates to the newest sample leave all earlier five-minute
+    moves unchanged. Keep those moves in order and maintain the closed-history
+    median inputs incrementally. Prefix eviction repairs affected references;
+    new or irregular histories rebuild the bounded 420-sample window with NumPy.
+    """
+
+    def __init__(self, samples: deque[tuple[float, float]]):
+        self.source = samples
+        self.rows = list(samples)
+        self.timestamps: list[float] = []
+        self.starts: list[int] = []
+        self.metrics: list[float | None] = []
+        self.valid_indices: list[int] = []
+        self.baseline_values: list[float] = []
+        self.monotonic = True
+        self.incremental_safe = True
+        self.baseline = 0.0
+        self._rebuild()
+
+    @staticmethod
+    def _move(start: tuple[float, float], end: tuple[float, float]) -> float | None:
+        span = end[0] - start[0]
+        if 270.0 <= span <= 330.0 and start[1] > 0:
+            return abs((end[1] / start[1] - 1.0) * 100.0)
+        return None
+
+    def _rebuild(self) -> None:
+        count = len(self.rows)
+        self.starts = [0] * count
+        self.metrics = [None] * count
+        self.valid_indices = []
+        self.baseline_values = []
+        self.monotonic = all(
+            self.rows[index][0] >= self.rows[index - 1][0]
+            for index in range(1, count)
+        )
+
+        if count and self.monotonic:
+            stamps = np.fromiter((row[0] for row in self.rows), dtype=np.float64, count=count)
+            self.timestamps = [float(value) for value in stamps]
+            prices = np.fromiter((row[1] for row in self.rows), dtype=np.float64, count=count)
+            starts = np.searchsorted(stamps, stamps - 330.0, side="left")
+            starts = np.maximum.accumulate(starts)
+            spans = stamps - stamps[starts]
+            valid = (spans >= 270.0) & (spans <= 330.0) & (prices[starts] > 0)
+            with np.errstate(divide="ignore", invalid="ignore", over="ignore"):
+                magnitudes = np.abs((prices / prices[starts] - 1.0) * 100.0)
+            self.starts = [int(value) for value in starts]
+            self.metrics = [
+                float(magnitudes[index]) if valid[index] else None
+                for index in range(count)
+            ]
+        elif count:
+            # Seeded or malformed histories can contain decreasing timestamps.
+            # Keep the detector's original forward-only sliding-window rule.
+            start = 0
+            for end in range(count):
+                self.timestamps.append(self.rows[end][0])
+                while start < end and self.rows[end][0] - self.rows[start][0] > 330.0:
+                    start += 1
+                self.starts[end] = start
+                self.metrics[end] = self._move(self.rows[start], self.rows[end])
+
+        self.valid_indices = [
+            index for index, metric in enumerate(self.metrics) if metric is not None
+        ]
+        if self.valid_indices:
+            last_valid = self.valid_indices[-1]
+            self.baseline_values = [
+                float(metric)
+                for index, metric in enumerate(self.metrics)
+                if metric is not None and index != last_valid
+            ]
+            self.baseline_values.sort()
+        self.incremental_safe = not any(
+            metric is not None and math.isnan(metric) for metric in self.metrics
+        )
+        self._refresh_baseline()
+
+    def _refresh_baseline(self) -> None:
+        # The old detector used a zero baseline until it had at least three
+        # valid historical moves, then took the median excluding the newest.
+        if len(self.valid_indices) <= 2:
+            self.baseline = 0.0
+            return
+        if not self.incremental_safe:
+            historical = [
+                metric for metric in self.metrics if metric is not None
+            ]
+            self.baseline = float(np.median(historical[:-1]))
+            return
+        middle = len(self.baseline_values) // 2
+        if len(self.baseline_values) % 2:
+            self.baseline = self.baseline_values[middle]
+        else:
+            # NumPy median averages the middle pair with np.mean. Retain the
+            # same floating-point reduction while avoiding a full sort/copy.
+            self.baseline = float(
+                np.mean((self.baseline_values[middle - 1], self.baseline_values[middle]))
+            )
+
+    def matches(self, samples: deque[tuple[float, float]]) -> bool:
+        if self.source is not samples or len(self.rows) != len(samples):
+            return False
+        if not samples:
+            return not self.rows
+        return self.rows[0] == samples[0] and self.rows[-1] == samples[-1]
+
+    def can_update(
+        self,
+        samples: deque[tuple[float, float]],
+        sample: tuple[float, float],
+        *,
+        replace: bool,
+    ) -> bool:
+        if not self.matches(samples) or not self.monotonic or not self.incremental_safe:
+            return False
+        if replace:
+            return len(self.rows) < 2 or sample[0] >= self.rows[-2][0]
+        return not self.rows or sample[0] >= self.rows[-1][0]
+
+    def _remove_baseline_value(self, value: float) -> None:
+        index = bisect_left(self.baseline_values, value)
+        if index < len(self.baseline_values) and self.baseline_values[index] == value:
+            self.baseline_values.pop(index)
+
+    def append(self, sample: tuple[float, float]) -> None:
+        index = len(self.rows)
+        old_latest = self.valid_indices[-1] if self.valid_indices else None
+        self.rows.append(sample)
+        self.timestamps.append(sample[0])
+        start = self.starts[-1] if self.starts else 0
+        while start < index and sample[0] - self.rows[start][0] > 330.0:
+            start += 1
+        self.starts.append(start)
+        metric = self._move(self.rows[start], sample)
+        self.metrics.append(metric)
+        if metric is not None:
+            if old_latest is not None:
+                insort_left(self.baseline_values, float(self.metrics[old_latest]))
+            self.valid_indices.append(index)
+            if math.isnan(metric):
+                self.incremental_safe = False
+        self._refresh_baseline()
+
+    def replace_last(self, sample: tuple[float, float]) -> None:
+        index = len(self.rows) - 1
+        old_latest = self.valid_indices[-1] if self.valid_indices else None
+        old_metric = self.metrics[index]
+        if old_metric is not None:
+            self.valid_indices.pop()
+
+        self.rows[index] = sample
+        self.timestamps[index] = sample[0]
+        start = self.starts[index - 1] if index else 0
+        while start < index and sample[0] - self.rows[start][0] > 330.0:
+            start += 1
+        self.starts[index] = start
+        metric = self._move(self.rows[start], sample)
+        self.metrics[index] = metric
+        if metric is not None:
+            self.valid_indices.append(index)
+            if math.isnan(metric):
+                self.incremental_safe = False
+
+        new_latest = self.valid_indices[-1] if self.valid_indices else None
+        if new_latest != old_latest:
+            if new_latest is not None and new_latest != index:
+                self._remove_baseline_value(float(self.metrics[new_latest]))
+            if old_latest is not None and old_latest != index:
+                insort_left(self.baseline_values, float(self.metrics[old_latest]))
+        self._refresh_baseline()
+
+    def prune_prefix(self, count: int) -> None:
+        """Drop oldest samples and recompute only windows they could affect."""
+        count = max(0, min(int(count), len(self.rows)))
+        if not count:
+            return
+        old_latest = self.valid_indices[-1] if self.valid_indices else None
+        old_rows = self.rows
+        old_starts = self.starts
+        old_metrics = self.metrics
+        rows = old_rows[count:]
+        starts = [max(0, start - count) for start in old_starts[count:]]
+        metrics = old_metrics[count:]
+        start = 0
+        affected_old_indices: set[int] = set()
+        for index, row in enumerate(rows):
+            old_index = index + count
+            old_start = old_starts[old_index]
+            if old_start >= count:
+                break
+            while start < index and row[0] - rows[start][0] > 330.0:
+                start += 1
+            starts[index] = start
+            metrics[index] = self._move(rows[start], row)
+            affected_old_indices.add(old_index)
+
+        valid_indices = [
+            index for index, metric in enumerate(metrics) if metric is not None
+        ]
+        new_latest = valid_indices[-1] if valid_indices else None
+        changed_identities = set(range(min(count, len(old_metrics))))
+        changed_identities.update(affected_old_indices)
+        if old_latest is not None:
+            changed_identities.add(old_latest)
+        if new_latest is not None:
+            changed_identities.add(new_latest + count)
+        for old_index in changed_identities:
+            old_metric = old_metrics[old_index] if old_index < len(old_metrics) else None
+            new_index = old_index - count
+            new_metric = metrics[new_index] if 0 <= new_index < len(metrics) else None
+            old_member = old_metric is not None and old_index != old_latest
+            new_member = new_metric is not None and new_index != new_latest
+            if old_member and (not new_member or old_metric != new_metric):
+                self._remove_baseline_value(float(old_metric))
+            if new_member and (not old_member or old_metric != new_metric):
+                insort_left(self.baseline_values, float(new_metric))
+
+        self.rows = rows
+        self.timestamps = self.timestamps[count:]
+        self.starts = starts
+        self.metrics = metrics
+        self.valid_indices = valid_indices
+        self._refresh_baseline()
+
+    def reference(self, now: float) -> tuple[float, float] | None:
+        if not self.rows:
+            return None
+        if not self.monotonic:
+            return next(
+                (row for row in self.rows if row[0] >= now - 300.0),
+                self.rows[0],
+            )
+        index = bisect_left(self.timestamps, now - 300.0)
+        return self.rows[index] if index < len(self.rows) else self.rows[0]
 
 
 COMPACT_METRIC_HEIGHT = 48
@@ -2056,6 +2317,7 @@ class WatchlistWidget(QtWidgets.QWidget):
         self.tickers: dict[str, dict[str, Any]] = {}
         self.hour_changes: dict[str, float] = {}
         self.move_samples: dict[str, deque[tuple[float, float]]] = {}
+        self._move_history_cache: dict[str, _WatchlistMoveHistory] = {}
         self.move_signal_until: dict[str, float] = {}
         self.move_signal_direction: dict[str, int] = {}
         self.move_last_trigger: dict[str, float] = {}
@@ -2117,6 +2379,7 @@ class WatchlistWidget(QtWidgets.QWidget):
             return False
         self.symbols = normalized
         self.groups[self.active_group] = self.symbols
+        self._discard_inactive_move_caches()
         self.refresh()
         if emit:
             self.symbols_changed.emit(list(self.symbols))
@@ -2146,6 +2409,7 @@ class WatchlistWidget(QtWidgets.QWidget):
         self.groups = normalized
         self.active_group = selected
         self.symbols = self.groups[selected]
+        self._discard_inactive_move_caches()
         self.refresh()
         if changed and emit:
             self.groups_changed.emit(self.group_snapshot())
@@ -2157,6 +2421,7 @@ class WatchlistWidget(QtWidgets.QWidget):
             return False
         self.active_group = name
         self.symbols = self.groups[name]
+        self._discard_inactive_move_caches()
         self.refresh()
         self.groups_changed.emit(self.group_snapshot())
         self.symbols_changed.emit(list(self.symbols))
@@ -2191,6 +2456,7 @@ class WatchlistWidget(QtWidgets.QWidget):
         del self.groups[self.active_group]
         self.active_group = next(iter(self.groups))
         self.symbols = self.groups[self.active_group]
+        self._discard_inactive_move_caches()
         self.refresh()
         self.groups_changed.emit(self.group_snapshot())
         self.symbols_changed.emit(list(self.symbols))
@@ -2288,6 +2554,12 @@ class WatchlistWidget(QtWidgets.QWidget):
             self.refresh()
             self.tickers_changed.emit()
 
+    def _discard_inactive_move_caches(self) -> None:
+        active = set(self.symbols)
+        for symbol in tuple(self._move_history_cache):
+            if symbol not in active:
+                self._move_history_cache.pop(symbol, None)
+
     def _observe_move(self, symbol: str, ticker: dict[str, Any]) -> None:
         """Detect unusual five-minute moves relative to recent behavior/liquidity."""
         price = safe_float(ticker.get("c"))
@@ -2295,29 +2567,42 @@ class WatchlistWidget(QtWidgets.QWidget):
             return
         now = time.monotonic()
         samples = self.move_samples.setdefault(symbol, deque(maxlen=420))
-        if samples and now - samples[-1][0] < 5.0:
+        sample = (now, price)
+        replace = bool(samples and now - samples[-1][0] < 5.0)
+        cache = self._move_history_cache.get(symbol)
+        if cache is not None and not cache.matches(samples):
+            cache = None
+        incremental = cache is not None and cache.can_update(
+            samples, sample, replace=replace
+        )
+        if replace:
             samples[-1] = (now, price)
         else:
-            samples.append((now, price))
+            samples.append(sample)
         cutoff = now - 1_800.0
         while samples and samples[0][0] < cutoff:
             samples.popleft()
-        reference = next(
-            ((stamp, value) for stamp, value in samples if stamp >= now - 300.0),
-            samples[0],
-        )
+        if cache is None or not incremental:
+            cache = _WatchlistMoveHistory(samples)
+        else:
+            if replace:
+                cache.replace_last(sample)
+            else:
+                cache.append(sample)
+            if not cache.incremental_safe:
+                cache = _WatchlistMoveHistory(samples)
+            else:
+                removed_count = len(cache.rows) - len(samples)
+                if removed_count > 0:
+                    cache.prune_prefix(removed_count)
+        self._move_history_cache[symbol] = cache
+        reference = cache.reference(now)
+        if reference is None:
+            return
         if now - reference[0] < 270.0 or reference[1] <= 0:
             return
         move = (price / reference[1] - 1.0) * 100.0
-        historical: list[float] = []
-        rows = list(samples)
-        start = 0
-        for end in range(len(rows)):
-            while start < end and rows[end][0] - rows[start][0] > 330.0:
-                start += 1
-            if 270.0 <= rows[end][0] - rows[start][0] <= 330.0 and rows[start][1] > 0:
-                historical.append(abs((rows[end][1] / rows[start][1] - 1.0) * 100.0))
-        baseline = float(np.median(historical[:-1])) if len(historical) > 2 else 0.0
+        baseline = cache.baseline
         quote_volume = safe_float(ticker.get("q"))
         liquidity_floor = (
             0.7
@@ -2433,6 +2718,7 @@ class WatchlistHeaderView(QtWidgets.QHeaderView):
     """Watchlist header with a membership toggle in its leading section."""
 
     toggle_current_requested = Signal()
+    width_environment_changed = Signal()
 
     def __init__(
         self,
@@ -2445,6 +2731,12 @@ class WatchlistHeaderView(QtWidgets.QHeaderView):
         self._toggle_pressed = False
         self.setMouseTracking(True)
         self.setToolTip("Add or remove the current chart symbol")
+
+    def event(self, event: QtCore.QEvent) -> bool:
+        result = super().event(event)
+        if _watchlist_width_environment_changed(event):
+            self.width_environment_changed.emit()
+        return result
 
     def _toggle_rect(self) -> QtCore.QRect:
         position = self.sectionViewportPosition(0)
@@ -2526,6 +2818,13 @@ class WatchlistTableWidget(QtWidgets.QTableWidget):
 
     row_move_requested = Signal(int, int)
     row_remove_requested = Signal(int)
+    width_environment_changed = Signal()
+
+    def event(self, event: QtCore.QEvent) -> bool:
+        result = super().event(event)
+        if _watchlist_width_environment_changed(event):
+            self.width_environment_changed.emit()
+        return result
 
     def mousePressEvent(self, event: QtGui.QMouseEvent) -> None:
         if event.button() == Qt.MouseButton.RightButton:
@@ -2574,6 +2873,8 @@ class WatchlistSidebarWidget(QtWidgets.QWidget):
         self._row_display_signatures = {}
         self._icon_refresh_after = {}
         self._theme_revision = 0
+        self._last_size_style_key = None
+        self._pending_numeric_resizes: set[int] = set()
         layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(3, 3, 3, 3)
         layout.setSpacing(0)
@@ -2609,9 +2910,8 @@ class WatchlistSidebarWidget(QtWidgets.QWidget):
         header.setSectionResizeMode(0, QtWidgets.QHeaderView.ResizeMode.Fixed)
         header.resizeSection(0, 26)
         header.setSectionResizeMode(1, QtWidgets.QHeaderView.ResizeMode.Stretch)
-        header.setSectionResizeMode(2, QtWidgets.QHeaderView.ResizeMode.ResizeToContents)
-        header.setSectionResizeMode(3, QtWidgets.QHeaderView.ResizeMode.ResizeToContents)
-        header.setSectionResizeMode(4, QtWidgets.QHeaderView.ResizeMode.ResizeToContents)
+        for column in (2, 3, 4):
+            header.setSectionResizeMode(column, QtWidgets.QHeaderView.ResizeMode.Fixed)
         header.setMinimumSectionSize(26)
         header.setSectionsClickable(True)
         header.setSortIndicatorShown(False)
@@ -2653,6 +2953,10 @@ class WatchlistSidebarWidget(QtWidgets.QWidget):
         self.table.setToolTip(
             "Double-click to open · right-click to remove · drag rows to reorder · header + toggles the current pair"
         )
+        self.table.width_environment_changed.connect(self._width_environment_changed)
+        self.watchlist_header.width_environment_changed.connect(
+            self._width_environment_changed
+        )
 
         layout.addWidget(self.table, 1)
         self.watchlist_header.toggle_current_requested.connect(
@@ -2670,7 +2974,22 @@ class WatchlistSidebarWidget(QtWidgets.QWidget):
         self.source.current_changed.connect(self._sync_current_symbol)
         self.source.groups_changed.connect(self._groups_changed)
         self.source.icon_changed.connect(self._icon_changed)
+        typography_controller().changed.connect(self._typography_changed)
         self._groups_changed(self.source.group_snapshot())
+        self.refresh()
+
+    def _width_environment_changed(self) -> None:
+        self._pending_numeric_resizes.update((2, 3, 4))
+        self.refresh()
+
+    def _typography_changed(self) -> None:
+        for row in range(self.table.rowCount()):
+            for column in range(1, 5):
+                item = self.table.item(row, column)
+                if item is not None:
+                    role = TextRole.INSTRUMENT_SYMBOL if column == 1 else TextRole.TABLE_VALUE
+                    item.setFont(typography_font(role))
+        self._pending_numeric_resizes.update((2, 3, 4))
         self.refresh()
 
     def _groups_changed(self, _snapshot: object = None) -> None:
@@ -2860,17 +3179,25 @@ class WatchlistSidebarWidget(QtWidgets.QWidget):
                 self._icon_refresh_after[symbol] = float("inf")
 
     def refresh(self) -> None:
+        previous_selected = self.selected_symbol()
         symbols = list(self.source.symbols)
         active_symbol = (
             self.source.current_symbol
             if self.source.current_symbol in symbols
             else ""
         )
+        selection_symbol = active_symbol or previous_selected
+        dirty_columns = set(self._pending_numeric_resizes)
+        self._pending_numeric_resizes.clear()
         if self.table.rowCount() != len(symbols):
+            dirty_columns.update((2, 3, 4))
             self.table.setRowCount(len(symbols))
         now = time.monotonic()
         signatures = {}
         style_key = (self._theme_revision, self.devicePixelRatioF())
+        if style_key != self._last_size_style_key:
+            dirty_columns.update((2, 3, 4))
+            self._last_size_style_key = style_key
         selected_row = -1
         current_bg = QtGui.QColor(
             self.source.theme.get(
@@ -2879,7 +3206,7 @@ class WatchlistSidebarWidget(QtWidgets.QWidget):
             )
         )
         for row, symbol in enumerate(symbols):
-            if symbol == active_symbol:
+            if symbol == selection_symbol:
                 selected_row = row
             ticker = self.source.tickers.get(symbol, {})
             move_direction = self.source.move_signal(symbol)
@@ -2933,6 +3260,8 @@ class WatchlistSidebarWidget(QtWidgets.QWidget):
                     self.table.setItem(row, column, item)
                 if item.text() != value:
                     item.setText(value)
+                    if column in (2, 3, 4):
+                        dirty_columns.add(column)
                 if item.toolTip() != tooltip:
                     item.setToolTip(tooltip)
                 item.setBackground(
@@ -2981,17 +3310,24 @@ class WatchlistSidebarWidget(QtWidgets.QWidget):
             if static_changed:
                 self.table.setRowHeight(row, 23)
         self._row_display_signatures = signatures
-        if selected_row >= 0 and self.table.currentRow() != selected_row:
+        if selected_row >= 0 and (
+            self.table.currentRow() != selected_row
+            or self.selected_symbol() != symbols[selected_row]
+        ):
             blocker = QtCore.QSignalBlocker(self.table)
+            self.table.setCurrentCell(selected_row, 1)
             self.table.selectRow(selected_row)
             del blocker
         elif selected_row < 0 and self.table.currentRow() >= 0:
             self.table.setCurrentCell(-1, -1)
             self.table.clearSelection()
+        for column in sorted(dirty_columns):
+            self.table.resizeColumnToContents(column)
 
     def apply_theme(self, theme: dict[str, str]) -> None:
         self._theme_revision += 1
         self.watchlist_header.apply_theme(theme)
+        self._pending_numeric_resizes.update((2, 3, 4))
         self.refresh()
 
 

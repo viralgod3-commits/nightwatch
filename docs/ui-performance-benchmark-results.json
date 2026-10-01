@@ -1,0 +1,258 @@
+{
+  "github_base": "369ef6d9164f23a4d113fbdf51a2bfce78c3e8b3",
+  "date": "2026-10-01",
+  "before": {
+    "source": "/workspace/scratch/9b71c1e514f6/nightwatch-ui-baseline-77da3df",
+    "environment": {
+      "python": "3.12.14",
+      "qt": "6.11.2",
+      "platform": "Linux-6.18.44-x86_64-with-glibc2.39",
+      "qt_platform": "offscreen",
+      "cpu_count": 9
+    },
+    "limits": "Synthetic warmed GUI callbacks; excludes live feeds, display presentation and GPU throughput.",
+    "watchlist": [
+      {
+        "symbols": 50,
+        "all_displayed_values_change": {
+          "samples": 12,
+          "median_ms": 104.428,
+          "p95_ms": 109.952,
+          "max_ms": 109.952
+        },
+        "column_widths": [
+          26,
+          214,
+          48,
+          56,
+          56
+        ]
+      },
+      {
+        "symbols": 200,
+        "all_displayed_values_change": {
+          "samples": 12,
+          "median_ms": 1600.988,
+          "p95_ms": 1669.422,
+          "max_ms": 1669.422
+        },
+        "column_widths": [
+          26,
+          214,
+          48,
+          56,
+          56
+        ]
+      }
+    ],
+    "overlays": [
+      {
+        "orders": 0,
+        "stable_commit": {
+          "samples": 500,
+          "median_ms": 0.048,
+          "p95_ms": 0.071,
+          "max_ms": 0.414
+        },
+        "pan_commit": {
+          "samples": 500,
+          "median_ms": 0.188,
+          "p95_ms": 0.274,
+          "max_ms": 1.376
+        }
+      },
+      {
+        "orders": 10,
+        "stable_commit": {
+          "samples": 500,
+          "median_ms": 1.375,
+          "p95_ms": 2.087,
+          "max_ms": 4.715
+        },
+        "pan_commit": {
+          "samples": 500,
+          "median_ms": 1.685,
+          "p95_ms": 2.541,
+          "max_ms": 3.458
+        }
+      },
+      {
+        "orders": 20,
+        "stable_commit": {
+          "samples": 500,
+          "median_ms": 2.874,
+          "p95_ms": 4.626,
+          "max_ms": 27.354
+        },
+        "pan_commit": {
+          "samples": 500,
+          "median_ms": 3.005,
+          "p95_ms": 3.862,
+          "max_ms": 9.281
+        }
+      }
+    ]
+  },
+  "after": {
+    "source": "/workspace/scratch/9b71c1e514f6/nightwatch-ui-performance-77da3df",
+    "environment": {
+      "python": "3.12.14",
+      "qt": "6.11.2",
+      "platform": "Linux-6.18.44-x86_64-with-glibc2.39",
+      "qt_platform": "offscreen",
+      "cpu_count": 9
+    },
+    "limits": "Synthetic warmed GUI callbacks; excludes live feeds, display presentation and GPU throughput.",
+    "watchlist": [
+      {
+        "symbols": 50,
+        "all_displayed_values_change": {
+          "samples": 12,
+          "median_ms": 2.991,
+          "p95_ms": 6.933,
+          "max_ms": 6.933
+        },
+        "column_widths": [
+          26,
+          214,
+          48,
+          56,
+          56
+        ]
+      },
+      {
+        "symbols": 200,
+        "all_displayed_values_change": {
+          "samples": 12,
+          "median_ms": 12.284,
+          "p95_ms": 28.825,
+          "max_ms": 28.825
+        },
+        "column_widths": [
+          26,
+          214,
+          48,
+          56,
+          56
+        ]
+      }
+    ],
+    "overlays": [
+      {
+        "orders": 0,
+        "stable_commit": {
+          "samples": 500,
+          "median_ms": 0.054,
+          "p95_ms": 0.089,
+          "max_ms": 0.266
+        },
+        "pan_commit": {
+          "samples": 500,
+          "median_ms": 0.208,
+          "p95_ms": 0.344,
+          "max_ms": 0.626
+        }
+      },
+      {
+        "orders": 10,
+        "stable_commit": {
+          "samples": 500,
+          "median_ms": 0.836,
+          "p95_ms": 1.15,
+          "max_ms": 2.32
+        },
+        "pan_commit": {
+          "samples": 500,
+          "median_ms": 1.037,
+          "p95_ms": 1.338,
+          "max_ms": 2.122
+        }
+      },
+      {
+        "orders": 20,
+        "stable_commit": {
+          "samples": 500,
+          "median_ms": 1.678,
+          "p95_ms": 2.298,
+          "max_ms": 3.462
+        },
+        "pan_commit": {
+          "samples": 500,
+          "median_ms": 1.928,
+          "p95_ms": 2.927,
+          "max_ms": 6.018
+        }
+      }
+    ]
+  },
+  "visuals": [
+    {
+      "file": "chart-linear.png",
+      "size": [
+        1920,
+        1000
+      ],
+      "pixel_sha256": "d904225e232f9a0aa8c1f3262906a14971b96225a39c92258ae7b95f8ab7699a",
+      "identical": true
+    },
+    {
+      "file": "chart-logarithmic.png",
+      "size": [
+        1920,
+        1000
+      ],
+      "pixel_sha256": "3742773e3fd6450aeb14dca9db0f311162c1dc3e8fe4b75dc44c973ed9eeb9b9",
+      "identical": true
+    },
+    {
+      "file": "chart-zoomed.png",
+      "size": [
+        1280,
+        800
+      ],
+      "pixel_sha256": "c77a62e6043af42af43fbb347ad8cfaabcf9b2bf7b6fb493dd1fa8dc18ce2d2e",
+      "identical": true
+    },
+    {
+      "file": "watchlist-200.png",
+      "size": [
+        420,
+        1000
+      ],
+      "pixel_sha256": "a756f20301543534546f8e0d98c5e452b6ec69f8c6538f50da7aed303cee6a14",
+      "identical": true
+    },
+    {
+      "file": "watchlist-50.png",
+      "size": [
+        420,
+        1000
+      ],
+      "pixel_sha256": "821668278cd5465f4e8fb96efa541ae7765b96534b6936685d0223189c17978e",
+      "identical": true
+    }
+  ],
+  "rail_snapshots_identical": true,
+  "tests": {
+    "passed": 167,
+    "failures": 0,
+    "errors": 0
+  },
+  "diagnostic_overhead": {
+    "software_counter_us_per_call_median": 0.1254,
+    "samples": 10,
+    "iterations_per_sample": 100000,
+    "native_gl_unmeasured": true
+  },
+  "publication": "Local only; no GitHub push",
+  "geometry_validation": {
+    "snapshots": 60,
+    "identical": true,
+    "scenarios": [
+      "linear",
+      "zoomed",
+      "logarithmic"
+    ],
+    "sha256": "76ae2fd61955d43e330e5452ea0a73e1fab353e49e94d2f13e96ce16e1753403"
+  }
+}
