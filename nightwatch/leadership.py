@@ -18,6 +18,7 @@ from PySide6 import QtCore, QtGui, QtWidgets
 from PySide6.QtCore import Qt, Signal
 from .models import Candle, safe_float
 from .chart.analysis import LatestJob, run_analysis
+from .research import WorkspaceHistory
 from .networking.binance import ApiTask
 from .utilities import (
     ElidedLabel,
@@ -325,8 +326,11 @@ class _LeaderAnalysis:
         return available + missing
 
 
-def _prepare_leaders(state):
+def _prepare_leaders(state, cached=None):
     model = _LeaderAnalysis(state)
+    if cached is not None:
+        model.metrics = cached["metrics"]
+        return {**cached, "ordered": model._ordered(), "dashboard": _prepare_dashboard(model)}
     end, hours = model.cursor, model.hours
     btc = model.series.get(BENCHMARK, {})
     model.metrics = {symbol: _metrics(model.series.get(symbol, {}), btc, end,
@@ -383,10 +387,10 @@ def _prepare_leaders(state):
     }
 
 
-def _workspace_analysis(function, state):
+def _workspace_analysis(function, state, histories=None):
 
 
-    return run_analysis(function, state)
+    return histories.analyze(function, state) if histories is not None else run_analysis(function, state)
 
 
 def _save_leaders_snapshot(db, name, state):
@@ -452,6 +456,7 @@ class LeadershipTimelineWidget(QtWidgets.QWidget):
         self._needs_clock = True
         self._coin_pixmaps: dict[str, QtGui.QPixmap] = {}
         self._analysis_serial = 0
+        self._history_transport = WorkspaceHistory()
         self._analysis_job = LatestJob(QtCore.QThreadPool.globalInstance(), self, priority=-1)
         self._analysis_job.ready.connect(self._analysis_ready)
         self._analysis_job.failed.connect(self._analysis_failed)
@@ -930,7 +935,7 @@ class LeadershipTimelineWidget(QtWidgets.QWidget):
         }
         self._analysis_job.submit(
             (self._analysis_view_key(), self._analysis_serial),
-            _workspace_analysis, _prepare_leaders, state,
+            _workspace_analysis, _prepare_leaders, state, self._history_transport,
         )
 
     @QtCore.Slot(object, object)
@@ -981,19 +986,42 @@ class LeadershipTimelineWidget(QtWidgets.QWidget):
             if self.table.columnCount() != len(headers):
                 self.table.setColumnCount(len(headers))
                 self.table.setHorizontalHeaderLabels(headers)
-            header = self.table.horizontalHeader()
-            header.setMinimumSectionSize(42)
-            fixed_widths = {0: 38, 1: 108, 2: 130, 3: 92, 4: 70, 5: 70, 6: 74, 7: 76, 8: 100, 9: 112}
-            for column in range(len(headers)):
-                if column in fixed_widths:
-                    header.setSectionResizeMode(column, QtWidgets.QHeaderView.ResizeMode.Fixed)
-                    self.table.setColumnWidth(column, fixed_widths[column])
-                else:
-                    header.setSectionResizeMode(column, QtWidgets.QHeaderView.ResizeMode.Stretch)
-            self.table.setRowCount(len(ordered))
-            self.row_symbols = ordered
+            if not getattr(self, "_leader_headers_configured", False):
+                header = self.table.horizontalHeader()
+                header.setMinimumSectionSize(42)
+                fixed_widths = {0: 38, 1: 108, 2: 130, 3: 92, 4: 70, 5: 70, 6: 74, 7: 76, 8: 100, 9: 112}
+                for column in range(len(headers)):
+                    if column in fixed_widths:
+                        header.setSectionResizeMode(column, QtWidgets.QHeaderView.ResizeMode.Fixed)
+                        self.table.setColumnWidth(column, fixed_widths[column])
+                    else:
+                        header.setSectionResizeMode(column, QtWidgets.QHeaderView.ResizeMode.Stretch)
+                self._leader_headers_configured = True
 
-            for row_index, symbol in enumerate(ordered):
+            # Keep each symbol's items and delegate data across rankings. Qt's
+            # native row sort moves the complete row, including its selection.
+            wanted = set(ordered)
+            seen = set()
+            for row in range(self.table.rowCount() - 1, -1, -1):
+                item = self.table.item(row, 1)
+                symbol = item.data(Qt.ItemDataRole.UserRole) if item is not None else None
+                if symbol not in wanted or symbol in seen:
+                    self.table.removeRow(row)
+                else:
+                    seen.add(symbol)
+            positions = {self.table.item(row, 1).data(Qt.ItemDataRole.UserRole): row
+                         for row in range(self.table.rowCount())}
+            for symbol in ordered:
+                if symbol not in positions:
+                    positions[symbol] = self.table.rowCount()
+                    self.table.insertRow(self.table.rowCount())
+            self.row_symbols = ordered
+            previous_rows = getattr(self, "_leader_row_cache", {})
+            current_rows = {}
+            theme_key = tuple(sorted(self.theme.items()))
+
+            for rank, symbol in enumerate(ordered, 1):
+                row_index = positions[symbol]
                 metrics = self.metrics.get(symbol, {})
                 name, category = self.identity(symbol)
                 state = metrics.get("state", "Waiting")
@@ -1001,11 +1029,31 @@ class LeadershipTimelineWidget(QtWidgets.QWidget):
                 live_ticker_price = safe_float(self.tickers.get(symbol, {}).get("c"), 0.0) if self.replay.value() == 24 else 0.0
                 price = live_ticker_price if live_ticker_price > 0 else metrics.get("price")
                 spark = prepared["sparks"].get(symbol, [])
+                price_text = _price(price)
+                previous = previous_rows.get(symbol)
+                rank_item = self.table.item(row_index, 0)
+                if not isinstance(rank_item, _LeadershipRankItem):
+                    rank_item = _LeadershipRankItem(str(rank))
+                    self.table.setItem(row_index, 0, rank_item)
+                elif rank_item.text() != str(rank):
+                    rank_item.setText(str(rank))
+                unchanged = (previous is not None
+                             and previous[0][0] == name and previous[0][1] == category
+                             and previous[0][2] == metrics and previous[0][3] == spark
+                             and previous[0][4] == theme_key)
+                if unchanged:
+                    current_rows[symbol] = previous if previous[1] == price_text else (previous[0], price_text)
+                    if previous[1] != price_text:
+                        self.table.item(row_index, 3).setText(price_text)
+                    continue
+                # Snapshot only changed rows. Rebuilding thousands of temporary
+                # metric tuples on unchanged commits also creates GC pressure.
+                current_rows[symbol] = ((name, category, dict(metrics), list(spark), theme_key), price_text)
                 values = [
-                    str(row_index + 1),
+                    str(rank),
                     symbol.removesuffix("USDT"),
                     name,
-                    _price(price),
+                    price_text,
                     _pct(metrics.get("usd1"), 1),
                     _pct(metrics.get("usd4"), 1),
                     _pct(metrics.get("usd24"), 1),
@@ -1053,6 +1101,10 @@ class LeadershipTimelineWidget(QtWidgets.QWidget):
                         item.setToolTip(f"{symbol} · {name} · {category}\nDouble-click to open chart\n4H vs BTC: {_pct(metrics.get('rs4'))} · 24H vs BTC: {_pct(metrics.get('rs24'))}")
                     item.setData(DETAIL_ROLE, detail)
                     item.setForeground(QtGui.QColor(detail.get("foreground", self.theme.get("text", "#DFE5EE"))))
+
+            if list(positions) != ordered:
+                self.table.sortItems(0, Qt.SortOrder.AscendingOrder)
+            self._leader_row_cache = current_rows
 
         finally:
             self.table.setUpdatesEnabled(True)
@@ -1563,6 +1615,11 @@ class LeadershipCellDelegate(QtWidgets.QStyledItemDelegate):
 class LeadershipHistoryTable(QtWidgets.QTableWidget):
     def paintEvent(self, event):
         super().paintEvent(event)
+
+
+class _LeadershipRankItem(QtWidgets.QTableWidgetItem):
+    def __lt__(self, other):
+        return int(self.text()) < int(other.text())
 
 
 class LeadershipTransport(QtWidgets.QPushButton):
@@ -2904,6 +2961,8 @@ def _sector_overview_classify(symbol: str, metadata: dict[str, Any] | None) -> s
     if underlying:
         tags.append(str(underlying).lower())
     joined = " | ".join(tags)
+    if not joined:
+        return None
     for sector, keywords in _SECTOR_OVERVIEW_TAG_SECTOR_RULES:
         if any(re.search(r"(?<![a-z0-9])" + re.escape(keyword) + r"(?![a-z0-9])", joined) for keyword in keywords):
             return sector
@@ -3123,9 +3182,12 @@ class _SectorOverviewSparkline(QtWidgets.QWidget):
         self.setMinimumHeight(34)
 
     def set_values(self, values: list[float | None], color: str | None = None) -> None:
-        self.values = list(values)
-        if color:
-            self.color = QtGui.QColor(color)
+        next_values = list(values)
+        next_color = QtGui.QColor(color) if color else self.color
+        if self.values == next_values and self.color == next_color:
+            return
+        self.values = next_values
+        self.color = next_color
         self.update()
 
     def paintEvent(self, event: QtGui.QPaintEvent) -> None:
@@ -3689,8 +3751,10 @@ class _SectorAnalysis:
         return above, covered
 
 
-def _prepare_sectors(state):
+def _prepare_sectors(state, cached=None):
     model = _SectorAnalysis(state)
+    if cached is not None:
+        return {**cached, "above": model._above_20d(cached["ma20"])}
     metrics = model._all_sector_metrics(model.timeframe)
     performances = {frame: model._sector_performances(frame)
                     for frame in _SECTOR_OVERVIEW_TIMEFRAMES}
@@ -3752,6 +3816,7 @@ class SectorOverviewWidget(QtWidgets.QWidget):
         self.cancel = threading.Event()
         self._analysis_serial = 0
         self._analysis_job = LatestJob(QtCore.QThreadPool.globalInstance(), self, priority=-1)
+        self._history_transport = WorkspaceHistory()
         self._analysis_job.ready.connect(self._analysis_ready)
         self._analysis_job.failed.connect(self._analysis_failed)
         self._prepared_analysis = {}
@@ -4238,7 +4303,7 @@ class SectorOverviewWidget(QtWidgets.QWidget):
                      tickers={symbol: {"c": row.get("c")} for symbol, row in self.tickers.items()})
         self._analysis_job.submit(
             (self._analysis_view_key(), self._analysis_serial),
-            _workspace_analysis, _prepare_sectors, state,
+            _workspace_analysis, _prepare_sectors, state, self._history_transport,
         )
 
     @QtCore.Slot(object, object)
@@ -4323,19 +4388,29 @@ class SectorOverviewWidget(QtWidgets.QWidget):
             key=performance_key,
         )
         self.table.setRowCount(len(ordered))
+        value_font = typography_font(TextRole.TABLE_VALUE)
+
+        def cell(row, column, text, color=None):
+            item = self.table.item(row, column)
+            if item is None:
+                item = QtWidgets.QTableWidgetItem()
+                if column:
+                    item.setFont(value_font)
+                    item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                self.table.setItem(row, column, item)
+            if item.text() != text:
+                item.setText(text)
+            ink = QtGui.QColor(color or self.theme.get("text", "#DFE5EE"))
+            if item.foreground().color() != ink:
+                item.setForeground(ink)
+
         for row, sector in enumerate(ordered):
             sector_metrics = metrics[sector]
-            name = QtWidgets.QTableWidgetItem(sector)
-            name.setForeground(QtGui.QColor(_sector_overview_sector_color(sector, self.theme, for_text=True)))
-            self.table.setItem(row, 0, name)
+            cell(row, 0, sector, _sector_overview_sector_color(sector, self.theme, for_text=True))
             for column, timeframe in enumerate(("15m", "1h", "4h", "1d"), 1):
                 value = performances[timeframe].get(sector)
-                item = QtWidgets.QTableWidgetItem(_sector_overview_pct(value, 1))
-                item.setFont(typography_font(TextRole.TABLE_VALUE))
-                item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-                if _sector_overview_finite(value):
-                    item.setForeground(QtGui.QColor(self.theme.get("green", "#4DDFA4") if value >= 0 else self.theme.get("red", "#FF7A85")))
-                self.table.setItem(row, column, item)
+                color = (self.theme.get("green", "#4DDFA4") if value >= 0 else self.theme.get("red", "#FF7A85")) if _sector_overview_finite(value) else None
+                cell(row, column, _sector_overview_pct(value, 1), color)
             current = sector_metrics.get("volume_share")
             previous = sector_metrics.get("previous_volume_share")
             share_text = (
@@ -4343,19 +4418,15 @@ class SectorOverviewWidget(QtWidgets.QWidget):
                 if _sector_overview_finite(current) and _sector_overview_finite(previous)
                 else "—"
             )
-            share_item = QtWidgets.QTableWidgetItem(share_text)
-            share_item.setFont(typography_font(TextRole.TABLE_VALUE))
-            share_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-            self.table.setItem(row, 5, share_item)
-            out_item = QtWidgets.QTableWidgetItem(f"{sector_metrics.get('outperformers', 0)} / {sector_metrics.get('covered', 0)}")
-            out_item.setFont(typography_font(TextRole.TABLE_VALUE))
-            out_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-            self.table.setItem(row, 6, out_item)
-            spark = _SectorOverviewSparkline(_SECTOR_OVERVIEW_SECTOR_COLORS[sector])
-            spark.set_values(sector_metrics.get("trend", []))
-            spark.setMinimumHeight(28)
-            self.table.setCellWidget(row, 7, spark)
-            self.table.setRowHeight(row, 40)
+            cell(row, 5, share_text)
+            cell(row, 6, f"{sector_metrics.get('outperformers', 0)} / {sector_metrics.get('covered', 0)}")
+            spark = self.table.cellWidget(row, 7)
+            if spark is None:
+                spark = _SectorOverviewSparkline(_SECTOR_OVERVIEW_SECTOR_COLORS[sector])
+                spark.setMinimumHeight(28)
+                self.table.setCellWidget(row, 7, spark)
+                self.table.setRowHeight(row, 40)
+            spark.set_values(sector_metrics.get("trend", []), _SECTOR_OVERVIEW_SECTOR_COLORS[sector])
 
     def _select_sector(self, sector: str) -> None:
         if sector == self.selected_sector:
@@ -5457,7 +5528,7 @@ class RotationScannerWidget(LeadershipTimelineWidget):
         state = dict(symbols=tuple(self.symbols), series=dict(self.series),
                      spot_series=dict(self.spot_series), cursor=self.cursor_end(), hours=self.span.currentData() or 4)
         self._analysis_job.submit((self._analysis_view_key(), self._analysis_serial),
-                                  _workspace_analysis, _prepare_rotation, state)
+                                  _workspace_analysis, _prepare_rotation, state, self._history_transport)
 
     def _render(self, prepared):
         self.metrics = prepared["metrics"]

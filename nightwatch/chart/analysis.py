@@ -212,7 +212,10 @@ def run_analysis(function, *args, cache_affinity=False):
         if _closed:
             raise RuntimeError("Chart analysis is shutting down")
         count = analysis_worker_count()
-        lane = "cached" if cache_affinity and count > 1 else "general"
+        # Keep resident research out of the chart-indicator affinity lane while
+        # respecting one total CPU budget. Small hosts share an affinity worker.
+        lane = ("research" if cache_affinity == "research" and count > 2 else
+                "cached" if cache_affinity and count > 1 else "general")
         executor = _executors.get(lane)
         if executor is None:
 
@@ -220,12 +223,20 @@ def run_analysis(function, *args, cache_affinity=False):
 
 
             executor = ProcessPoolExecutor(
-                max_workers=1 if lane == "cached" else max(1, count - 1),
+                max_workers=1 if lane != "general" else max(1, count - min(2, count - 1)),
                 mp_context=multiprocessing.get_context("spawn"),
                 initializer=_initialize_analysis_worker,
             )
             _executors[lane] = executor
-        future = executor.submit(function, *args)
+        try:
+            future = executor.submit(function, *args)
+        except BrokenProcessPool:
+            # A worker can die while idle, so submit itself may fail before a
+            # future exists. Retire that lane just as for a failed running job.
+            if _executors.get(lane) is executor:
+                _executors.pop(lane)
+            executor.shutdown(wait=False, cancel_futures=True)
+            raise
     try:
         return future.result()
     except BrokenProcessPool:

@@ -3577,7 +3577,70 @@ def _account_key(payload):
     )
 
 
+def _account_key_is_stable(key):
+    """Whether a key can safely identify one card across snapshots."""
+    if not (
+        isinstance(key, tuple)
+        and len(key) == 4
+        and all(isinstance(part, str) for part in key)
+        and bool(key[0].strip())
+    ):
+        return False
+    # Position rows have no order ID; symbol + positionSide (and source when
+    # present) is their stable exchange identity.
+    position_key = bool(key[1].strip()) and key[2].upper() in {"", "POSITION"}
+    return bool(key[3].strip()) or position_key
+
+
+def _same_account_card_factory(previous, current):
+    if previous is current:
+        return True
+    # Bound methods are recreated on attribute access, but their target and
+    # implementation still identify the same factory and signal wiring.
+    previous_self = getattr(previous, "__self__", None)
+    current_self = getattr(current, "__self__", None)
+    previous_function = getattr(previous, "__func__", None)
+    current_function = getattr(current, "__func__", None)
+    return (
+        previous_self is not None
+        and previous_self is current_self
+        and previous_function is not None
+        and previous_function is current_function
+    )
+
+
+_ACCOUNT_CARD_CONTEXT_UNSET = object()
+
+
+def _same_account_card_context(previous, current):
+    if previous is _ACCOUNT_CARD_CONTEXT_UNSET or current is _ACCOUNT_CARD_CONTEXT_UNSET:
+        return False
+    if type(previous) is type(current) and isinstance(
+        previous, (str, int, float, bool, bytes, type(None))
+    ):
+        return previous == current
+    if isinstance(previous, tuple) and isinstance(current, tuple):
+        return len(previous) == len(current) and all(
+            _same_account_card_context(left, right)
+            for left, right in zip(previous, current)
+        )
+    return False
+
+
 _ACCOUNT_SORT_ROLE = int(Qt.ItemDataRole.UserRole) + 51
+
+
+class _AccountCardOrderItem(QtWidgets.QListWidgetItem):
+    """List item that sorts by a numeric, per-refresh row rank."""
+
+    def __init__(self, rank=0):
+        super().__init__()
+        self._account_order_rank = int(rank)
+
+    def __lt__(self, other):
+        if isinstance(other, _AccountCardOrderItem):
+            return self._account_order_rank < other._account_order_rank
+        return super().__lt__(other)
 
 
 def _table_record_key(payload):
@@ -3630,31 +3693,190 @@ class AccountDataTable(QtWidgets.QTableWidget):
 
 
 def _populate_account_cards(
-    view, payloads, factory, empty_text, *, fingerprint=None, update_existing=None
+    view, payloads, factory, empty_text, *, fingerprint=None, update_existing=None,
+    update_context=_ACCOUNT_CARD_CONTEXT_UNSET,
 ):
     payloads = [dict(payload) for payload in payloads]
+    keys = [_account_key(payload) for payload in payloads]
     structure = (
         str(empty_text),
-        tuple(_account_key(payload) for payload in payloads),
+        tuple(keys),
     )
     # Live prices, partial fills and statuses change card content, not identity.
     # Keep selection, close-size choices, scroll position and signal connections.
-    if getattr(view, "_cards_fingerprint", None) == structure:
+    if (
+        getattr(view, "_cards_fingerprint", None) == structure
+        and _same_account_card_factory(getattr(view, "_cards_factory", None), factory)
+    ):
+        # Skip card work only for an explicitly supplied, unchanged context;
+        # callbacks may depend on non-payload inputs such as the selected symbol.
+        same_context = _same_account_card_context(
+            getattr(view, "_cards_update_context", _ACCOUNT_CARD_CONTEXT_UNSET),
+            update_context,
+        )
         if payloads and update_existing is not None and view.count() == len(payloads):
             for index, payload in enumerate(payloads):
                 item = view.item(index)
+                previous_payload = item.data(Qt.ItemDataRole.UserRole)
+                if same_context and previous_payload == payload:
+                    continue
                 item.setData(Qt.ItemDataRole.UserRole, dict(payload))
                 card = view.itemWidget(item)
                 update_existing(card, dict(payload))
                 required = max(card.minimumSizeHint().height(), card.sizeHint().height()) + 2
                 if item.sizeHint().height() != required:
                     item.setSizeHint(QtCore.QSize(0, required))
+        view._cards_update_context = update_context
         return False
 
     previous = view.currentItem()
     previous_payload = previous.data(Qt.ItemDataRole.UserRole) if previous else None
     selected_key = _account_key(previous_payload) if isinstance(previous_payload, dict) else None
     scroll = view.verticalScrollBar().value()
+
+    # QListWidget's internal list model can move rows while preserving the
+    # persistent index widgets installed by setItemWidget. Reuse is safe only
+    # when both snapshots give every row a unique, usable identity and the
+    # factory is unchanged; otherwise retain the original clear/rebuild path.
+    old_rows = {}
+    old_keys = []
+    can_reconcile = (
+        bool(payloads)
+        and factory is not None
+        and update_existing is not None
+        and _same_account_card_factory(getattr(view, "_cards_factory", None), factory)
+        and len(keys) == len(set(keys))
+        and all(_account_key_is_stable(key) for key in keys)
+        and view.count() > 0
+    )
+    if can_reconcile:
+        for index in range(view.count()):
+            item = view.item(index)
+            payload = item.data(Qt.ItemDataRole.UserRole)
+            card = view.itemWidget(item)
+            if not isinstance(payload, dict) or card is None:
+                can_reconcile = False
+                break
+            key = _account_key(payload)
+            if not _account_key_is_stable(key) or key in old_rows:
+                can_reconcile = False
+                break
+            old_rows[key] = (item, card)
+            old_keys.append(key)
+        if len(old_keys) != view.count() or not set(old_keys).intersection(keys):
+            can_reconcile = False
+
+    if can_reconcile:
+        updates_enabled = view.updatesEnabled()
+        view.setUpdatesEnabled(False)
+        reconciled = False
+        try:
+            new_by_key = dict(zip(keys, payloads))
+            same_context = _same_account_card_context(
+                getattr(view, "_cards_update_context", _ACCOUNT_CARD_CONTEXT_UNSET),
+                update_context,
+            )
+            # Update surviving rows before editing the model. If a factory or
+            # updater is incompatible, the caller can still rebuild cleanly.
+            for key in keys:
+                existing = old_rows.get(key)
+                if existing is None:
+                    continue
+                item, card = existing
+                payload = new_by_key[key]
+                if (
+                    same_context
+                    and item.data(Qt.ItemDataRole.UserRole) == payload
+                ):
+                    continue
+                update_existing(card, dict(payload))
+                item.setData(Qt.ItemDataRole.UserRole, dict(payload))
+                required = max(card.minimumSizeHint().height(), card.sizeHint().height()) + 2
+                if item.sizeHint().height() != required:
+                    item.setSizeHint(QtCore.QSize(0, required))
+
+            model = view.model()
+            model_parent = QtCore.QModelIndex()
+            removed = [index for index, key in enumerate(old_keys) if key not in new_by_key]
+            # Remove contiguous runs from the bottom so surviving row indexes
+            # remain valid. QListWidget's model schedules removed index widgets
+            # for deletion and reparents no surviving cards.
+            end = len(removed)
+            while end:
+                start_pos = end - 1
+                while start_pos > 0 and removed[start_pos - 1] == removed[start_pos] - 1:
+                    start_pos -= 1
+                first = removed[start_pos]
+                count = end - start_pos
+                if not model.removeRows(first, count, model_parent):
+                    raise RuntimeError("QListWidget model refused row removal")
+                end = start_pos
+
+            live_rows = {key: row for key, row in old_rows.items() if key in new_by_key}
+            desired_rank = {key: rank for rank, key in enumerate(keys)}
+            for key, payload in zip(keys, payloads):
+                if key in live_rows:
+                    continue
+                item = _AccountCardOrderItem(desired_rank[key])
+                item.setData(Qt.ItemDataRole.UserRole, dict(payload))
+                card = factory(dict(payload))
+                item.setSizeHint(
+                    QtCore.QSize(0, max(card.minimumSizeHint().height(), card.sizeHint().height()) + 2)
+                )
+                view.addItem(item)
+                view.setItemWidget(item, card)
+                if hasattr(card, "selected_requested"):
+                    card.selected_requested.connect(lambda item=item: view.setCurrentItem(item))
+                live_rows[key] = (item, card)
+
+            live_keys = [
+                _account_key(view.item(index).data(Qt.ItemDataRole.UserRole))
+                for index in range(view.count())
+            ]
+            if live_keys != keys:
+                if all(isinstance(live_rows[key][0], _AccountCardOrderItem) for key in keys):
+                    # QListWidget's native sort preserves persistent indexes and
+                    # their index widgets. Unique integer ranks express the
+                    # incoming order with one model sort instead of many row moves.
+                    for rank, key in enumerate(keys):
+                        live_rows[key][0]._account_order_rank = rank
+                    view.sortItems(Qt.SortOrder.AscendingOrder)
+                    live_keys = [
+                        _account_key(view.item(index).data(Qt.ItemDataRole.UserRole))
+                        for index in range(view.count())
+                    ]
+
+                if live_keys != keys:
+                    for target, key in enumerate(keys):
+                        source = live_keys.index(key, target)
+                        if source == target:
+                            continue
+                        # destinationChild uses pre-move coordinates. Moving a
+                        # later row to target places it directly at that index.
+                        if not model.moveRows(model_parent, source, 1, model_parent, target):
+                            raise RuntimeError("QListWidget model refused row move")
+                        live_keys.insert(target, live_keys.pop(source))
+
+            selected_item = live_rows.get(selected_key, (None, None))[0]
+            if selected_item is None and view.count():
+                selected_item = view.item(0)
+            if selected_item is not None and view.currentItem() is not selected_item:
+                view.setCurrentItem(selected_item)
+            view.verticalScrollBar().setValue(scroll)
+            view._cards_fingerprint = structure
+            view._cards_factory = factory
+            view._cards_update_context = update_context
+            reconciled = True
+        except Exception:
+            # A Qt binding/model variation or a custom updater may not support
+            # safe reuse. A full rebuild below remains the correctness fallback.
+            reconciled = False
+        finally:
+            view.setUpdatesEnabled(updates_enabled)
+        if reconciled:
+            return True
+
+    updates_enabled = view.updatesEnabled()
     view.setUpdatesEnabled(False)
     try:
         view.clear()
@@ -3673,10 +3895,12 @@ def _populate_account_cards(
             view.addItem(item)
             view.setItemWidget(item, card)
             view._cards_fingerprint = structure
+            view._cards_factory = factory
+            view._cards_update_context = update_context
             return True
         selection = None
-        for payload in payloads:
-            item = QtWidgets.QListWidgetItem()
+        for rank, payload in enumerate(payloads):
+            item = _AccountCardOrderItem(rank)
             item.setData(Qt.ItemDataRole.UserRole, dict(payload))
             card = factory(dict(payload))
             item.setSizeHint(QtCore.QSize(0, max(card.minimumSizeHint().height(), card.sizeHint().height()) + 2))
@@ -3689,9 +3913,11 @@ def _populate_account_cards(
         view.setCurrentItem(selection or view.item(0))
         view.verticalScrollBar().setValue(scroll)
         view._cards_fingerprint = structure
+        view._cards_factory = factory
+        view._cards_update_context = update_context
         return True
     finally:
-        view.setUpdatesEnabled(True)
+        view.setUpdatesEnabled(updates_enabled)
 
 
 def _populate_fill_cards(view: QtWidgets.QListWidget, snapshot: dict[str, Any],
@@ -3704,6 +3930,7 @@ def _populate_fill_cards(view: QtWidgets.QListWidget, snapshot: dict[str, Any],
         view, payloads, FillAccountCard,
         f"No fills for {symbol}" if connected else "Connect API credentials to view fills",
         update_existing=lambda card, payload: card.update_payload(payload),
+        update_context=None,
     )
 
 
@@ -4211,7 +4438,8 @@ class PositionDeskView(QtWidgets.QFrame):
         blocker = QtCore.QSignalBlocker(self.positions)
         _populate_account_cards(self.positions, payloads, self._position_factory,
                                 "No open positions" if connected else "Connect API credentials to view positions",
-                                update_existing=lambda card, payload: card.update_payload(payload, symbol))
+                                update_existing=lambda card, payload: card.update_payload(payload, symbol),
+                                update_context=symbol)
         del blocker
         self.positions._schedule_card_heights()
         _set_text_if_changed(self.position_toggle, f"Positions {len(payloads)}")
@@ -4230,7 +4458,8 @@ class PositionDeskView(QtWidgets.QFrame):
     def set_orders(self, payloads, symbol, connected):
         _populate_account_cards(self.orders, payloads, self._order_factory,
                                 "No working orders" if connected else "Connect API credentials to view orders",
-                                update_existing=lambda card, payload: card.update_payload(payload, symbol))
+                                update_existing=lambda card, payload: card.update_payload(payload, symbol),
+                                update_context=symbol)
         self.orders._schedule_card_heights()
         _set_text_if_changed(self.working_title, f"WORKING ORDERS {len(payloads)}")
         _set_text_if_changed(self.cancel_button, f"Cancel {symbol} orders")

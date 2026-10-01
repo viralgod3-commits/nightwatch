@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import math
 import time
+import weakref
 from collections import OrderedDict, deque
 from dataclasses import dataclass, field, replace
 from typing import Any
@@ -3555,6 +3556,180 @@ class _OrderFlowAnalysisProcess:
         self.runtime.shutdown()
 
 
+class _OrderFlowPresentationMailbox(QtCore.QObject):
+    """Latest-value bridge from the relay thread to the GUI event queue.
+
+    The analysis process can produce snapshots faster than the GUI consumes
+    them.  Keep one value per presentation signal and post one GUI wakeup while
+    any values are waiting.  Ordered inputs and failures do not pass through a
+    lossy queue.
+    """
+
+    wake = QtCore.Signal()
+    MAX_FAILURES_PER_DRAIN = 32
+    PRESENTATION_SIGNALS = frozenset(
+        {"snapshot_ready", "microstructure_ready", "diagnostic_ready"}
+    )
+
+    def __init__(self, runtime: "OrderFlowRuntime") -> None:
+        super().__init__()
+        self._runtime = weakref.ref(runtime)
+        self._lock = threading.Lock()
+        self._generation = 0
+        self._sequence = 0
+        self._latest: dict[str, tuple[int, int, object]] = {}
+        self._failures: deque[tuple[int, int, str]] = deque()
+        self._wake_pending = False
+        self._closed = False
+        self.wakeups_posted = 0
+        self.coalesced_counts = {name: 0 for name in self.PRESENTATION_SIGNALS}
+        self.emitted_counts = {
+            **{name: 0 for name in self.PRESENTATION_SIGNALS},
+            "failed": 0,
+        }
+        self.max_deliveries_per_drain = 0
+
+        app = QtCore.QCoreApplication.instance()
+        gui_thread = app.thread() if app is not None else runtime.thread()
+        if self.thread() != gui_thread:
+            self.moveToThread(gui_thread)
+        self.wake.connect(self._drain, Qt.ConnectionType.QueuedConnection)
+        runtime.destroyed.connect(
+            self._on_runtime_destroyed, Qt.ConnectionType.QueuedConnection
+        )
+
+    def set_generation(self, generation: int) -> None:
+        """Discard stale presentation values while retaining queued failures."""
+        with self._lock:
+            self._generation = int(generation)
+            self._latest.clear()
+
+    def publish(self, name: str, generation: int, value: object) -> bool:
+        """Store a derived value and queue at most one GUI wakeup."""
+        if name not in self.PRESENTATION_SIGNALS and name != "failed":
+            return False
+        should_wake = False
+        with self._lock:
+            if self._closed:
+                return False
+            generation = int(generation)
+            if name in self.PRESENTATION_SIGNALS and generation != self._generation:
+                return False
+            self._sequence += 1
+            event = (self._sequence, generation, value)
+            if name == "failed":
+                self._failures.append((event[0], event[1], str(value)))
+            else:
+                if name in self._latest:
+                    self.coalesced_counts[name] += 1
+                self._latest[name] = event
+            if not self._wake_pending:
+                self._wake_pending = True
+                self.wakeups_posted += 1
+                should_wake = True
+        if should_wake:
+            try:
+                self.wake.emit()
+            except RuntimeError:
+                with self._lock:
+                    self._wake_pending = False
+                    self._closed = True
+                return False
+        return True
+
+    def close(self) -> None:
+        """Stop accepting presentation values; allow already queued failures through."""
+        with self._lock:
+            self._closed = True
+            self._latest.clear()
+
+    @QtCore.Slot()
+    def _on_runtime_destroyed(self) -> None:
+        """Release the GUI-owned helper after its runtime has actually died."""
+        with self._lock:
+            self._closed = True
+            self._latest.clear()
+            self._failures.clear()
+            self._wake_pending = False
+        self.deleteLater()
+
+    @QtCore.Slot()
+    def _drain(self) -> None:
+        with self._lock:
+            failures = [
+                self._failures.popleft()
+                for _ in range(min(len(self._failures), self.MAX_FAILURES_PER_DRAIN))
+            ]
+            failure_boundary = failures[-1][0] if self._failures and failures else math.inf
+            events = [
+                (sequence, "failed", generation, value)
+                for sequence, generation, value in failures
+            ]
+            for name, (sequence, generation, value) in tuple(self._latest.items()):
+                if sequence <= failure_boundary:
+                    events.append((sequence, name, generation, value))
+                    del self._latest[name]
+
+        runtime = self._runtime()
+        if runtime is None:
+            with self._lock:
+                self._closed = True
+                self._latest.clear()
+                self._failures.clear()
+                self._wake_pending = False
+            return
+        emitted_this_drain = 0
+        for _sequence, name, generation, value in sorted(events):
+            if name != "failed":
+                with self._lock:
+                    if self._closed or generation != self._generation:
+                        continue
+            try:
+                signal = getattr(runtime, name, None)
+                if signal is not None:
+                    signal.emit(generation, value)
+            except RuntimeError:
+                # The worker QObject may be deleted as its QThread stops while
+                # this GUI-owned wakeup is already in flight.
+                with self._lock:
+                    self._closed = True
+                    self._latest.clear()
+                    self._failures.clear()
+                    self._wake_pending = False
+                return
+            if signal is None:
+                continue
+            with self._lock:
+                self.emitted_counts[name] += 1
+            emitted_this_drain += 1
+
+        with self._lock:
+            self.max_deliveries_per_drain = max(
+                self.max_deliveries_per_drain, emitted_this_drain
+            )
+
+        should_wake = False
+        with self._lock:
+            if self._closed:
+                self._latest.clear()
+            waiting = bool(self._latest or self._failures)
+            if waiting:
+                # Keep the token held across the next posted wakeup. Producers
+                # can replace values while that wakeup is queued, but cannot
+                # add another event to the GUI queue.
+                should_wake = True
+                self.wakeups_posted += 1
+            else:
+                self._wake_pending = False
+        if should_wake:
+            try:
+                self.wake.emit()
+            except RuntimeError:
+                with self._lock:
+                    self._wake_pending = False
+                    self._closed = True
+
+
 class OrderFlowRuntime(QtCore.QObject):
     """Qt-compatible ingress relay for an isolated, lossless analysis process.
 
@@ -3589,6 +3764,11 @@ class OrderFlowRuntime(QtCore.QObject):
         self._restart_timer = QtCore.QTimer(self)
         self._restart_timer.setSingleShot(True)
         self._restart_timer.timeout.connect(self._restart)
+        # Construct this before MainWindow moves the runtime to its worker
+        # QThread.  The mailbox itself remains on the QApplication thread and
+        # is the only wakeup path for the derived presentation streams.
+        self._presentation_mailbox = _OrderFlowPresentationMailbox(self)
+        self._presentation_mailbox.set_generation(self._generation)
         self._link = _OrderBookProcessLink(_OrderFlowAnalysisProcess, options, self, ordered=True)
         self._link.ready.connect(self._deliver)
         self._link.failed.connect(self._failed)
@@ -3604,7 +3784,13 @@ class OrderFlowRuntime(QtCore.QObject):
         try:
             for name, generation, value in result['events']:
                 if generation == self._generation:
-                    getattr(self, name).emit(generation, value)
+                    if (
+                        name in _OrderFlowPresentationMailbox.PRESENTATION_SIGNALS
+                        or name == "failed"
+                    ):
+                        self._presentation_mailbox.publish(name, generation, value)
+                    else:
+                        getattr(self, name).emit(generation, value)
         finally:
             self._link.consumed()
 
@@ -3617,7 +3803,7 @@ class OrderFlowRuntime(QtCore.QObject):
         self._restart_attempts = self._restart_attempts + 1 if time.monotonic() - self._last_restart_mono < 60 else 1
         self._last_restart_mono = time.monotonic()
         self._restart_timer.start(min(30_000, 500 * 2 ** min(self._restart_attempts - 1, 6)))
-        self.failed.emit(self._generation, message)
+        self._presentation_mailbox.publish("failed", self._generation, message)
 
     @QtCore.Slot()
     def _restart(self):
@@ -3639,6 +3825,7 @@ class OrderFlowRuntime(QtCore.QObject):
     @QtCore.Slot(int, str, float, float)
     def reset_model(self, generation, symbol, tick_size, quote_volume):
         self._generation = int(generation)
+        self._presentation_mailbox.set_generation(self._generation)
         self._reset_args = (generation, symbol, tick_size, quote_volume)
         self._post('reset_model', generation, symbol, tick_size, quote_volume)
 
@@ -3680,4 +3867,5 @@ class OrderFlowRuntime(QtCore.QObject):
 
     def stop_transport(self):
         self._stopping = True
+        self._presentation_mailbox.close()
         self._link.close()
