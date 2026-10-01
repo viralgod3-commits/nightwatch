@@ -1320,9 +1320,9 @@ class MetricCard(QtWidgets.QFrame):
         )
         if compact:
             self.setProperty("instrumentClickable", not self.identity)
-        layout = QtWidgets.QVBoxLayout(self)
+        layout = (QtWidgets.QHBoxLayout if self.identity else QtWidgets.QVBoxLayout)(self)
         layout.setContentsMargins(12 if compact else 5, 5, 12 if compact else 5, 5)
-        layout.setSpacing(1 if compact else 2)
+        layout.setSpacing(12 if self.identity else 1 if compact else 2)
 
         self.title = (
             QtWidgets.QLabel(title.upper())
@@ -1404,9 +1404,9 @@ class MetricCard(QtWidgets.QFrame):
         if self.compact:
             margins = self.layout().contentsMargins()
             width = max(COMPACT_IDENTITY_WIDTH,
-                        max(self.title.fontMetrics().horizontalAdvance(self.title.text()),
-                            self.value.fontMetrics().horizontalAdvance(self.value.text()))
-                        + margins.left() + margins.right() + 4)
+                        self.title.fontMetrics().horizontalAdvance(self.title.text())
+                        + self.value.fontMetrics().horizontalAdvance(self.value.text())
+                        + self.layout().spacing() + margins.left() + margins.right() + 4)
             if self.property("instrumentFlexOwned"):
                 if self.width() != width or self.minimumWidth() != width:
                     self.setFixedWidth(width)

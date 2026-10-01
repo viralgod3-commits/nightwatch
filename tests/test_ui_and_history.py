@@ -341,6 +341,8 @@ def test_market_bar_keeps_padded_groups_and_click_targets(qapp, monkeypatch, int
     assert opened == ['volume', 'oi', 'long_short', 'funding']
     identity = bar.identity_control
     assert identity.value.width() >= identity.value.fontMetrics().horizontalAdvance(identity.value.text())
+    assert identity.title.geometry().right() < identity.value.geometry().left()
+    assert abs(identity.title.geometry().center().y() - identity.value.geometry().center().y()) <= 1
     assert bar.timeframes.height() < bar.height()
     assert all(button.height() == 28 for button in bar.timeframes._buttons)
     assert all(divider.height() < bar.height() for divider in bar.metric_separators)
@@ -349,7 +351,8 @@ def test_market_bar_keeps_padded_groups_and_click_targets(qapp, monkeypatch, int
         qapp.processEvents()
         visible = [card for card in bar.metric_controls if card.isVisible()]
         assert all(divider.isVisible() == card.isVisible() for divider, card in zip(bar.metric_separators, bar.metric_controls))
-        assert max(card.width() for card in visible) - min(card.width() for card in visible) <= 1
+        if visible:
+            assert max(card.width() for card in visible) - min(card.width() for card in visible) <= 1
     assert all(card.isVisible() for card in bar.metric_controls)
     bar.close()
     bar.deleteLater()
