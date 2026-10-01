@@ -1,7 +1,7 @@
 from types import SimpleNamespace
 
 import pytest
-from PySide6 import QtCore, QtWidgets
+from PySide6 import QtCore, QtGui, QtWidgets
 from PySide6.QtCore import Qt
 
 from nightwatch.models import Candle
@@ -218,3 +218,140 @@ def test_dom_process_resolves_the_same_font_root(qapp, tmp_path, monkeypatch):
     monkeypatch.setattr(orderbook_ui, '_DomRasterWorkerCanvas', lambda theme: None)
     orderbook_ui._DomRasterProcess({'dpi': 96, 'theme': {}})
     assert seen == [str(Path(orderbook_ui.__file__).resolve().parents[1])]
+
+
+@pytest.mark.parametrize('stored,expected', [
+    (None, ('1m', '5m', '15m', '1h', '4h', '1d', '1w', '1M')),
+    ([], ('1m', '5m', '15m', '1h', '4h', '1d', '1w', '1M')),
+    ('12h', ('1m', '5m', '15m', '1h', '4h', '1d', '1w', '1M')),
+    (['1M', '3m', '30m', '3m', {}, 'invalid'], ('3m', '30m', '1M')),
+    (['12h', '1h', '6h'], ('1h', '6h', '12h')),
+])
+def test_market_bar_selection_restores_supported_order(stored, expected):
+    from nightwatch.constants import normalized_market_bar_timeframes
+    assert normalized_market_bar_timeframes(stored) == expected
+
+
+def test_market_bar_selection_bounds_numbered_shortcuts():
+    from nightwatch.constants import TIMEFRAMES, normalized_market_bar_timeframes
+    assert len(normalized_market_bar_timeframes(TIMEFRAMES)) == 9
+
+
+def test_timeframe_rebuild_preserves_current_interval_and_clears_old_actions(qapp):
+    from nightwatch.ui.market_widgets import TimeframeStrip
+    strip = TimeframeStrip()
+    selected = []
+    strip.activated.connect(lambda index: selected.append(strip.currentData()))
+    strip.setItems(('3m', '30m', '1d'), '12h')
+    assert strip.currentData() == '12h'
+    assert not any(button.isChecked() for button in strip._buttons)
+    assert strip._external_data == '12h'
+    assert [action.text() for action in strip._collapsed_menu.actions()] == ['3m\t1', '30m\t2', '1D\t3']
+    assert selected == []
+    strip._activate_index(1)
+    assert selected == ['30m']
+    assert strip._external_data is None
+    strip.setCollapsed(True)
+    strip.setItems(('1w', '1M'), '30m')
+    assert strip.currentData() == '30m'
+    assert strip._collapsed_button.text() == '30m'
+    assert len(strip._collapsed_actions.actions()) == 2
+    assert len(strip._group.buttons()) == 2
+    assert all(not action.shortcut().toString() for action in strip._collapsed_menu.actions())
+    from PySide6.QtTest import QTest
+    strip.show()
+    strip._show_collapsed_menu()
+    qapp.processEvents()
+    QTest.keyClick(strip._collapsed_menu, Qt.Key.Key_1)
+    assert strip.currentData() == '1w'
+    assert not strip._collapsed_menu.isVisible()
+    strip._activate_index(1)
+    assert selected == ['30m', '1w', '1M']
+    strip.close()
+    strip.deleteLater()
+
+
+def test_market_bar_uses_midpoint_font_and_smaller_captions(qapp):
+    from nightwatch.theme import DEFAULT_THEME_NAME, THEMES, ui_palette, build_shell_stylesheet
+    from nightwatch.ui.market_widgets import MarketStatsWidget
+    from nightwatch.utilities import TextRole, typography_font
+    stats = MarketStatsWidget(ui_palette(THEMES[DEFAULT_THEME_NAME]), compact=True)
+    assert stats.cards['last'].value.font() == typography_font(TextRole.ORDERBOOK_CENTER_PRICE)
+    assert stats.cards['volume'].title.font().pointSizeF() < stats.cards['volume'].value.font().pointSizeF()
+    assert stats.cards['funding'].title.full_text() == 'FUNDING RATE'
+    theme = ui_palette(THEMES[DEFAULT_THEME_NAME])
+    stats.setStyleSheet(build_shell_stylesheet(DEFAULT_THEME_NAME, theme))
+    stats.ensurePolished()
+    assert stats.cards['volume'].title.palette().color(QtGui.QPalette.ColorRole.WindowText).alpha() < 255
+    stats.deleteLater()
+
+
+def test_narrow_market_bar_collapses_favorites_before_hiding_data(qapp):
+    from nightwatch.theme import DEFAULT_THEME_NAME, THEMES, ui_palette
+    from nightwatch.ui.market_widgets import MarketStatsWidget
+    from nightwatch.utilities import InstrumentBar
+    stats = MarketStatsWidget(ui_palette(THEMES[DEFAULT_THEME_NAME]), compact=True)
+    bar = InstrumentBar(stats)
+    bar.resize(680, 42)
+    bar.show()
+    qapp.processEvents()
+    assert bar.timeframes._collapsed
+    assert bar.identity_control.isVisible()
+    assert all(card.isVisible() for card in bar.metric_controls)
+    order = [bar.row.itemAt(index).widget() for index in range(bar.row.count())]
+    assert order == [bar.context_slot, stats.cards['last'], *bar.metric_controls]
+    bar.resize(1200, 42)
+    qapp.processEvents()
+    assert not bar.timeframes._collapsed
+    stats.set_timeframes(('30m',), '30m')
+    qapp.processEvents()
+    assert bar.context_slot.width() == bar.timeframes.expandedWidth()
+    bar.close()
+    bar.deleteLater()
+
+
+def test_hover_tooltip_uses_latest_value_and_cancels_on_leave(qapp, monkeypatch):
+    from PySide6 import QtGui
+    from nightwatch.utilities import tooltip_controller
+    controller = tooltip_controller()
+    widget = QtWidgets.QLabel('Visible')
+    widget.resize(200, 40)
+    widget.show()
+    qapp.processEvents()
+    point = widget.mapToGlobal(widget.rect().center())
+    QtGui.QCursor.setPos(point)
+    shown = []
+    monkeypatch.setattr(QtWidgets.QToolTip, 'showText', lambda *args: shown.append(args))
+    controller.request(widget, 'Old value', point)
+    controller.request(widget, 'New value < 2', point)
+    assert shown == []
+    assert controller._timer.isActive()
+    controller._show_pending()
+    assert shown[-1][1] == '<qt>New value &lt; 2</qt>'
+    controller.eventFilter(widget, QtCore.QEvent(QtCore.QEvent.Type.Leave))
+    assert not controller._timer.isActive()
+    assert controller._owner is None
+    controller.request(widget, 'Deleted owner', point)
+    widget.deleteLater()
+    QtCore.QCoreApplication.sendPostedEvents(widget, QtCore.QEvent.Type.DeferredDelete)
+    controller._show_pending()
+    assert controller._owner is None
+
+
+def test_tooltip_keeps_truncated_text_and_escapes_plain_content(qapp):
+    from nightwatch.utilities import tooltip_controller, set_tooltip_theme
+    from nightwatch.theme import DEFAULT_THEME_NAME, THEMES, ui_palette
+    controller = tooltip_controller()
+    label = QtWidgets.QLabel('Visible text')
+    label.resize(200, 30)
+    assert controller._redundant(label, 'Visible text')
+    label.resize(20, 30)
+    assert not controller._redundant(label, 'Visible text')
+    assert controller._formatted('A < B & C') == '<qt>A &lt; B &amp; C</qt>'
+    rich = '<table><tr><td>Funding</td></tr></table>'
+    assert controller._formatted(rich) == rich
+    assert qapp.style().styleHint(QtWidgets.QStyle.StyleHint.SH_ToolTip_WakeUpDelay) == 500
+    assert qapp.style().styleHint(QtWidgets.QStyle.StyleHint.SH_ToolTip_FallAsleepDelay) == 0
+    original_sheet = qapp.styleSheet()
+    set_tooltip_theme(ui_palette(THEMES[DEFAULT_THEME_NAME]))
+    assert qapp.styleSheet() == original_sheet, 'Tooltip styling must preserve application styling'

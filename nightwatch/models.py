@@ -728,6 +728,7 @@ class DiagnosticsHostPort(Protocol):
 
 class SettingsHostPort(Protocol):
     learning_mode: bool
+    market_bar_timeframes: tuple[str, ...]
     theme_actions: Any
     candle_style_actions: Any
     chart_layout_actions: Any
@@ -761,6 +762,9 @@ class SettingsHostPort(Protocol):
         ...
 
     def set_learning_mode(self, enabled: bool) -> None:
+        ...
+
+    def set_market_bar_timeframes(self, intervals: object) -> None:
         ...
 
     def set_volume_bar_height_percent(self, value: int) -> None:

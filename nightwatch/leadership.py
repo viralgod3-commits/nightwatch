@@ -26,6 +26,8 @@ from .utilities import (
     apply_text_render_hints,
     device_pixel_rect,
     set_text_role,
+    hide_hover_tooltip,
+    show_hover_tooltip,
     typography_font,
 )
 from .coin_catalog import coin_base_symbol, coin_remote_symbol, coin_icon_bytes, coin_name
@@ -5115,10 +5117,14 @@ class RotationBubbleChart(QtWidgets.QWidget):
                 text += f"\n{self.hours}H turnover: {_amount(point['volume'])}"
             if point.get("_trail_normalized"):
                 text += "\nDisplay spacing normalized; values above are observed."
-            QtWidgets.QToolTip.showText(event.globalPosition().toPoint(), text, self)
+            show_hover_tooltip(self, text, event.globalPosition().toPoint())
         else:
-            QtWidgets.QToolTip.hideText()
+            hide_hover_tooltip(self)
         super().mouseMoveEvent(event)
+
+    def leaveEvent(self, event):
+        hide_hover_tooltip(self)
+        super().leaveEvent(event)
 
     def keyPressEvent(self, event):
         symbols = sorted(p["symbol"] for p in self.points)

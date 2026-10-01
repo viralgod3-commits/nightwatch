@@ -27,6 +27,7 @@ from .preparation import (
 from .analysis import LatestJob, analysis_worker_count, run_analysis, indicator_analysis, profile_analysis, major_level_analysis, fibonacci_analysis
 from .rendering import ChartGraphicsView, CandlestickItem, VolumeOverlayItem, NativeBarCompositeItem
 from ..utilities import alpha_color, TextRole, set_text_role, typography_controller, typography_font
+from ..utilities import hide_hover_tooltip, show_hover_tooltip
 from ..presentation import (
     PresentationClock,
     display_refresh_rate,
@@ -6993,7 +6994,7 @@ class ChartWorkspace(QtWidgets.QWidget):
         _event: object,
     ) -> None:
         if len(points) == 0:
-            QtWidgets.QToolTip.hideText()
+            hide_hover_tooltip(self)
             return
         data = points[0].data()
         if not isinstance(data, dict):
@@ -7001,12 +7002,12 @@ class ChartWorkspace(QtWidgets.QWidget):
         stamp = datetime.fromtimestamp(
             safe_float(data.get("time")), timezone.utc
         ).strftime("%Y-%m-%d %H:%M:%S UTC")
-        QtWidgets.QToolTip.showText(
-            QtGui.QCursor.pos() + QtCore.QPoint(12, 14),
+        show_hover_tooltip(
+            self,
             f"{data.get('liquidated_position', '')} LIQUIDATION\n"
             f"{human_number(safe_float(data.get('notional')), money=True)}\n"
             f"Price {format_price(safe_float(data.get('price')))}\n{stamp}",
-            self,
+            QtGui.QCursor.pos(),
         )
 
     def add_depth(self, event: dict[str, Any]) -> tuple[list[tuple[float, float]], list[tuple[float, float]]]:

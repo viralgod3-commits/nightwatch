@@ -124,7 +124,24 @@ INTERVAL_SECONDS = {
 }
 
 
-TIMEFRAMES = ("1m", "5m", "15m", "1h", "4h", "12h", "1d", "1w", "1M")
+# Supported chart intervals are independent of the trader's quick-access strip.
+TIMEFRAMES = tuple(INTERVAL_SECONDS)
+DEFAULT_MARKET_BAR_TIMEFRAMES = ("1m", "5m", "15m", "1h", "4h", "1d", "1w", "1M")
+MARKET_BAR_TIMEFRAME_LIMIT = 9
+MARKET_BAR_TIMEFRAME_PRESETS = {
+    "Default": DEFAULT_MARKET_BAR_TIMEFRAMES,
+    "Intraday": ("1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h"),
+    "Swing": ("15m", "30m", "1h", "2h", "4h", "6h", "12h", "1d", "1w"),
+    "Long term": ("1h", "4h", "6h", "12h", "1d", "1w", "1M"),
+}
+
+
+def normalized_market_bar_timeframes(values: object) -> tuple[str, ...]:
+    """Restore a nonempty, ordered selection from possibly stale settings."""
+    if not isinstance(values, (list, tuple)):
+        return DEFAULT_MARKET_BAR_TIMEFRAMES
+    selected = {value for value in values if isinstance(value, str) and value in TIMEFRAMES}
+    return tuple(value for value in TIMEFRAMES if value in selected)[:MARKET_BAR_TIMEFRAME_LIMIT] or DEFAULT_MARKET_BAR_TIMEFRAMES
 
 
 MARKET_SORT_MODES = {

@@ -5,6 +5,9 @@ from __future__ import annotations
 # typography
 # ========================================================================
 import os
+import html
+import re
+import weakref
 from typing import Any
 
 from PySide6 import QtCore, QtGui, QtWidgets
@@ -253,7 +256,7 @@ TYPOGRAPHY_FONT_FILES: dict[str, str] = {
 
 
 _LEGACY_TEXT_ROLES: dict[str, str] = {
-    "topMetricTitle": TextRole.UI_LABEL,
+    "topMetricTitle": TextRole.UI_CAPTION,
     "metricTitle": TextRole.UI_LABEL,
     "tradeFieldLabel": TextRole.UI_LABEL,
     "tradingSectionLabel": TextRole.UI_LABEL,
@@ -268,7 +271,7 @@ _LEGACY_TEXT_ROLES: dict[str, str] = {
     "watchlistGroupMenu": TextRole.UI_GLYPH,
     "topMetricValue": TextRole.MARKET_VALUE,
     "metricValue": TextRole.MARKET_VALUE,
-    "topTickerLast": TextRole.MARKET_VALUE,
+    "topTickerLast": TextRole.ORDERBOOK_CENTER_PRICE,
     "topTickerSymbol": TextRole.TOP_TICKER_SYMBOL,
     "globalSymbolSearch": TextRole.INSTRUMENT_SYMBOL,
     "metricHoverValue": TextRole.MARKET_VALUE_EMPHASIZED,
@@ -616,6 +619,7 @@ class TypographyController(QtCore.QObject):
         if application is None:
             return
         application.setFont(self.font(TextRole.UI_BODY))
+        QtWidgets.QToolTip.setFont(self.font(TextRole.UI_BODY))
         for window in application.topLevelWidgets():
             apply_typography(window)
 
@@ -739,6 +743,176 @@ class _TypographyRoleFilter(QtCore.QObject):
         return super().eventFilter(watched, event)
 
 
+class _TooltipStyle(QtWidgets.QProxyStyle):
+    """Use the same deliberate hover delay, including adjacent controls."""
+
+    def styleHint(self, hint, option=None, widget=None, return_data=None):
+        if hint == QtWidgets.QStyle.StyleHint.SH_ToolTip_WakeUpDelay:
+            return 500
+        if hint == QtWidgets.QStyle.StyleHint.SH_ToolTip_FallAsleepDelay:
+            return 0  # Disable Qt's nearly instant second-tooltip grace period.
+        return super().styleHint(hint, option, widget, return_data)
+
+
+class _TooltipController(QtCore.QObject):
+    """One native popup and one bounded timer for painted-content hovers."""
+
+    DURATION_MS = 8_000
+
+    def __init__(self, application: QtWidgets.QApplication):
+        super().__init__(application)
+        self._owner = None
+        self._text = ""
+        self._position = QtCore.QPoint()
+        self._rect = QtCore.QRect()
+        self._stylesheet = ""
+        self._timer = QtCore.QTimer(self)
+        self._timer.setSingleShot(True)
+        self._timer.setInterval(500)
+        self._timer.timeout.connect(self._show_pending)
+        application.aboutToQuit.connect(self.hide)
+        application.setStyle(_TooltipStyle(application.style().objectName()))
+        application.installEventFilter(self)
+
+    @staticmethod
+    def _formatted(text: str) -> str:
+        # Existing rich data tables retain their layout; plain text wraps and
+        # cannot accidentally interpret an exchange symbol as HTML.
+        if re.match(r"\s*<(?:qt|html|p|b|strong|table|div|span|font|pre|ul)\b", text, re.IGNORECASE):
+            return text
+        return "<qt>" + html.escape(text).replace("\n", "<br>") + "</qt>"
+
+    @staticmethod
+    def _redundant(widget: QtWidgets.QWidget, text: str) -> bool:
+        if isinstance(widget, (QtWidgets.QAbstractButton, QtWidgets.QLabel)):
+            visible = widget.text().replace("&", "").strip()
+            return bool(
+                visible and text.strip() == visible
+                and widget.fontMetrics().horizontalAdvance(visible) <= widget.contentsRect().width() - 6
+            )
+        return False
+
+    def request(self, widget: QtWidgets.QWidget, text: str, position: QtCore.QPoint,
+                rect: QtCore.QRect | None = None) -> None:
+        if not text:
+            self.hide(widget)
+            return
+        owner = self._owner() if self._owner is not None else None
+        self._position = QtCore.QPoint(position)
+        self._rect = QtCore.QRect(rect if rect is not None else widget.rect())
+        if owner is widget and self._text == text:
+            return
+        self.hide()
+        self._owner = weakref.ref(widget)
+        self._text = text
+        self._timer.start()
+
+    def hide(self, widget: QtWidgets.QWidget | None = None) -> None:
+        owner = self._owner() if self._owner is not None else None
+        if widget is not None and owner is not widget:
+            return
+        self._timer.stop()
+        self._owner = None
+        self._text = ""
+        QtWidgets.QToolTip.hideText()
+
+    def _show_pending(self) -> None:
+        import shiboken6
+
+        widget = self._owner() if self._owner is not None else None
+        if widget is None or not shiboken6.isValid(widget) or not widget.isVisible():
+            self.hide()
+            return
+        if not self._rect.contains(widget.mapFromGlobal(QtGui.QCursor.pos())):
+            self.hide()
+            return
+        QtWidgets.QToolTip.showText(self._position, self._formatted(self._text),
+                                  widget, self._rect, self.DURATION_MS)
+
+    def eventFilter(self, watched: QtCore.QObject, event: QtCore.QEvent) -> bool:
+        event_type = event.type()
+        if (
+            event_type == QtCore.QEvent.Type.Show
+            and isinstance(watched, QtWidgets.QWidget)
+            and watched.windowType() == QtCore.Qt.WindowType.ToolTip
+        ):
+            if watched.styleSheet() != self._stylesheet:
+                watched.setStyleSheet(self._stylesheet)
+            set_text_role(watched, TextRole.UI_BODY)
+        if event_type == QtCore.QEvent.Type.ToolTip and isinstance(watched, QtWidgets.QWidget):
+            text = watched.toolTip()
+            if isinstance(watched, QtWidgets.QMenu):
+                action = watched.actionAt(event.pos())
+                if action is not None:
+                    text = action.toolTip()
+                    if text == action.text().replace("&", ""):
+                        QtWidgets.QToolTip.hideText()
+                        return True
+            view = watched.parentWidget()
+            if isinstance(view, QtWidgets.QAbstractItemView) and watched is view.viewport():
+                index = view.indexAt(event.pos())
+                item_tip = index.data(QtCore.Qt.ItemDataRole.ToolTipRole)
+                if item_tip:
+                    text = str(item_tip)
+                    value_data = index.data(QtCore.Qt.ItemDataRole.DisplayRole)
+                    value = "" if value_data is None else str(value_data)
+                    if text == value and watched.fontMetrics().horizontalAdvance(value) <= view.visualRect(index).width() - 10:
+                        QtWidgets.QToolTip.hideText()
+                        return True
+            if text:
+                if self._redundant(watched, text):
+                    QtWidgets.QToolTip.hideText()
+                else:
+                    self.hide()
+                    QtWidgets.QToolTip.showText(event.globalPos(), self._formatted(text),
+                                              watched, watched.rect(), self.DURATION_MS)
+                event.accept()
+                return True
+        elif event_type in (QtCore.QEvent.Type.MouseButtonPress, QtCore.QEvent.Type.WindowDeactivate):
+            if self._owner is not None or QtWidgets.QToolTip.isVisible():
+                self.hide()
+        elif event_type == QtCore.QEvent.Type.Leave:
+            owner = self._owner() if self._owner is not None else None
+            if watched is owner:
+                self.hide()
+        return super().eventFilter(watched, event)
+
+
+def tooltip_controller() -> _TooltipController:
+    application = QtWidgets.QApplication.instance()
+    controller = getattr(application, "_nightwatch_tooltip_controller", None)
+    if controller is None:
+        controller = _TooltipController(application)
+        application._nightwatch_tooltip_controller = controller
+    return controller
+
+
+def show_hover_tooltip(widget: QtWidgets.QWidget, text: str, position: QtCore.QPoint) -> None:
+    tooltip_controller().request(widget, text, position)
+
+
+def hide_hover_tooltip(widget: QtWidgets.QWidget) -> None:
+    tooltip_controller().hide(widget)
+
+
+def tooltip_stylesheet(theme: dict[str, str]) -> str:
+    return f"""QToolTip {{ background: {theme['panel2']}; color: {theme['text']};
+        border: 1px solid {theme['control_border']}; border-radius: 4px;
+        padding: 6px 8px; max-width: 420px; }}"""
+
+
+def set_tooltip_theme(theme: dict[str, str]) -> None:
+    application = QtWidgets.QApplication.instance()
+    controller = tooltip_controller()
+    # An application stylesheet can interrupt existing parent-widget styles.
+    # Style Qt's native popup label directly, including detached-window tips.
+    controller._stylesheet = tooltip_stylesheet(theme).replace("QToolTip", "QLabel")
+    for window in application.topLevelWidgets():
+        if window.windowType() == QtCore.Qt.WindowType.ToolTip:
+            window.setStyleSheet(controller._stylesheet)
+    QtWidgets.QToolTip.setFont(typography_font(TextRole.UI_BODY))
+
+
 def load_app_fonts(application: QtGui.QGuiApplication, package_root: str) -> None:
     """Register every application font from project-root ``fonts/``."""
     global _UI_FONT_FAMILY, _NUMERIC_FONT_FAMILY
@@ -774,6 +948,9 @@ def load_app_fonts(application: QtGui.QGuiApplication, package_root: str) -> Non
     # bootstrap-era templates before the application asks for its first font.
     _TYPOGRAPHY_CONTROLLER.clear_font_cache()
     application.setFont(typography_font(TextRole.UI_BODY))
+    QtWidgets.QToolTip.setFont(typography_font(TextRole.UI_BODY))
+    if isinstance(application, QtWidgets.QApplication):
+        tooltip_controller()
     font_filter = _TypographyRoleFilter(application)
     application.installEventFilter(font_filter)
     application._nightwatch_typography_filter = font_filter
@@ -927,6 +1104,7 @@ class InstrumentBar(QtWidgets.QFrame):
         self.stats = stats
         self.timeframes = getattr(stats, "timeframe_selector", None)
         self.row = QtWidgets.QHBoxLayout(self)
+        self.row.setSizeConstraint(QtWidgets.QLayout.SizeConstraint.SetNoConstraint)
         self.row.setContentsMargins(0, 0, 0, 0)
         self.row.setSpacing(0)
         self.row.setAlignment(QtCore.Qt.AlignmentFlag.AlignVCenter)
@@ -954,6 +1132,7 @@ class InstrumentBar(QtWidgets.QFrame):
         context_layout.setSpacing(0)
         if self.timeframes is not None:
             self.timeframes.setFixedHeight(INSTRUMENT_BAR_HEIGHT)
+            self.timeframes.content_changed.connect(self._apply_responsive_layout)
             context_layout.addWidget(self.timeframes)
         self.row.addWidget(self.context_slot, 0)
         if self.identity_control is not None:
@@ -970,6 +1149,11 @@ class InstrumentBar(QtWidgets.QFrame):
         self.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Fixed)
         self.setFixedHeight(INSTRUMENT_BAR_HEIGHT)
         QtCore.QTimer.singleShot(0, self._apply_responsive_layout)
+
+    def minimumSizeHint(self) -> QtCore.QSize:
+        # Fixed-width children describe the expanded strip, not its minimum.
+        width = self._timeframe_width(collapsed=True)
+        return QtCore.QSize(width, INSTRUMENT_BAR_HEIGHT)
 
     @staticmethod
     def _stable_widget_width(widget: QtWidgets.QWidget | None) -> int:
@@ -1004,6 +1188,11 @@ class InstrumentBar(QtWidgets.QFrame):
             compact = self.width() < left + right + normal_width + identity_width + sum(metric_widths)
             timeframe_width = tight_width if compact else normal_width
             required = (0 if compact else left + right) + timeframe_width + identity_width + sum(metric_widths)
+            # Collapse favorites before sacrificing ticker or market data.
+            collapsed = self.width() < required and timeframe_width > collapsed_width
+            if collapsed:
+                required -= timeframe_width - collapsed_width
+                timeframe_width = collapsed_width
             count = len(self.metric_controls)
             while self.width() < required and count:
                 count -= 1
@@ -1012,9 +1201,6 @@ class InstrumentBar(QtWidgets.QFrame):
             if self.width() < required and identity_visible:
                 identity_visible = False
                 required -= identity_width
-            collapsed = self.width() < required and timeframe_width > collapsed_width
-            if collapsed:
-                timeframe_width = collapsed_width
             state = (compact, count, identity_visible, collapsed, timeframe_width)
             if state == self._responsive_state:
                 return

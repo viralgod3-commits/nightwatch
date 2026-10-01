@@ -80,6 +80,7 @@ from ..constants import (
     TESTING_ENTRIES,
     THEME_DISPLAY_NAMES,
     TIMEFRAMES,
+    normalized_market_bar_timeframes,
 )
 from ..models import (
     DomExecutionContext,
@@ -164,6 +165,7 @@ from ..utilities import (
     apply_typography,
     configure_typography,
     line_icon,
+    set_tooltip_theme,
     typography_controller,
 )
 
@@ -540,6 +542,11 @@ class MainWindow(QtWidgets.QMainWindow):
         # It is deliberately OFF by default; information-rich market-data hovers
         # opt in separately and remain available in normal trading mode.
         self.learning_mode = self.settings.value("ui/learning_mode_v1", False, bool)
+        try:
+            saved_timeframes = json.loads(self.settings.value("ui/market_bar_timeframes_v1", "", str))
+        except (TypeError, ValueError):
+            saved_timeframes = None
+        self.market_bar_timeframes = normalized_market_bar_timeframes(saved_timeframes)
         self.setProperty("learningMode", self.learning_mode)
         self.setProperty("chartTooltipsSuppressed", not self.learning_mode)
         # Expensive non-visible services are staged after the first shell show.
@@ -1507,6 +1514,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.settings_button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.settings_button.setAccessibleName("Settings")
         self.settings_button.setToolTip("Settings")
+        self.settings_button.setProperty("informationalToolTip", True)
+        self.panel_layout_button.setProperty("informationalToolTip", True)
         self.settings_button.clicked.connect(
             lambda _checked=False: self._show_settings_window()
         )
@@ -1535,7 +1544,8 @@ class MainWindow(QtWidgets.QMainWindow):
             button.setCheckable(True)
             button.setFixedSize(width, toolbar_height)
             button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-            button.setToolTip(f"Open the {name.lower()} workspace")
+            button.setToolTip(f"{name.title()} · Alt+{index + 1}")
+            button.setProperty("informationalToolTip", True)
             button.clicked.connect(lambda _checked=False, page=index: self._switch_workspace(page))
             self.workspace_group.addButton(button)
             self.workspace_buttons[name] = button
@@ -1562,6 +1572,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.ui_theme,
             compact=True,
         )
+        self.stats.set_timeframes(self.market_bar_timeframes, self.current_interval)
         self.stats.set_symbol(self.current_symbol)
 
         # Timeframe is part of the market-context cluster and remains owned by
@@ -3199,7 +3210,7 @@ class MainWindow(QtWidgets.QMainWindow):
         for action, shortcut in self.trading_hotkeys.items():
             if shortcut:
                 rows.append((shortcut, trading_labels.get(action, action.replace("_", " ").title())))
-        for index, timeframe in enumerate(TIMEFRAMES, start=1):
+        for index, timeframe in enumerate(self.market_bar_timeframes, start=1):
             label = timeframe.upper() if timeframe in {"1d", "1w"} else timeframe
             rows.append((str(index), f"Switch primary chart to {label}"))
         for indicator, shortcut in self.indicator_shortcuts.items():
@@ -3259,6 +3270,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _apply_stylesheet(self) -> None:
         t = self.ui_theme
+        set_tooltip_theme(t)
         control_border = t["control_border"]
         surfaces = getattr(self, "developer_ui_surfaces", DEV_UI_SURFACE_DEFAULTS)
         section_radius = f"{int(surfaces['block_radius'])}px"
@@ -5418,9 +5430,9 @@ class MainWindow(QtWidgets.QMainWindow):
                 and not text_input
                 and self.symbol_search_dialog is None
                 and self.workspace_stack.currentIndex() == 0
-                and first_key <= key < first_key + len(TIMEFRAMES)
+                and first_key <= key < first_key + len(self.market_bar_timeframes)
             ):
-                timeframe = TIMEFRAMES[key - first_key]
+                timeframe = self.market_bar_timeframes[key - first_key]
                 self.switch_interval(timeframe)
                 timeframe_label = (
                     timeframe.upper() if timeframe in {"1d", "1w"} else timeframe
@@ -6007,7 +6019,7 @@ class MainWindow(QtWidgets.QMainWindow):
             hub.switch_market(symbol, self.current_interval)
 
     def switch_interval(self, interval: str) -> None:
-        if interval == self.current_interval:
+        if interval not in TIMEFRAMES or interval == self.current_interval:
             return
         self._store_current_symbol_drawings()
         self._warm_initial_chart_history_pending = False
@@ -6030,6 +6042,17 @@ class MainWindow(QtWidgets.QMainWindow):
         stats = getattr(self, "stats", None)
         if stats is not None:
             stats.set_interval(interval)
+
+    def set_market_bar_timeframes(self, intervals: object) -> None:
+        selected = normalized_market_bar_timeframes(intervals)
+        if selected == self.market_bar_timeframes:
+            return
+        self.market_bar_timeframes = selected
+        self.settings.setValue("ui/market_bar_timeframes_v1", json.dumps(selected))
+        self.stats.set_timeframes(selected, self.current_interval)
+        dialog = self.settings_dialog
+        if dialog is not None and dialog.isVisible():
+            dialog.sync_from_owner()
 
     def _fit_chart(self) -> None:
         self.chart.fit_chart()
@@ -8254,6 +8277,12 @@ class MainWindow(QtWidgets.QMainWindow):
             try:
                 if bool(current.property("informationalToolTip")):
                     return True
+                if isinstance(current, QtWidgets.QAbstractItemView):
+                    return True  # Data-cell explanations are available in normal mode.
+                if isinstance(current, QtWidgets.QAbstractButton) and not current.text():
+                    return True  # Icon-only controls need an accessible explanation.
+                if isinstance(current, QtWidgets.QLabel) and getattr(current, "_auto_tooltip", False):
+                    return True  # Preserve full text when the visible label is elided.
             except (AttributeError, RuntimeError):
                 pass
             current = current.parent()

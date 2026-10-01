@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import html
 import math
 import time
 from collections import deque
@@ -12,7 +13,10 @@ import numpy as np
 from PySide6 import QtCore, QtGui, QtWidgets
 from PySide6.QtCore import Qt, Signal
 
-from ..constants import DEFAULT_SYMBOL, MARKET_SORT_MODES, TIMEFRAMES
+from ..constants import (
+    DEFAULT_MARKET_BAR_TIMEFRAMES, DEFAULT_SYMBOL, MARKET_SORT_MODES,
+    normalized_market_bar_timeframes,
+)
 from ..coin_catalog import coin_base_symbol, coin_icon_bytes, coin_icon_exists
 from ..networking.binance import launch_task
 from ..utilities import ElidedLabel, alpha_color, device_pixel_rect, line_icon
@@ -54,6 +58,7 @@ class TimeframeStrip(QtWidgets.QWidget):
     """Always-visible compact chart-timeframe button strip."""
 
     activated = Signal(int)
+    content_changed = Signal()
 
 
     BUTTON_WIDTH = 36
@@ -65,6 +70,7 @@ class TimeframeStrip(QtWidgets.QWidget):
         self._buttons: list[QtWidgets.QPushButton] = []
         self._current_index = -1
         self._collapsed = False
+        self._external_data: str | None = None
 
         layout = QtWidgets.QHBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -88,8 +94,24 @@ class TimeframeStrip(QtWidgets.QWidget):
         layout.addWidget(self._collapsed_button)
 
         self._collapsed_menu = QtWidgets.QMenu(self)
+        self._collapsed_menu.installEventFilter(self)
+        self._collapsed_menu.setToolTipsVisible(True)
         self._collapsed_actions = QtGui.QActionGroup(self)
         self._collapsed_actions.setExclusive(True)
+
+        # A restored/CLI interval outside the favorites must still be visible.
+        # It is not a saved favorite and does not take a numbered shortcut.
+        self._external_button = QtWidgets.QPushButton(self)
+        self._external_button.setObjectName("timeframeStripButton")
+        self._external_button.setCheckable(True)
+        self._external_button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self._external_button.setFixedSize(self.BUTTON_WIDTH, COMPACT_METRIC_HEIGHT)
+        self._external_button.setProperty("informationalToolTip", True)
+        set_text_role(self._external_button, TextRole.UI_CONTROL_COMPACT)
+        self._external_button.clicked.connect(self._show_collapsed_menu)
+        self._external_button.hide()
+        layout.addWidget(self._external_button)
+        self._collapsed_button.setProperty("informationalToolTip", True)
 
     def addItem(self, text: str, user_data: Any = None) -> None:
         index = len(self._items)
@@ -100,16 +122,20 @@ class TimeframeStrip(QtWidgets.QWidget):
         button.setCheckable(True)
         button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         button.setFixedSize(self.BUTTON_WIDTH, COMPACT_METRIC_HEIGHT)
-        button.setToolTip(f"Chart timeframe · {text}")
+        button.setToolTip(f"{text} · Shortcut {index + 1}")
+        button.setAccessibleName(f"{text} chart timeframe, shortcut {index + 1}")
+        button.setProperty("informationalToolTip", True)
         set_text_role(button, TextRole.UI_CONTROL_COMPACT)
         button.clicked.connect(
             lambda _checked=False, i=index: self._activate_index(i)
         )
         self._group.addButton(button, index)
-        self.layout().addWidget(button)
+        self.layout().insertWidget(self.layout().count() - 1, button)
+        button.setVisible(not self._collapsed)
         self._buttons.append(button)
 
-        action = self._collapsed_menu.addAction(str(text))
+        # Render the key without installing competing QAction shortcuts.
+        action = self._collapsed_menu.addAction(f"{text}\t{index + 1}")
         action.setCheckable(True)
         action.setData(index)
         action.triggered.connect(
@@ -121,6 +147,26 @@ class TimeframeStrip(QtWidgets.QWidget):
             self.setCurrentIndex(0)
 
         self._sync_mode_width()
+
+    def setItems(self, intervals: tuple[str, ...], current: str | None = None) -> None:
+        current = str(current or self.currentData() or intervals[0])
+        for button in self._buttons:
+            self._group.removeButton(button)
+            self.layout().removeWidget(button)
+            button.hide()
+            button.deleteLater()
+        for action in self._collapsed_actions.actions():
+            self._collapsed_actions.removeAction(action)
+        self._collapsed_menu.clear()
+        self._items.clear()
+        self._buttons.clear()
+        self._current_index = -1
+        self._external_data = None
+        for interval in intervals:
+            text = interval.upper() if interval in {"1d", "1w"} else interval
+            self.addItem(text, interval)
+        self.setCurrentData(current)
+        self.content_changed.emit()
 
     def count(self) -> int:
         return len(self._items)
@@ -136,7 +182,30 @@ class TimeframeStrip(QtWidgets.QWidget):
     def currentData(self) -> Any:
         if 0 <= self._current_index < len(self._items):
             return self._items[self._current_index][1]
-        return None
+        return self._external_data
+
+    def setCurrentData(self, value: str) -> None:
+        index = self.findData(value)
+        if index >= 0:
+            self.setCurrentIndex(index)
+            return
+        self._current_index = -1
+        self._external_data = str(value)
+        self._group.setExclusive(False)
+        for button in self._buttons:
+            button.setChecked(False)
+        self._group.setExclusive(True)
+        for action in self._collapsed_actions.actions():
+            action.setChecked(False)
+        text = value.upper() if value in {"1d", "1w"} else value
+        self._external_button.setText(text)
+        self._external_button.setChecked(True)
+        self._external_button.setToolTip("Current timeframe · outside your saved selection")
+        self._external_button.setVisible(not self._collapsed)
+        self._collapsed_button.setText(text)
+        self._collapsed_button.setToolTip("Choose a saved timeframe")
+        self._sync_mode_width()
+        self.content_changed.emit()
 
     def findData(self, value: Any) -> int:
         for index, (_text, data) in enumerate(self._items):
@@ -147,6 +216,9 @@ class TimeframeStrip(QtWidgets.QWidget):
     def setCurrentIndex(self, index: int) -> None:
         if index < 0 or index >= len(self._items):
             return
+        was_external = self._external_data is not None
+        self._external_data = None
+        self._external_button.hide()
         self._current_index = int(index)
         for button_index, button in enumerate(self._buttons):
             checked = button_index == self._current_index
@@ -159,17 +231,18 @@ class TimeframeStrip(QtWidgets.QWidget):
         if 0 <= self._current_index < len(self._items):
             text = self._items[self._current_index][0]
             self._collapsed_button.setText(text)
-            self._collapsed_button.setToolTip(f"Chart timeframe · {text}")
+            self._collapsed_button.setToolTip(f"Choose timeframe · Shortcuts 1–{self.count()}")
+        if was_external:
+            self._sync_mode_width()
+            self.content_changed.emit()
 
     def expandedWidth(self, *, tight: bool | None = None) -> int:
         if tight is None:
             spacing = self.layout().spacing()
         else:
             spacing = 0 if tight else self.NORMAL_SPACING
-        return (
-            len(self._buttons) * self.BUTTON_WIDTH
-            + max(0, len(self._buttons) - 1) * max(0, int(spacing))
-        )
+        count = len(self._buttons) + int(self._external_data is not None)
+        return count * self.BUTTON_WIDTH + max(0, count - 1) * max(0, int(spacing))
 
     def setTightSpacing(self, tight: bool) -> None:
         """Remove only inter-timeframe gaps during responsive width pressure."""
@@ -191,6 +264,7 @@ class TimeframeStrip(QtWidgets.QWidget):
         self._collapsed_button.setVisible(collapsed)
         for button in self._buttons:
             button.setVisible(not collapsed)
+        self._external_button.setVisible(not collapsed and self._external_data is not None)
         self._sync_mode_width()
 
     def _sync_mode_width(self) -> None:
@@ -203,12 +277,12 @@ class TimeframeStrip(QtWidgets.QWidget):
 
 
         self._collapsed_button.setChecked(True)
-        if not self._collapsed or not self._items:
+        self._external_button.setChecked(True)
+        if not self._items:
             return
+        anchor = self._collapsed_button if self._collapsed else self._external_button
         self._collapsed_menu.popup(
-            self._collapsed_button.mapToGlobal(
-                QtCore.QPoint(0, self._collapsed_button.height())
-            )
+            anchor.mapToGlobal(QtCore.QPoint(0, anchor.height()))
         )
 
     def _activate_index(self, index: int) -> None:
@@ -216,6 +290,21 @@ class TimeframeStrip(QtWidgets.QWidget):
             return
         self.setCurrentIndex(index)
         self.activated.emit(index)
+
+    def eventFilter(self, watched: QtCore.QObject, event: QtCore.QEvent) -> bool:
+        if (
+            watched is self._collapsed_menu
+            and event.type() == QtCore.QEvent.Type.KeyPress
+            and event.modifiers() == Qt.KeyboardModifier.NoModifier
+        ):
+            index = int(event.key()) - int(Qt.Key.Key_1)
+            if 0 <= index < self.count():
+                if not event.isAutoRepeat():
+                    self._collapsed_menu.hide()
+                    self._activate_index(index)
+                event.accept()
+                return True
+        return super().eventFilter(watched, event)
 
 
 METRIC_DETAIL_ORDER: tuple[tuple[str, str], ...] = (
@@ -1260,11 +1349,11 @@ class MetricCard(QtWidgets.QFrame):
         )
         set_text_role(
             self.title,
-            TextRole.TOP_TICKER_SYMBOL if self.identity else TextRole.UI_LABEL,
+            TextRole.TOP_TICKER_SYMBOL if self.identity else TextRole.UI_CAPTION if compact else TextRole.UI_LABEL,
         )
 
 
-        set_text_role(self.value, TextRole.MARKET_VALUE)
+        set_text_role(self.value, TextRole.ORDERBOOK_CENTER_PRICE if self.identity else TextRole.MARKET_VALUE)
         self.title.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
         self.value.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
         if compact:
@@ -1301,7 +1390,7 @@ class MetricCard(QtWidgets.QFrame):
 
         for widget in (self, self.title, self.value):
             widget.setProperty("informationalToolTip", True)
-        self.setToolTipDuration(30_000)
+        self.setToolTipDuration(8_000)
         if self.identity:
 
 
@@ -1356,8 +1445,8 @@ class MetricCard(QtWidgets.QFrame):
         rows = [(label, value) for label, value in rows if label or value]
         self.detail_title, self.detail_rows = _title, rows
         body = "".join(
-            f"<tr><td style='padding-right:18px'>{label}</td>"
-            f"<td align='right'>{value}</td></tr>"
+            f"<tr><td style='padding-right:18px'>{html.escape(str(label))}</td>"
+            f"<td align='right'>{html.escape(str(value))}</td></tr>"
             for label, value in rows
         )
         tooltip = f"<table cellspacing='0' cellpadding='0'>{body}</table>"
@@ -1371,7 +1460,7 @@ class MetricCard(QtWidgets.QFrame):
         )
         for widget in (self, self.title, self.value):
             widget.setToolTip(tooltip)
-            widget.setToolTipDuration(30_000)
+            widget.setToolTipDuration(8_000)
         self._refresh_popup()
 
     def set_history(self, points, caption, *, percent=False, bars=False, ratio=False):
@@ -1430,15 +1519,6 @@ class MetricCard(QtWidgets.QFrame):
         for widget in (self, self.title, self.value):
             widget.setToolTip("")
 
-    def enterEvent(self, event: QtGui.QEnterEvent) -> None:
-        if self.toolTip():
-            QtWidgets.QToolTip.showText(
-                QtGui.QCursor.pos() + QtCore.QPoint(12, 16),
-                self.toolTip(),
-                self,
-            )
-        super().enterEvent(event)
-
     def leaveEvent(self, event: QtCore.QEvent) -> None:
         QtWidgets.QToolTip.hideText()
         super().leaveEvent(event)
@@ -1489,7 +1569,7 @@ class MarketStatsWidget(QtWidgets.QWidget):
                 "taker": "TAKER",
                 "oi": "OPEN INTEREST",
                 "long_short": "LONG/SHORT",
-                "funding": "FUNDING",
+                "funding": "FUNDING RATE",
             }
             for name, title in compact_titles.items():
                 self.cards[name].title.setText(title)
@@ -1513,9 +1593,7 @@ class MarketStatsWidget(QtWidgets.QWidget):
             self.timeframe_selector.setObjectName("topTimeframeStrip")
             self.timeframe_selector.setFixedHeight(COMPACT_METRIC_HEIGHT)
             self.timeframe_selector.setAccessibleName("Chart timeframe")
-            for timeframe in TIMEFRAMES:
-                label = timeframe.upper() if timeframe in {"1d", "1w"} else timeframe
-                self.timeframe_selector.addItem(label, timeframe)
+            self.timeframe_selector.setItems(DEFAULT_MARKET_BAR_TIMEFRAMES)
             self.timeframe_selector.activated.connect(
                 lambda _index: self.timeframe_selected.emit(
                     str(self.timeframe_selector.currentData() or "")
@@ -1579,12 +1657,14 @@ class MarketStatsWidget(QtWidgets.QWidget):
         selector = getattr(self, "timeframe_selector", None)
         if selector is None:
             return
-        index = selector.findData(str(interval))
-        if index < 0 or index == selector.currentIndex():
+        if str(interval) == selector.currentData():
             return
-        blocker = QtCore.QSignalBlocker(selector)
-        selector.setCurrentIndex(index)
-        del blocker
+        selector.setCurrentData(str(interval))
+
+    def set_timeframes(self, intervals: object, current: str | None = None) -> None:
+        selector = getattr(self, "timeframe_selector", None)
+        if selector is not None:
+            selector.setItems(normalized_market_bar_timeframes(intervals), current)
 
     def open_metric_detail(self, metric_key: str) -> None:
         if metric_key not in METRIC_DETAIL_KEYS:
@@ -2006,7 +2086,6 @@ class WatchlistWidget(QtWidgets.QWidget):
         self.table.setEditTriggers(QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers)
         self.table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QtWidgets.QAbstractItemView.SelectionMode.SingleSelection)
-        self.table.setToolTip("Double-click a pair to open it")
         self.table.cellDoubleClicked.connect(self._open_row)
         self.add_button.clicked.connect(self.add_current)
         self.remove_button.clicked.connect(self.remove_selected)
@@ -2508,7 +2587,6 @@ class WatchlistSidebarWidget(QtWidgets.QWidget):
         group_bar.setSpacing(4)
         self.group_selector = QtWidgets.QComboBox()
         self.group_selector.setObjectName("watchlistGroupSelector")
-        self.group_selector.setToolTip("Select watchlist group")
         self.group_selector.currentTextChanged.connect(self._select_group)
         self.group_menu_button = QtWidgets.QToolButton()
         self.group_menu_button.setObjectName("watchlistGroupMenu")
@@ -3009,7 +3087,6 @@ class SymbolSearchDialog(QtWidgets.QDialog):
         self.table.cellDoubleClicked.connect(
             lambda row, _column: self._accept_row(row)
         )
-        self.table.setToolTip("Click a column heading to change sorting")
         self.search.textChanged.connect(self._refresh)
         self.search.returnPressed.connect(self._accept_current)
         self.result_count = QtWidgets.QLabel()

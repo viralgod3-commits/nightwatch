@@ -12,6 +12,9 @@ from PySide6.QtCore import QTimer, Qt, Signal
 
 from ..utilities import TextRole, apply_text_render_hints, set_text_role
 from ..utilities import device_pixel_value
+from ..constants import (
+    MARKET_BAR_TIMEFRAME_LIMIT, MARKET_BAR_TIMEFRAME_PRESETS, TIMEFRAMES,
+)
 
 
 class MicrostructureNewsCard(QtWidgets.QFrame):
@@ -169,14 +172,7 @@ class MicrostructureNewsCard(QtWidgets.QFrame):
 
     def set_detail_html(self, detail: str) -> None:
         self._hover_html = str(detail)
-
-    def enterEvent(self, event: QtCore.QEvent) -> None:
-        super().enterEvent(event)
-        if (
-            self._hover_html
-            and not bool(self.window().property("chartTooltipsSuppressed"))
-        ):
-            QtWidgets.QToolTip.showText(QtGui.QCursor.pos(), self._hover_html, self)
+        self.setToolTip(self._hover_html)
 
     def leaveEvent(self, event: QtCore.QEvent) -> None:
         QtWidgets.QToolTip.hideText()
@@ -628,7 +624,7 @@ class IndicatorShortcutsDialog(QtWidgets.QDialog):
         heading = QtWidgets.QLabel("INDICATOR SHORTCUTS")
         heading.setObjectName("dialogHeading")
         note = QtWidgets.QLabel(
-            "Assign Ctrl shortcuts to chart indicators. Number keys 1–9 select timeframes."
+            "Assign Ctrl shortcuts to chart indicators. Number keys follow the market bar's selected timeframes from left to right."
         )
         note.setObjectName("subtleLabel")
         note.setWordWrap(True)
@@ -904,6 +900,9 @@ class NightwatchSettingsDialog(QtWidgets.QDialog):
         self._directional_mode_combos: dict[str, QtWidgets.QComboBox] = {}
         self._mode_buttons: dict[int, QtWidgets.QRadioButton] = {}
         self.volume_height_spin: QtWidgets.QSpinBox | None = None
+        self._timeframe_buttons: dict[str, QtWidgets.QPushButton] = {}
+        self._timeframe_presets: dict[str, QtWidgets.QPushButton] = {}
+        self._timeframe_preview: QtWidgets.QLabel | None = None
         self.frame_benchmark_button: QtWidgets.QPushButton | None = None
         self.frame_benchmark_label: QtWidgets.QLabel | None = None
         self.developer_tabs: QtWidgets.QTabWidget | None = None
@@ -1393,6 +1392,47 @@ class NightwatchSettingsDialog(QtWidgets.QDialog):
             "Chart & Indicators",
             "Chart behavior, visible layers, drawing tools, and studies are grouped here so the complete chart setup is one click away.",
         )
+        timeframe_box, timeframe_layout = self._group("Market bar timeframes")
+        timeframe_note = QtWidgets.QLabel(
+            "Choose 1–9 timeframes. Number shortcuts follow the selected buttons from left to right. "
+            "Your current chart interval stays unchanged; if omitted, it remains visible until you switch."
+        )
+        timeframe_note.setObjectName("subtleLabel")
+        timeframe_note.setWordWrap(True)
+        timeframe_layout.addWidget(timeframe_note)
+        presets = QtWidgets.QHBoxLayout()
+        for name, intervals in MARKET_BAR_TIMEFRAME_PRESETS.items():
+            button = QtWidgets.QPushButton(name)
+            button.setObjectName("marketTimeframePreset")
+            button.setSizePolicy(QtWidgets.QSizePolicy.Policy.Ignored, QtWidgets.QSizePolicy.Policy.Fixed)
+            button.setCheckable(True)
+            button.setAutoDefault(False)
+            button.clicked.connect(
+                lambda _checked=False, values=intervals: self._timeframe_selection_changed(values)
+            )
+            presets.addWidget(button)
+            self._timeframe_presets[name] = button
+        timeframe_layout.addLayout(presets)
+        choices = QtWidgets.QGridLayout()
+        choices.setHorizontalSpacing(6)
+        choices.setVerticalSpacing(6)
+        for index, interval in enumerate(TIMEFRAMES):
+            label = interval.upper() if interval in {"1d", "1w"} else interval
+            button = QtWidgets.QPushButton(label)
+            button.setObjectName("marketTimeframeChoice")
+            button.setSizePolicy(QtWidgets.QSizePolicy.Policy.Ignored, QtWidgets.QSizePolicy.Policy.Fixed)
+            button.setCheckable(True)
+            button.setAutoDefault(False)
+            button.setAccessibleName(f"Show {label} in market bar")
+            button.toggled.connect(self._timeframe_button_toggled)
+            choices.addWidget(button, index // 7, index % 7)
+            self._timeframe_buttons[interval] = button
+        timeframe_layout.addLayout(choices)
+        self._timeframe_preview = QtWidgets.QLabel()
+        self._timeframe_preview.setObjectName("subtleLabel")
+        self._timeframe_preview.setWordWrap(True)
+        timeframe_layout.addWidget(self._timeframe_preview)
+        layout.addWidget(timeframe_box)
         grid = self._settings_grid(layout)
 
         benchmark_box, benchmark_layout = self._group("30-second chart benchmark")
@@ -1513,6 +1553,39 @@ class NightwatchSettingsDialog(QtWidgets.QDialog):
         grid.addWidget(indicators_box, 4, 0, 1, 2)
         self._refresh_frame_benchmark()
         return page
+
+    def _timeframe_button_toggled(self, _checked: bool) -> None:
+        if self._syncing:
+            return
+        selected = tuple(interval for interval, button in self._timeframe_buttons.items() if button.isChecked())
+        if 1 <= len(selected) <= MARKET_BAR_TIMEFRAME_LIMIT:
+            self._timeframe_selection_changed(selected)
+        else:
+            self._sync_timeframes()
+
+    def _timeframe_selection_changed(self, intervals: tuple[str, ...]) -> None:
+        if not self._syncing:
+            self.host.set_market_bar_timeframes(intervals)
+            self._sync_timeframes()
+
+    def _sync_timeframes(self) -> None:
+        selected = self.host.market_bar_timeframes
+        for interval, button in self._timeframe_buttons.items():
+            active = interval in selected
+            blocker = QtCore.QSignalBlocker(button)
+            button.setChecked(active)
+            button.setEnabled((active and len(selected) > 1) or (not active and len(selected) < MARKET_BAR_TIMEFRAME_LIMIT))
+            del blocker
+        for name, button in self._timeframe_presets.items():
+            blocker = QtCore.QSignalBlocker(button)
+            button.setChecked(selected == MARKET_BAR_TIMEFRAME_PRESETS[name])
+            del blocker
+        if self._timeframe_preview is not None:
+            keys = "   ·   ".join(
+                f"{index} → {interval.upper() if interval in {'1d', '1w'} else interval}"
+                for index, interval in enumerate(selected, 1)
+            )
+            self._timeframe_preview.setText(f"{len(selected)}/9 selected\n{keys}")
 
     def _start_frame_benchmark(self) -> None:
         clock = getattr(self.host, "presentation_clock", None)
@@ -1912,6 +1985,7 @@ class NightwatchSettingsDialog(QtWidgets.QDialog):
             for action in tuple(self._action_widgets):
                 self._sync_action_widget(action)
             self._sync_directional_modes()
+            self._sync_timeframes()
 
             if self.volume_height_spin is not None:
                 blocker = QtCore.QSignalBlocker(self.volume_height_spin)
@@ -1978,4 +2052,3 @@ class NightwatchSettingsDialog(QtWidgets.QDialog):
         super().showEvent(event)
         if self.categories.currentRow() == self.CATEGORIES.index("Advanced"):
             QtCore.QTimer.singleShot(0, self._ensure_current_developer_tool)
-
