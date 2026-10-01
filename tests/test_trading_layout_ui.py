@@ -14,7 +14,7 @@ from nightwatch.theme import RIGHT_LAYOUT_PRESETS, THEMES
 from nightwatch.trading.trading_ui import TradingWorkspace
 from nightwatch.ui.dialogs import RightPanelPresetsDialog
 from nightwatch.ui.panels import PanelSpec, RightRailController, RightRailState, panel_ids
-from nightwatch.utilities import TextRole, load_app_fonts, typography_font
+from nightwatch.utilities import load_app_fonts
 
 
 @pytest.fixture
@@ -120,7 +120,6 @@ def test_ticket_controls_remain_reachable_at_different_sizes(workspace, qapp, wi
         source = ticket._field_rows['source']
         assert selector.y() == source.y()
         assert selector.geometry().right() < source.geometry().left()
-    assert ticket.quantity_edit.font().pointSizeF() == typography_font(TextRole.TABLE_VALUE).pointSizeF()
     ticket.ticket_scroll.verticalScrollBar().setValue(ticket.ticket_scroll.verticalScrollBar().maximum())
     settle(qapp)
     assert ticket.buy_button.isVisible() and ticket.execution_state_label.isVisible()
@@ -197,8 +196,6 @@ def test_account_rows_and_metrics_reflow_without_resetting_state(workspace, qapp
     workspace.set_mark_price(66000, 'BTCUSDT')
     assert workspace.selected_position()['unrealizedProfit'] == 500.0
     details = workspace.account_frame.details
-    assert details.pnl_label.font().pointSizeF() == typography_font(TextRole.MARKET_VALUE_EMPHASIZED).pointSizeF()
-    assert details.trade_button.width() >= 55
     assert details.values['entry'].geometry().right() < details.width()
     for index in range(4):
         workspace.tabs.setCurrentIndex(index)

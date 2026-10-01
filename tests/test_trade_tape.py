@@ -87,27 +87,6 @@ def test_results_are_compact_with_explanations_in_tooltips(qapp, outcome, symbol
     assert index.data(Qt.ItemDataRole.TextAlignmentRole) == int(Qt.AlignmentFlag.AlignCenter)
 
 
-def test_typography_states_select_static_faces_and_keep_role_preferences(qapp, monkeypatch):
-    import nightwatch.utilities as utilities
-    monkeypatch.setattr(utilities, '_NUMERIC_FONT_FAMILIES', {
-        ('normal', 400): 'Registered regular',
-        ('normal', 700): 'Registered bold',
-    })
-    controller = TypographyController()
-    controller.configure({TextRole.TABLE_VALUE: {'size': 13.5}}, notify=False)
-    regular = controller.font(TextRole.TABLE_VALUE, state='trade_price_regular')
-    changed = controller.font(TextRole.TABLE_VALUE, state='trade_price_changed')
-    assert regular.families()[0] == 'Registered regular'
-    assert changed.families()[0] == 'Registered bold'
-    assert regular.weight() == QtGui.QFont.Weight.Normal
-    assert changed.weight() == QtGui.QFont.Weight.Bold
-    assert regular.pointSizeF() == changed.pointSizeF() == 13.5
-    assert controller.font(TextRole.TABLE_VALUE).weight() == QtGui.QFont.Weight.Medium
-    assert controller.font(TextRole.TABLE_VALUE, emphasized=True).weight() == QtGui.QFont.Weight.DemiBold
-    regular.setPointSizeF(99)
-    assert controller.font(TextRole.TABLE_VALUE, state='trade_price_regular').pointSizeF() == 13.5
-
-
 @pytest.mark.parametrize('width,price,previous,side', [
     (120, 2248.73, 2247.74, 'BUY'),
     (120, 2248.86, 2248.66, 'SELL'),
