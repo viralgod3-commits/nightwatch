@@ -1,4 +1,5 @@
 from dataclasses import replace
+import math
 
 import pytest
 from PySide6 import QtCore, QtGui, QtWidgets
@@ -31,22 +32,24 @@ def snapshot(trades, sequence=1):
 
 
 @pytest.mark.parametrize('price,previous,changed', [
-    ('2248.73', '2247.74', {3, 6}),  # Unchanged digit between changed digits.
-    ('2248.86', '2248.66', {5}),  # Unchanged trailing digit stays regular.
+    ('2248.73', '2247.74', {3, 4, 5, 6}),  # Emphasize the decimal point and entire suffix.
+    ('2248.86', '2248.66', {5, 6}),  # Include the unchanged trailing digit.
     ('2248.75', '2248.75', set()),
-    ('2248.75', '', set()),
-    ('99.90', '100.00', {0, 1, 3}),
-    ('100.00', '99.90', {0, 1, 2, 4}),
-    ('100.01', '99.99', {0, 1, 2, 4, 5}),
+    ('2248.75', '', set(range(7))),
+    ('99.90', '100.00', set(range(5))),
+    ('100.00', '99.90', set(range(6))),
+    ('100.01', '99.99', set(range(6))),
+    ('500.00', '1500.00', set(range(6))),  # A removed leading place is still a price change.
+    ('9.01', '109.01', set(range(4))),
     ('100000', '99999', {0, 1, 2, 3, 4, 5}),
-    ('1234.50', '1234.40', {5}),
+    ('1234.50', '1234.40', {5, 6}),
     ('0.00000012', '0.00000010', {9}),
-    ('0.00000525', '0.00000475', {7, 8}),
+    ('0.00000525', '0.00000475', {7, 8, 9}),
     ('1.200', '1.2', set()),
     ('0.1', '0.01', {2}),
 ])
-def test_price_emphasis_compares_individual_decimal_places(price, previous, changed):
-    mask = _TradePriceDelegate.changed_digits(price, previous)
+def test_price_emphasis_starts_at_first_differing_decimal_place(price, previous, changed):
+    mask = _TradePriceDelegate.emphasis_mask(price, previous)
     assert len(mask) == len(price)
     assert {position for position, emphasis in enumerate(mask) if emphasis} == changed
 
@@ -134,15 +137,22 @@ def test_price_painter_uses_one_side_color_and_clips_to_the_cell(qapp, width, pr
         assert all(color.red() > 3 * color.green() for _, _, color in ink)
     layout, line = next(reversed(delegate._layouts.values()))
     assert layout.font().weight() == QtGui.QFont.Weight.Normal
-    assert all(span.format.fontWeight() == QtGui.QFont.Weight.Bold for span in layout.formats())
-    assert all(span.format.foreground().style() == Qt.BrushStyle.NoBrush for span in layout.formats())
+    spans = [span for span in layout.formats() if span.format.fontWeight() == QtGui.QFont.Weight.Bold]
+    color = model.index(0, 2).data(Qt.ItemDataRole.ForegroundRole)
+    assert all(span.format.foreground().color().getRgb()[:3] == color.getRgb()[:3] for span in layout.formats())
+    for span in layout.formats():
+        opacity = span.format.foreground().color().alphaF()
+        if span in spans:
+            assert opacity == 1.0
+        else:
+            assert 0.49 <= opacity <= 0.51
     if width == 120:
-        positions = {i for span in layout.formats() for i in range(span.start, span.start + span.length)}
-        assert positions == ({3, 6} if side == 'BUY' else {5})
+        positions = {i for span in spans for i in range(span.start, span.start + span.length)}
+        assert positions == ({3, 4, 5, 6} if side == 'BUY' else {5, 6})
     else:
         assert layout.text().startswith('…') and layout.text().endswith('12')
         assert line.naturalTextWidth() <= width - 9
-        assert [(span.start, span.length) for span in layout.formats()] == [(len(layout.text()) - 1, 1)]
+        assert [(span.start, span.length) for span in spans] == [(len(layout.text()) - 1, 1)]
 
 
 def test_layout_cache_is_bounded_and_reuses_shaped_text(qapp):
@@ -150,14 +160,15 @@ def test_layout_cache_is_bounded_and_reuses_shaped_text(qapp):
     regular = typography_font(TextRole.TABLE_VALUE, state='trade_price_regular')
     changed = typography_font(TextRole.TABLE_VALUE, state='trade_price_changed')
     device = QtGui.QImage(120, 28, QtGui.QImage.Format.Format_ARGB32)
+    color = QtGui.QColor('#00C56A')
     for value in range(delegate.LAYOUT_CACHE_LIMIT + 10):
         text = f'{value}.00'
-        delegate._layout(text, (False,) * len(text), regular, changed, device)
+        delegate._layout(text, (False,) * len(text), regular, changed, device, color)
     assert len(delegate._layouts) == delegate.LAYOUT_CACHE_LIMIT
     assert all(key[0] != '0.00' for key in delegate._layouts)
     text = f'{delegate.LAYOUT_CACHE_LIMIT + 9}.00'
-    before = delegate._layout(text, (False,) * len(text), regular, changed, device)
-    after = delegate._layout(text, (False,) * len(text), regular, changed, device)
+    before = delegate._layout(text, (False,) * len(text), regular, changed, device, color)
+    after = delegate._layout(text, (False,) * len(text), regular, changed, device, color)
     assert before is after
 
 
@@ -173,8 +184,8 @@ def test_prepend_and_outcome_updates_keep_model_rows_and_neighbor_comparison(qap
     model.set_trades(rows)
     assert [row[0].sequence for row in model.rows] == [4, 3, 2]
     assert not resets
-    assert _TradePriceDelegate.changed_digits(model.index(1, 2).data(), model.index(2, 2).data()) == (
-        False, False, False, True, False, False, True,
+    assert _TradePriceDelegate.emphasis_mask(model.index(1, 2).data(), model.index(2, 2).data()) == (
+        False, False, False, True, True, True, True,
     )
     model.set_trades([replace(rows[0], outcome='FOLLOW_THROUGH'), *rows[1:]])
     assert model.index(0, 4).data() == '✓'
@@ -193,12 +204,12 @@ def test_all_and_large_modes_compare_preceding_displayed_trade_and_update_result
     widget._refresh_table()
     qapp.processEvents()
     assert [row[0].sequence for row in widget.model.rows] == [3, 1]
-    mask = _TradePriceDelegate.changed_digits(widget.model.index(0, 2).data(), widget.model.index(1, 2).data())
+    mask = _TradePriceDelegate.emphasis_mask(widget.model.index(0, 2).data(), widget.model.index(1, 2).data())
     assert {i for i, changed in enumerate(mask) if changed} == {4, 5}
     widget.set_mode('ALL', emit=False)
     widget._refresh_table()
     assert [row[0].sequence for row in widget.model.rows] == [3, 2, 1]
-    mask = _TradePriceDelegate.changed_digits(widget.model.index(0, 2).data(), widget.model.index(1, 2).data())
+    mask = _TradePriceDelegate.emphasis_mask(widget.model.index(0, 2).data(), widget.model.index(1, 2).data())
     assert {i for i, changed in enumerate(mask) if changed} == {5}
     widget.set_order_flow_snapshot(snapshot([*rows[:-1], replace(rows[-1], outcome='FOLLOW_THROUGH')], sequence=2))
     widget._refresh_table()
@@ -208,3 +219,59 @@ def test_all_and_large_modes_compare_preceding_displayed_trade_and_update_result
     assert widget.model.index(0, 4).data() == '✓'
     widget.close()
     widget.deleteLater()
+
+
+@pytest.mark.parametrize('side', ['BUY', 'SELL'])
+@pytest.mark.parametrize('ratio', [1, 2])
+@pytest.mark.parametrize('hinting', ['full', 'none'])
+def test_changed_digit_is_visibly_brighter_in_rendered_pixels(qapp, monkeypatch, side, ratio, hinting):
+    import nightwatch.orderbook.orderbook_ui as tape
+    controller = TypographyController()
+    controller.configure({TextRole.TABLE_VALUE: {'hinting': hinting}}, notify=False)
+    monkeypatch.setattr(tape, 'typography_font', controller.font)
+
+    def digit_ink(previous):
+        model = _TradesTapeModel()
+        model.decimals = 1
+        model.set_trades([trade(2, 83459.9, side=side), trade(1, previous)])
+        delegate = _TradePriceDelegate()
+        image = QtGui.QImage(128 * ratio, 28 * ratio, QtGui.QImage.Format.Format_ARGB32)
+        image.setDevicePixelRatio(ratio)
+        image.fill(Qt.GlobalColor.black)
+        option = QtWidgets.QStyleOptionViewItem()
+        option.rect = QtCore.QRect(0, 0, 128, 28)
+        painter = QtGui.QPainter(image)
+        try:
+            delegate.paint(painter, option, model.index(0, 2))
+        finally:
+            painter.end()
+        _, line = next(reversed(delegate._layouts.values()))
+        origin = 123 - line.naturalTextWidth()
+        left = math.floor((origin + line.cursorToX(6)[0]) * ratio)
+        right = math.ceil((origin + line.cursorToX(7)[0]) * ratio)
+        pixels = [image.pixelColor(x, y) for x in range(left, right) for y in range(image.height())]
+        values = [color.green() if side == 'BUY' else color.red() for color in pixels]
+        return sum(values), max(values)
+
+    normal_mass, normal_peak = digit_ink(83459.9)
+    changed_mass, changed_peak = digit_ink(83459.8)
+    assert changed_mass >= normal_mass * 1.8
+    assert changed_peak >= normal_peak * 1.6
+
+
+def test_cached_price_text_keeps_buy_and_sell_colors_separate(qapp):
+    delegate = _TradePriceDelegate()
+    regular = typography_font(TextRole.TABLE_VALUE, state='trade_price_regular')
+    changed = typography_font(TextRole.TABLE_VALUE, state='trade_price_changed')
+    image = QtGui.QImage(128, 28, QtGui.QImage.Format.Format_ARGB32)
+    text = '83459.9'
+    mask = delegate.emphasis_mask(text, '83459.8')
+    buy = QtGui.QColor('#00C56A')
+    sell = QtGui.QColor('#F0143E')
+    buy_layout = delegate._layout(text, mask, regular, changed, image, buy)
+    sell_layout = delegate._layout(text, mask, regular, changed, image, sell)
+    assert buy_layout is not sell_layout
+    assert len(delegate._layouts) == 2
+    for layout, expected in ((buy_layout[0], buy), (sell_layout[0], sell)):
+        assert all(span.format.foreground().color().getRgb()[:3] == expected.getRgb()[:3]
+                   for span in layout.formats())

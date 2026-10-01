@@ -229,6 +229,11 @@ TYPOGRAPHY_STATE_WEIGHTS: dict[str, int] = {
     "trade_price_changed": 700,
 }
 
+TYPOGRAPHY_STATE_OPACITIES: dict[str, float] = {
+    "trade_price_regular": 0.5,
+    "trade_price_changed": 1.0,
+}
+
 TYPOGRAPHY_LIMITS: dict[str, dict[str, int]] = {
     TextRole.ORDERBOOK_PRICE: {"min_pixel_size": 9},
     TextRole.TABLE_VALUE: {"min_pixel_size": 9},
@@ -643,6 +648,11 @@ def typography_min_pixel_size(role: str) -> int:
 def typography_state_weight(name: str) -> int:
     """Return a centralized QSS/state weight for non-role transient emphasis."""
     return int(TYPOGRAPHY_STATE_WEIGHTS.get(str(name), 400))
+
+
+def typography_state_opacity(name: str) -> float:
+    """Return the central text intensity for one presentation state."""
+    return float(TYPOGRAPHY_STATE_OPACITIES.get(str(name), 1.0))
 
 
 def configure_typography(

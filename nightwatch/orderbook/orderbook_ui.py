@@ -462,6 +462,7 @@ from ..models import human_number
 from ..utilities import (
     ElidedLabel, TextRole, apply_text_render_hints, set_text_role,
     typography_font, typography_font_at_pixel_size, typography_min_pixel_size,
+    typography_state_opacity,
 )
 
 class _TradesTapeModel(QtCore.QAbstractTableModel):
@@ -557,7 +558,7 @@ class _TradesTapeModel(QtCore.QAbstractTableModel):
 
 
 class _TradePriceDelegate(QtWidgets.QStyledItemDelegate):
-    """Emphasize changed decimal places in bold, retaining one aggressor color."""
+    """Dim the shared prefix; emphasize the changed suffix in the same trade hue."""
 
     LAYOUT_CACHE_LIMIT = 128
 
@@ -566,40 +567,49 @@ class _TradePriceDelegate(QtWidgets.QStyledItemDelegate):
         self._layouts = OrderedDict()
 
     @staticmethod
-    def changed_digits(price: str, previous: str) -> tuple[bool, ...]:
-        """Compare fixed-point strings by place value, including integer carries."""
+    def emphasis_mask(price: str, previous: str) -> tuple[bool, ...]:
+        """Emphasize from the first differing place through the end of the price."""
         if not previous:
-            return (False,) * len(price)
+            return (True,) * len(price)
         point = price.find('.') if '.' in price else len(price)
         previous_point = previous.find('.') if '.' in previous else len(previous)
         offset = previous_point - point
-        changed = []
+        if offset > 0 and any('1' <= digit <= '9' for digit in previous[:offset]):
+            return (True,) * len(price)
         for position, digit in enumerate(price):
             reference = position + offset
             older = previous[reference] if 0 <= reference < len(previous) else '0'
-            changed.append('0' <= digit <= '9' and digit != older)
-        return tuple(changed)
+            if '0' <= digit <= '9' and digit != older:
+                return (False,) * position + (True,) * (len(price) - position)
+        return (False,) * len(price)
 
-    def _layout(self, text, mask, regular, changed, device):
+    def _layout(self, text, mask, regular, changed, device, color):
+        regular_opacity = typography_state_opacity('trade_price_regular')
+        changed_opacity = typography_state_opacity('trade_price_changed')
         key = (text, mask, regular.key(), changed.key(),
-               device.logicalDpiX(), device.logicalDpiY(), device.devicePixelRatioF())
+               device.logicalDpiX(), device.logicalDpiY(), device.devicePixelRatioF(),
+               color.rgba(), regular_opacity, changed_opacity)
         cached = self._layouts.get(key)
         if cached is not None:
             self._layouts.move_to_end(key)
             return cached
         layout = QtGui.QTextLayout(text, regular, device)
         layout.setCacheEnabled(True)
+        dim_color = QtGui.QColor(color)
+        dim_color.setAlphaF(color.alphaF() * regular_opacity)
+        bright_color = QtGui.QColor(color)
+        bright_color.setAlphaF(color.alphaF() * changed_opacity)
         formats = []
-        start = None
-        for position, emphasized in enumerate((*mask, False)):
-            if emphasized and start is None:
-                start = position
-            elif not emphasized and start is not None:
-                span = QtGui.QTextLayout.FormatRange()
-                span.start, span.length = start, position - start
-                span.format.setFont(changed)
-                formats.append(span)
-                start = None
+        start = 0
+        for position in range(1, len(text) + 1):
+            if position < len(text) and mask[position] == mask[start]:
+                continue
+            span = QtGui.QTextLayout.FormatRange()
+            span.start, span.length = start, position - start
+            span.format.setFont(changed if mask[start] else regular)
+            span.format.setForeground(bright_color if mask[start] else dim_color)
+            formats.append(span)
+            start = position
         layout.setFormats(formats)
         layout.beginLayout()
         line = layout.createLine()
@@ -615,14 +625,15 @@ class _TradePriceDelegate(QtWidgets.QStyledItemDelegate):
     def paint(self, painter, option, index):
         text = str(index.data() or '')
         previous = str(index.model().index(index.row() + 1, index.column()).data() or '')
-        mask = self.changed_digits(text, previous)
+        mask = self.emphasis_mask(text, previous)
         rect = QtCore.QRectF(option.rect).adjusted(4, 0, -5, 0)
         if not text or rect.width() <= 0:
             return
         device = painter.device()
+        color = index.data(Qt.ItemDataRole.ForegroundRole)
         regular = typography_font(TextRole.TABLE_VALUE, state='trade_price_regular')
         changed = typography_font(TextRole.TABLE_VALUE, state='trade_price_changed')
-        layout, line = self._layout(text, mask, regular, changed, device)
+        layout, line = self._layout(text, mask, regular, changed, device, color)
         if line.naturalTextWidth() > rect.width():
             pixels = regular.pixelSize() if regular.pixelSize() > 0 else round(regular.pointSizeF() * device.logicalDpiY() / 72)
             size = max(typography_min_pixel_size(TextRole.TABLE_VALUE),
@@ -630,12 +641,12 @@ class _TradePriceDelegate(QtWidgets.QStyledItemDelegate):
             if size < pixels:
                 regular = typography_font_at_pixel_size(regular, size)
                 changed = typography_font_at_pixel_size(changed, size)
-                layout, line = self._layout(text, mask, regular, changed, device)
+                layout, line = self._layout(text, mask, regular, changed, device, color)
             if line.naturalTextWidth() > rect.width():
                 shown = QtGui.QFontMetricsF(changed, device).elidedText(text, Qt.TextElideMode.ElideLeft, int(rect.width()))
                 suffix_length = len(shown) - 1 if shown.startswith('…') else 0
                 mask = (False,) + mask[-suffix_length:] if suffix_length > 0 else (False,) * len(shown)
-                layout, line = self._layout(shown, mask, regular, changed, device)
+                layout, line = self._layout(shown, mask, regular, changed, device, color)
         if not line.isValid():
             return
         painter.save()
@@ -644,7 +655,7 @@ class _TradePriceDelegate(QtWidgets.QStyledItemDelegate):
             painter.fillRect(option.rect, QtGui.QColor(ORDERBOOK_REFERENCE['bg']))
             painter.setClipRect(rect, Qt.ClipOperation.IntersectClip)
             apply_text_render_hints(painter)
-            painter.setPen(index.data(Qt.ItemDataRole.ForegroundRole))
+            painter.setPen(color)
             x = rect.right() - line.naturalTextWidth()
             y = rect.top() + (rect.height() - line.height()) / 2
             layout.draw(painter, QtCore.QPointF(x, y))
@@ -725,7 +736,7 @@ class TradesTapeWidget(QtWidgets.QWidget):
         header.setSectionResizeMode(QtWidgets.QHeaderView.ResizeMode.Fixed)
         header.setSectionResizeMode(2, QtWidgets.QHeaderView.ResizeMode.Stretch)
         header.setStretchLastSection(False)
-        self.table.setToolTip('Newest first · times in UTC. Green: aggressive buy; rose: aggressive sell. Bold price digits changed from the preceding displayed trade. Result: ✓ follow-through; × no follow-through; … pending (500 ms). Scroll down to hold your place; scroll to the top to follow live trades.')
+        self.table.setToolTip('Newest first · times in UTC. Green: aggressive buy; rose: aggressive sell. Shared price prefixes are dim; the suffix from the first differing digit is bright and bold, compared with the preceding displayed trade. Result: ✓ follow-through; × no follow-through; … pending (500 ms). Scroll down to hold your place; scroll to the top to follow live trades.')
         self.empty = QtWidgets.QLabel('Waiting for large trades…', self.table.viewport())
         self.empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.empty.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
