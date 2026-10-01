@@ -54,7 +54,7 @@ _STATE_COLUMN_MAX_WIDTH = 120.0
 _PAIRED_ANALYTIC_WIDTH = 70.0
 # Responsive layouts introduce analytical lanes as width becomes available.
 from ..models import (
-    ORDER_FLOW_AGGREGATION_MULTIPLIERS, DomExecutionContext, DomPositionOverlay,
+    ORDER_FLOW_AGGREGATION_MULTIPLIERS, DomPositionOverlay,
     OrderFlowDisplayLevel, OrderFlowPresentationFrame,
     OrderFlowSnapshot, OrderFlowTradePrint,
 )
@@ -496,9 +496,10 @@ class _TradesTapeModel(QtCore.QAbstractTableModel):
 
     def headerData(self, section, orientation, role=Qt.ItemDataRole.DisplayRole):
         if orientation == Qt.Orientation.Horizontal and role == Qt.ItemDataRole.DisplayRole:
-            return ('PRICE', 'QTY' if self.value_mode == 'base' else 'SIZE', 'RESULT', 'TIME')[section]
-        if orientation == Qt.Orientation.Horizontal and section == 2 and role == Qt.ItemDataRole.TextAlignmentRole:
-            return int(Qt.AlignmentFlag.AlignCenter)
+            return ('PRICE', 'SIZE', 'TAG', 'TIME')[section]
+        if orientation == Qt.Orientation.Horizontal and role == Qt.ItemDataRole.TextAlignmentRole:
+            return int(Qt.AlignmentFlag.AlignCenter if section == 2
+                       else Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         return None
 
     def data(self, index, role=Qt.ItemDataRole.DisplayRole):
@@ -526,7 +527,7 @@ class _TradesTapeModel(QtCore.QAbstractTableModel):
         if role == Qt.ItemDataRole.TextAlignmentRole:
             horizontal = (Qt.AlignmentFlag.AlignRight if column in (0, 1)
                           else Qt.AlignmentFlag.AlignHCenter if column == 2
-                          else Qt.AlignmentFlag.AlignLeft)
+                          else Qt.AlignmentFlag.AlignRight)
             return int(Qt.AlignmentFlag.AlignVCenter | horizontal)
         if role == Qt.ItemDataRole.ToolTipRole:
             outcome = self.OUTCOMES.get(trade.outcome, ('—', 'unknown'))[1]
@@ -651,7 +652,7 @@ class _TradePriceDelegate(QtWidgets.QStyledItemDelegate):
         text = str(index.data() or '')
         previous = str(index.model().index(index.row() + 1, index.column()).data() or '')
         mask = self.amount_emphasis_mask(text) if self._amount else self.emphasis_mask(text, previous)
-        rect = QtCore.QRectF(option.rect).adjusted(4, 0, -5, 0)
+        rect = QtCore.QRectF(option.rect).adjusted(8, 0, -8, 0)
         if not text or rect.width() <= 0:
             return
         device = painter.device()
@@ -765,11 +766,11 @@ class TradesTapeWidget(QtWidgets.QWidget):
         self.table.verticalHeader().setSectionResizeMode(QtWidgets.QHeaderView.ResizeMode.Fixed)
         self.table.verticalHeader().setDefaultSectionSize(28)
         header = self.table.horizontalHeader()
-        header.hide()
+        header.show()
+        set_text_role(header, TextRole.UI_CAPTION)
         header.setMinimumSectionSize(0)
         header.setSectionResizeMode(QtWidgets.QHeaderView.ResizeMode.Fixed)
         header.setStretchLastSection(False)
-        self.table.setToolTip('Newest first · times in UTC. Price colour shows aggressor side. Result: ✓ follow-through; × no follow-through; … pending (500 ms). Result colour shows observed price direction: green up, rose down, grey flat or pending. Amount whole units are bold; fractions are quieter. Scroll down to hold your place; scroll to the top to follow live trades.')
         self.empty = QtWidgets.QLabel('Waiting for large trades…', self.table.viewport())
         self.empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.empty.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
@@ -789,14 +790,22 @@ class TradesTapeWidget(QtWidgets.QWidget):
         metrics = self.table.fontMetrics()
         header = self.table.horizontalHeader()
         width = max(0, self.table.viewport().width())
-        result_width = max(28, metrics.horizontalAdvance('✓') + 12)
-        time_width = min(metrics.horizontalAdvance('00:00:00') + 20,
-                         max(0, width - result_width - 40))
-        numeric_width = max(0, width - result_width - time_width)
-        price_width = round(numeric_width * 0.5)
-        for column, size in enumerate((price_width, numeric_width - price_width,
-                                       result_width, time_width)):
+        # Stable lanes with the spare room shared evenly. Neither numeric
+        # column consumes all the space left by a cramped tag/time pair.
+        natural = (80, 74, 36, metrics.horizontalAdvance('00:00:00') + 16)
+        if width >= sum(natural):
+            extra = (width - sum(natural)) / 4
+            sizes = [round(value + extra) for value in natural]
+            sizes[-1] = width - sum(sizes[:-1])
+        else:
+            tag = min(36, round(width * .16))
+            time = min(natural[-1], round(width * .32))
+            numeric = max(0, width - tag - time)
+            price = round(numeric * .52)
+            sizes = (price, numeric - price, tag, time)
+        for column, size in enumerate(sizes):
             header.resizeSection(column, size)
+        header.setFixedHeight(max(24, header.fontMetrics().height() + 8))
         self.table.setColumnHidden(2, False)
         self.table.verticalHeader().setDefaultSectionSize(max(26, metrics.height() + 9))
 
@@ -978,12 +987,12 @@ class TradesTapeWidget(QtWidgets.QWidget):
         self.setStyleSheet(
             f"QWidget {{ background: {p['bg']}; color: {p['text']}; border: 0; }}"
             f"QTableView {{ background: {p['bg']}; color: {p['text']}; border: 0; }}"
-            f"QHeaderView::section {{ background: {p['surface_raised']}; color: {p['muted']}; border: 0; padding: 7px 4px; }}"
-            f"QTableView::item {{ border: 0; padding: 3px 4px; }}"
-            f"QToolButton {{ background: {p['surface_raised']}; color: {p['text']}; border: 1px solid {p['grid_strong']}; border-radius: 5px; padding: 5px 8px; }}"
+            f"QHeaderView::section {{ background: {p['bg']}; color: {p['muted']}; border: 0; padding: 3px 8px; }}"
+            f"QTableView::item {{ border: 0; padding: 3px 8px; }}"
+            f"QToolButton {{ background: {p['surface_raised']}; color: {p['text']}; border: 1px solid {p['grid_strong']}; border-radius: 3px; padding: 3px 8px; }}"
             f"QToolButton:hover {{ background: {p['control_hover']}; }}"
-            f"QScrollBar:vertical {{ background: {p['bg']}; width: 7px; margin: 0; }}"
-            f"QScrollBar::handle:vertical {{ background: {p['grid_strong']}; min-height: 24px; border-radius: 3px; }}"
+            f"QScrollBar:vertical {{ background: transparent; width: 3px; margin: 0; }}"
+            f"QScrollBar::handle:vertical {{ background: {p['grid']}; min-height: 24px; border-radius: 1px; }}"
             f"QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; }}"
             f"QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{ background: transparent; }}"
         )
@@ -1160,7 +1169,6 @@ class OrderBookControlBar(QtWidgets.QFrame):
 
     def _plain_button(self, text, tooltip='', *, compact_width=None):
         button = _OrderBookSurfaceButton(text, self.theme, self, compact_width=compact_width)
-        button.setToolTip(tooltip)
         return button
 
     def _toggle_button(self, text, tooltip='', *, compact_width=None):
@@ -1254,19 +1262,16 @@ class OrderBookControlBar(QtWidgets.QFrame):
             tip = f'Price step: {effective} ({multiplier}× exchange tick)'
             if multiplier > 1:
                 tip += '\nGrouped prices are for analysis; use 1× for exact price selection.'
-            button.setToolTip(tip)
             action = self._aggregation_actions[multiplier]
             self._set_checked_without_signal(action, multiplier == self._aggregation)
             action.setText(f'{multiplier}× · {effective}')
         del blockers
         self.aggregation_button.setText(f'{self._aggregation}× ▾')
         self.value_mode_button.setText('Qty' if self._value_mode == 'base' else 'USDT')
-        self.value_mode_button.setToolTip('Base-asset quantity · click for USDT value' if self._value_mode == 'base' else 'USDT value · click for base-asset quantity')
         self._set_checked_without_signal(self.units_action, self._value_mode == 'base')
         self._set_checked_without_signal(self.tape_action, self._tape_enabled)
         for key, action in self._density_actions.items():
             self._set_checked_without_signal(action, key == self._density)
-        self.density_button.setToolTip(f'Row spacing: {self._DENSITY_NAMES.get(self._density, "Comfortable")}')
 
 import math
 import time
@@ -1275,7 +1280,7 @@ from dataclasses import dataclass, replace
 from typing import ClassVar
 from PySide6 import QtCore, QtGui, QtWidgets
 from PySide6.QtCore import QTimer, Qt, Signal
-from ..models import DomExecutionContext, DomPositionOverlay, OrderFlowPresentationFrame
+from ..models import DomPositionOverlay, OrderFlowPresentationFrame
 from ..models import ORDER_FLOW_AGGREGATION_MULTIPLIERS, OrderFlowDisplayLevel, OrderFlowSnapshot
 from ..models import human_number, safe_float
 from ..utilities import TextRole, apply_text_render_hints, device_pixel_rect, device_pixel_value, typography_controller, typography_font
@@ -1325,16 +1330,6 @@ def _smooth_profile_value_map(
     return moving
 
 
-@dataclass(frozen=True, slots=True)
-class DomAccountMarker:
-    """One exact account/trading price before it is mapped onto display rows."""
-    exact_price: float
-    side: str
-    role: str
-    color: QtGui.QColor
-    quantity: float = 0.0
-    source: str = ''
-
 @dataclass(slots=True)
 class PreparedDomRow:
     """Typed, presentation-only state for one visible DOM price row.
@@ -1366,7 +1361,7 @@ class PreparedDomRow:
     profile_depth: float = 0.0
     profile_previous_depth: float = 0.0
 
-def _compute_order_flow_dom_geometry(width: float, height: float, font_height: float=13.0, price_font_height: float | None=None, label_font_height: float | None=None, *, execution_active: bool=False, column_preferences: dict[str, object] | None=None, row_density: str='normal', presentation_preset: str='execution', essential_only: bool=False, previous_mode: str | None=None, previous_bbo_only: bool | None=None, price_min_width: float=90.0, amount_min_width: float=36.0, state_expanded_width: float | None=None, column_width_overrides: dict[str, float] | None=None, book_depth: bool=False) -> dict[str, object]:
+def _compute_order_flow_dom_geometry(width: float, height: float, font_height: float=13.0, price_font_height: float | None=None, label_font_height: float | None=None, *, column_preferences: dict[str, object] | None=None, row_density: str='normal', presentation_preset: str='execution', essential_only: bool=False, previous_mode: str | None=None, previous_bbo_only: bool | None=None, price_min_width: float=90.0, amount_min_width: float=36.0, state_expanded_width: float | None=None, column_width_overrides: dict[str, float] | None=None, book_depth: bool=False) -> dict[str, object]:
     """Compute a deterministic width-driven DOM composition.
 
     BID / PRICE / ASK are always present. Analytical lanes are introduced only
@@ -1522,7 +1517,6 @@ def _compute_order_flow_dom_geometry(width: float, height: float, font_height: f
     shallow = height < 310.0
     title_height = max(32.0, float(math.ceil(label_h + 12.0)))
     metric_height = 0.0 if shallow else max(48.0, float(math.ceil(font_h + label_h + 15.0)))
-    execution_height = max(24.0, float(math.ceil(label_h + 8.0))) if execution_active else 0.0
     center_height = max(56.0, float(math.ceil(price_h + label_h + 19.0)))
     footer_height = 52.0 if not shallow else 28.0
     column_height = max(30.0, float(math.ceil(label_h + 12.0)))
@@ -1535,13 +1529,11 @@ def _compute_order_flow_dom_geometry(width: float, height: float, font_height: f
     if height < 120.0:
         title_height = min(title_height, height * 0.24)
         metric_height = 0.0
-        execution_height = 0.0
         column_height = min(column_height, height * 0.20)
         center_height = min(center_height, height * 0.40)
         footer_height = 0.0
     top_height = title_height + metric_height
-    execution_top = margin + top_height
-    column_top = execution_top + execution_height
+    column_top = margin + top_height
     table_top = column_top + column_height
 
     # The bottom edge is part of the rendered surface, not an unused outer
@@ -1552,7 +1544,7 @@ def _compute_order_flow_dom_geometry(width: float, height: float, font_height: f
     # distribute the remainder uniformly across those rows. This makes the DOM
     # consume every vertical pixel without a dead strip and keeps both sides
     # perfectly aligned around the center band.
-    fixed = margin + top_height + execution_height + column_height + center_height + footer_height
+    fixed = margin + top_height + column_height + center_height + footer_height
     available_rows = max(0.0, height - fixed)
     rows_per_side = int(available_rows // max(1.0, nominal_row_height * 2.0))
     bbo_only = rows_per_side < 1
@@ -1588,9 +1580,9 @@ def _compute_order_flow_dom_geometry(width: float, height: float, font_height: f
         'depth_mode': 'none' if bbo_only else 'profile' if book_depth else 'integrated',
         'book_depth': bool(book_depth),
         'top_height': top_height, 'title_height': title_height, 'metric_height': metric_height,
-        'execution_height': execution_height, 'column_height': column_height,
+        'column_height': column_height,
         'row_height': row_height, 'nominal_row_height': nominal_row_height, 'center_height': center_height, 'footer_height': footer_height,
-        'rows_per_side': rows_per_side, 'header_top': margin, 'execution_top': execution_top,
+        'rows_per_side': rows_per_side, 'header_top': margin,
         'column_top': column_top, 'table_top': table_top, 'center_top': center_top,
         'center_bottom': center_bottom, 'footer_top': footer_top, 'footer_bottom': footer_bottom,
         'columns': columns, 'column_minimums': {name: column_minimums.get(name, 20.0) for name in columns},
@@ -1680,8 +1672,6 @@ class _DomRasterCanvas(QtWidgets.QWidget):
         self._market_signal: dict[str, object] | None = None
         self._last_layout_state: dict[str, object] = {}
         self._row_change_cues: dict[tuple[str, int | float], tuple[str, float, float]] = {}
-        self._account_marker_side_latches: dict[tuple[object, ...], dict[str, object]] = {}
-        self._execution_band_active_until = 0.0
         self.source_snapshot: OrderFlowSnapshot | None = None
         self._applied_source_snapshot: OrderFlowSnapshot | None = None
         self.snapshot: OrderFlowSnapshot | None = None
@@ -1701,12 +1691,6 @@ class _DomRasterCanvas(QtWidgets.QWidget):
         self._snapshot_build_samples: deque[float] = deque(maxlen=240)
         self._visual_scales = {'liquidity': 0.0, 'delta': 0.0, 'trade': 0.0, 'depth': 0.0}
         self._state_latches: dict[tuple[str, int | float], dict[str, object]] = {}
-        self.execution_context = DomExecutionContext(self.symbol)
-        self._execution_text: list[tuple[str, QtGui.QColor]] = []
-        self._execution_text_compact: list[tuple[str, QtGui.QColor]] = []
-        self._execution_markers: tuple[DomAccountMarker, ...] = ()
-        self._mapped_account_markers: dict[int, tuple[DomAccountMarker, ...]] = {}
-        self._offscreen_account_markers: dict[str, tuple[DomAccountMarker, ...]] = {'above': (), 'below': ()}
         self._prepared_display_states: dict[tuple[str, int | float], str] = {}
         # Visual-diff state is produced once while prepared rows/hit geometry are
         # rebuilt. Snapshot application keeps references to the previous maps, then
@@ -1735,9 +1719,6 @@ class _DomRasterCanvas(QtWidgets.QWidget):
         self._theme_cache_ready = False
         self._freshness_text = 'Waiting for market data'
         self._market_status = 'CONNECTING'
-        self._header_tooltip = 'Order-flow summary'
-        self._center_tooltip = 'Current market price'
-        self._footer_tooltip = 'Recent liquidity activity'
         self._bid_rows: list[PreparedDomRow] = []
         self._ask_rows: list[PreparedDomRow] = []
         self._hit_rows: list[tuple[QtCore.QRectF, float, OrderFlowDisplayLevel]] = []
@@ -1851,9 +1832,6 @@ class _DomRasterCanvas(QtWidgets.QWidget):
         self._market_signal_expiry_timer.setSingleShot(True)
         self._market_signal_expiry_timer.setTimerType(Qt.TimerType.PreciseTimer)
         self._market_signal_expiry_timer.timeout.connect(self._expire_market_signal)
-        self._execution_band_timer = QTimer(self)
-        self._execution_band_timer.setSingleShot(True)
-        self._execution_band_timer.timeout.connect(self._expire_execution_band)
         self.setMouseTracking(True)
         self.setCursor(Qt.CursorShape.ArrowCursor)
         self.setMinimumSize(0, 0)
@@ -2037,11 +2015,6 @@ class _DomRasterCanvas(QtWidgets.QWidget):
         self._state_pulling = QtGui.QColor(_ORDERBOOK_SIGNAL_COLORS['PULLING'])
         self._state_depleting = QtGui.QColor(_ORDERBOOK_SIGNAL_COLORS['DEPLETING'])
         self._state_wall = QtGui.QColor(_ORDERBOOK_SIGNAL_COLORS['PERSISTENT'])
-        self._execution_entry = QtGui.QColor(p['bid'])
-        self._execution_tp = QtGui.QColor(p['bid'])
-        self._execution_sl = QtGui.QColor(p['amber'])
-        self._execution_liq = QtGui.QColor(p['ask'])
-        self._execution_neutral = QtGui.QColor(p['text'])
         self._bid_signal_fill = QtGui.QColor(p['bg'])
         self._ask_signal_fill = QtGui.QColor(p['bg'])
         self._ltp_line_color = QtGui.QColor('#444444')
@@ -2074,7 +2047,6 @@ class _DomRasterCanvas(QtWidgets.QWidget):
         self._profile_mid_pen.setWidthF(1.0)
         self._prepared_sequence = -1
         self._theme_cache_ready = True
-        self._prepare_execution_display()
         if self._typography_ready:
             self._prepare_display()
             self.update()
@@ -2089,116 +2061,6 @@ class _DomRasterCanvas(QtWidgets.QWidget):
             self._prepare_liquidity_profile()
             self.update()
 
-
-    def set_execution_context(self, context: DomExecutionContext | None) -> None:
-        if context is None:
-            context = DomExecutionContext(self.symbol)
-        if context.symbol and context.symbol != self.symbol:
-            return
-        if context == self.execution_context:
-            return
-        had_context = bool(self.execution_context.positions or self.execution_context.orders)
-        has_context = bool(context.positions or context.orders)
-        self.execution_context = context
-        if has_context:
-            self._execution_band_active_until = 0.0
-            self._execution_band_timer.stop()
-        elif had_context:
-            self._execution_band_active_until = time.monotonic() + 2.5
-            self._execution_band_timer.start(2500)
-        self._prepare_execution_display()
-        self._prepared_sequence = -1
-        self._prepare_display()
-        self.update()
-
-    def set_mark_price(self, mark: float) -> None:
-        mark = safe_float(mark)
-        if mark <= 0.0 or not self.execution_context.positions:
-            return
-        changed = False
-        positions: list[DomPositionOverlay] = []
-        for position in self.execution_context.positions:
-            pnl = position.unrealized_pnl
-            if position.entry_price > 0.0 and position.quantity > 0.0:
-                signed = -position.quantity if position.side == 'SHORT' else position.quantity
-                pnl = (mark - position.entry_price) * signed
-            updated = replace(position, mark_price=mark, unrealized_pnl=pnl)
-            positions.append(updated)
-            changed = changed or updated != position
-        if not changed:
-            return
-        self.execution_context = replace(self.execution_context, positions=tuple(positions))
-        self._prepare_execution_display()
-        top = int(float(self._geometry.get('execution_top', 0.0)))
-        height = int(math.ceil(float(self._geometry.get('execution_height', 20.0)))) + 2
-        if height > 2:
-            self.update(0, max(0, top - 1), self.width(), max(1, height))
-
-    def _prepare_execution_display(self) -> None:
-        context = self.execution_context
-        position_parts: list[str] = []
-        compact_position_parts: list[str] = []
-        position_color = self._muted
-        for position in context.positions[:2]:
-            side_short = 'L' if position.side == 'LONG' else 'S'
-            entry = self._price_text(position.entry_price)
-            qty = human_number(position.quantity)
-            pnl = self._signed_money(position.unrealized_pnl)
-            leverage = f' · {position.leverage}×' if position.leverage > 0 else ''
-            liquidation = f' · LIQ {self._price_text(position.liquidation_price)}' if position.liquidation_price > 0.0 else ''
-            position_parts.append(f'{side_short} {qty} @ {entry} · PNL {pnl}{leverage}{liquidation}')
-            compact_position_parts.append(f'{side_short} {qty} @ {entry} · {pnl}')
-            if abs(position.unrealized_pnl) > 0.005:
-                position_color = self._bid if position.unrealized_pnl > 0.0 else self._ask
-            elif position_color == self._muted:
-                position_color = self._bid if position.side == 'LONG' else self._ask
-        if len(context.positions) > 2:
-            hidden = len(context.positions) - 2
-            position_parts.append(f'+{hidden} POS')
-            compact_position_parts.append(f'+{hidden}')
-        if not position_parts:
-            position_parts = ['FLAT']
-            compact_position_parts = ['FLAT']
-        if len(context.positions) > 1:
-            position_color = self._text
-        tp_count = sum((1 for order in context.orders if order.label == 'TP'))
-        sl_count = sum((1 for order in context.orders if order.label == 'SL'))
-        exit_count = sum((1 for order in context.orders if order.reduce_only))
-        order_text = f'ORD {len(context.orders)}'
-        if tp_count:
-            order_text += f' · TP {tp_count}'
-        if sl_count:
-            order_text += f' · SL {sl_count}'
-        if exit_count and (not (tp_count or sl_count)):
-            order_text += f' · EXIT {exit_count}'
-        order_color = self._text if context.orders else self._muted
-        self._execution_text = [(' | '.join(position_parts), position_color), (order_text, order_color)]
-        compact_order_text = f'O{len(context.orders)}'
-        if tp_count:
-            compact_order_text += f' · T{tp_count}'
-        if sl_count:
-            compact_order_text += f' · S{sl_count}'
-        self._execution_text_compact = [(' | '.join(compact_position_parts), position_color), (compact_order_text, order_color)]
-        markers: list[DomAccountMarker] = []
-        for position in context.positions:
-            if position.entry_price > 0.0:
-                markers.append(DomAccountMarker(exact_price=position.entry_price, side=position.side, role='ENTRY', color=QtGui.QColor(self._execution_entry), quantity=max(0.0, position.quantity), source='POSITION'))
-            if position.liquidation_price > 0.0:
-                markers.append(DomAccountMarker(exact_price=position.liquidation_price, side=position.side, role='LIQ', color=QtGui.QColor(self._execution_liq), quantity=max(0.0, position.quantity), source='POSITION'))
-        for order in context.orders:
-            if order.price <= 0.0:
-                continue
-            if order.label == 'TP':
-                color = self._execution_tp
-            elif order.label == 'SL':
-                color = self._execution_sl
-            elif order.reduce_only:
-                color = self._execution_sl
-            else:
-                color = self._execution_neutral
-            markers.append(DomAccountMarker(exact_price=order.price, side=order.side, role=order.label, color=QtGui.QColor(color), quantity=max(0.0, order.quantity), source=order.source))
-        self._execution_markers = tuple(markers)
-        self._rebuild_account_marker_mapping()
 
     def set_symbol(self, symbol: str) -> None:
         normalized = str(symbol).upper().strip().removesuffix('.P') or 'BTCUSDT'
@@ -2216,8 +2078,6 @@ class _DomRasterCanvas(QtWidgets.QWidget):
         self._last_trade_price = 0.0
         self._last_trade_side = ''
         self.reset()
-        self.execution_context = DomExecutionContext(self.symbol)
-        self._prepare_execution_display()
 
     def set_price_tick_size(self, tick_size: float) -> None:
         self.price_tick_size = max(0.0, safe_float(tick_size))
@@ -2228,7 +2088,6 @@ class _DomRasterCanvas(QtWidgets.QWidget):
             self.price_decimals = _decimal_places_from_step(self.price_tick_size)
         else:
             self.price_decimals = 0
-        self._prepare_execution_display()
         self._state_latches.clear()
         self._reset_visual_scales()
         if self.source_snapshot is not None:
@@ -2387,7 +2246,6 @@ class _DomRasterCanvas(QtWidgets.QWidget):
         fixed_height = (
             float(geometry.get('margin', 0.0))
             + float(geometry.get('top_height', 0.0))
-            + float(geometry.get('execution_height', 0.0))
             + float(geometry.get('column_height', 0.0))
             + float(geometry.get('center_height', 0.0))
             + float(geometry.get('footer_height', 0.0))
@@ -2539,7 +2397,7 @@ class _DomRasterCanvas(QtWidgets.QWidget):
         for key in self._visual_scales:
             self._visual_scales[key] = 0.0
 
-    def reset(self, *, preserve_execution: bool=False) -> None:
+    def reset(self) -> None:
         self._snapshot_prepare_timer.stop()
         self._freshness_timer.stop()
         self._market_signal_expiry_timer.stop()
@@ -2566,13 +2424,6 @@ class _DomRasterCanvas(QtWidgets.QWidget):
         self._snapshot_pipeline_timing.clear()
         self._state_latches.clear()
         self._reset_visual_scales()
-        if not preserve_execution:
-            self.execution_context = DomExecutionContext(self.symbol)
-            self._execution_text = [('FLAT', self._muted), ('ORD 0', self._muted)]
-            self._execution_text_compact = [('FLAT', self._muted), ('O0', self._muted)]
-            self._execution_markers = ()
-        self._mapped_account_markers.clear()
-        self._offscreen_account_markers = {'above': (), 'below': ()}
         self._prepared_display_states.clear()
         self._prepared_row_signatures = {}
         self._prepared_row_rects = {}
@@ -4070,7 +3921,7 @@ class _DomRasterCanvas(QtWidgets.QWidget):
         self._prepare_column_header_content()
         self._prepare_metric_footer_paint_content(width)
 
-    def _refresh_geometry_for_size(self, width: int, height: int, snapshot: OrderFlowSnapshot | None, execution_active: bool) -> bool:
+    def _refresh_geometry_for_size(self, width: int, height: int, snapshot: OrderFlowSnapshot | None) -> bool:
         """Refresh only layout/font-fit state; safe to call synchronously on resize."""
         required_price_width = self._required_price_lane_width(snapshot)
         required_amount_width = self._required_amount_lane_width(snapshot)
@@ -4088,7 +3939,6 @@ class _DomRasterCanvas(QtWidgets.QWidget):
             round(max(8.0, self._row_metrics.height()), 3),
             round(max(8.0, self._price_metrics.height()), 3),
             round(max(8.0, self._label_metrics.height()), 3),
-            execution_active,
             tuple(sorted((str(k), str(v)) for k, v in self._column_preferences.items())),
             self._row_density, self._presentation_preset, self._book_depth, override_signature,
             round(required_price_width, 2), round(required_amount_width, 2),
@@ -4101,7 +3951,6 @@ class _DomRasterCanvas(QtWidgets.QWidget):
                 max(8.0, self._row_metrics.height()),
                 max(8.0, self._price_metrics.height()),
                 max(8.0, self._label_metrics.height()),
-                execution_active=execution_active,
                 column_preferences=self._column_preferences,
                 row_density=self._row_density,
                 presentation_preset=self._presentation_preset,
@@ -4130,7 +3979,6 @@ class _DomRasterCanvas(QtWidgets.QWidget):
                 max(8.0, self._row_metrics.height()),
                 max(8.0, self._price_metrics.height()),
                 max(8.0, self._label_metrics.height()),
-                execution_active=execution_active,
                 column_preferences=fallback_preferences,
                 row_density=self._row_density,
                 presentation_preset=self._presentation_preset,
@@ -4158,10 +4006,9 @@ class _DomRasterCanvas(QtWidgets.QWidget):
             return
         width = max(1, self.width())
         height = max(1, self.height())
-        execution_active = bool(self.execution_context.positions or self.execution_context.orders or time.monotonic() < self._execution_band_active_until)
         snapshot = self.snapshot
         previous_rows_per_side = int(self._geometry.get('rows_per_side', 0))
-        geometry_changed = self._refresh_geometry_for_size(width, height, snapshot, execution_active)
+        geometry_changed = self._refresh_geometry_for_size(width, height, snapshot)
         if geometry_changed and int(self._geometry.get('rows_per_side', 0)) != previous_rows_per_side:
             reuse_rows = False
         now = time.monotonic()
@@ -4179,9 +4026,6 @@ class _DomRasterCanvas(QtWidgets.QWidget):
             self._metric_items = []
             self._footer_items = []
             self._freshness_text = source_text
-            self._header_tooltip = f'Order-flow status: {status_text}\n{source_text}'
-            self._center_tooltip = 'Current market price is not available yet'
-            self._footer_tooltip = 'Recent liquidity activity is not available yet'
             self._prepare_paint_content(width)
             self._prepared_size = (width, height)
             self._rebuild_hit_rows()
@@ -4317,12 +4161,6 @@ class _DomRasterCanvas(QtWidgets.QWidget):
             ('REPL', self._money(snapshot.replenished_notional_5s), self._text),
             ('1s B/S', f'B {self._money(snapshot.buy_notional_1s)} / S {self._money(snapshot.sell_notional_1s)}', self._bid),
         ]
-        health_line = f'\nHealth: {health_reason}' if health_reason else ''
-        pipeline_summary = self._pipeline_latency_summary_text()
-        pipeline_line = f'\nPipeline rolling stages:\n{pipeline_summary}' if pipeline_summary else ''
-        self._header_tooltip = f'Order-flow summary\nStatus: {status_text}{health_line}\n{latency_text} (current latency / rolling 10 s maximum; PIPE = last measured depth ingress){pipeline_line}\nSource: {source}\n{freshness_parts[0]}, {freshness_parts[1]}, {freshness_parts[2]}\nMicroprice bias: {snapshot.microprice_bias_bps:+.2f} bp\nTouch imbalance: {self._signed_percent(snapshot.touch_imbalance_pct)}\nNear-touch pressure (context): {self._signed_percent(snapshot.near_pressure_pct)}\nAggressor imbalance (5s): {self._signed_percent(snapshot.aggressor_imbalance_5s_pct)}\nRPI share (context, 5s): {snapshot.rpi_share_5s_pct:.0f}%\nDisplay aggregation: {self.aggregation_multiplier}× tick'
-        self._center_tooltip = f'Midpoint: {center_text}\nBest bid: {self._price_text(snapshot.best_bid)}\nBest ask: {self._price_text(snapshot.best_ask)}\nSpread: {snapshot.spread_bps:.2f} bp'
-        self._footer_tooltip = f'Liquidity activity\nAdded (5s): {self._money(snapshot.added_notional_5s)}\nCanceled (5s): {self._money(snapshot.cancelled_notional_5s)}\nReplenished (5s): {self._money(snapshot.replenished_notional_5s)}\nTaker buy / sell (1s): {self._money(snapshot.buy_notional_1s)} / {self._money(snapshot.sell_notional_1s)}'
         self._prepare_paint_content(width)
         self._prepared_sequence = snapshot.sequence
         self._prepared_size = (width, height)
@@ -4586,8 +4424,6 @@ class _DomRasterCanvas(QtWidgets.QWidget):
             self._prepare_liquidity_profile()
         hit_rows = []
         self._prepared_display_states.clear()
-        self._mapped_account_markers.clear()
-        self._offscreen_account_markers = {'above': (), 'below': ()}
         signatures: dict[tuple[str, int | float], tuple[object, ...]] = {}
         rects: dict[tuple[str, int | float], QtCore.QRect] = {}
         hit_geometry_active = bool(
@@ -4649,7 +4485,6 @@ class _DomRasterCanvas(QtWidgets.QWidget):
         self._hit_rows = hit_rows
         if not hit_geometry_active:
             return
-        self._rebuild_account_marker_mapping()
 
     def _commit_geometry_for_current_size(self) -> None:
         if not hasattr(self, '_row_metrics'):
@@ -4657,8 +4492,7 @@ class _DomRasterCanvas(QtWidgets.QWidget):
         width = max(1, self.width())
         height = max(1, self.height())
         old_rows = int(self._geometry.get('rows_per_side', 0))
-        execution_active = bool(self.execution_context.positions or self.execution_context.orders or time.monotonic() < self._execution_band_active_until)
-        changed = self._refresh_geometry_for_size(width, height, self.snapshot, execution_active)
+        changed = self._refresh_geometry_for_size(width, height, self.snapshot)
         if not changed and self._prepared_size == (width, height):
             return
         new_rows = int(self._geometry.get('rows_per_side', 0))
@@ -4742,17 +4576,6 @@ class _DomRasterCanvas(QtWidgets.QWidget):
                 region += QtGui.QRegion(new_rect)
             self._request_repaint_region('market_signal_expiry', region)
 
-    def _expire_execution_band(self) -> None:
-        if self.execution_context.positions or self.execution_context.orders:
-            return
-        if time.monotonic() < self._execution_band_active_until:
-            remaining = max(1, int(math.ceil((self._execution_band_active_until - time.monotonic()) * 1000.0)))
-            self._execution_band_timer.start(remaining)
-            return
-        self._execution_band_active_until = 0.0
-        self._geometry_cache_key = None
-        self._prepare_display()
-        self.update()
 
     def _column_rect(self, name: str, top: float, height: float) -> QtCore.QRectF:
         left, right = self._geometry['columns'][name]
@@ -4907,283 +4730,15 @@ class _DomRasterCanvas(QtWidgets.QWidget):
             self._draw_numeric_text(painter, QtCore.QRectF(cell.left(), cell.top() + 18, cell.width(), cell.height() - 18), value, color, Qt.AlignmentFlag.AlignLeft, font=self._metric_font, pad=8)
 
 
-    def _draw_execution_band(self, painter: QtGui.QPainter, bounds: QtCore.QRectF) -> None:
-        top = float(self._geometry['execution_top'])
-        height = float(self._geometry['execution_height'])
-        if height <= 0.0:
-            return
-        rect = QtCore.QRectF(bounds.left(), top, bounds.width(), height)
-        painter.fillRect(rect, self._surface_top)
-        text_source = self._execution_text_compact if rect.width() < 300.0 else self._execution_text
-        position_text, position_color = text_source[0] if text_source else ('FLAT', self._muted)
-        order_text, order_color = text_source[1] if len(text_source) > 1 else ('ORD 0', self._muted)
-        split = 0.72
-        self._draw_text(painter, QtCore.QRectF(rect.left(), rect.top(), rect.width() * split, rect.height()), position_text, position_color, Qt.AlignmentFlag.AlignLeft, font=self._label_font, pad=2.0)
-        self._draw_text(painter, QtCore.QRectF(rect.left() + rect.width() * split, rect.top(), rect.width() * (1.0 - split), rect.height()), order_text, order_color, Qt.AlignmentFlag.AlignRight, font=self._label_font, pad=2.0)
-
     def _marker_key(self, price: float) -> int | float:
         if self.price_tick_size > 0.0:
             return int(round(price / self.price_tick_size))
         return round(price, 10)
 
-    def _account_marker_display_side(self, marker: DomAccountMarker) -> str:
-        """Resolve visual side with a small deadband/consecutive-frame latch."""
-        role = marker.role.upper()
-        side = marker.side.upper()
-        if role in {'LMT', 'ORD'} and side in {'BUY', 'SELL'}:
-            return 'bid' if side == 'BUY' else 'ask'
-        snapshot = self.snapshot
-        center = 0.0
-        if snapshot is not None:
-            center = snapshot.microprice or snapshot.midpoint
-            if center <= 0.0 and snapshot.best_bid > 0.0 and (snapshot.best_ask > 0.0):
-                center = (snapshot.best_bid + snapshot.best_ask) * 0.5
-        fallback = 'bid' if side in {'BUY', 'LONG'} else 'ask' if side in {'SELL', 'SHORT'} else 'bid'
-        if center <= 0.0:
-            return fallback
-        desired = 'bid' if marker.exact_price < center else 'ask' if marker.exact_price > center else fallback
-        key = (role, side, round(float(marker.exact_price), 12), str(marker.source))
-        entry = self._account_marker_side_latches.get(key)
-        if entry is None:
-            self._account_marker_side_latches[key] = {'side': desired, 'candidate': '', 'count': 0}
-            return desired
-        current = str(entry.get('side', desired))
-        if desired == current:
-            entry['candidate'] = ''
-            entry['count'] = 0
-            return current
-        distance_bps = abs(marker.exact_price - center) / max(center, 1e-12) * 10000.0
-        if distance_bps >= 3.0:
-            entry.update(side=desired, candidate='', count=0)
-            return desired
-        if distance_bps <= 1.5:
-            entry['candidate'] = ''
-            entry['count'] = 0
-            return current
-        if entry.get('candidate') == desired:
-            entry['count'] = int(entry.get('count', 0)) + 1
-        else:
-            entry['candidate'] = desired
-            entry['count'] = 1
-        if int(entry.get('count', 0)) >= 3:
-            entry.update(side=desired, candidate='', count=0)
-            return desired
-        return current
 
     def _display_bucket_price(self, price: float, side: str) -> float:
         return self._bucket_price_for_multiplier(price, side, self.aggregation_multiplier)
 
-    def account_price_to_display_row(self, marker: DomAccountMarker) -> tuple[int | None, str]:
-        """Map exact account state onto the current display rows deterministically.
-
-        Returns ``(row_index, "")`` for an onscreen row, otherwise
-        ``(None, "above"|"below"|"")`` for an offscreen/no-row marker.
-        """
-        if not self._hit_rows:
-            return (None, '')
-        display_side = self._account_marker_display_side(marker)
-        target = self._display_bucket_price(marker.exact_price, display_side)
-        side_rows = [(index, entry) for index, entry in enumerate(self._hit_rows) if isinstance(entry[2], OrderFlowDisplayLevel) and entry[2].side == display_side]
-        visible_prices = [float(entry[1]) for entry in self._hit_rows]
-        if visible_prices:
-            if target > max(visible_prices):
-                return (None, 'above')
-            if target < min(visible_prices):
-                return (None, 'below')
-        if not side_rows:
-            return (None, '')
-        target_key = self._marker_key(target)
-        for index, entry in side_rows:
-            if self._marker_key(float(entry[1])) == target_key:
-                return (index, '')
-        index, _entry = min(side_rows, key=lambda pair: abs(float(pair[1][1]) - target))
-        return (index, '')
-
-    def _rebuild_account_marker_mapping(self) -> None:
-        grouped: dict[int, list[DomAccountMarker]] = {}
-        active_marker_keys = {(marker.role.upper(), marker.side.upper(), round(float(marker.exact_price), 12), str(marker.source)) for marker in self._execution_markers}
-        for key in tuple(self._account_marker_side_latches):
-            if key not in active_marker_keys:
-                self._account_marker_side_latches.pop(key, None)
-        offscreen: dict[str, list[DomAccountMarker]] = {'above': [], 'below': []}
-        if self._execution_markers and self._hit_rows:
-            for marker in self._execution_markers:
-                index, edge = self.account_price_to_display_row(marker)
-                if index is not None:
-                    grouped.setdefault(index, []).append(marker)
-                elif edge in offscreen:
-                    offscreen[edge].append(marker)
-        priority = self._account_marker_priority
-        self._mapped_account_markers = {index: tuple(sorted(markers, key=priority)) for index, markers in grouped.items()}
-        self._offscreen_account_markers = {edge: tuple(sorted(markers, key=priority)) for edge, markers in offscreen.items()}
-
-    @staticmethod
-    def _account_marker_priority(marker: DomAccountMarker) -> int:
-        return {'LIQ': 0, 'SL': 1, 'TP': 2, 'EXIT': 3, 'ENTRY': 4, 'LMT': 5, 'STOP': 5, 'TRG': 5, 'TRAIL': 5, 'ORD': 6}.get(marker.role, 7)
-
-    def _account_marker_tag(self, marker: DomAccountMarker, multiplicity: int, width: float) -> str:
-        role = marker.role
-        side = marker.side.upper()
-        base = {'ENTRY': 'E', 'TP': 'TP', 'SL': 'SL', 'LIQ': 'LQ', 'LMT': 'B' if side == 'BUY' else 'S', 'ORD': 'B' if side == 'BUY' else 'S', 'EXIT': 'X', 'STOP': 'ST', 'TRG': 'TR', 'TRAIL': 'TS'}.get(role, role[:2])
-        if multiplicity > 1:
-            if width < 30.0:
-                compact_base = {'ENTRY': 'E', 'TP': 'T', 'SL': 'S', 'LIQ': 'L', 'EXIT': 'X', 'STOP': 'O', 'TRG': 'G', 'TRAIL': 'R', 'LMT': 'B' if side == 'BUY' else 'S', 'ORD': 'B' if side == 'BUY' else 'S'}.get(role, base[:1])
-                return f'{compact_base}{multiplicity}'
-            return f'{base}×{multiplicity}'
-        return base
-
-    def _draw_offscreen_account_markers(self, painter: QtGui.QPainter) -> None:
-        columns = self._geometry.get('columns', {})
-        if not isinstance(columns, dict) or 'price' not in columns or (not self._hit_rows):
-            return
-        row_height = float(self._geometry['row_height'])
-        table_top = float(self._geometry['table_top'])
-        footer_top = float(self._geometry['footer_top'])
-        margin = float(self._geometry.get('margin', 0.0))
-        price_left = float(columns['price'][0])
-        available_right = max(margin + 1.0, price_left - 2.0)
-        available_width = max(1.0, available_right - margin)
-        if self._book_depth and 'liquidity' in columns:
-            margin = max(float(columns['liquidity'][0]) + self._profile_amount_width + 2.0, self.width() * 0.48)
-            available_width = max(1.0, float(columns['liquidity'][1]) - margin - 2.0)
-        for edge, markers in self._offscreen_account_markers.items():
-            if not markers:
-                continue
-            ordered = markers
-            top = table_top if edge == 'above' else max(table_top, footer_top - row_height)
-            clip_rect = QtCore.QRectF(margin, top, available_width, row_height)
-            arrow = '↑' if edge == 'above' else '↓'
-            lead = ordered[0]
-            role = str(lead.role or 'ORD')
-            exact = format_book_price(lead.exact_price, self.price_decimals)
-            extra = f' +{len(ordered) - 1}' if len(ordered) > 1 else ''
-            reference = 0.0
-            if self.snapshot is not None:
-                reference = float(self.snapshot.best_ask) if edge == 'above' else float(self.snapshot.best_bid)
-            ticks_text = ''
-            if self.price_tick_size > 0.0 and reference > 0.0:
-                ticks = int(round(abs(lead.exact_price - reference) / self.price_tick_size))
-                ticks_text = f' · {ticks}t'
-            candidates = (f'{arrow} {role} {exact}{ticks_text}{extra}', f'{arrow} {role} {exact}{extra}', f'{arrow} {role} {exact}', f'{arrow} {role}', arrow)
-            usable = max(1.0, clip_rect.width() - 8.0)
-            label = arrow
-            for candidate in candidates:
-                if self._label_metrics.horizontalAdvance(candidate) <= usable:
-                    label = candidate
-                    break
-            painter.save()
-            try:
-                painter.setClipRect(device_pixel_rect(self, clip_rect), Qt.ClipOperation.IntersectClip)
-                fill = QtGui.QColor(ORDERBOOK_REFERENCE['bg'])
-                label_width = min(clip_rect.width(), self._label_metrics.horizontalAdvance(label) + 10.0)
-                badge = QtCore.QRectF(clip_rect.left() + 1.0, clip_rect.top() + 1.0, max(1.0, label_width), max(1.0, clip_rect.height() - 2.0))
-                painter.fillRect(device_pixel_rect(self, badge), fill)
-                self._draw_text(painter, badge, label, self._badge_text, Qt.AlignmentFlag.AlignLeft, font=self._label_font, pad=3.0)
-                distinct: list[DomAccountMarker] = []
-                seen: set[tuple[str, str]] = set()
-                for marker in ordered:
-                    signature = (marker.role, marker.side)
-                    if signature in seen:
-                        continue
-                    seen.add(signature)
-                    distinct.append(marker)
-                pip_size = max(self._physical_pixel_width() * 2.0, 2.0)
-                gap = max(self._physical_pixel_width(), 1.0)
-                pip_right = min(clip_rect.right() - 2.0, badge.right() - 2.0)
-                y = badge.top() + 1.0 if edge == 'above' else badge.bottom() - pip_size - 1.0
-                for index, marker in enumerate(distinct[:5]):
-                    x = pip_right - (index + 1) * pip_size - index * gap
-                    if x <= badge.left() + 2.0:
-                        break
-                    pip = QtCore.QRectF(x, y, pip_size, pip_size)
-                    color = QtGui.QColor(marker.color)
-                    color.setAlpha(235)
-                    painter.fillRect(device_pixel_rect(self, pip), color)
-            finally:
-                painter.restore()
-
-    def _draw_execution_overlays(self, painter: QtGui.QPainter) -> None:
-        if not self._execution_markers or not self._hit_rows:
-            return
-        columns = self._geometry.get('columns', {})
-        if not isinstance(columns, dict):
-            return
-        for index, marker_tuple in self._mapped_account_markers.items():
-            if not marker_tuple or index < 0 or index >= len(self._hit_rows):
-                continue
-            row_rect, _row_price, row_level = self._hit_rows[index]
-            markers = marker_tuple
-            marker = markers[0]
-            line_color = QtGui.QColor(marker.color)
-            line_color.setAlpha(190 if marker.role in {'LIQ', 'SL', 'TP'} else 135)
-            pen = QtGui.QPen(line_color)
-            pen.setCosmetic(True)
-            pen.setWidthF(0.0)
-            if marker.role not in {'LIQ', 'SL', 'TP', 'ENTRY'}:
-                pen.setStyle(Qt.PenStyle.DashLine)
-            painter.setPen(pen)
-            self._draw_row_line_around_state(
-                painter,
-                row_rect.left(),
-                row_rect.bottom() - self._physical_pixel_width(),
-                row_rect.right(),
-            )
-
-            # The reference DOM has no dedicated OWN column. Keep account tags
-            # away from STATE whenever possible: bid values are right-aligned so
-            # their outer-left edge is free; ask values are left-aligned so their
-            # outer-right edge is free. Fall back to STATE, then PRICE.
-            display_side = row_level.side if isinstance(row_level, OrderFlowDisplayLevel) else self._account_marker_display_side(marker)
-            preferred_lane = 'bid' if display_side == 'bid' else 'ask'
-            if self._book_depth and 'liquidity' in columns:
-                lane = 'liquidity'
-            elif preferred_lane in columns:
-                lane = preferred_lane
-            elif 'state' in columns:
-                lane = 'state'
-            else:
-                lane = 'price'
-            anchor = self._column_rect(lane, row_rect.top(), row_rect.height())
-            width = min(max(18.0, anchor.width() * 0.36), 34.0)
-            if lane == 'bid':
-                badge = QtCore.QRectF(anchor.left() + 1.0, anchor.top() + 2.0, min(width, anchor.width() - 2.0), max(1.0, anchor.height() - 4.0))
-            elif lane in {'ask', 'liquidity'}:
-                badge = QtCore.QRectF(max(anchor.left() + 1.0, anchor.right() - width - 1.0), anchor.top() + 2.0, min(width, anchor.width() - 2.0), max(1.0, anchor.height() - 4.0))
-            elif lane == 'state':
-                badge = anchor.adjusted(2.0, 2.0, -2.0, -2.0)
-            else:
-                badge = QtCore.QRectF(anchor.left() + 1.0, anchor.top() + 2.0, min(width, anchor.width() * 0.28), max(1.0, anchor.height() - 4.0))
-
-            same_role_count = sum((1 for item in markers if item.role == marker.role and item.side == marker.side))
-            tag = self._account_marker_tag(marker, same_role_count, badge.width())
-            fill = QtGui.QColor(ORDERBOOK_REFERENCE['bg'])
-            painter.save()
-            try:
-                painter.setClipRect(device_pixel_rect(self, anchor), Qt.ClipOperation.IntersectClip)
-                painter.fillRect(device_pixel_rect(self, badge), fill)
-                self._draw_numeric_text(painter, badge, tag, self._badge_text, Qt.AlignmentFlag.AlignHCenter, font=self._label_font, pad=1.0)
-                distinct: list[DomAccountMarker] = []
-                seen_roles: set[tuple[str, str]] = set()
-                for item in markers:
-                    signature = (item.role, item.side)
-                    if signature in seen_roles:
-                        continue
-                    seen_roles.add(signature)
-                    distinct.append(item)
-                if len(distinct) > 1:
-                    pip = max(self._physical_pixel_width() * 2.0, min(2.5, badge.width() / 7.0))
-                    gap = max(self._physical_pixel_width(), 0.75)
-                    visible = distinct[:3]
-                    total = len(visible) * pip + max(0, len(visible) - 1) * gap
-                    left = badge.center().x() - total * 0.5
-                    y = badge.bottom() - pip - self._physical_pixel_width()
-                    for pip_index, item in enumerate(visible):
-                        color = QtGui.QColor(item.color)
-                        color.setAlpha(240)
-                        painter.fillRect(device_pixel_rect(self, QtCore.QRectF(left + pip_index * (pip + gap), y, pip, pip)), color)
-            finally:
-                painter.restore()
-        self._draw_offscreen_account_markers(painter)
 
     def _draw_column_header(self, painter: QtGui.QPainter, bounds: QtCore.QRectF) -> None:
         height = float(self._geometry['column_height'])
@@ -5748,8 +5303,6 @@ class _DomRasterCanvas(QtWidgets.QWidget):
             header_bottom = header_top + float(self._geometry['top_height'])
             header_title_bottom = header_top + float(self._geometry['title_height'])
             header_metric_top = header_title_bottom
-            execution_top = float(self._geometry['execution_top'])
-            execution_bottom = execution_top + float(self._geometry['execution_height'])
             column_top = float(self._geometry['column_top'])
             column_bottom = column_top + float(self._geometry['column_height'])
             table_top = float(self._geometry['table_top'])
@@ -5764,8 +5317,6 @@ class _DomRasterCanvas(QtWidgets.QWidget):
                 self._draw_header_title(painter, bounds)
             if band_dirty(header_metric_top, header_bottom):
                 self._draw_header_metrics(painter, bounds)
-            if band_dirty(execution_top, execution_bottom):
-                self._draw_execution_band(painter, bounds)
             if band_dirty(column_top, column_bottom):
                 self._draw_column_header(painter, bounds)
             if ladder_dirty:
@@ -5824,7 +5375,6 @@ class _DomRasterCanvas(QtWidgets.QWidget):
                 painter.setPen(self._column_border_pen)
                 for _name, (_left, right) in list(columns.items())[:-1]:
                     self._draw_snapped_line(painter, float(right), table_top, float(right), float(self._geometry['footer_top']))
-                self._draw_execution_overlays(painter)
             if center_dirty:
                 self._draw_center(painter, bounds)
             if band_dirty(footer_top, footer_bottom):
@@ -6009,7 +5559,6 @@ class _DomRasterCanvas(QtWidgets.QWidget):
             'snapshot_sequence': max(self._prepared_sequence, self._latest_applied_sequence),
             'row_snapshot_sequence': self._prepared_sequence,
             'latest_applied_sequence': self._latest_applied_sequence,
-            'execution_markers': len(self._execution_markers),
             'layout_mode': str(self._geometry.get('mode', 'unknown')),
             'depth_mode': str(self._geometry.get('depth_mode', 'none')),
             'bbo_only': int(bool(self._geometry.get('bbo_only'))),
@@ -6033,43 +5582,6 @@ class _DomRasterCanvas(QtWidgets.QWidget):
                 return (index, price, level)
         return (None, 0.0, None)
 
-    def _learning_mode_enabled(self) -> bool:
-        window = self.window()
-        return bool(window is not None and window.property('learningMode'))
-
-    def _context_tooltip(self, position: QtCore.QPointF) -> tuple[str, str]:
-        y = position.y()
-        header_bottom = float(self._geometry['header_top']) + float(self._geometry['top_height'])
-        execution_top = float(self._geometry['execution_top'])
-        execution_bottom = execution_top + float(self._geometry['execution_height'])
-        column_top = float(self._geometry['column_top'])
-        if column_top <= y < column_top + float(self._geometry['column_height']):
-            labels = {'state': 'Confirmed inferred liquidity state; non-normal labels require two distinct row analyses and local significance gates', 'bid': 'Resting bid liquidity at this price (quote notional)', 'price': 'Price spine; grouped rows are informational only', 'ask': 'Resting ask liquidity at this price (quote notional)', 'flow': 'Signed aggressive trade-flow imbalance at this price over 5 seconds', 'delta': 'Observed visible resting-liquidity change over 5 seconds, measured from depth updates', 'memory': 'Liquidity persistence history over the last 30 seconds'}
-            if self.aggregation_multiplier > 1:
-                labels.update({
-                    'state': 'Native STATE classifications are hidden above 1×. Event badges describe activity contained in the bucket.',
-                    'memory': '30s bucket liquidity persistence reconstructed from the constituent native levels; unknown history is preserved rather than treated as zero.',
-                    'delta': 'Five-second visible resting-liquidity change for the displayed bucket, normalized by the bucket previous depth.',
-                    'flow': 'Net aggressive-flow imbalance within this bucket over 5 seconds; opposing trades cancel in the ratio.',
-                })
-            labels['bid'] += '; intensity is relative to the current grouped view'
-            labels['ask'] += '; intensity is relative to the current grouped view'
-            for name, (left, right) in self._geometry['columns'].items():
-                if float(left) <= position.x() < float(right):
-                    return (f'column:{name}', labels.get(name, name))
-        if y <= header_bottom:
-            return ('header', self._header_tooltip)
-        if execution_bottom > execution_top and execution_top <= y <= execution_bottom:
-            position_text = self._execution_text[0][0] if self._execution_text else 'FLAT'
-            order_text = self._execution_text[1][0] if len(self._execution_text) > 1 else 'ORD 0'
-            return ('execution', f'Account context\nPosition: {position_text}\nWorking orders: {order_text}')
-        if float(self._geometry['center_top']) <= y <= float(self._geometry['center_bottom']):
-            return ('center', self._center_tooltip)
-        if y >= float(self._geometry['footer_top']):
-            return ('footer', self._footer_tooltip)
-        if self.aggregation_multiplier > 1:
-            return ('ladder', 'Aggregated display rows are informational. Switch to 1× tick to select an exact order price.')
-        return ('ladder', 'Click a native-tick price row to copy it into the order ticket')
 
     def _column_resize_boundary_at(self, position: QtCore.QPointF) -> tuple[str, str] | None:
         if bool(self._geometry.get('bbo_only', False)):
@@ -6164,134 +5676,22 @@ class _DomRasterCanvas(QtWidgets.QWidget):
         resize_pair = self._column_resize_boundary_at(event.position())
         if resize_pair is not None:
             self.setCursor(Qt.CursorShape.SplitHCursor)
-            self._hover_context = f'resize:{resize_pair[0]}:{resize_pair[1]}'
-            self.setToolTip('Drag to resize adjacent order-book columns')
             event.accept()
             return
-        row_index, price, level = self._hover_level(event.position())
-        self.setCursor(Qt.CursorShape.PointingHandCursor if level is not None and self.aggregation_multiplier == 1 else Qt.CursorShape.ArrowCursor)
-        context_key = ''
-        tooltip = ''
-        if level is not None and row_index is not None:
-            context_key = f'row:{level.side}:{self._marker_key(level.price)}'
-            markers = self._mapped_account_markers.get(row_index, ())
-            execution_lines: list[str] = []
-            for marker in markers:
-                quantity = f' {human_number(marker.quantity)}' if marker.quantity > 0.0 else ''
-                execution_lines.append(f'{marker.role} {marker.side}{quantity} @ {self._price_text(marker.exact_price)}')
-            execution_text = '\nAccount overlays:\n  ' + '\n  '.join(execution_lines) if execution_lines else ''
-            display_state = self._prepared_display_states.get((level.side, self._marker_key(level.price)), level.state)
-            state_description = self._STATE_DESCRIPTIONS.get(display_state, display_state.title())
-            selection_text = '\nAggregated bucket: informational only. Switch to 1× tick for exact price selection.' if self.aggregation_multiplier > 1 else '\nClick to use this exact native-tick price in the order ticket.'
-            state_short = self._STATE_LABELS.get(display_state, display_state[:7]) or 'NORMAL'
-            compact_account = ''
-            if markers:
-                lead = sorted(markers, key=self._account_marker_priority)[0]
-                compact_account = f'  •  ACCT {self._account_marker_tag(lead, 1, 40.0)}'
-            reload_text = f'  •  RELOAD ×{level.trade_reload_count}' if level.trade_reload_count > 0 else ''
-            restack_text = f'  •  RESTACK ×{level.restack_count}' if level.restack_count > 0 else ''
-            semantic_label = str(getattr(level, 'semantic_event_label', '') or '')
-            semantic_text = f'  •  EVENT {semantic_label}' if semantic_label else ''
-            concise_tooltip = f'{level.side.upper()}  {self._price_text(level.price)}  •  {self._money(level.notional)}  •  STATE {state_short}\nSELL EXEC {self._money(level.sell_trade_notional_5s)}  •  BUY EXEC {self._money(level.buy_trade_notional_5s)}{reload_text}{restack_text}{semantic_text}{compact_account}'
-            verbose_tooltip = f'{level.side.upper()}  {self._price_text(level.price)}\nResting liquidity: {self._money(level.notional)}\nObserved visible book change (5s): {self._signed_money(level.delta_notional_5s)}\nAggressive sells at price (5s): {self._money(level.sell_trade_notional_5s)} in {level.sell_trade_count_5s} prints\nAggressive buys at price (5s): {self._money(level.buy_trade_notional_5s)} in {level.buy_trade_count_5s} prints\nSemantic event: {semantic_label or 'none'}\nTrade-driven reload: {self._money(level.recent_replenished_notional)} · {level.trade_reload_count} events\nPull/restack: {self._money(level.recent_restacked_notional)} · {level.restack_count} events\nCumulative visible depth: {self._money(level.cumulative_depth_notional)}\n{state_description}\nSTATE confirmation: 2 distinct row analyses; local same-side significance gate applied\nAge: {level.age_seconds:.1f}s  •  persistence: {level.persistence_ratio * 100:.0f}%\n30s memory — peak: {self._money(level.history_peak_notional_30s)}, mean: {self._money(level.history_mean_notional_30s)}, presence: {level.history_presence_30s * 100:.0f}%{execution_text}{selection_text}'
-            if self.aggregation_multiplier == 1:
-                health, _reason = self._feed_health_status(self.snapshot)
-                inference_live = health in {'LIVE', 'DEGRADED'} and not (self._trade_stream_known and not self._trade_stream_active)
-                flags = ', '.join(level.state_flags) or 'NORMAL'
-                if inference_live and level.persistent and display_state != 'PERSISTENT':
-                    concise_tooltip += '  •  PERSISTENT LIQUIDITY'
-                verbose_tooltip += (
-                    f'\nInstantaneous qualifications (before badge confirmation): {flags if inference_live else "unavailable while feed is stale/incomplete"}'
-                    f'\nNew passive adds (5s; excludes reload/repost): {self._money(level.new_passive_added_notional)}'
-                    f'\nEffective cancels (5s; excludes reposted size): {self._money(level.effective_cancelled_notional)}'
-                    '\nReload/restack are inferred same-price flows, not individual order identities.'
-                )
-            if self.aggregation_multiplier > 1:
-                current_notional = max(0.0, float(level.notional))
-                delta_notional = float(level.delta_notional_5s)
-                previous_notional = max(0.0, current_notional - delta_notional)
-                denominator = max(previous_notional, abs(delta_notional), 1e-9)
-                delta_pct = max(-100.0, min(100.0, delta_notional / denominator * 100.0))
-                history_known = any(
-                    math.isfinite(float(value)) and float(value) >= 0.0
-                    for value in level.liquidity_history_30s
-                )
-                liquidity_summary = (
-                    f'\nLIQ 30s bucket — peak: {self._money(level.history_peak_notional_30s)}, '
-                    f'mean: {self._money(level.history_mean_notional_30s)}, '
-                    f'presence: {level.history_presence_30s * 100:.0f}%'
-                    if history_known
-                    else '\nLIQ 30s bucket: unavailable (insufficient native history)'
-                )
-                bucket_metrics = (
-                    f'\nΔ BOOK (5s): {self._signed_percent(delta_pct)} · '
-                    f'{self._signed_money(delta_notional)}'
-                    f'{liquidity_summary}'
-                )
-                bucket_note = (
-                    "\nBUCKET ACTIVITY · STATE remains native-price only."
-                    "\nPrint markers mean a qualifying native print occurred inside this bucket, not at its displayed price."
-                    "\nBar intensity is relative to this grouped view."
-                )
-                concise_tooltip = concise_tooltip.replace(f'STATE {state_short}', 'STATE UNCLASSIFIED')
-                concise_tooltip += bucket_metrics
-                verbose_tooltip = (
-                    f'{level.side.upper()} BUCKET {self._price_text(level.price)}'
-                    f'\nResting liquidity: {self._money(level.notional)}'
-                    f'{bucket_metrics}'
-                    f'\nAggressive sells in bucket: {self._money(level.sell_trade_notional_5s)} in {level.sell_trade_count_5s} prints'
-                    f'\nAggressive buys in bucket: {self._money(level.buy_trade_notional_5s)} in {level.buy_trade_count_5s} prints'
-                    f'\nNative activity in bucket: {semantic_label or "none"}'
-                    f'{execution_text}{selection_text}'
-                )
-                signal = self._market_signal
-                if isinstance(signal, dict) and float(signal.get('expires', 0.0)) > time.monotonic():
-                    anchor_side = str(signal.get('anchor_side', ''))
-                    anchor = float(signal.get('anchor_price', 0.0) or 0.0)
-                    if (level.side == anchor_side and self._marker_key(level.price)
-                            == self._marker_key(self._display_bucket_price(anchor, anchor_side))):
-                        bucket_note += f'\n{signal.get("key", "SIGNAL")} · EXACT NATIVE ANCHOR {self._price_text(anchor)}'
-                concise_tooltip += bucket_note
-                verbose_tooltip += bucket_note
-            tooltip = verbose_tooltip if self._learning_mode_enabled() else concise_tooltip
-            if self._book_depth:
-                cumulative = level.cumulative_depth_notional
-                if self._value_mode == 'base':
-                    prepared = self._bid_rows if level.side == 'bid' else self._ask_rows
-                    cumulative = 0.0
-                    for row in prepared:
-                        cumulative += max(0.0, row.level.quantity)
-                        if row.level.price == level.price:
-                            break
-                unit = 'USDT' if self._value_mode == 'quote' else self.symbol.removesuffix('USDT')
-                tooltip = (
-                    f'{level.side.upper()}  {self._price_text(level.price)}'
-                    f'\nSize: {self._row_amount(level.notional, level.price, quantity=level.quantity)} {unit}'
-                    f'\nCumulative: {self._compact_scalar(cumulative)} {unit}'
-                    f'{execution_text}{selection_text}\n\n{self._profile_scale_text}'
-                )
-                if self._learning_mode_enabled():
-                    tooltip += f'\n\n{verbose_tooltip}'
-        else:
-            context_key, tooltip = self._context_tooltip(event.position())
-            if self._book_depth and context_key:
-                tooltip += f'\n\n{self._profile_scale_text}'
-        self.setToolTip(tooltip)
-        changed_price = price != self._hover_price
-        if changed_price or context_key != self._hover_context:
-            old_rect = self._row_rect_for_price(self._hover_price) if changed_price else QtCore.QRect()
+        _row_index, price, level = self._hover_level(event.position())
+        self.setCursor(Qt.CursorShape.PointingHandCursor
+                       if level is not None and self.aggregation_multiplier == 1
+                       else Qt.CursorShape.ArrowCursor)
+        if price != self._hover_price:
+            old_rect = self._row_rect_for_price(self._hover_price)
             self._hover_price = price
-            self._hover_context = context_key
-            self.setToolTip(tooltip)
-            if changed_price:
-                new_rect = self._row_rect_for_price(price)
-                region = QtGui.QRegion()
-                if not old_rect.isNull():
-                    region += QtGui.QRegion(old_rect.adjusted(-1, -1, 1, 1))
-                if not new_rect.isNull():
-                    region += QtGui.QRegion(new_rect.adjusted(-1, -1, 1, 1))
-                if not region.isEmpty():
-                    self._request_repaint_region('hover', region)
+            new_rect = self._row_rect_for_price(price)
+            region = QtGui.QRegion()
+            for rect in (old_rect, new_rect):
+                if not rect.isNull():
+                    region += QtGui.QRegion(rect.adjusted(-1, -1, 1, 1))
+            if not region.isEmpty():
+                self._request_repaint_region('hover', region)
         super().mouseMoveEvent(event)
 
     def _row_rect_for_price(self, price: float) -> QtCore.QRect:
@@ -6335,7 +5735,6 @@ class _DomRasterCanvas(QtWidgets.QWidget):
             _row_index, price, _level = self._hover_level(event.position())
             if price > 0.0:
                 if self.aggregation_multiplier > 1:
-                    QtWidgets.QToolTip.showText(event.globalPosition().toPoint(), 'AGGREGATED PRICE · switch to 1× tick for exact selection', self, self.rect(), 1400)
                     event.accept()
                     return
                 self.price_selected.emit(price)
@@ -6351,7 +5750,7 @@ class _DomRasterCanvas(QtWidgets.QWidget):
         super().mouseReleaseEvent(event)
 from PySide6 import QtCore, QtGui, QtWidgets
 from PySide6.QtCore import Qt, Signal
-from ..models import DomExecutionContext, OrderFlowPresentationFrame
+from ..models import OrderFlowPresentationFrame
 from ..models import ORDER_FLOW_AGGREGATION_MULTIPLIERS, OrderFlowSnapshot
 from ..models import safe_float
 
@@ -6436,7 +5835,6 @@ class _DomRasterProcess:
                 setter(config[key])
         canvas._frame_interval = config['interval']
         canvas._raster_dpr = config['dpr']
-        canvas.setProperty('learningMode', config['learning'])
         if old.get('size') != config['size'] or old.get('dpr') != config['dpr']:
             canvas.resize(*config['size'])
             canvas._prepared_size = (-1, -1)
@@ -6498,14 +5896,13 @@ class _DomRasterProcess:
                     canvas.set_snapshot(args)
                     canvas._snapshot_prepare_timer.stop()
                     canvas._flush_pending_snapshot()
-            elif name in ('set_execution_context', 'set_mark_price', 'set_microstructure_snapshot',
+            elif name in ('set_microstructure_snapshot',
                           'set_book_validity', 'set_trade_stream_status'):
                 getattr(canvas, name)(*args)
         self.application.processEvents()
-        # Hover uses the same formatter and exact row semantics, off the GUI GIL.
+        # Preserve row hover and column-resize cursors in the raster process.
         if self.pointer is not None:
-            x, y, learning = self.pointer
-            canvas.setProperty('learningMode', learning)
+            x, y = self.pointer
             if x < 0:
                 canvas.leaveEvent(QtCore.QEvent(QtCore.QEvent.Type.Leave))
                 self.pointer = None
@@ -6516,7 +5913,7 @@ class _DomRasterProcess:
                                          Qt.KeyboardModifier.NoModifier)
                 canvas.mouseMoveEvent(event)
         result = {'epoch': self.epoch, 'market_epoch': self.market_epoch,
-                  'tooltip': canvas.toolTip(), 'frame': None}
+                  'frame': None}
         if not canvas._dirty_pixels.isEmpty():
             slot, target = self._surface(lease)
             dirty, canvas._dirty_pixels = canvas._dirty_pixels, QtGui.QRegion()
@@ -6632,7 +6029,6 @@ class OrderFlowDomCanvas(_DomRasterCanvas):
                       columns=self.column_preferences(), widths=self.column_width_state(),
                       size=(max(1,self.width()), max(1,self.height())), dpr=self.devicePixelRatioF(),
                       interval=display_frame_interval_ms(self), theme=self._bar_theme,
-                      learning=self._learning_mode_enabled(),
                       typography=self._remote_typography)
         if config == self._sent_config:
             return
@@ -6655,9 +6051,8 @@ class OrderFlowDomCanvas(_DomRasterCanvas):
             self.width(), self.height(), self._row_metrics.height(),
             self._price_metrics.height(), self._label_metrics.height(),
             row_density=self._row_density,
-            execution_active=bool(self.execution_context.positions or self.execution_context.orders),
             book_depth=self._book_depth)
-        fixed = sum(float(g[key]) for key in ('margin', 'top_height', 'execution_height',
+        fixed = sum(float(g[key]) for key in ('margin', 'top_height',
                                               'column_height', 'center_height', 'footer_height'))
         return max(1, int(math.ceil(fixed + max(0, int(rows_per_side))*g['nominal_row_height']*2)))
 
@@ -6668,8 +6063,6 @@ class OrderFlowDomCanvas(_DomRasterCanvas):
     def _prepare_display(self, *, reuse_rows=False):
         self._queue_configuration()
 
-    def _prepare_execution_display(self):
-        pass
 
     def _commit_geometry_for_current_size(self):
         self._queue_configuration()
@@ -6688,15 +6081,6 @@ class OrderFlowDomCanvas(_DomRasterCanvas):
         self._latest_received_sequence = snapshot.sequence
         self._send('snapshot', payload)
 
-    def set_execution_context(self, context):
-        context = context or DomExecutionContext(self.symbol)
-        if context.symbol and context.symbol != self.symbol:
-            return
-        self.execution_context = context
-        self._send('set_execution_context', (context,))
-
-    def set_mark_price(self, mark):
-        self._send('set_mark_price', (mark,))
 
     def set_microstructure_snapshot(self, snapshot):
         self._send('set_microstructure_snapshot', (snapshot,))
@@ -6711,14 +6095,11 @@ class OrderFlowDomCanvas(_DomRasterCanvas):
         # No row preparation or raster work runs here during chart interaction.
         self._interaction_priority_active = bool(active)
 
-    def reset(self, *, preserve_execution=False):
+    def reset(self):
         self._market_epoch += 1
         self._display_frame = None
         self._latest_received_sequence = -1
-        if not preserve_execution:
-            self.execution_context = DomExecutionContext(self.symbol)
         self._queue_configuration()
-        self._send('set_execution_context', (self.execution_context,))
         QtWidgets.QWidget.update(self)
 
     def resizeEvent(self, event):
@@ -6761,8 +6142,6 @@ class OrderFlowDomCanvas(_DomRasterCanvas):
                 self._publish_layout_state()
                 QtWidgets.QWidget.update(self)
                 repaint = True
-            if result['epoch'] == self._display_epoch:
-                self.setToolTip(result.get('tooltip', ''))
             if 'diagnostics' in result:
                 self._remote_diagnostics.update(result['diagnostics'])
         if not repaint or not self.isVisible():
@@ -6782,7 +6161,6 @@ class OrderFlowDomCanvas(_DomRasterCanvas):
         logging.getLogger(__name__).error('DOM rendering process: %s', message)
         self._remote_error = 'Order book renderer unavailable'
         self._display_frame = None
-        self.setToolTip(message)
         QtWidgets.QWidget.update(self)
 
     def paintEvent(self, event):
@@ -6834,11 +6212,11 @@ class OrderFlowDomCanvas(_DomRasterCanvas):
             self.setCursor(Qt.CursorShape.SplitHCursor if pair else
                            Qt.CursorShape.PointingHandCursor if price and self.aggregation_multiplier == 1
                            else Qt.CursorShape.ArrowCursor)
-            self._send('pointer', (event.position().x(), event.position().y(), self._learning_mode_enabled()))
+            self._send('pointer', (event.position().x(), event.position().y()))
         event.accept()
 
     def leaveEvent(self, event):
-        self._send('pointer', (-1.0, -1.0, False))
+        self._send('pointer', (-1.0, -1.0))
         self.setToolTip('')
         if not self._column_resize_active:
             self.setCursor(Qt.CursorShape.ArrowCursor)
@@ -6923,6 +6301,7 @@ class OrderBookWidget(QtWidgets.QWidget):
         layout.addWidget(self.controls, 0)
         layout.addWidget(self.splitter, 1)
         self.setObjectName('orderBookWorkspace')
+        self.setProperty('suppressTooltips', True)
         self.setStyleSheet(f"QWidget#orderBookWorkspace {{ background: {ORDERBOOK_REFERENCE['bg']}; }}")
         self.setMinimumSize(0, 0)
         self.set_symbol(self.symbol)
@@ -7127,12 +6506,6 @@ class OrderBookWidget(QtWidgets.QWidget):
     def _show_context_menu(self, pos: QtCore.QPoint) -> None:
         """Rare structural/recovery actions only; session controls live above the DOM."""
         menu = QtWidgets.QMenu(self)
-        learning = menu.addAction('Learning mode tooltips')
-        learning.setCheckable(True)
-        window = self.window()
-        learning.setChecked(bool(window is not None and window.property('learningMode')))
-        learning.toggled.connect(self._set_learning_mode_from_settings)
-        menu.addSeparator()
         reset_widths = menu.addAction('Reset column widths')
         reset_widths.setEnabled(bool(self.canvas.column_width_state()))
         reset_widths.triggered.connect(
@@ -7145,17 +6518,6 @@ class OrderBookWidget(QtWidgets.QWidget):
         reset_display.triggered.connect(self._reset_display_options)
         menu.exec(self.canvas.mapToGlobal(pos))
 
-    def _set_learning_mode_from_settings(self, enabled: bool) -> None:
-        """Use the application's persisted Learning Mode as the sole tooltip switch."""
-        window = self.window()
-        setter = getattr(window, 'set_learning_mode', None) if window is not None else None
-        if callable(setter):
-            setter(bool(enabled))
-            return
-        if window is not None:
-            window.setProperty('learningMode', bool(enabled))
-        if not enabled:
-            QtWidgets.QToolTip.hideText()
 
     def set_order_flow_snapshot(self, snapshot: object) -> None:
         payload = snapshot
@@ -7269,12 +6631,6 @@ class OrderBookWidget(QtWidgets.QWidget):
     def layout_state(self) -> dict[str, object]:
         return self.canvas.layout_state()
 
-    def set_execution_context(self, context: DomExecutionContext | None) -> None:
-        self.canvas.set_execution_context(context)
-
-    def set_mark_price(self, price: float) -> None:
-        self.canvas.set_mark_price(price)
-
 
     def set_symbol(self, symbol: str, rules: object | None=None) -> None:
         normalized = str(symbol).upper().strip().removesuffix('.P') or 'BTCUSDT'
@@ -7299,9 +6655,9 @@ class OrderBookWidget(QtWidgets.QWidget):
             self._tape.set_market(self.symbol, self._tape.quote_volume_24h, tick_size=self.price_tick_size)
         self._sync_controls()
 
-    def reset(self, *, preserve_execution: bool=False) -> None:
+    def reset(self) -> None:
         self._latest_snapshot = None
-        self.canvas.reset(preserve_execution=preserve_execution)
+        self.canvas.reset()
         if self._tape is not None:
             self._tape.reset()
 

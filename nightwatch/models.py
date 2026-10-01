@@ -762,9 +762,6 @@ class SettingsHostPort(Protocol):
     def directional_color_mode(self, surface: str) -> str:
         ...
 
-    def set_learning_mode(self, enabled: bool) -> None:
-        ...
-
     def set_market_bar_timeframes(self, intervals: object) -> None:
         ...
 

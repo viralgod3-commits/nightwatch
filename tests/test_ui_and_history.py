@@ -271,12 +271,12 @@ def test_timeframe_rebuild_preserves_current_interval_and_clears_old_actions(qap
     strip.deleteLater()
 
 
-def test_market_bar_uses_midpoint_font_and_smaller_captions(qapp):
+def test_market_bar_uses_numeric_ticker_font_and_smaller_captions(qapp):
     from nightwatch.theme import DEFAULT_THEME_NAME, THEMES, ui_palette, build_shell_stylesheet
     from nightwatch.ui.market_widgets import MarketStatsWidget
     from nightwatch.utilities import TextRole, typography_font
     stats = MarketStatsWidget(ui_palette(THEMES[DEFAULT_THEME_NAME]), compact=True)
-    assert stats.cards['last'].value.font() == typography_font(TextRole.ORDERBOOK_CENTER_PRICE)
+    assert stats.cards['last'].value.font() == typography_font(TextRole.TOP_TICKER_PRICE)
     assert stats.cards['volume'].title.font().pointSizeF() < stats.cards['volume'].value.font().pointSizeF()
     assert stats.cards['funding'].title.full_text() == 'Funding rate'
     theme = ui_palette(THEMES[DEFAULT_THEME_NAME])

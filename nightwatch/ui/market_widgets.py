@@ -1585,7 +1585,7 @@ class MetricCard(QtWidgets.QFrame):
         # The instrument row supplies the other 12 px of the 96 px left gap.
         layout.setContentsMargins(84 if self.identity else 12 if compact else 5,
                                   5, 96 if self.identity else 12 if compact else 5, 5)
-        layout.setSpacing(12 if self.identity else 1 if compact else 2)
+        layout.setSpacing(24 if self.identity else 1 if compact else 2)
 
         self.title = (
             QtWidgets.QLabel(title.upper())
@@ -1613,7 +1613,7 @@ class MetricCard(QtWidgets.QFrame):
         )
 
 
-        set_text_role(self.value, TextRole.ORDERBOOK_CENTER_PRICE if self.identity else TextRole.TOP_MARKET_VALUE if compact else TextRole.MARKET_VALUE)
+        set_text_role(self.value, TextRole.TOP_TICKER_PRICE if self.identity else TextRole.TOP_MARKET_VALUE if compact else TextRole.MARKET_VALUE)
         self.title.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
         self.value.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
         if compact:

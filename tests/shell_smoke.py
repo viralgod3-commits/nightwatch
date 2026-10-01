@@ -62,7 +62,10 @@ def check_market_bar(window, app):
     QTest.qWait(20)
     QTest.keyClick(window.chart, QtCore.Qt.Key.Key_6)
     assert window.current_interval == '1d'
-    assert not window._informational_tooltip_allowed(QtWidgets.QLabel('Instruction', window))
+    assert window._informational_tooltip_allowed(QtWidgets.QLabel('Instruction', window))
+    assert not window._informational_tooltip_allowed(window.orderbook.canvas)
+    assert not window._informational_tooltip_allowed(window.order_panel.price_edit)
+    assert window._informational_tooltip_allowed(window.order_panel.time_in_force)
     assert window._informational_tooltip_allowed(window.stats.cards['volume'])
     assert window._informational_tooltip_allowed(window.settings_button)
 
@@ -141,7 +144,7 @@ def main():
         assert tape.value_mode() == 'base'
         if window.orderbook._tape is not None:
             assert window.orderbook._tape.value_mode() == 'base'
-        assert tape.table.horizontalHeader().isHidden()
+        assert tape.table.horizontalHeader().isVisible()
         assert tape.model.columnCount() == 4
 
     except BaseException:
@@ -152,7 +155,7 @@ def main():
             time.sleep(.01)
         raise
     for index in range(window.workspace_stack.count()):
-        window.workspace_stack.setCurrentIndex(index)
+        window._switch_workspace(index)
         for _ in range(5):
             app.processEvents()
             time.sleep(.01)

@@ -905,7 +905,6 @@ class NightwatchSettingsDialog(QtWidgets.QDialog):
         self._action_widget_labels: dict[QtGui.QAction, str] = {}
         self._panel_checks: dict[str, QtWidgets.QCheckBox] = {}
         self._settings_search: QtWidgets.QLineEdit | None = None
-        self.learning_mode_check: QtWidgets.QCheckBox | None = None
         self._directional_mode_combos: dict[str, QtWidgets.QComboBox] = {}
         self._mode_buttons: dict[int, QtWidgets.QRadioButton] = {}
         self.volume_height_spin: QtWidgets.QSpinBox | None = None
@@ -1830,10 +1829,6 @@ class NightwatchSettingsDialog(QtWidgets.QDialog):
         top_grid.setColumnStretch(1, 1)
 
         guidance_box, guidance_layout = self._group("Guidance")
-        self.learning_mode_check = QtWidgets.QCheckBox("Show instructional tooltips")
-        self.learning_mode_check.setChecked(bool(self.host.learning_mode))
-        self.learning_mode_check.toggled.connect(self.host.set_learning_mode)
-        guidance_layout.addWidget(self.learning_mode_check)
         guide = QtWidgets.QPushButton("Open order book guide…")
         guide.setAutoDefault(False)
         guide.clicked.connect(self._open_orderbook_guide)
@@ -2001,11 +1996,6 @@ class NightwatchSettingsDialog(QtWidgets.QDialog):
                 self.volume_height_spin.setValue(
                     int(self.host.volume_bar_height_setting())
                 )
-                del blocker
-
-            if self.learning_mode_check is not None:
-                blocker = QtCore.QSignalBlocker(self.learning_mode_check)
-                self.learning_mode_check.setChecked(bool(self.host.learning_mode))
                 del blocker
 
             controller = self.host.right_rail_controller

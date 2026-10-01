@@ -83,9 +83,6 @@ from ..constants import (
     normalized_market_bar_timeframes,
 )
 from ..models import (
-    DomExecutionContext,
-    DomPositionOverlay,
-    DomWorkingOrder,
     MarketDataHubPort,
     MicrostructureSnapshot,
     ORDER_FLOW_AGGREGATION_MULTIPLIERS,
@@ -166,6 +163,7 @@ from ..utilities import (
     configure_typography,
     line_icon,
     set_tooltip_theme,
+    tooltips_allowed,
     typography_controller,
 )
 
@@ -538,10 +536,9 @@ class MainWindow(QtWidgets.QMainWindow):
         # direct-manipulation frame. Order-flow is independently worker-paced.
         self.presentation_clock = PresentationClock(self, self)
         self.presentation_clock.frame.connect(self._flush_presentation_frame)
-        # Learning mode is the single authority for instructional tooltips.
-        # It is deliberately OFF by default; information-rich market-data hovers
-        # opt in separately and remain available in normal trading mode.
-        self.learning_mode = self.settings.value("ui/learning_mode_v1", False, bool)
+        # Useful hovers are always available. Surface policies exclude the
+        # order book and restrict trading guidance to time-in-force options.
+        self.learning_mode = True
         try:
             saved_timeframes = json.loads(self.settings.value("ui/market_bar_timeframes_v1", "", str))
         except (TypeError, ValueError):
@@ -1030,7 +1027,6 @@ class MainWindow(QtWidgets.QMainWindow):
         self._right_rail_geometry_signature: tuple[object, ...] | None = None
         self._market_data_started = False
         self._latest_trading_snapshot: dict[str, Any] = {}
-        self._dom_context_signature: tuple[Any, ...] | None = None
         self._chart_orders_signature: tuple[Any, ...] | None = None
         self.trading_gateway: TradingGatewayPort = self._composition.create_trading_gateway()
         # Session-only safety gate: the first attempted trade after arming is
@@ -1124,7 +1120,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.trading_gateway.account_event.connect(self._trading_account_event)
         self.trading_gateway.protections_recovered.connect(self._restore_saved_protections)
         self.trading_gateway.snapshot_ready.connect(self._sync_chart_working_orders)
-        self.trading_gateway.snapshot_ready.connect(self._sync_dom_execution_context)
+        self.trading_gateway.snapshot_ready.connect(self._sync_trading_snapshot)
         self.trading_gateway.snapshot_ready.connect(self._sync_ticker_streams)
         self.trading_gateway.problem.connect(self._on_problem)
         self.rail_amendments = RailAmendments(self, diagnostics=diagnostics)
@@ -5035,17 +5031,9 @@ class MainWindow(QtWidgets.QMainWindow):
         elif event_type == QtCore.QEvent.Type.Shortcut:
             if isinstance(watched, QtGui.QAction) and watched.parent() is self and not self._owns_keyboard():
                 return True
-        if not self.learning_mode:
-            if event.type() == QtCore.QEvent.Type.ToolTip:
-                if not self._informational_tooltip_allowed(watched):
-                    QtWidgets.QToolTip.hideText()
-                    return True
-            elif event.type() == QtCore.QEvent.Type.GraphicsSceneHelp:
-                # QGraphicsItem tooltips arrive as scene-help events rather than
-                # QWidget ToolTip events. Normal trading mode suppresses these
-                # too; dynamic market-data hovers use explicit readouts instead.
-                QtWidgets.QToolTip.hideText()
-                return True
+        if event_type == QtCore.QEvent.Type.ToolTip and not tooltips_allowed(watched):
+            QtWidgets.QToolTip.hideText()
+            return True
         if (
             event.type() == QtCore.QEvent.Type.KeyPress
             and event.isAutoRepeat()
@@ -5873,7 +5861,6 @@ class MainWindow(QtWidgets.QMainWindow):
         self.last_price = 0.0
         self.orderbook.set_symbol(symbol, rules)
         self.orderbook.reset()
-        self._sync_dom_execution_context()
         self.last_recorded_depth = 0.0
         self.last_recorded_funding = 0.0
         # A market switch invalidates the current lazy-history request.  The
@@ -7804,9 +7791,6 @@ class MainWindow(QtWidgets.QMainWindow):
         mark = safe_float(payload.get("p"))
         if mark:
             self.trading_workspace.set_mark_price(mark, symbol)
-            if (symbol == self.current_symbol and self._market_depth_active
-                    and self.right_rail_controller.panel_active("depth")):
-                self.orderbook.set_mark_price(mark)
             self._observe_emergency_mark(symbol, mark)
         if symbol != self.current_symbol:
             if profile_started:
@@ -7957,7 +7941,7 @@ class MainWindow(QtWidgets.QMainWindow):
             quote_volume=safe_float((self.tickers.get(self.current_symbol) or {}).get("q")),
         )
         self._reset_microstructure_card(preserve_render=True)
-        self.orderbook.reset(preserve_execution=True)
+        self.orderbook.reset()
 
     def _on_book_validity(self, valid: bool, reason: str) -> None:
         """Treat synchronized-book readiness as separate from socket connectivity."""
@@ -8080,38 +8064,10 @@ class MainWindow(QtWidgets.QMainWindow):
             current = current.parentWidget()
         return None
 
-    def set_learning_mode(self, enabled: bool) -> None:
-        enabled = bool(enabled)
-        if enabled == self.learning_mode:
-            return
-        self.learning_mode = enabled
-        self.settings.setValue("ui/learning_mode_v1", enabled)
-        self.setProperty("learningMode", enabled)
-        self.setProperty("chartTooltipsSuppressed", not enabled)
-        if not enabled:
-            QtWidgets.QToolTip.hideText()
-        dialog = getattr(self, "settings_dialog", None)
-        if dialog is not None and dialog.isVisible():
-            dialog.sync_from_owner()
 
     @staticmethod
     def _informational_tooltip_allowed(watched: QtCore.QObject) -> bool:
-        current: QtCore.QObject | None = watched
-        while current is not None:
-            try:
-                if bool(current.property("informationalToolTip")):
-                    return True
-                if isinstance(current, QtWidgets.QAbstractItemView):
-                    return True  # Data-cell explanations are available in normal mode.
-                if isinstance(current, QtWidgets.QAbstractButton) and not current.text():
-                    return True  # Icon-only controls need an accessible explanation.
-                if isinstance(current, QtWidgets.QLabel) and getattr(current, "_auto_tooltip", False):
-                    return True  # Preserve full text when the visible label is elided.
-            except (AttributeError, RuntimeError):
-                pass
-            current = current.parent()
-        return False
-
+        return tooltips_allowed(watched)
 
     def _execution_book_ready(self) -> bool:
         hub = getattr(self, "hub", None)
@@ -9737,159 +9693,12 @@ class MainWindow(QtWidgets.QMainWindow):
                     9000,
                 )
 
-    def _sync_dom_execution_context(self, snapshot: dict[str, Any] | None = None) -> None:
-        if snapshot is not None:
-            if not isinstance(snapshot, dict):
-                return
-            self._latest_trading_snapshot = dict(snapshot)
-            self._reconcile_magnetic_rail_requests(self._latest_trading_snapshot)
-        source = self._latest_trading_snapshot
-        if not isinstance(source, dict):
-            source = {}
-        symbol = self.current_symbol
-        positions: list[DomPositionOverlay] = []
-        account = source.get("account")
-        if not isinstance(account, dict):
-            account = {}
-        position_rows = account.get("positions")
-        if not isinstance(position_rows, list):
-            position_rows = []
-        for row in position_rows:
-            if not isinstance(row, dict):
-                continue
-            if str(row.get("symbol") or "").upper() != symbol:
-                continue
-            amount = safe_float(row.get("positionAmt"))
-            if abs(amount) <= 0.0:
-                continue
-            position_side = str(row.get("positionSide") or "BOTH").upper()
-            if position_side == "LONG" or (position_side == "BOTH" and amount > 0.0):
-                side = "LONG"
-            elif position_side == "SHORT" or (position_side == "BOTH" and amount < 0.0):
-                side = "SHORT"
-            else:
-                continue
-            positions.append(
-                DomPositionOverlay(
-                    side=side,
-                    quantity=abs(amount),
-                    entry_price=safe_float(row.get("entryPrice")),
-                    mark_price=safe_float(row.get("markPrice")),
-                    unrealized_pnl=safe_float(row.get("unrealizedProfit")),
-                    leverage=max(0, int(safe_float(row.get("leverage")))),
-                    liquidation_price=safe_float(row.get("liquidationPrice")),
-                )
-            )
-
-        orders: list[DomWorkingOrder] = []
-        for source_name, raw_rows in (
-            ("STANDARD", source.get("orders", [])),
-            ("ALGO", source.get("algoOrders", [])),
-        ):
-            rows = raw_rows if isinstance(raw_rows, list) else []
-            for row in rows:
-                if not isinstance(row, dict):
-                    continue
-                if str(row.get("symbol") or "").upper() != symbol:
-                    continue
-                status = str(
-                    row.get("status") or row.get("algoStatus") or "NEW"
-                ).upper()
-                if status not in {"NEW", "PARTIALLY_FILLED", "PENDING"}:
-                    continue
-                side = str(row.get("side") or "").upper()
-                if side not in {"BUY", "SELL"}:
-                    continue
-                order_type = str(
-                    row.get("type")
-                    or row.get("orderType")
-                    or row.get("algoType")
-                    or "ORDER"
-                ).upper()
-                reduce_only = bool(
-                    row.get("reduceOnly") is True
-                    or str(row.get("reduceOnly", "")).casefold() == "true"
-                )
-                close_position = bool(
-                    row.get("closePosition") is True
-                    or str(row.get("closePosition", "")).casefold() == "true"
-                )
-                exit_order = reduce_only or close_position
-                if "TAKE_PROFIT" in order_type:
-                    label = "TP" if exit_order else "TRG"
-                elif "TRAILING" in order_type:
-                    label = "SL" if exit_order else "TRAIL"
-                elif "STOP" in order_type:
-                    label = "SL" if exit_order else "STOP"
-                elif exit_order:
-                    label = "EXIT"
-                elif "LIMIT" in order_type:
-                    label = "LMT"
-                else:
-                    label = "ORD"
-                if label in {"TP", "SL"}:
-                    price = safe_float(
-                        row.get("triggerPrice")
-                        or row.get("stopPrice")
-                        or row.get("price")
-                        or row.get("actualPrice")
-                    )
-                else:
-                    price = safe_float(
-                        row.get("price")
-                        or row.get("actualPrice")
-                        or row.get("triggerPrice")
-                        or row.get("stopPrice")
-                    )
-                quantity = safe_float(
-                    row.get("origQty")
-                    or row.get("quantity")
-                    or row.get("totalQty")
-                )
-                orders.append(
-                    DomWorkingOrder(
-                        price=price,
-                        quantity=max(0.0, quantity),
-                        side=side,
-                        label=label,
-                        reduce_only=exit_order,
-                        source=source_name,
-                    )
-                )
-        positions.sort(key=lambda item: (0 if item.side == "LONG" else 1, -item.quantity))
-        orders.sort(key=lambda item: (item.price <= 0.0, item.price, item.label, item.side))
-        signature = (
-            symbol,
-            tuple(
-                (
-                    item.side,
-                    item.quantity,
-                    item.entry_price,
-                    item.mark_price,
-                    item.unrealized_pnl,
-                    item.leverage,
-                    item.liquidation_price,
-                )
-                for item in positions
-            ),
-            tuple(
-                (
-                    item.price,
-                    item.quantity,
-                    item.side,
-                    item.label,
-                    item.reduce_only,
-                    item.source,
-                )
-                for item in orders
-            ),
-        )
-        if signature == self._dom_context_signature:
+    def _sync_trading_snapshot(self, snapshot: dict[str, Any]) -> None:
+        """Retain shared account state and chart-rail reconciliation."""
+        if not isinstance(snapshot, dict):
             return
-        self._dom_context_signature = signature
-        self.orderbook.set_execution_context(
-            DomExecutionContext(symbol, tuple(positions), tuple(orders))
-        )
+        self._latest_trading_snapshot = dict(snapshot)
+        self._reconcile_magnetic_rail_requests(self._latest_trading_snapshot)
 
     @staticmethod
     def _working_orders_for_symbol(

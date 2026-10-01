@@ -42,6 +42,7 @@ class TextRole:
     UI_GLYPH = "ui_glyph"
     INSTRUMENT_SYMBOL = "instrument_symbol"
     TOP_TICKER_SYMBOL = "top_ticker_symbol"
+    TOP_TICKER_PRICE = "top_ticker_price"
     TOP_MARKET_VALUE = "top_market_value"
     MARKET_VALUE = "market_value"
     MARKET_VALUE_EMPHASIZED = "market_value_emphasized"
@@ -91,6 +92,7 @@ TYPOGRAPHY_ROLE_LABELS: dict[str, str] = {
     TextRole.UI_GLYPH: "UI glyph controls",
     TextRole.INSTRUMENT_SYMBOL: "Instrument / symbol identifiers",
     TextRole.TOP_TICKER_SYMBOL: "Top-bar ticker identifier",
+    TextRole.TOP_TICKER_PRICE: "Top-bar ticker price",
     TextRole.TOP_MARKET_VALUE: "Top-bar market values",
     TextRole.MARKET_VALUE: "Market / execution values",
     TextRole.MARKET_VALUE_EMPHASIZED: "Emphasized market values",
@@ -174,6 +176,7 @@ TYPOGRAPHY_DEFAULTS: dict[str, dict[str, Any]] = {
     # can make glyphs such as uppercase T appear disproportionately heavy.
     TextRole.INSTRUMENT_SYMBOL: _font_profile("ui", 9.5, 500, hinting="vertical"),
     TextRole.TOP_TICKER_SYMBOL: _font_profile("ui", 9.5, 500, hinting="vertical"),
+    TextRole.TOP_TICKER_PRICE: _font_profile("numeric", 9.5, 500, hinting="full", fixed_pitch=True),
     TextRole.TOP_MARKET_VALUE: _font_profile("numeric", 10.5, 500, hinting="full", fixed_pitch=True, numeric_width="extended"),
     TextRole.MARKET_VALUE: _font_profile("numeric", 9.0, 500, hinting="full", fixed_pitch=True),
     TextRole.MARKET_VALUE_EMPHASIZED: _font_profile("numeric", 9.0, 600, hinting="full", fixed_pitch=True),
@@ -274,7 +277,7 @@ _LEGACY_TEXT_ROLES: dict[str, str] = {
     "watchlistGroupMenu": TextRole.UI_GLYPH,
     "topMetricValue": TextRole.TOP_MARKET_VALUE,
     "metricValue": TextRole.MARKET_VALUE,
-    "topTickerLast": TextRole.ORDERBOOK_CENTER_PRICE,
+    "topTickerLast": TextRole.TOP_TICKER_PRICE,
     "topTickerSymbol": TextRole.TOP_TICKER_SYMBOL,
     "globalSymbolSearch": TextRole.INSTRUMENT_SYMBOL,
     "metricHoverValue": TextRole.MARKET_VALUE_EMPHASIZED,
@@ -746,6 +749,20 @@ class _TypographyRoleFilter(QtCore.QObject):
         return super().eventFilter(watched, event)
 
 
+def tooltips_allowed(widget: QtCore.QObject) -> bool:
+    """Honor surface exclusions for native and explicitly requested hovers."""
+    essential = False
+    current = widget
+    while current is not None:
+        if current.property("suppressTooltips"):
+            return False
+        essential = essential or bool(current.property("essentialToolTip"))
+        if current.property("suppressNonessentialTooltips") and not essential:
+            return False
+        current = current.parent()
+    return True
+
+
 class _TooltipStyle(QtWidgets.QProxyStyle):
     """Use the same deliberate hover delay, including adjacent controls."""
 
@@ -797,7 +814,7 @@ class _TooltipController(QtCore.QObject):
 
     def request(self, widget: QtWidgets.QWidget, text: str, position: QtCore.QPoint,
                 rect: QtCore.QRect | None = None) -> None:
-        if not text:
+        if not text or not tooltips_allowed(widget):
             self.hide(widget)
             return
         owner = self._owner() if self._owner is not None else None
@@ -823,7 +840,7 @@ class _TooltipController(QtCore.QObject):
         import shiboken6
 
         widget = self._owner() if self._owner is not None else None
-        if widget is None or not shiboken6.isValid(widget) or not widget.isVisible():
+        if widget is None or not shiboken6.isValid(widget) or not widget.isVisible() or not tooltips_allowed(widget):
             self.hide()
             return
         if not self._rect.contains(widget.mapFromGlobal(QtGui.QCursor.pos())):
@@ -843,6 +860,10 @@ class _TooltipController(QtCore.QObject):
                 watched.setStyleSheet(self._stylesheet)
             set_text_role(watched, TextRole.UI_BODY)
         if event_type == QtCore.QEvent.Type.ToolTip and isinstance(watched, QtWidgets.QWidget):
+            if not tooltips_allowed(watched):
+                self.hide()
+                event.accept()
+                return True
             text = watched.toolTip()
             if isinstance(watched, QtWidgets.QMenu):
                 action = watched.actionAt(event.pos())

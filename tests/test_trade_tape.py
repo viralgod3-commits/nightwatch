@@ -313,9 +313,9 @@ def test_tape_keeps_four_columns_result_and_independent_quantity_switch(qapp, wi
     widget._refresh_table()
     qapp.processEvents()
     assert widget.model.columnCount() == 4
-    assert [widget.model.headerData(i, Qt.Orientation.Horizontal) for i in range(4)] == ['PRICE', 'SIZE', 'RESULT', 'TIME']
+    assert [widget.model.headerData(i, Qt.Orientation.Horizontal) for i in range(4)] == ['PRICE', 'SIZE', 'TAG', 'TIME']
     assert not hasattr(widget, 'title')
-    assert widget.table.horizontalHeader().isHidden()
+    assert widget.table.horizontalHeader().isVisible()
     assert not widget.table.isColumnHidden(2)
     assert widget.model.index(0, 1).data() == '$0.000001'
     rect = widget.table.visualRect(widget.model.index(0, 2))

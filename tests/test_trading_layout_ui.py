@@ -109,10 +109,46 @@ def test_ticket_controls_remain_reachable_at_different_sizes(workspace, qapp, wi
             continue
         origin = control.mapTo(viewport, QtCore.QPoint())
         assert origin.x() >= 0 and origin.x() + control.width() <= viewport.width()
+    for edit, mark in ((ticket.price_edit, ticket.price_mark_button),
+                       (ticket.trigger_edit, ticket.trigger_mark_button),
+                       (ticket.activation_edit, ticket.activation_mark_button)):
+        if edit.isVisible():
+            assert edit.height() == mark.height()
+            assert edit.mapTo(viewport, QtCore.QPoint()).y() == mark.mapTo(viewport, QtCore.QPoint()).y()
+    if ticket.type_combo.isVisible():
+        selector = ticket._field_rows['type']
+        source = ticket._field_rows['source']
+        assert selector.y() == source.y()
+        assert selector.geometry().right() < source.geometry().left()
     assert ticket.quantity_edit.font().pointSizeF() == typography_font(TextRole.TABLE_VALUE).pointSizeF()
     ticket.ticket_scroll.verticalScrollBar().setValue(ticket.ticket_scroll.verticalScrollBar().maximum())
     settle(qapp)
     assert ticket.buy_button.isVisible() and ticket.execution_state_label.isVisible()
+
+
+def test_filled_conditional_inputs_survive_reflow_and_only_tif_has_help(workspace, qapp):
+    from nightwatch.utilities import tooltip_controller, tooltips_allowed
+    ticket = workspace.ticket
+    ticket.type_combo.setCurrentIndex(ticket.type_combo.findData('STOP'))
+    ticket.price_edit.setText('63000')
+    ticket.trigger_edit.setText('63500')
+    ticket.quantity_edit.setText('0.1')
+    for width in (300, 760, 330):
+        workspace.resize(width, 440)
+        settle(qapp)
+        assert (ticket.price_edit.text(), ticket.trigger_edit.text(), ticket.quantity_edit.text()) == ('63000', '63500', '0.1')
+        for edit in (ticket.price_edit, ticket.trigger_edit):
+            assert edit._hint.isVisible()
+            assert edit.textMargins().left() > edit._hint.width()
+            assert edit.rect().contains(edit._hint.geometry())
+    controller = tooltip_controller()
+    controller.request(ticket.price_edit, 'Price', ticket.price_edit.mapToGlobal(QtCore.QPoint()))
+    assert not controller._timer.isActive()
+    assert not tooltips_allowed(ticket.price_edit)
+    assert tooltips_allowed(ticket.time_in_force)
+    for index in range(ticket.time_in_force.count()):
+        ticket.time_in_force.setCurrentIndex(index)
+        assert ticket.time_in_force.toolTip() == ticket.time_in_force.itemData(index, QtCore.Qt.ItemDataRole.ToolTipRole)
 
 
 def test_account_tabs_cancel_and_close_keep_correct_payloads(workspace, gateway, monkeypatch, qapp):
