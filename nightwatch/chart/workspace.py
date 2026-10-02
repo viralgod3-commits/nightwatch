@@ -8730,7 +8730,12 @@ class ChartWorkspace(QtWidgets.QWidget):
         ):
             for name in ("right", "bottom", "top"):
                 axis = plot.getAxis(name)
-                axis.setPen(pg.mkPen(theme["border"]))
+                axis_pen = pg.mkPen(theme["border"])
+                if name == "right":
+                    color = axis_pen.color()
+                    color.setAlphaF(color.alphaF() * 0.5)
+                    axis_pen.setColor(color)
+                axis.setPen(axis_pen)
                 axis.setTextPen(pg.mkPen(theme["muted"]))
                 axis.setGrid(False)
         candle_up = theme.get("candle_up", theme["green"])
