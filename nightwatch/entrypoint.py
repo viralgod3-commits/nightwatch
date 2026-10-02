@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import argparse
+from contextlib import contextmanager
+import signal
 import os
 import sys
 import time
@@ -21,6 +23,24 @@ from .utilities import load_app_fonts
 from .utilities import ensure_frameless_close_button, position_frameless_close_button
 
 
+
+
+@contextmanager
+def _console_interrupt_shutdown(window):
+    """Defer Ctrl+C to normal closeEvent cleanup outside Qt virtual callbacks."""
+    pending = False
+
+    def request_close(_signum, _frame):
+        nonlocal pending
+        if not pending:
+            pending = True
+            QTimer.singleShot(0, window.close)
+
+    previous = signal.signal(signal.SIGINT, request_close)
+    try:
+        yield
+    finally:
+        signal.signal(signal.SIGINT, previous)
 
 
 def parse_args() -> argparse.Namespace:
@@ -438,7 +458,8 @@ def main() -> int:
         window.show()
         QTimer.singleShot(0, start_market_data_when_chart_ready)
     startup_mark("window show requested")
-    return application.exec()
+    with _console_interrupt_shutdown(window):
+        return application.exec()
 
 
 import os

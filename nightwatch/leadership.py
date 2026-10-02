@@ -3422,7 +3422,6 @@ class _SectorOverviewSectorTile(QtWidgets.QFrame):
             self.members.setText(members_text)
         self.bars.set_values(metrics.get("volume_bars", []), _sector_overview_sector_color(self.sector, self.theme))
         self.bars.setToolTip(f"Turnover history · fixed cohort {metrics.get('volume_history_covered', 0)}/{metrics.get('members', 0)} pairs · — means unavailable")
-        self.spark.setToolTip(f"Median vs BTC history · fixed cohort {metrics.get('trend_covered', 0)}/{metrics.get('members', 0)} pairs")
 
     def mouseReleaseEvent(self, event: QtGui.QMouseEvent) -> None:
         if event.button() == Qt.MouseButton.LeftButton:

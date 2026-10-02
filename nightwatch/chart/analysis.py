@@ -191,6 +191,9 @@ def analysis_worker_count():
 
 
 def _initialize_analysis_worker():
+    # The GUI owns Ctrl+C and coordinates cooperative worker shutdown.
+    import signal
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
 
 
 

@@ -3519,6 +3519,9 @@ class _OrderBookProcessLink(QtCore.QObject):
 
 
 def _orderbook_process_main(connection, factory, options):
+    # Console interrupts belong to the parent, not an idle pipe receiver.
+    import signal
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
     worker = None
     try:
 
