@@ -193,14 +193,13 @@ from .utilities import alpha_color, tooltip_stylesheet, typography_state_weight
 
 def build_shell_stylesheet(theme_name: str, theme: dict[str, str], surfaces: dict[str, int] | None=None, status: dict[str, object] | None=None) -> str:
     t = theme
+    surface_style = surfaces if surfaces is not None else DEV_UI_SURFACE_DEFAULTS
     market_caption_color = "rgba(%d, %d, %d, %d)" % alpha_color(t['text'], 153).getRgb()
     timeframe_controls = f"""
         QFrame#instrumentBar {{
-            background: {t['header']}; border: 0;
-            border-left: 1px solid {t['border']};
-            border-right: 1px solid {t['border']};
-            border-bottom: 1px solid {t['border']};
-            margin: 0 4px;
+            background: {t['header']}; border: 1px solid {t['border']};
+            border-radius: {int(surface_style['block_radius'])}px;
+            margin: 0 0 0 12px;
         }}
         QFrame#instrumentContextSlot {{
             background: {t['panel2']}; border: 0;
@@ -250,7 +249,6 @@ def build_shell_stylesheet(theme_name: str, theme: dict[str, str], surfaces: dic
     separator = t.get('separator', t['border'])
     depth_green = t.get('depth_green', t['green'])
     depth_red = t.get('depth_red', t['red'])
-    surface_style = surfaces if surfaces is not None else DEV_UI_SURFACE_DEFAULTS
     block_border_width = max(0, int(surface_style['block_border_width']))
     if is_nightwatch_dark_theme(theme_name):
         radius = f"{int(surface_style['element_radius'])}px"
@@ -286,6 +284,7 @@ def build_shell_stylesheet(theme_name: str, theme: dict[str, str], surfaces: dic
     # Topology uses rightRailSplit now; keep every structural gap black in all themes.
     structural_overrides = """
         QWidget#centralRoot, QWidget#leftWorkspace, QWidget#workspaceStack,
+        QWidget#instrumentBarHost,
         QFrame#rightRailHost, QScrollArea#rightRailScroll,
         QWidget#rightRailViewport, QWidget#rightRailCanvas,
         QSplitter#rightRailSplit {

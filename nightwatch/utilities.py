@@ -1101,13 +1101,11 @@ class MainToolbar(QtWidgets.QFrame):
     def apply_theme(self, theme: dict[str, str]) -> None:
         text = theme.get("text", "#EDEDED")
         muted = theme.get("muted", "#8E8E96")
-        border = theme.get("border", "#262629")
         hover = theme.get("control_hover", "#1E1E22")
         active = theme.get("active_line", text)
         # Scope all rules locally so the instrument cards retain their styling.
         self.setStyleSheet(f"""
-            QFrame#mainToolbar {{ background: #000000; border: 0;
-                border-bottom: 1px solid {border}; }}
+            QFrame#mainToolbar {{ background: #000000; border: 0; }}
             QFrame#workspaceNav {{ background: #000000; border: 0; padding: 0; }}
             QPushButton#workspaceNavButton {{ background: transparent; color: {muted};
                 border: 0; border-bottom: 1px solid transparent;
@@ -1137,6 +1135,9 @@ class InstrumentBar(QtWidgets.QFrame):
         self._chart_context_visible = True
         self._responsive_layout_active = False
         self._responsive_state = None
+        self._plot_alignment = None
+        self._plot_alignment_pending = False
+        self._alignment_charts = []
 
         cards = getattr(stats, "cards", {})
         cards = cards if isinstance(cards, dict) else {}
@@ -1273,6 +1274,64 @@ class InstrumentBar(QtWidgets.QFrame):
     def resizeEvent(self, event: QtGui.QResizeEvent) -> None:
         super().resizeEvent(event)
         self._apply_responsive_layout()
+        self._queue_plot_alignment()
+
+    def set_plot_alignment(self, container: QtWidgets.QWidget, host_layout: QtWidgets.QHBoxLayout) -> None:
+        """End the market bar at the rightmost visible chart's price axis."""
+        self._plot_alignment = container, host_layout
+        container.installEventFilter(self)
+        self._observe_alignment_chart(container.primary_chart)
+        for pane in container.auxiliary:
+            self._observe_alignment_chart(pane.chart)
+        container.chart_added.connect(self._observe_alignment_chart)
+        self._queue_plot_alignment()
+
+    def _observe_alignment_chart(self, chart: QtWidgets.QWidget) -> None:
+        if chart in self._alignment_charts:
+            return
+        self._alignment_charts.append(chart)
+        chart.graphics.viewport().installEventFilter(self)
+        chart.price_plot.getViewBox().sigResized.connect(self._queue_plot_alignment)
+        self._queue_plot_alignment()
+
+    def eventFilter(self, watched: QtCore.QObject, event: QtCore.QEvent) -> bool:
+        if self._plot_alignment is not None and event.type() in (
+            QtCore.QEvent.Type.Resize, QtCore.QEvent.Type.Show,
+        ):
+            self._queue_plot_alignment()
+        return super().eventFilter(watched, event)
+
+    def _queue_plot_alignment(self, *_args) -> None:
+        if self._plot_alignment is None or self._plot_alignment_pending:
+            return
+        self._plot_alignment_pending = True
+        QtCore.QTimer.singleShot(0, self._sync_plot_alignment)
+
+    def _sync_plot_alignment(self) -> None:
+        self._plot_alignment_pending = False
+        if self._plot_alignment is None or not self._chart_context_visible:
+            return
+        _container, host_layout = self._plot_alignment
+        host = host_layout.parentWidget()
+        if host is None:
+            return
+        axis_x = 0
+        for chart in self._alignment_charts:
+            if not chart.isVisible():
+                continue
+            axis = chart.price_axis
+            if not axis.geometry().isEmpty():
+                # AxisItem's paint bounds include ticks extending into the plot;
+                # its local origin is the actual layout boundary.
+                position = chart.graphics.mapFromScene(axis.mapToScene(QtCore.QPointF(0, 0)))
+                edge = host.mapFromGlobal(chart.graphics.viewport().mapToGlobal(position)).x()
+                axis_x = max(axis_x, edge)
+        if not 0 < axis_x <= host.width():
+            return  # Qt has not yet committed matching chart/host geometry.
+        inset = host.width() - axis_x
+        margins = host_layout.contentsMargins()
+        if margins.right() != inset:
+            host_layout.setContentsMargins(margins.left(), margins.top(), inset, margins.bottom())
 
     def set_chart_context_visible(self, visible: bool) -> None:
         self._chart_context_visible = bool(visible)
@@ -1280,6 +1339,7 @@ class InstrumentBar(QtWidgets.QFrame):
         if visible:
             self._responsive_state = None
             self._apply_responsive_layout()
+            self._queue_plot_alignment()
 
     def set_developer_geometry(self, *, left=7, top=4, right=7, bottom=4,
                                spacing=4, height=INSTRUMENT_BAR_HEIGHT) -> None:
@@ -1765,4 +1825,3 @@ def get_diagnostics() -> DiagnosticsHub:
     if _DIAGNOSTICS is None:
         _DIAGNOSTICS = DiagnosticsHub()
     return _DIAGNOSTICS
-

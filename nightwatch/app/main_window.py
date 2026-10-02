@@ -1826,8 +1826,16 @@ class MainWindow(QtWidgets.QMainWindow):
         self._chart_column_layout = chart_column_layout
         chart_column_layout.setContentsMargins(0, 0, 0, 0)
         chart_column_layout.setSpacing(0)
-        chart_column_layout.addWidget(self.instrument_bar)
+        instrument_host = QtWidgets.QWidget(self.chart_column)
+        instrument_host.setObjectName("instrumentBarHost")
+        instrument_host.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        instrument_layout = QtWidgets.QHBoxLayout(instrument_host)
+        instrument_layout.setContentsMargins(0, 0, 0, 0)
+        instrument_layout.setSpacing(0)
+        instrument_layout.addWidget(self.instrument_bar)
+        chart_column_layout.addWidget(instrument_host)
         chart_column_layout.addWidget(self.chart_surface, 1)
+        self.instrument_bar.set_plot_alignment(self.chart_container, instrument_layout)
         # Build the shells once; Leaders restores its snapshot in a worker and
         # Sectors starts history work only when its workspace is visible.
         self.market_board = LeadershipTimelineWidget(self.ui_theme)
