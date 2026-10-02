@@ -2011,7 +2011,7 @@ class OrderPanel(QtWidgets.QWidget):
             )
             return
         try:
-            text = quantize_step(str(self.mark_price), self.rules.tick_size)
+            text = quantize_step(str(self.mark_price), self.rules.tick_size, offset=str(self.rules.min_price))
         except ValueError:
             text = format_price(self.mark_price).replace(",", "")
         target.setText(text)
@@ -2560,7 +2560,7 @@ class OrderPanel(QtWidgets.QWidget):
         if target.text().strip() and not target.hasFocus():
             return False, label
         try:
-            text = quantize_step(str(float(price)), self.rules.tick_size)
+            text = quantize_step(str(float(price)), self.rules.tick_size, offset=str(self.rules.min_price))
         except (ValueError, TypeError):
             text = format_price(price).replace(",", "")
         target.setText(text)
@@ -2609,7 +2609,7 @@ class OrderPanel(QtWidgets.QWidget):
             available_position = self._reduced_position_size()
             if available_position <= 0:
                 raise ValueError(f"There is no {direction.lower()} position to reduce.")
-            quantity_value = available_position * raw / 100.0
+            quantity_value = Decimal(str(available_position)) * Decimal(str(raw)) / 100
         elif mode == "QUOTE NOTIONAL":
             if reference <= 0:
                 raise ValueError("A current or limit price is required for notional sizing.")
@@ -2651,17 +2651,18 @@ class OrderPanel(QtWidgets.QWidget):
             if market_quantity
             else self.rules.lot_step
         )
+        minimum_qty = self.rules.min_market_qty if market_quantity else self.rules.min_qty
         quantity = (
             validate_step(
                 self.quantity_edit.text().replace(",", "").strip(),
                 step,
                 "Quantity",
+                offset=str(minimum_qty),
             )
             if mode == "CONTRACTS"
-            else quantize_step(str(quantity_value), step)
+            else quantize_step(str(quantity_value), step, offset=str(minimum_qty))
         )
         value = safe_float(quantity)
-        minimum_qty = self.rules.min_market_qty if market_quantity else self.rules.min_qty
         maximum_qty = self.rules.max_market_qty if market_quantity else self.rules.max_qty
         if not (minimum_qty <= value <= maximum_qty):
             raise ValueError(
@@ -2674,18 +2675,18 @@ class OrderPanel(QtWidgets.QWidget):
             )
         return quantity
 
-    def _validated_price(self, value: str, label: str) -> str:
-        price = validate_step(value, self.rules.tick_size, label)
+    def _validated_price(self, value: str, label: str, *, limit_side: str = '') -> str:
+        price = validate_step(value, self.rules.tick_size, label, offset=str(self.rules.min_price))
         number = safe_float(price)
-        if not (self.rules.min_price <= number <= self.rules.max_price):
+        if number < self.rules.min_price or (self.rules.max_price > 0 and number > self.rules.max_price):
             raise ValueError(
                 f"{label} must be between {format_price(self.rules.min_price)} and "
                 f"{format_price(self.rules.max_price)}."
             )
-        if self._mark_is_fresh():
-            if self.rules.price_multiplier_up and number > self.mark_price * self.rules.price_multiplier_up:
+        if limit_side and self._mark_is_fresh():
+            if limit_side == 'BUY' and self.rules.price_multiplier_up and number > self.mark_price * self.rules.price_multiplier_up:
                 raise ValueError(f"{label} is above Binance's current mark-price band.")
-            if self.rules.price_multiplier_down and number < self.mark_price * self.rules.price_multiplier_down:
+            if limit_side == 'SELL' and self.rules.price_multiplier_down and number < self.mark_price * self.rules.price_multiplier_down:
                 raise ValueError(f"{label} is below Binance's current mark-price band.")
         return price
 
@@ -2727,7 +2728,7 @@ class OrderPanel(QtWidgets.QWidget):
             }
             if order_type in {"LIMIT", "STOP"}:
                 order["price"] = self._validated_price(
-                    self.price_edit.text().replace(",", "").strip(), "Order price"
+                    self.price_edit.text().replace(",", "").strip(), "Order price", limit_side=side
                 )
                 order["timeInForce"] = self.current_time_in_force()
             if order_type in CONDITIONAL_ORDER_TYPES:
@@ -2745,7 +2746,8 @@ class OrderPanel(QtWidgets.QWidget):
                         self.trigger_edit.text().replace(",", "").strip(), "Trigger price"
                     )
                     trigger = safe_float(order["triggerPrice"])
-                    if self._mark_is_fresh() and order_type in {"STOP", "STOP_MARKET"}:
+                    if (str(order['workingType']) == 'MARK_PRICE' and self._mark_is_fresh()
+                            and order_type in {"STOP", "STOP_MARKET"}):
                         expected_above = side == "BUY"
                         if (expected_above and trigger <= self.mark_price) or (
                             not expected_above and trigger >= self.mark_price
@@ -2757,7 +2759,7 @@ class OrderPanel(QtWidgets.QWidget):
                             )
                 if order_type == "TRAILING_STOP_MARKET":
                     activation = safe_float(order.get("activatePrice"))
-                    if activation > 0 and self._mark_is_fresh():
+                    if activation > 0 and str(order['workingType']) == 'MARK_PRICE' and self._mark_is_fresh():
                         invalid = (
                             side == "BUY" and activation >= self.mark_price
                         ) or (
@@ -2901,8 +2903,8 @@ class BatchOrderDialog(QtWidgets.QDialog):
                 self._set_validation(f"ROW {index} · ENTER BOTH PRICE AND SIZE")
                 return
             try:
-                validate_step(price_text, self.rules.tick_size, f"Row {index} limit price")
-                validate_step(quantity_text, self.rules.lot_step, f"Row {index} quantity")
+                validate_step(price_text, self.rules.tick_size, f"Row {index} limit price", offset=str(self.rules.min_price))
+                validate_step(quantity_text, self.rules.lot_step, f"Row {index} quantity", offset=str(self.rules.min_qty))
             except ValueError as exc:
                 self._set_validation(str(exc))
                 return
@@ -2930,8 +2932,8 @@ class BatchOrderDialog(QtWidgets.QDialog):
                 "symbol": self.symbol,
                 "side": side.currentText(),
                 "type": "LIMIT",
-                "price": validate_step(price_text, self.rules.tick_size, "Limit price"),
-                "quantity": validate_step(quantity_text, self.rules.lot_step, "Quantity"),
+                "price": validate_step(price_text, self.rules.tick_size, "Limit price", offset=str(self.rules.min_price)),
+                "quantity": validate_step(quantity_text, self.rules.lot_step, "Quantity", offset=str(self.rules.min_qty)),
                 "timeInForce": "GTC",
                 "positionSide": self.position_side,
             }
@@ -3003,7 +3005,7 @@ class ModifyOrderDialog(QtWidgets.QDialog):
         self.price.textChanged.connect(self._validate_live)
 
     def _validated_changes(self) -> dict[str, Any]:
-        quantity = validate_step(self.quantity.text(), self.rules.lot_step, "New total quantity")
+        quantity = validate_step(self.quantity.text(), self.rules.lot_step, "New total quantity", offset=str(self.rules.min_qty))
         try:
             executed = Decimal(str(self.order.get("executedQty") or self.order.get("cumQty") or "0"))
         except InvalidOperation as exc:
@@ -3012,14 +3014,17 @@ class ModifyOrderDialog(QtWidgets.QDialog):
             raise ValueError("Filled quantity is unavailable; refresh the order before editing.")
         if Decimal(quantity) <= executed:
             raise ValueError("New total quantity must exceed the already filled amount. Use Cancel to remove the remainder.")
-        return {
+        changes = {
             "symbol": str(self.order.get("symbol") or ""),
             "orderId": self.order.get("orderId"),
             "side": self.order.get("side"),
             "quantity": quantity,
             "_minimumExecutedQty": str(executed),
-            "price": validate_step(self.price.text(), self.rules.tick_size, "Price"),
+            "price": validate_step(self.price.text(), self.rules.tick_size, "Price", offset=str(self.rules.min_price)),
         }
+        if self.order.get('reduceOnly') is True or str(self.order.get('reduceOnly')).lower() == 'true':
+            changes['reduceOnly'] = True
+        return changes
 
     def _validate_live(self, _text: str = "") -> None:
         try:
@@ -5190,7 +5195,7 @@ class TradingWorkspace(QtWidgets.QWidget):
         percent = max(1, min(100, int(percent)))
         try:
             quantity = quantize_step(
-                str(abs(amount) * percent / 100.0), rules.market_step
+                str(abs(Decimal(str(position.get('positionAmt')))) * Decimal(percent) / 100), rules.market_step, offset=str(rules.min_market_qty)
             )
         except ValueError as exc:
             self.status.setText(f"CLOSE NOT SENT · {exc}")
@@ -5239,25 +5244,26 @@ class TradingWorkspace(QtWidgets.QWidget):
             return
         try:
             quantity = quantize_step(
-                str(abs(amount) * percent / 100.0), rules.lot_step
+                str(abs(Decimal(str(position.get('positionAmt')))) * Decimal(percent) / 100), rules.lot_step, offset=str(rules.min_qty)
             )
             quantity_value = safe_float(quantity)
             if not (rules.min_qty <= quantity_value <= rules.max_qty):
                 raise ValueError(
                     f"Close quantity must be between {rules.min_qty:g} and {rules.max_qty:g}."
                 )
-            price = validate_step(dialog.price_text(), rules.tick_size, "Limit price")
+            price = validate_step(dialog.price_text(), rules.tick_size, "Limit price", offset=str(rules.min_price))
             price_value = safe_float(price)
-            if not (rules.min_price <= price_value <= rules.max_price):
+            if price_value < rules.min_price or (rules.max_price > 0 and price_value > rules.max_price):
                 raise ValueError(
                     f"Limit price must be between {format_price(rules.min_price)} "
                     f"and {format_price(rules.max_price)}."
                 )
             mark = safe_float(position.get("markPrice"))
             if mark > 0:
-                if rules.price_multiplier_up and price_value > mark * rules.price_multiplier_up:
+                close_side = _position_close_side(position)
+                if close_side == 'BUY' and rules.price_multiplier_up and price_value > mark * rules.price_multiplier_up:
                     raise ValueError("Limit price is above Binance's current price band.")
-                if rules.price_multiplier_down and price_value < mark * rules.price_multiplier_down:
+                if close_side == 'SELL' and rules.price_multiplier_down and price_value < mark * rules.price_multiplier_down:
                     raise ValueError("Limit price is below Binance's current price band.")
         except ValueError as exc:
             QtWidgets.QMessageBox.warning(self, "Invalid close limit", str(exc))

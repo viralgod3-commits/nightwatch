@@ -46,6 +46,7 @@ from ..ui.developer_tools import (
     MarketHistoryDownloadDialog,
 )
 from ..trading.orders import RailAmendments, edit_active_rail_settings
+from ..trading.account_state import normalize_order
 from ..chart.magnetic_rail import (
     ORDER_RAIL_ORDER_PRESET_DEFAULTS,
     ORDER_RAIL_USER_KEYS,
@@ -380,7 +381,7 @@ def prepare_universe(payload: dict[str, Any]) -> UniversePreparation:
                 "stepSize", lot_filter.get("stepSize", "0.001")
             ),
             min_price=safe_float(price_filter.get("minPrice")),
-            max_price=safe_float(price_filter.get("maxPrice"), float("inf")),
+            max_price=safe_float(price_filter.get("maxPrice"), float("inf")) or float('inf'),
             min_qty=safe_float(lot_filter.get("minQty")),
             max_qty=safe_float(lot_filter.get("maxQty"), float("inf")),
             min_market_qty=safe_float(
@@ -8928,7 +8929,7 @@ class MainWindow(QtWidgets.QMainWindow):
                     targets = list(protections.get(kind, []))[:4]
                     protection_quantities(safe_float(order.get("quantity")), targets, resolved_rules)
                     for target in targets:
-                        validate_step(str(target.get("price", "")), resolved_rules.tick_size, "Protection trigger")
+                        validate_step(str(target.get("price", "")), resolved_rules.tick_size, "Protection trigger", offset=str(resolved_rules.min_price))
             except ValueError as exc:
                 self.alerts_panel.append_alert("ENTRY PROTECTION INVALID", f"{symbol} · {exc} · entry not sent")
                 return ""
@@ -8979,7 +8980,7 @@ class MainWindow(QtWidgets.QMainWindow):
         if frontend_submission:
             self._frontend_submission_requests.discard(request_id)
             self._frontend_unknown_requests.discard(request_id)
-        payload = dict(result) if isinstance(result, dict) else {"result": result}
+        payload = normalize_order(result) if isinstance(result, dict) else {"result": result}
         context = payload.pop("_context", {})
         transport = payload.pop("_transport", "REST")
         if isinstance(context, dict) and context.get("emergency_close"):
@@ -9088,13 +9089,17 @@ class MainWindow(QtWidgets.QMainWindow):
             )
             pending = self.pending_protections.get(client_id) or self.pending_protections.get(registered_client) or {**context, "client_id": client_id}
             pending["client_id"] = client_id
+            for key in ('algoId', 'orderId', 'actualOrderId'):
+                if payload.get(key) not in (None, '', '0', 0):
+                    pending[key] = payload[key]
             terminal = {
                 "FILLED", "FINISHED", "CANCELED", "EXPIRED",
                 "EXPIRED_IN_MATCH", "REJECTED",
             }
+            is_terminal = status.upper() in terminal and not payload.get('_awaiting_child')
             if filled > 0:
-                self._submit_protection_plan(pending, filled, terminal=status.upper() in terminal)
-            elif status.upper() in terminal:
+                self._submit_protection_plan(pending, filled, terminal=is_terminal)
+            elif is_terminal:
                 self.submitted_protection_clients.add(client_id)
                 self.pending_protections.pop(client_id, None)
                 if registered_client:
@@ -9202,15 +9207,23 @@ class MainWindow(QtWidgets.QMainWindow):
         for record in recovered.get("records", []):
             client_id = record["client_id"]
             context = dict(record.get("context") or {})
-            result = record.get("result") or {}
+            result = normalize_order(record.get('result') or {})
             status = str(result.get("status") or result.get("algoStatus") or "").upper()
             if record["kind"] == "leg":
-                if status in {"NEW", "PARTIALLY_FILLED", "TRIGGERED"}:
+                if status in {"NEW", "PARTIALLY_FILLED", "TRIGGERED", 'TRIGGERING', 'PENDING_NEW'}:
                     self.active_protection_legs[client_id] = context
-                elif status == "REJECTED":
+                elif (status in {'REJECTED', 'EXPIRED', 'EXPIRED_IN_MATCH'}
+                      or (status == 'FINISHED' and result.get('_child_missing')
+                          and safe_float(result.get('executedQty')) < safe_float(context.get('quantity')))):
+                    self.active_protection_legs.pop(client_id, None)
                     self.alerts_panel.append_alert("RECOVERED PROTECTION REJECTED", f"{client_id} · inspect position risk before resuming trading")
+                    if self.trading_gateway.has_open_position(str(context.get('symbol') or '')):
+                        self._start_emergency_close(context, f'Saved protection ended with {status} while offline or disconnected.')
+                else:
+                    self.active_protection_legs.pop(client_id, None)
             else:
                 context["client_id"] = client_id
+                context['_allocation_restored'] = True
                 previous = self.pending_protections.get(client_id, {})
                 context["filled_quantity"] = max(safe_float(context.get("filled_quantity")), safe_float(previous.get("filled_quantity")), safe_float(result.get("executedQty") or result.get("cumQty") or result.get("aq")))
                 context["protected_quantity"] = max(safe_float(context.get("protected_quantity")), safe_float(previous.get("protected_quantity")))
@@ -9218,15 +9231,14 @@ class MainWindow(QtWidgets.QMainWindow):
                 entries.append((context, status))
         if recovered.get("errors"):
             self.alerts_panel.append_alert("PROTECTION RECOVERY NEEDS REVIEW", "\n".join(recovered["errors"]))
-            return
         for context, status in entries:
             symbol = str((context.get('entry') or {}).get('symbol') or '')
-            if status in {"FILLED", "FINISHED", "CANCELED", "EXPIRED", "REJECTED"} and not self.trading_gateway.has_open_position(symbol):
+            if status in {"FILLED", "FINISHED", "CANCELED", "EXPIRED", 'EXPIRED_IN_MATCH', "REJECTED"} and not self.trading_gateway.has_open_position(symbol):
                 self.submitted_protection_clients.add(str(context['client_id']))
                 self.pending_protections.pop(str(context['client_id']), None)
                 continue
             if context["filled_quantity"] > 0:
-                self._submit_protection_plan(context, context["filled_quantity"], terminal=status in {"FILLED", "FINISHED", "CANCELED", "EXPIRED", "REJECTED"})
+                self._submit_protection_plan(context, context["filled_quantity"], terminal=status in {"FILLED", "FINISHED", "CANCELED", "EXPIRED", 'EXPIRED_IN_MATCH', "REJECTED"})
         self.alerts_panel.append_alert("PROTECTION MONITORING RESTORED", f"{len(entries)} saved entries · {len(self.active_protection_legs)} active legs reconciled by client ID")
 
     def _submit_protection_plan(
@@ -9242,7 +9254,7 @@ class MainWindow(QtWidgets.QMainWindow):
         if client_id in self.submitted_protection_clients:
             return
         pending = self.pending_protections.setdefault(client_id, context)
-        if self.trading_gateway._protection_recovery_pending:
+        if self.trading_gateway._protection_recovery_pending and not pending.get('_allocation_restored'):
             pending["filled_quantity"] = max(safe_float(pending.get("filled_quantity")), filled_quantity)
             self._set_ticket_protection_state(str((pending.get("entry") or {}).get("symbol") or ""), "PROTECTION RECOVERY PENDING")
             return
@@ -9271,7 +9283,7 @@ class MainWindow(QtWidgets.QMainWindow):
             for kind in ("tp", "sl"):
                 targets = [dict(target) for target in list(plans.get(kind, []))[:4]]
                 for target in targets:
-                    target["price"] = validate_step(str(target.get("price", "")), rules.tick_size, "Protection trigger")
+                    target["price"] = validate_step(str(target.get("price", "")), rules.tick_size, "Protection trigger", offset=str(rules.min_price))
                 prepared_sizes[kind] = (targets, protection_quantities(float(delta), targets, rules))
         except ValueError as exc:
             if not terminal and "quantity" in str(exc).lower():
@@ -9332,7 +9344,11 @@ class MainWindow(QtWidgets.QMainWindow):
             if tranche in self._emergency_tranches:
                 return
             self._emergency_tranches.add(tranche)
-        requested = safe_float(context.get('tranche_quantity') or context.get("quantity"))
+        try:
+            requested = safe_float(self.trading_gateway.remaining_protection_quantity(context))
+        except (ValueError, ArithmeticError):
+            self.alerts_panel.append_alert('PROTECTION FAILURE · CLOSE NOT SENT', f'{symbol} · remaining tranche quantity could not be verified.')
+            return
         rules = context.get("rules")
         if not isinstance(rules, SymbolRules):
             rules = self.symbol_rules.get(symbol)
@@ -9366,7 +9382,7 @@ class MainWindow(QtWidgets.QMainWindow):
         try:
             if not math.isfinite(safe_float(rules.market_step)) or safe_float(rules.market_step) <= 0:
                 raise ValueError("The exchange market quantity step is invalid.")
-            quantity = quantize_step(str(close_amount), rules.market_step)
+            quantity = quantize_step(str(close_amount), rules.market_step, offset=str(rules.min_market_qty))
             if not (0 < safe_float(quantity) and rules.min_market_qty <= safe_float(quantity) <= rules.max_market_qty):
                 raise ValueError("The emergency close quantity is outside the exchange market-order range.")
         except ValueError as exc:
@@ -9493,12 +9509,19 @@ class MainWindow(QtWidgets.QMainWindow):
     def _trading_account_event(self, event: dict[str, Any]) -> None:
         self._sync_ticker_streams()
         if event.get("e") == "ORDER_TRADE_UPDATE":
-            order = event.get("o") or {}
-            client_id = str(order.get("c") or "")
+            order = normalize_order(event.get('o') or {})
+            client_id = self.trading_gateway.protection_client_id(order)
             status = str(order.get("X") or "").upper()
             terminal = {
                 "FILLED", "CANCELED", "EXPIRED", "EXPIRED_IN_MATCH", "REJECTED"
             }
+            active_leg = self.active_protection_legs.get(client_id)
+            if active_leg and status in {'REJECTED', 'EXPIRED_IN_MATCH', 'EXPIRED'}:
+                self.active_protection_legs.pop(client_id, None)
+                if safe_float(order.get('executedQty')) < safe_float(order.get('origQty')):
+                    self._start_emergency_close(active_leg, f'Protection matching-engine order ended with {status}.')
+            elif active_leg and status in {'FILLED', 'CANCELED'}:
+                self.active_protection_legs.pop(client_id, None)
             if client_id in self.pending_protections:
                 filled = safe_float(
                     order.get("z")
@@ -9513,13 +9536,8 @@ class MainWindow(QtWidgets.QMainWindow):
                     self.pending_protections.pop(client_id, None)
                     self.submitted_protection_clients.add(client_id)
         elif event.get("e") == "ALGO_UPDATE":
-            algo = event.get("o") or event.get("a") or event.get("algoOrder") or event
-            client_id = str(
-                algo.get("caid")
-                or algo.get("clientAlgoId")
-                or algo.get("c")
-                or ""
-            )
+            algo = normalize_order(event.get('o') or event.get('a') or event.get('algoOrder') or event)
+            client_id = self.trading_gateway.protection_client_id(algo)
             status = str(
                 algo.get("X")
                 or algo.get("orderStatus")
@@ -9529,15 +9547,15 @@ class MainWindow(QtWidgets.QMainWindow):
                 or ""
             ).upper()
             active_leg = self.active_protection_legs.get(client_id)
-            if active_leg and status == "REJECTED":
+            if active_leg and status in {'REJECTED', 'EXPIRED', 'EXPIRED_IN_MATCH'}:
                 self.active_protection_legs.pop(client_id, None)
                 reason = str(
                     algo.get("rm")
                     or algo.get("rejectReason")
-                    or "Binance rejected the protection when it triggered."
+                    or f"Binance protection ended with {status}."
                 )
                 self._start_emergency_close(active_leg, reason)
-            elif active_leg and status in {"CANCELED", "EXPIRED", "FINISHED"}:
+            elif active_leg and status == 'CANCELED':
                 self.active_protection_legs.pop(client_id, None)
             terminal = {"FILLED", "FINISHED", "CANCELED", "EXPIRED", "REJECTED"}
             if client_id in self.pending_protections:
@@ -9551,7 +9569,7 @@ class MainWindow(QtWidgets.QMainWindow):
                     self._submit_protection_plan(
                         self.pending_protections[client_id], filled, terminal=status in terminal
                     )
-                elif status in terminal:
+                elif status in terminal and status != 'FINISHED':
                     self.pending_protections.pop(client_id, None)
                     self.submitted_protection_clients.add(client_id)
             self.alerts_panel.append_alert(
@@ -9560,12 +9578,7 @@ class MainWindow(QtWidgets.QMainWindow):
             )
         elif event.get("e") == "CONDITIONAL_ORDER_TRIGGER_REJECT":
             rejected = event.get("or") or event.get("o") or event
-            client_id = str(
-                rejected.get("caid")
-                or rejected.get("c")
-                or rejected.get("clientAlgoId")
-                or ""
-            )
+            client_id = self.trading_gateway.protection_client_id(rejected)
             active_leg = self.active_protection_legs.pop(client_id, None)
             if active_leg:
                 reason = str(

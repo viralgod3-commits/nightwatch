@@ -100,29 +100,35 @@ def api_period(interval: str) -> str:
     return interval if interval in {"15m", "30m", "1h", "2h", "4h", "6h", "12h", "1d"} else "15m"
 
 
-def quantize_step(value: str, step: str, *, rounding: str = ROUND_DOWN) -> str:
+def quantize_step(value: str, step: str, *, rounding: str = ROUND_DOWN, offset: str = '0') -> str:
     try:
         number = Decimal(value)
         quantum = Decimal(step)
-        if not number.is_finite() or not quantum.is_finite() or number <= 0 or quantum <= 0:
+        origin = Decimal(str(offset))
+        if not number.is_finite() or not quantum.is_finite() or not origin.is_finite() or number <= 0 or number < origin or quantum < 0:
             raise InvalidOperation
-        rounded = (number / quantum).to_integral_value(rounding=rounding) * quantum
+        if quantum == 0:
+            return format(number.normalize(), 'f')
+        rounded = origin + ((number - origin) / quantum).to_integral_value(rounding=rounding) * quantum
         return format(rounded.normalize(), "f")
     except (InvalidOperation, ValueError):
         raise ValueError("Enter a valid positive quantity or price.")
 
 
-def validate_step(value: str, step: str, label: str) -> str:
+def validate_step(value: str, step: str, label: str, *, offset: str = '0') -> str:
     """Validate exchange precision without changing a value the user entered."""
     try:
         number = Decimal(str(value).strip())
         quantum = Decimal(str(step).strip())
-        if not number.is_finite() or number <= 0 or not quantum.is_finite() or quantum <= 0:
+        origin = Decimal(str(offset))
+        if not number.is_finite() or number <= 0 or not quantum.is_finite() or not origin.is_finite() or quantum < 0:
             raise InvalidOperation
-        units = number / quantum
+        if quantum == 0:
+            return format(number, 'f')
+        units = (number - origin) / quantum
         if units != units.to_integral_value():
             raise ValueError(
-                f"{label} must be an exact multiple of {format(quantum.normalize(), 'f')}. "
+                f"{label} must follow increments of {format(quantum.normalize(), 'f')} from {format(origin.normalize(), 'f')}. "
                 "The value was not rounded or changed."
             )
         return format(number, "f")

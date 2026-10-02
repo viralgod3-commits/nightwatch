@@ -7,6 +7,7 @@ from typing import Any, Protocol
 
 from ..models import Candle, SymbolRules
 from ..models import quantize_step, safe_float, validate_step
+from .account_state import normalize_order
 
 
 class BalanceProvider(Protocol):
@@ -46,13 +47,12 @@ def protection_quantities(
         raise ValueError("Protection close percentages cannot total more than 100%.")
     if not targets:
         return []
-    budget = Decimal(quantize_step(str(filled * min(total_percent, Decimal(100)) / 100), rules.market_step))
+    budget = Decimal(quantize_step(str(filled * min(total_percent, Decimal(100)) / 100), rules.market_step, offset=str(rules.min_market_qty)))
     assigned = Decimal(0)
     quantities: list[str] = []
     for index, percent in enumerate(percentages):
-        amount = budget - assigned if index == len(percentages) - 1 else Decimal(
-            quantize_step(str(filled * percent / 100), rules.market_step)
-        )
+        raw = budget - assigned if index == len(percentages) - 1 else filled * percent / 100
+        amount = Decimal(quantize_step(str(raw), rules.market_step, offset=str(rules.min_market_qty)))
         if amount <= 0 or not (rules.min_market_qty <= float(amount) <= rules.max_market_qty):
             raise ValueError("A protection target is outside the exchange market-quantity range after rounding.")
         quantities.append(format(amount.normalize(), "f"))
@@ -115,7 +115,7 @@ def build_quick_order_request(
                 raise ValueError("Maximum slippage must be between 0% and 10%.")
             bound = Decimal(str(reference)) * (1 + (slippage if side == "BUY" else -slippage) / 100)
             price = bound
-        limit_price = quantize_step(str(price), rules.tick_size, rounding=ROUND_DOWN if side == "BUY" else ROUND_UP)
+        limit_price = quantize_step(str(price), rules.tick_size, rounding=ROUND_DOWN if side == "BUY" else ROUND_UP, offset=str(rules.min_price))
         if not (Decimal(str(rules.min_price)) <= Decimal(limit_price) <= Decimal(str(rules.max_price))):
             raise ValueError("Rounded limit price is outside the exchange price range.")
         if slippage_enabled and ((side == "BUY" and Decimal(limit_price) > bound) or
@@ -125,7 +125,7 @@ def build_quick_order_request(
     sizing_price = max(Decimal(str(reference)), Decimal(limit_price)) if limit_price else Decimal(str(reference))
     notional = Decimal(str(available)) * Decimal(str(collateral_percent)) / 100 * leverage
     step = rules.market_step if order_type == "MARKET" else rules.lot_step
-    quantity = quantize_step(str(notional / sizing_price), step)
+    quantity = quantize_step(str(notional / sizing_price), step, offset=str(rules.min_market_qty if order_type == 'MARKET' else rules.min_qty))
     quantity_value = safe_float(quantity)
     minimum_qty = rules.min_market_qty if order_type == "MARKET" else rules.min_qty
     maximum_qty = rules.max_market_qty if order_type == "MARKET" else rules.max_qty
@@ -168,6 +168,7 @@ def build_quick_order_request(
         trigger = safe_float(quantize_step(
             str(trigger), rules.tick_size,
             rounding=ROUND_UP if direction_sign > 0 else ROUND_DOWN,
+            offset=str(rules.min_price),
         ))
         if not (rules.min_price <= trigger <= rules.max_price):
             raise ValueError("Quick TP/SL trigger is outside the exchange price range.")
@@ -303,10 +304,11 @@ def build_magnetic_rail_order_request(
             raise ValueError("Select an unambiguous position before using a reduce rail.")
         position = matching[0]
         position_side = str(position.get("positionSide") or "BOTH").upper()
-        total_quantity = abs(safe_float(position.get("positionAmt")))
+        total_quantity = abs(Decimal(str(position.get('positionAmt'))))
         quantity = quantize_step(
-            str(total_quantity * allocation / 100.0),
+            str(total_quantity * Decimal(allocation) / 100),
             step,
+            offset=str(minimum_qty),
         )
     else:
         available = gateway.available_balance(rules.margin_asset)
@@ -316,7 +318,7 @@ def build_magnetic_rail_order_request(
         if sizing_price <= 0:
             raise ValueError("A valid rail or market price is required for sizing.")
         notional = available * allocation / 100.0 * leverage
-        quantity = quantize_step(str(notional / sizing_price), step)
+        quantity = quantize_step(str(notional / sizing_price), step, offset=str(minimum_qty))
         position_side = (
             "LONG" if hedge_mode and side == "BUY"
             else "SHORT" if hedge_mode
@@ -353,24 +355,24 @@ def build_magnetic_rail_order_request(
     limit_offset = safe_float(rail_state.get("limitOffsetPercent"))
 
     if order_type == "LIMIT":
-        order["price"] = quantize_step(str(rail_price), rules.tick_size)
+        order["price"] = quantize_step(str(rail_price), rules.tick_size, offset=str(rules.min_price))
         order["timeInForce"] = time_in_force
     elif order_type in {"STOP", "TAKE_PROFIT"}:
-        order["triggerPrice"] = quantize_step(str(rail_price), rules.tick_size)
+        order["triggerPrice"] = quantize_step(str(rail_price), rules.tick_size, offset=str(rules.min_price))
         limit_price = rail_price * (1.0 + limit_offset / 100.0)
-        order["price"] = quantize_step(str(limit_price), rules.tick_size)
+        order["price"] = quantize_step(str(limit_price), rules.tick_size, offset=str(rules.min_price))
         order["timeInForce"] = time_in_force
         order["workingType"] = working_type
         order["priceProtect"] = price_protect
     elif order_type in {"STOP_MARKET", "TAKE_PROFIT_MARKET"}:
-        order["triggerPrice"] = quantize_step(str(rail_price), rules.tick_size)
+        order["triggerPrice"] = quantize_step(str(rail_price), rules.tick_size, offset=str(rules.min_price))
         order["workingType"] = working_type
         order["priceProtect"] = price_protect
     else:
         callback = safe_float(rail_state.get("callbackRate"), 0.5)
         if not (0.1 <= callback <= 10.0):
             raise ValueError("Trailing callback rate must be between 0.1% and 10%.")
-        order["activatePrice"] = quantize_step(str(rail_price), rules.tick_size)
+        order["activatePrice"] = quantize_step(str(rail_price), rules.tick_size, offset=str(rules.min_price))
         order["callbackRate"] = callback
         order["workingType"] = working_type
 
@@ -464,16 +466,16 @@ def build_smart_exit_orders(
             raw_level = max(raw_level, best_ask or reference)
         else:
             raw_level = min(raw_level, best_bid or reference)
-        price = safe_float(quantize_step(str(raw_level), rules.tick_size))
+        price = safe_float(quantize_step(str(raw_level), rules.tick_size, offset=str(rules.min_price)))
         if is_long and best_bid > 0 and price <= best_bid:
             maker_floor = Decimal(str(best_bid)) + tick_decimal
-            price = safe_float(quantize_step(str(maker_floor), rules.tick_size))
+            price = safe_float(quantize_step(str(maker_floor), rules.tick_size, offset=str(rules.min_price)))
         if is_short and best_ask > 0 and price >= best_ask:
             maker_ceiling = Decimal(str(best_ask)) - tick_decimal
-            price = safe_float(quantize_step(str(maker_ceiling), rules.tick_size))
+            price = safe_float(quantize_step(str(maker_ceiling), rules.tick_size, offset=str(rules.min_price)))
         if price <= 0 or any(abs(price - safe_float(value)) < minimum_separation for value in levels):
             continue
-        levels.append(quantize_step(str(price), rules.tick_size))
+        levels.append(quantize_step(str(price), rules.tick_size, offset=str(rules.min_price)))
         if len(levels) == 3:
             break
     if not levels:
@@ -484,7 +486,7 @@ def build_smart_exit_orders(
         )
 
     step = Decimal(str(rules.lot_step))
-    remaining = max(0.0, abs(amount) - max(0.0, reserved_quantity))
+    remaining = max(Decimal(0), abs(Decimal(str(position.get('positionAmt')))) - Decimal(str(max(0.0, reserved_quantity))))
     total = (Decimal(str(remaining)) / step).to_integral_value(rounding=ROUND_DOWN) * step
     minimum = Decimal(str(max(0.0, rules.min_qty)))
     if total <= 0 or total < minimum:
@@ -616,15 +618,14 @@ class RailAmendments(QtCore.QObject):
             return
         kind = str(order.get('type') or order.get('orderType') or '').upper()
         try:
-            tick = Decimal(rules.tick_size)
-            snapped = (Decimal(str(order['newPrice'])) / tick).to_integral_value(rounding=ROUND_HALF_UP) * tick
-            new_price = validate_step(format(snapped, 'f'), rules.tick_size, 'Price')
+            snapped = quantize_step(str(order['newPrice']), rules.tick_size, rounding=ROUND_HALF_UP, offset=str(rules.min_price))
+            new_price = validate_step(snapped, rules.tick_size, 'Price', offset=str(rules.min_price))
             if not rules.min_price <= float(new_price) <= rules.max_price:
                 raise ValueError('Price is outside symbol limits')
             context = {'rules': rules, 'existing_order_replacement': True}
             if kind == 'LIMIT' and identity[1] == 'STANDARD':
                 request = {'symbol': symbol, 'side': order['side'], 'price': new_price,
-                           'quantity': validate_step(str(order.get('origQty') or order.get('quantity')), rules.lot_step, 'Quantity'),
+                           'quantity': validate_step(str(order.get('origQty') or order.get('quantity')), rules.lot_step, 'Quantity', offset=str(rules.min_qty)),
                            '_minimumExecutedQty': str(order.get('executedQty') or order.get('cumQty') or '0')}
                 if order.get('orderId'):
                     request['orderId'] = order['orderId']
@@ -674,6 +675,7 @@ class RailAmendments(QtCore.QObject):
                 self._resolve_item_preview(item, False)
                 self._finish(item, 'RAIL · missing cancel identity; original unchanged')
                 return
+            item['cancel_request'], item['cancel_algo'] = built
             request_id = self.gateway.submit_cancel(*built)
         self._track(request_id, item)
 
@@ -690,7 +692,8 @@ class RailAmendments(QtCore.QObject):
             remaining = Decimal(str(order.get('origQty') or order.get('quantity'))) - Decimal(str(order.get('executedQty') or '0'))
             if remaining <= 0:
                 raise ValueError('No remaining quantity')
-            result['quantity'] = validate_step(str(remaining), rules.lot_step, 'Quantity')
+            step = rules.market_step if kind in {'STOP_MARKET', 'TAKE_PROFIT_MARKET', 'TRAILING_STOP_MARKET'} else rules.lot_step
+            result['quantity'] = validate_step(str(remaining), step, 'Quantity', offset=str(rules.min_market_qty if kind in {'STOP_MARKET', 'TAKE_PROFIT_MARKET', 'TRAILING_STOP_MARKET'} else rules.min_qty))
             if flag(order.get('reduceOnly')):
                 result['reduceOnly'] = True
         if kind in {'STOP', 'TAKE_PROFIT'}:
@@ -699,7 +702,7 @@ class RailAmendments(QtCore.QObject):
             if price_match and price_match != 'NONE':
                 result['priceMatch'] = price_match
             else:
-                result['price'] = validate_step(str(order.get('price')), rules.tick_size, 'Limit price')
+                result['price'] = validate_step(str(order.get('price')), rules.tick_size, 'Limit price', offset=str(rules.min_price))
         if kind == 'TRAILING_STOP_MARKET':
             result['activatePrice'] = new_price
             result['callbackRate'] = order.get('callbackRate') or order.get('priceRate')
@@ -735,26 +738,67 @@ class RailAmendments(QtCore.QObject):
             status = str(payload.get('status') or payload.get('algoStatus') or '').upper()
 
             algo_cancelled = (item['identity'][1] == 'ALGO' and str(payload.get('code')) == '200'
-                              and str(payload.get('algoId') or payload.get('clientAlgoId') or '') == item['identity'][2])
+                              and item['identity'][2] in {str(payload.get('algoId') or ''), str(payload.get('clientAlgoId') or '')})
             if status not in {'CANCELED', 'CANCELLED'} and not algo_cancelled:
                 self._finish(item, 'REPLACEMENT STOPPED · cancellation not confirmed; refresh order status')
                 return
-            item['stage'] = 'replace'
-            request_id = self.gateway.submit_order(item['request'], item['context'])
-            self._track(request_id, item)
+            self._confirm_cancelled(item)
             return
-        if item['stage'] == 'replace':
-            payload = result if isinstance(result, dict) else {}
-            new_client = str(payload.get('clientAlgoId') or payload.get('clientOrderId') or item['request']['newClientOrderId'])
-            status = str(payload.get('status') or payload.get('algoStatus') or 'NEW').upper()
-            if status in {'NEW', 'PARTIALLY_FILLED', 'PENDING', 'ACCEPTED'}:
-                for name, plan in item.get('protection', {}).items():
-                    if plan:
-                        mapping = getattr(self.owner, name)
-                        mapping.pop(item['old_client'], None)
-                        mapping[new_client] = plan
         self._resolve_item_preview(item, True)
         self._finish(item, 'RAIL · exchange confirmed amendment; refreshing order state')
+
+    def _confirm_cancelled(self, item):
+        """Confirm the parent never triggered before creating another entry."""
+        api_key, api_secret = self.gateway.api_key, self.gateway.api_secret
+
+        def query():
+            return normalize_order(self.gateway.rest.query_order_request(
+                api_key, api_secret, item['cancel_request'], algo=item['cancel_algo']))
+
+        def done(row):
+            expected = item['cancel_request']
+            client = str(expected.get('clientAlgoId') or expected.get('origClientOrderId') or '')
+            if (row.get('status') != 'CANCELED' or self.gateway._response_mismatches(expected, row, client)
+                    or safe_float(row.get('actualOrderId')) > 0):
+                self._resolve_item_preview(item, False)
+                self._finish(item, 'REPLACEMENT STOPPED · original trigger/fill state does not permit a safe replacement; inspect orders and positions')
+                return
+            try:
+                if not flag(item['request'].get('closePosition')):
+                    remaining = Decimal(str(row.get('origQty'))) - Decimal(str(row.get('executedQty') or '0'))
+                    rules = item['context']['rules']
+                    step = rules.market_step if item['request'].get('type') in {'STOP_MARKET', 'TAKE_PROFIT_MARKET', 'TRAILING_STOP_MARKET'} else rules.lot_step
+                    item['request']['quantity'] = validate_step(str(remaining), step, 'Remaining quantity', offset=str(rules.min_market_qty if item['request'].get('type') in {'STOP_MARKET', 'TAKE_PROFIT_MARKET', 'TRAILING_STOP_MARKET'} else rules.min_qty))
+            except (ValueError, TypeError, ArithmeticError):
+                self._resolve_item_preview(item, False)
+                self._finish(item, 'REPLACEMENT STOPPED · remaining quantity could not be confirmed')
+                return
+            item['stage'] = 'replace'
+            entry_plan = item['protection'].get('pending_protections') or {}
+            leg_plan = item['protection'].get('active_protection_legs') or {}
+            new_client = str(item['request']['newClientOrderId'])
+            if leg_plan:
+                context = {**leg_plan, **item['context'], 'client_id': new_client, 'protective_leg': True, 'position_intent': 'REDUCE'}
+                self.owner.active_protection_legs.pop(item['old_client'], None)
+                self.owner.active_protection_legs[new_client] = dict(context)
+                request_id = self.gateway.submit_order(item['request'], context)
+            elif entry_plan:
+                self.owner.pending_protections.pop(item['old_client'], None)
+                request_id = self.owner._submit_order({
+                    'order': item['request'], 'rules': item['context']['rules'],
+                    'protections': entry_plan.get('protections') or {},
+                    'position_intent': entry_plan.get('position_intent') or 'OPEN',
+                })
+            else:
+                request_id = self.gateway.submit_order(item['request'], item['context'])
+            self._track(request_id, item)
+
+        def failed(message):
+            self._resolve_item_preview(item, False)
+            self._finish(item, f'REPLACEMENT STOPPED · canceled order could not be queried safely: {message}')
+
+        task = self.gateway._launch_task(query, done, failed, self.gateway.task_pool)
+        self.gateway.tasks.add(task)
 
     def _failed(self, request_id, message, uncertain):
         item = self.pending.pop(request_id, None)

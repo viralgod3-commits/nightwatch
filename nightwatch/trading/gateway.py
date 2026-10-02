@@ -9,7 +9,6 @@ import os
 import re
 import sqlite3
 import time
-import urllib.parse
 from collections import deque
 from dataclasses import asdict
 from decimal import Decimal, InvalidOperation
@@ -35,7 +34,7 @@ from ..networking.binance import (
 )
 from ..models import safe_float, validate_step
 from ..models import DiagnosticsPort
-from .account_state import event_timestamp, exchange_bool, older_than_row, replay_account_events
+from .account_state import event_timestamp, exchange_bool, normalize_order, older_than_row, replay_account_events, valid_order_fills
 
 
 def _journal_json(value) -> str:
@@ -177,6 +176,7 @@ class TradingGateway(QtCore.QObject):
         self.pending_account_refresh: tuple[str | None, bool] | None = None
         self._last_snapshot_mono = 0.0
         self._last_snapshot_scope: tuple[str | None, bool] | None = None
+        self._last_account_snapshot: dict | None = None
         self.balance_cache: dict[str, dict[str, Any]] = {}
         self.multi_assets_margin: bool | None = None
         self._refresh_events: list[dict[str, Any]] | None = None
@@ -214,6 +214,9 @@ class TradingGateway(QtCore.QObject):
         self.account_event_refresh_timer.setSingleShot(True)
         self.account_event_refresh_timer.setInterval(1_500)
         self.account_event_refresh_timer.timeout.connect(self._refresh_after_account_event)
+        self.protection_poll_timer = QTimer(self)
+        self.protection_poll_timer.setInterval(5_000)
+        self.protection_poll_timer.timeout.connect(self._poll_disconnected_protections)
         self._journal_pool = QtCore.QThreadPool(self)
         self._journal_pool.setMaxThreadCount(1)
         self._journal: _PlacementJournal | None = None
@@ -221,6 +224,8 @@ class TradingGateway(QtCore.QObject):
         self._journal_error = ""
         self._journal_requests: set[str] = set()
         self._protection_records: dict[str, dict[str, Any]] = {}
+        self._protection_cleanup_clients: set[str] = set()
+        self._protection_cleanup_attempts: dict[str, int] = {}
         self._protection_recovery_pending = False
         self._protection_recovery_task = None
         self._protection_reserved_slots = 0
@@ -306,6 +311,7 @@ class TradingGateway(QtCore.QObject):
         records = [{'kind': 'entry', 'client_id': client_id, 'context': dict(plan), 'order': entry,
                     'last_status': previous.get('last_status', ''),
                     '_status_received_mono': previous.get('_status_received_mono', 0.0),
+                    'execution': dict(previous.get('execution') or {}),
                     'method': 'algoOrder.place' if str(entry.get('type')) in CONDITIONAL_ORDER_TYPES else 'order.place'}]
         for order, context in legs:
             records.append({'kind': 'leg', 'client_id': context['client_id'], 'context': dict(context),
@@ -337,6 +343,7 @@ class TradingGateway(QtCore.QObject):
         records = [dict(record) for record in self._protection_records.values()]
         query_started = time.monotonic()
         self._protection_recovery_pending = True
+        api_key, api_secret = self.api_key, self.api_secret
 
         def query():
             recovered, errors = [], []
@@ -344,11 +351,13 @@ class TradingGateway(QtCore.QObject):
                 order = record['order']
                 symbol = str(order.get('symbol') or record['context'].get('symbol') or '')
                 try:
-                    result = self.rest.query_order_by_client_id(self.api_key, self.api_secret, symbol,
-                                                               record['client_id'], algo=record['method'] == 'algoOrder.place')
+                    if record.get('not_accepted'):
+                        recovered.append({**record, 'result': {'symbol': symbol, 'status': 'REJECTED', 'executedQty': '0'}})
+                        continue
+                    result = normalize_order(self.rest.query_order_by_client_id(api_key, api_secret, symbol,
+                                                               record['client_id'], algo=record['method'] == 'algoOrder.place'))
+                    result = self._with_child_execution(api_key, api_secret, symbol, result)
                     recovered.append({**record, 'result': result})
-                    if record['kind'] == 'leg' and str(result.get('status') or result.get('algoStatus') or '').upper() == 'REJECTED':
-                        errors.append(f"{symbol} · {record['client_id']} · recovered protection was rejected; inspect exposure")
                 except (RuntimeError, OSError, TimeoutError) as exc:
                     errors.append(f"{symbol} · {record['client_id']} · {exc}")
             return {'records': recovered, 'errors': errors}
@@ -361,10 +370,10 @@ class TradingGateway(QtCore.QObject):
                 if current is None:
                     continue
                 status = str(recovered['result'].get('status') or recovered['result'].get('algoStatus') or '').upper()
-                if current.get('_status_received_mono', 0.0) <= query_started and status != current.get('last_status'):
-                    current['last_status'] = status
-                    current['_status_received_mono'] = query_started
-                    self._persist_protection_record(current)
+                if current.get('_status_received_mono', 0.0) <= query_started:
+                    self._observe_protection_order(recovered['client_id'], recovered['result'], received_at=query_started)
+                else:
+                    recovered['result'] = {**recovered['result'], **current.get('execution', {}), 'status': current.get('last_status') or status}
                 restored.append({**recovered, **current})
             result = {**result, 'records': restored}
             self._protection_recovery_pending = bool(result['errors'])
@@ -372,8 +381,8 @@ class TradingGateway(QtCore.QObject):
             # offline. Read positions after observing that terminal status
             # before extending its protection or retiring its saved plan.
             flat_unconfirmed = any(
-                record['kind'] == 'entry'
-                and record.get('last_status') in {'FILLED', 'FINISHED', 'CANCELED', 'EXPIRED', 'REJECTED'}
+                (record.get('last_status') in {'FILLED', 'FINISHED', 'CANCELED', 'EXPIRED', 'EXPIRED_IN_MATCH', 'REJECTED'}
+                 or (record['kind'] == 'entry' and safe_float(record.get('execution', {}).get('executedQty')) > 0))
                 and not self.has_open_position(str(record['order'].get('symbol') or ''))
                 and record.get('_status_received_mono', 0.0) > self._last_snapshot_mono
                 for record in restored
@@ -382,6 +391,14 @@ class TradingGateway(QtCore.QObject):
                 self._protection_recovery_pending = True
                 self.refresh_account(None, all_open_orders=True, follow_up=True)
                 return
+            for record in restored:
+                symbol = str(record['order'].get('symbol') or '')
+                if (record['kind'] == 'leg' and record.get('last_status') in {'REJECTED', 'EXPIRED', 'EXPIRED_IN_MATCH'}
+                        and self.has_open_position(symbol)):
+                    result['errors'].append(f"{symbol} · {record['client_id']} · recovered protection ended with {record['last_status']}; inspect exposure")
+            self._protection_recovery_pending = bool(result['errors'])
+            if not result['errors'] and self._last_account_snapshot is not None:
+                self._retire_closed_protections(self._last_account_snapshot)
             self.protections_recovered.emit(result)
             if result['errors']:
                 self.problem.emit('Protection recovery requires review; new entries are blocked and no missing leg was resent. Use Reconcile after inspecting orders/positions. ' + '; '.join(result['errors']))
@@ -402,23 +419,145 @@ class TradingGateway(QtCore.QObject):
         task = self._launch_task(lambda: journal.run('tranche', payload=serialized), lambda _result: None, self._journal_failed, self._journal_pool)
         self.tasks.add(task)
 
+    def protection_client_id(self, source: dict) -> str:
+        """Resolve engine order updates/rejections back to their saved Algo plan."""
+        order = normalize_order(source)
+        direct = str(order.get('clientAlgoId') or order.get('clientOrderId') or '')
+        if direct in self._protection_records:
+            return direct
+        symbol = str(order.get('symbol') or '')
+        identifier = str(order.get('orderId') or '')
+        if symbol and identifier:
+            for client_id, record in self._protection_records.items():
+                if str(record.get('order', {}).get('symbol') or '') != symbol:
+                    continue
+                execution = record.get('execution') or {}
+                if identifier in {str(execution.get('actualOrderId') or ''), str(execution.get('orderId') or '')}:
+                    return client_id
+        return direct
+
+    def _observe_protection_order(self, client_id: str, source: dict, *, received_at: float | None = None) -> None:
+        record = self._protection_records.get(client_id)
+        if record is None:
+            return
+        order = normalize_order(source)
+        previous_execution = dict(record.get('execution') or {})
+        execution = dict(previous_execution)
+        for key in ('orderId', 'algoId', 'actualOrderId', 'actualType', 'avgPrice'):
+            if order.get(key) not in (None, '', '0', 0):
+                execution[key] = order[key]
+        if safe_float(order.get('executedQty')) >= safe_float(execution.get('executedQty')):
+            execution['executedQty'] = order.get('executedQty', execution.get('executedQty', '0'))
+        record['execution'] = execution
+        status = str(order.get('status') or record.get('last_status') or 'NEW').upper()
+        changed = execution != previous_execution or status != record.get('last_status')
+        record['last_status'] = status
+        if changed:
+            record['_status_received_mono'] = received_at if received_at is not None else time.monotonic()
+            self._persist_protection_record(record)
+        if status in {'CANCELED', 'FILLED', 'FINISHED', 'EXPIRED', 'EXPIRED_IN_MATCH', 'REJECTED'}:
+            self._protection_cleanup_clients.discard(client_id)
+        if record.get('kind') == 'leg' and safe_float(execution.get('executedQty')) > 0:
+            self._cancel_completed_protection_tranche(record)
+
+    def _with_child_execution(self, api_key: str, api_secret: str, symbol: str, source: dict) -> dict:
+        result = normalize_order(source)
+        if not valid_order_fills(result):
+            raise RuntimeError('Unexpected response: Binance returned invalid order fill data.')
+        child_id = result.get('actualOrderId')
+        if safe_float(child_id) > 0:
+            try:
+                child = normalize_order(self.rest.query_order(api_key, api_secret, symbol, child_id))
+            except RuntimeError as exc:
+                # Trigger rejection can produce an engine ID without a history
+                # row. A terminal Algo parent remains authoritative in that case.
+                if binance_error_code(exc) != -2013 or result.get('status') not in {'FINISHED', 'REJECTED', 'CANCELED', 'EXPIRED'}:
+                    raise
+                return {**result, '_child_reconciled': True, '_child_missing': True}
+            result.update(status=child.get('status') or result.get('status'),
+                          executedQty=child.get('executedQty', result.get('executedQty', '0')),
+                          avgPrice=child.get('avgPrice', result.get('avgPrice', '0')),
+                          _child_reconciled=True)
+            if not valid_order_fills(result):
+                raise RuntimeError('Unexpected response: Binance returned invalid child order fill data.')
+        elif result.get('algoId') and result.get('status') == 'FINISHED':
+            raise RuntimeError('Unexpected response: finished Algo order omitted its matching-engine order identifier.')
+        return result
+
+    def _cancel_protection_record(self, record: dict) -> None:
+        client_id = str(record['client_id'])
+        if any(details.get('context', {}).get('cleanup_client') == client_id for details in self.request_details.values()):
+            return
+        attempts = self._protection_cleanup_attempts.get(client_id, 0)
+        if attempts >= 3:
+            return
+        self._protection_cleanup_attempts[client_id] = attempts + 1
+        self._protection_cleanup_clients.add(client_id)
+        execution = record.get('execution') or {}
+        symbol = str(record.get('order', {}).get('symbol') or '')
+        if safe_float(execution.get('actualOrderId')) > 0:
+            request, algo = {'symbol': symbol, 'orderId': execution['actualOrderId']}, False
+        else:
+            request, algo = {'symbol': symbol, 'clientAlgoId': client_id}, True
+        self.submit_cancel(request, algo, context={'cleanup_client': client_id})
+
+    def _cancel_completed_protection_tranche(self, filled_leg: dict) -> None:
+        context = filled_leg.get('context') or {}
+        entry_id, fill_total = context.get('entry_client_id'), context.get('fill_total')
+        if not entry_id or not fill_total:
+            return
+        legs = [record for record in self._protection_records.values() if record.get('kind') == 'leg'
+                and record.get('context', {}).get('entry_client_id') == entry_id
+                and record.get('context', {}).get('fill_total') == fill_total]
+        exited = sum((Decimal(str(record.get('execution', {}).get('executedQty') or '0')) for record in legs), Decimal(0))
+        amount = Decimal(str(context.get('tranche_quantity') or '0'))
+        if not amount.is_finite() or amount <= 0 or exited < amount:
+            return
+        for record in legs:
+            if record.get('last_status') not in {'CANCELED', 'FILLED', 'FINISHED', 'EXPIRED', 'EXPIRED_IN_MATCH', 'REJECTED'}:
+                self._cancel_protection_record(record)
+
+    def remaining_protection_quantity(self, context: dict) -> Decimal:
+        """Bound fail-safe closes to the part of this fill tranche not exited."""
+        amount = Decimal(str(context.get('tranche_quantity') or context.get('quantity') or '0'))
+        entry_id, fill_total = context.get('entry_client_id'), context.get('fill_total')
+        if not entry_id or not fill_total:
+            return amount
+        exited = sum((Decimal(str(record.get('execution', {}).get('executedQty') or '0'))
+                      for record in self._protection_records.values()
+                      if record.get('kind') == 'leg' and record.get('context', {}).get('entry_client_id') == entry_id
+                      and record.get('context', {}).get('fill_total') == fill_total), Decimal(0))
+        if not amount.is_finite() or not exited.is_finite() or amount < 0 or exited < 0:
+            raise ValueError('Protection tranche execution quantities could not be verified.')
+        return max(Decimal(0), amount - exited)
+
     def _retire_closed_protections(self, snapshot: dict) -> None:
-        if self._journal is None:
+        if self._journal is None or self._protection_recovery_pending or self._protection_recovery_task is not None:
             return
         scope = str(snapshot.get('ordersScope') or '')
         live_ids = {str(row.get('clientOrderId') or row.get('clientAlgoId') or '') for row in [*snapshot.get('orders', []), *snapshot.get('algoOrders', [])]}
         for client_id, entry in tuple(self._protection_records.items()):
-            if entry['kind'] != 'entry' or str(entry.get('last_status') or '').upper() not in {'FILLED', 'FINISHED', 'CANCELED', 'EXPIRED', 'REJECTED'}:
+            if entry['kind'] != 'entry' or str(entry.get('last_status') or '').upper() not in {'FILLED', 'FINISHED', 'CANCELED', 'EXPIRED', 'EXPIRED_IN_MATCH', 'REJECTED'}:
                 continue
             symbol = str(entry['order'].get('symbol') or '')
             if scope not in {'ALL', symbol} or entry.get('_status_received_mono', 0) > snapshot.get('_read_started_mono', 0):
                 continue
             related = [key for key, record in self._protection_records.items() if key == client_id or record['context'].get('entry_client_id') == client_id]
-            if self.has_open_position(symbol) or any(key in live_ids for key in related):
+            engine_ids = {str(self._protection_records[key].get('execution', {}).get('actualOrderId') or '') for key in related}
+            live_engine = any(str(row.get('symbol') or '') == symbol and str(row.get('orderId') or '') in engine_ids
+                              for row in snapshot.get('orders', []))
+            if self.has_open_position(symbol) or any(key in live_ids for key in related) or live_engine:
+                if not self.has_open_position(symbol) and not live_engine and client_id not in live_ids:
+                    for key in related:
+                        record = self._protection_records[key]
+                        if record.get('kind') == 'leg' and key in live_ids:
+                            self._cancel_protection_record(record)
                 continue
             journal = self._journal
             for key in related:
                 self._protection_records.pop(key, None)
+                self._protection_cleanup_clients.discard(key)
+                self._protection_cleanup_attempts.pop(key, None)
                 task = self._launch_task(lambda key=key: journal.run('retire_protection', key), lambda _result: None, self._journal_failed, self._journal_pool)
                 self.tasks.add(task)
         if not self._protection_records:
@@ -453,7 +592,7 @@ class TradingGateway(QtCore.QObject):
             return value
 
         try:
-            serialized = json.dumps(unsigned(saved), separators=(",", ":"))
+            serialized = _journal_json(unsigned(saved))
         except (TypeError, ValueError) as exc:
             self._remember_failure(request_id, f"Order intent could not be saved: {exc}", False, details)
             return
@@ -568,11 +707,14 @@ class TradingGateway(QtCore.QObject):
         self.user_reconnect.stop()
         self.keepalive_timer.stop()
         self.account_event_refresh_timer.stop()
+        self.protection_poll_timer.stop()
         self.trade_socket.close()
         self.user_socket.close()
         self.trade_connected = False
         self._bind_session_sockets()
         self.listen_key = ""
+        self.user_stream_task = None
+        self.keepalive_task = None
         self.balance_cache.clear()
         self._collateral_reservations.clear()
         self.multi_assets_margin = None
@@ -585,6 +727,9 @@ class TradingGateway(QtCore.QObject):
         self.pending_account_refresh = None
         self._last_snapshot_mono = 0.0
         self._last_snapshot_scope = None
+        self._last_account_snapshot = None
+        self._protection_cleanup_clients.clear()
+        self._protection_cleanup_attempts.clear()
         self.account_event_refresh_symbols.clear()
         self.cross_ready.clear()
         self.cross_pending.clear()
@@ -705,12 +850,14 @@ class TradingGateway(QtCore.QObject):
         side = str(payload.get("side", "")).upper().strip()
         order_type = str(payload.get("type", "")).upper().strip()
         position_side = str(payload.get("positionSide", "BOTH")).upper().strip()
-        reduce_only = payload.get("reduceOnly") is True or str(
-            payload.get("reduceOnly", "")
-        ).casefold() == "true"
-        close_position = payload.get("closePosition") is True or str(
-            payload.get("closePosition", "")
-        ).casefold() == "true"
+        for key in ('reduceOnly', 'closePosition', 'priceProtect'):
+            if key in payload:
+                flag = exchange_bool(payload[key])
+                if flag is None:
+                    raise ValueError(f'{key} must be true or false.')
+                payload[key] = flag
+        reduce_only = payload.get('reduceOnly', False)
+        close_position = payload.get('closePosition', False)
         payload.update(
             {
                 "symbol": symbol,
@@ -733,6 +880,8 @@ class TradingGateway(QtCore.QObject):
             raise ValueError("Position side must be BOTH, LONG or SHORT.")
         if position_side != "BOTH" and reduce_only:
             raise ValueError("Binance hedge-mode orders cannot include reduceOnly.")
+        if position_side != 'BOTH':
+            payload.pop('reduceOnly', None)
         if close_position:
             if order_type not in {"STOP_MARKET", "TAKE_PROFIT_MARKET"}:
                 raise ValueError(
@@ -742,6 +891,7 @@ class TradingGateway(QtCore.QObject):
                 raise ValueError("A close-all conditional order cannot include quantity.")
             if reduce_only:
                 raise ValueError("closePosition and reduceOnly cannot be sent together.")
+            payload.pop('reduceOnly', None)
             if position_side == "LONG" and side == "BUY":
                 raise ValueError("Closing a hedge-mode LONG requires SELL/LONG.")
             if position_side == "SHORT" and side == "SELL":
@@ -772,26 +922,34 @@ class TradingGateway(QtCore.QObject):
                 else rules.lot_step
             )
             payload["quantity"] = validate_step(
-                str(payload.get("quantity", "")), step, "Quantity"
+                str(payload.get("quantity", "")), step, "Quantity", offset=str(rules.min_market_qty if market_quantity else rules.min_qty)
             )
             quantity = safe_float(payload["quantity"])
             minimum_qty = rules.min_market_qty if market_quantity else rules.min_qty
             maximum_qty = rules.max_market_qty if market_quantity else rules.max_qty
-            if not (minimum_qty <= quantity <= maximum_qty):
+            if quantity <= 0 or not (minimum_qty <= quantity <= maximum_qty):
                 raise ValueError(
                     f"Quantity must be between {minimum_qty:g} and {maximum_qty:g}."
                 )
-            for key, label in (
-                ("price", "Order price"),
-                ("triggerPrice", "Trigger price"),
-                ("activatePrice", "Activation price"),
-            ):
-                if payload.get(key) not in (None, ""):
-                    payload[key] = validate_step(
-                        str(payload[key]), rules.tick_size, label
-                    )
+            if market_quantity:
+                validate_step(payload['quantity'], rules.lot_step, 'Quantity', offset=str(rules.min_qty))
+                if not (rules.min_qty <= quantity <= rules.max_qty):
+                    raise ValueError('Market quantity is outside Binance LOT_SIZE limits.')
         elif not close_position and safe_float(payload.get("quantity")) <= 0:
             raise ValueError("Order quantity must be positive.")
+        for key, label in (
+            ('price', 'Order price'), ('triggerPrice', 'Trigger price'),
+            ('activatePrice', 'Activation price'),
+        ):
+            if payload.get(key) in (None, ''):
+                continue
+            if isinstance(rules, SymbolRules):
+                payload[key] = validate_step(str(payload[key]), rules.tick_size, label, offset=str(rules.min_price))
+                price = safe_float(payload[key])
+                if price <= 0 or price < rules.min_price or (rules.max_price > 0 and price > rules.max_price):
+                    raise ValueError(f'{label} is outside Binance symbol price limits.')
+            elif safe_float(payload[key]) <= 0:
+                raise ValueError(f'{label} must be positive.')
         working_type = str(payload.get("workingType", "MARK_PRICE")).upper()
         if working_type not in {"MARK_PRICE", "CONTRACT_PRICE"}:
             raise ValueError("Working type must be MARK_PRICE or CONTRACT_PRICE.")
@@ -812,17 +970,18 @@ class TradingGateway(QtCore.QObject):
         if order_type in {"LIMIT", "STOP", "TAKE_PROFIT"}:
             if not price_match and safe_float(payload.get("price")) <= 0:
                 raise ValueError(f"{order_type} requires a positive order price.")
-            time_in_force = str(payload.get("timeInForce", "")).upper()
+            time_in_force = str(payload.get("timeInForce") or ('GTC' if order_type in CONDITIONAL_ORDER_TYPES else '')).upper()
             if time_in_force not in {"GTC", "IOC", "FOK", "GTX", "GTD", "RPI"}:
                 raise ValueError("A valid time-in-force is required for this order type.")
             payload["timeInForce"] = time_in_force
             if time_in_force == "GTD":
-                good_till = int(safe_float(payload.get("goodTillDate")))
-                now_ms = int(time.time() * 1_000)
+                good_till = int(safe_float(payload.get("goodTillDate"))) // 1000 * 1000
+                now_ms = int(context.get('_server_time_ms') or time.time() * 1_000)
                 if not (now_ms + 600_000 < good_till < 253_402_300_799_000):
                     raise ValueError(
                         "GTD goodTillDate must be more than 600 seconds ahead and within Binance's supported range."
                     )
+                payload['goodTillDate'] = good_till
         stp_mode = str(payload.get("selfTradePreventionMode", "")).upper().strip()
         if stp_mode:
             allowed_stp = {"EXPIRE_TAKER", "EXPIRE_MAKER", "EXPIRE_BOTH"}
@@ -901,6 +1060,8 @@ class TradingGateway(QtCore.QObject):
         if record is not None and not uncertain:
             record['last_status'] = 'REJECTED'
             record['_status_received_mono'] = time.monotonic()
+            if not (record.get('execution', {}).get('orderId') or record.get('execution', {}).get('algoId')):
+                record['not_accepted'] = True
             self._persist_protection_record(record)
         if isinstance(context, dict):
             self.failure_contexts[request_id] = dict(context)
@@ -914,20 +1075,49 @@ class TradingGateway(QtCore.QObject):
         if not uncertain:
             self._pop_request_details(request_id, None)
             self._mark_terminal(request_id)
+        if isinstance(context, dict) and context.get('cleanup_client'):
+            self._protection_recovery_pending = True
+            self._queue_account_refresh(str(context.get('symbol') or ''))
         self.request_failed.emit(request_id, message, uncertain)
 
     def _finish_request(self, request_id: str, result: Any) -> None:
         if request_id in self.terminal_requests:
             return
+        details = self.request_details.get(request_id, {})
+        method = str(details.get('method') or '')
+        if not isinstance(result, dict):
+            self._handle_transport_failure(request_id, details, 'Unexpected response: Binance order confirmation is not an object.')
+            return
+        result = normalize_order(result)
+        if method == 'algoOrder.place' and result.get('status') == 'FINISHED' and not result.get('_child_reconciled'):
+            result['_awaiting_child'] = True
+        if method in {'order.place', 'algoOrder.place', 'order.modify', 'order.cancel', 'algoOrder.cancel'}:
+            algo = method.startswith('algoOrder.')
+            id_key = 'algoId' if algo else 'orderId'
+            if safe_float(result.get(id_key)) <= 0:
+                self._handle_transport_failure(request_id, details, 'Unexpected response: Binance order confirmation omitted its order identifier.')
+                return
+            if method.endswith('.place') and not (result.get('clientAlgoId') if algo else result.get('clientOrderId')):
+                self._handle_transport_failure(request_id, details, 'Unexpected response: Binance order confirmation omitted its client identifier.')
+                return
+            wanted_client = str(details.get('client_id') or (details.get('params') or {}).get('clientAlgoId')
+                                or (details.get('params') or {}).get('origClientOrderId') or '')
+            returned_client = str(result.get('clientAlgoId') or result.get('clientOrderId') or '')
+            if wanted_client and returned_client != wanted_client:
+                self._handle_transport_failure(request_id, details, 'Unexpected response: Binance order confirmation did not verify the requested client identifier.')
+                return
+            if not valid_order_fills(result):
+                self._handle_transport_failure(request_id, details, 'Unexpected response: Binance returned invalid order fill data.')
+                return
         details = self._pop_request_details(request_id, {})
         fingerprint = str(details.get("fingerprint", ""))
         if fingerprint:
             self.inflight_fingerprints.pop(fingerprint, None)
             self.unresolved_fingerprints.pop(fingerprint, None)
         self.reconciling.discard(request_id)
-        expected = details.get("expected") or {}
+        expected = details.get("expected") or details.get('params') or {}
         if isinstance(result, dict):
-            expected_client = str(details.get("client_id", ""))
+            expected_client = str(details.get('client_id') or expected.get('origClientOrderId') or expected.get('clientAlgoId') or '')
             mismatches = self._response_mismatches(expected, result, expected_client)
             if mismatches:
                 self._set_request_details(request_id, details)
@@ -952,15 +1142,20 @@ class TradingGateway(QtCore.QObject):
         client_id = str(details.get('client_id') or '')
         record = self._protection_records.get(client_id)
         if record is not None and isinstance(result, dict):
-            record['last_status'] = str(result.get('status') or result.get('algoStatus') or 'NEW').upper()
-            record['_status_received_mono'] = time.monotonic()
-            self._persist_protection_record(record)
+            self._observe_protection_order(client_id, result)
+        cleanup_client = str(details.get('context', {}).get('cleanup_client') or '')
+        if cleanup_client:
+            cleanup_status = result.get('status') or ('CANCELED' if str(result.get('code')) == '200' else '')
+            self._observe_protection_order(cleanup_client, {**result, 'status': cleanup_status})
+        if result.get('_awaiting_child') and self._protection_records:
+            QTimer.singleShot(0, self, self._recover_protections)
         self.request_succeeded.emit(request_id, result)
 
     @staticmethod
     def _response_mismatches(expected: dict[str, Any], result: dict[str, Any], client_id: str = "") -> list[str]:
         mismatches = []
         fields = {
+            'orderId': ('orderId',), 'algoId': ('algoId',),
             "symbol": ("symbol",), "side": ("side",), "type": ("type", "orderType"),
             "quantity": ("origQty", "quantity"), "price": ("price",),
             "triggerPrice": ("triggerPrice", "stopPrice"), "activatePrice": ("activatePrice", "activationPrice"),
@@ -970,7 +1165,7 @@ class TradingGateway(QtCore.QObject):
             "priceMatch": ("priceMatch",), "selfTradePreventionMode": ("selfTradePreventionMode",),
             "goodTillDate": ("goodTillDate",),
         }
-        numeric = {"quantity", "price", "triggerPrice", "activatePrice", "callbackRate", "goodTillDate"}
+        numeric = {"quantity", "price", "triggerPrice", "activatePrice", "callbackRate", "goodTillDate", 'orderId', 'algoId'}
         booleans = {"reduceOnly", "closePosition", "priceProtect"}
         for key, aliases in fields.items():
             if expected.get(key) in (None, ""):
@@ -1004,7 +1199,9 @@ class TradingGateway(QtCore.QObject):
         for expected in expected_orders:
             client_id = str(expected.get("newClientOrderId") or expected.get("clientAlgoId") or "")
             result = by_client.get(client_id)
-            if result is None or self._response_mismatches(expected, result, client_id):
+            if (result is None or not valid_order_fills(normalize_order(result))
+                    or safe_float(result.get('algoId') or result.get('orderId')) <= 0
+                    or self._response_mismatches(expected, result, client_id)):
                 return False
         return True
 
@@ -1096,10 +1293,62 @@ class TradingGateway(QtCore.QObject):
         method = str(metadata.get("method", ""))
         if uncertain and method in {"order.place", "algoOrder.place"}:
             self._begin_reconciliation(request_id, metadata, message)
+        elif uncertain and method in {'order.modify', 'order.cancel', 'algoOrder.cancel'}:
+            self._begin_operation_reconciliation(request_id, metadata, message)
         elif uncertain:
             self._finish_uncertain_nonplacement(request_id, metadata, message)
         else:
             self._remember_failure(request_id, message, False, metadata)
+
+    def _begin_operation_reconciliation(self, request_id: str, metadata: dict, reason: str) -> None:
+        """Query an uncertain amendment/cancel without transmitting it again."""
+        if request_id in self.terminal_requests or request_id in self.reconciling:
+            return
+        details = {**self.request_details.get(request_id, {}), **metadata, 'transport_state': 'uncertain'}
+        params = dict(details.get('params') or details.get('expected') or {})
+        method = str(details.get('method') or '')
+        self._set_request_details(request_id, details)
+        self.reconciling.add(request_id)
+        api_key, api_secret = self.api_key, self.api_secret
+
+        def query():
+            last_error = reason
+            for attempt in range(6):
+                if attempt:
+                    time.sleep(0.8)
+                try:
+                    row = normalize_order(self.rest.query_order_request(api_key, api_secret, params, algo=method == 'algoOrder.cancel'))
+                    if not valid_order_fills(row):
+                        raise RuntimeError('Unexpected response: Binance returned invalid order fill data.')
+                    identifier = row.get('algoId') if method == 'algoOrder.cancel' else row.get('orderId')
+                    if safe_float(identifier) <= 0:
+                        raise RuntimeError('Unexpected response: order query omitted its identifier.')
+                    terminal = str(row.get('status') or '') in {'CANCELED', 'FILLED', 'FINISHED', 'EXPIRED', 'EXPIRED_IN_MATCH', 'REJECTED'}
+                    if method == 'order.modify':
+                        if terminal or not self._response_mismatches(params, row):
+                            return row
+                    elif terminal:
+                        return row
+                    last_error = 'The queried order has not confirmed the requested change.'
+                except (RuntimeError, TimeoutError, OSError) as exc:
+                    last_error = str(exc)
+            raise RuntimeError(last_error)
+
+        def done(row):
+            self.reconciling.discard(request_id)
+            if method == 'order.modify' and self._response_mismatches(params, row):
+                self._remember_failure(request_id, f"Amendment outcome reconciled: the order is {row.get('status')}; the requested changes were not established.", False, details)
+            else:
+                self._finish_request(request_id, {**row, '_transport': 'RECONCILED BY ORDER ID', '_reconciled': True})
+            self._queue_account_refresh(str(params.get('symbol') or ''))
+
+        def failed(message):
+            self.reconciling.discard(request_id)
+            self._remember_failure(request_id, f'{reason} Read-only reconciliation did not establish the change: {message}', True, details)
+            self._queue_account_refresh(str(params.get('symbol') or ''))
+
+        task = self._launch_task(query, done, failed, self.task_pool)
+        self.tasks.add(task)
 
     def _expire_pending_requests(self) -> None:
         now = time.monotonic()
@@ -1122,7 +1371,7 @@ class TradingGateway(QtCore.QObject):
     @staticmethod
     def _ws_signature(params: dict[str, Any], secret: str) -> str:
         encoded = BinanceRest._encoded_params(params)
-        query = urllib.parse.urlencode(sorted(encoded.items()))
+        query = '&'.join(f'{key}={value}' for key, value in sorted(encoded.items()))
         return hmac.new(
             secret.encode("utf-8"),
             query.encode("utf-8"),
@@ -1159,6 +1408,7 @@ class TradingGateway(QtCore.QObject):
             self.unresolved_fingerprints[fingerprint] = request_id
         self.state_changed.emit(f"RECONCILING · {client_id}")
         task: ApiTask
+        api_key, api_secret = self.api_key, self.api_secret
 
         def query() -> dict[str, Any]:
             last_error = reason
@@ -1166,13 +1416,18 @@ class TradingGateway(QtCore.QObject):
                 if attempt:
                     time.sleep(0.8)
                 try:
-                    return self.rest.query_order_by_client_id(
-                        self.api_key,
-                        self.api_secret,
+                    result = normalize_order(self.rest.query_order_by_client_id(
+                        api_key,
+                        api_secret,
                         symbol,
                         client_id,
                         algo=method == "algoOrder.place",
-                    )
+                    ))
+                    returned_client = str(result.get('clientAlgoId') or result.get('clientOrderId') or '')
+                    if (safe_float(result.get('algoId') or result.get('orderId')) <= 0 or returned_client != client_id
+                            or self._response_mismatches(details.get('expected') or {}, result, client_id)):
+                        raise RuntimeError('Unexpected response: queried order could not be verified against its saved intent.')
+                    return self._with_child_execution(api_key, api_secret, symbol, result)
                 except (RuntimeError, TimeoutError, OSError) as exc:
                     last_error = str(exc)
                     if not any(
@@ -1209,12 +1464,16 @@ class TradingGateway(QtCore.QObject):
         self.tasks.add(task)
 
     def reconcile_unknown_orders(self) -> None:
-        if self._protection_records and self._protection_recovery_pending:
+        if self._protection_cleanup_clients:
+            for client_id in self._protection_cleanup_clients:
+                self._protection_cleanup_attempts.pop(client_id, None)
+        if self._protection_records and (self._protection_recovery_pending or self._protection_cleanup_clients):
             self._recover_protections()
         candidates = [
             (request_id, dict(details))
             for request_id, details in self.request_details.items()
             if str(details.get("fingerprint", "")) in self.unresolved_fingerprints
+            or (details.get('transport_state') == 'uncertain' and details.get('method') in {'order.modify', 'order.cancel', 'algoOrder.cancel'})
         ]
         if not candidates and not self._protection_recovery_pending:
             self.problem.emit("No unresolved order placements are waiting for reconciliation.")
@@ -1226,6 +1485,8 @@ class TradingGateway(QtCore.QObject):
                     details,
                     "Manual batch reconciliation requested.",
                 )
+            elif details.get('method') in {'order.modify', 'order.cancel', 'algoOrder.cancel'}:
+                self._begin_operation_reconciliation(request_id, details, 'Manual operation reconciliation requested.')
             else:
                 self._begin_reconciliation(
                     request_id,
@@ -1235,7 +1496,8 @@ class TradingGateway(QtCore.QObject):
 
     def submit_order(self, order: dict[str, Any], context: dict[str, Any] | None = None) -> str:
         request_id = self._next_id("order")
-        context = context or {}
+        context = dict(context or {})
+        context['_server_time_ms'] = self.rest.cached_timestamp_ms()
         emergency = bool(context.get("emergency_close"))
         protective = bool(context.get('protective_leg'))
         reducing = emergency or protective or str(context.get('position_intent') or '').upper() == 'REDUCE' or str(order.get('reduceOnly') or '').lower() == 'true'
@@ -1243,9 +1505,14 @@ class TradingGateway(QtCore.QObject):
             self._remember_failure(request_id, "API credentials are required; trading session unavailable.", False,
                                    {"context": context})
             return request_id
-        if not reducing and (self._protection_recovery_pending or self.account_can_trade is not True):
+        if not reducing and (self._protection_recovery_pending or self._protection_cleanup_clients or self.account_can_trade is not True):
             self._remember_failure(request_id, 'New entries require confirmed account permissions and completed protection recovery.', False, {'context': context})
             return request_id
+        if context.get('protections') and (context['protections'].get('tp') or context['protections'].get('sl')) and not reducing:
+            if self.user_socket.state() != QtNetwork.QAbstractSocket.SocketState.ConnectedState:
+                self.connect_session()
+                self._remember_failure(request_id, 'An entry with TP/SL requires a connected account stream; wait for ACCOUNT STREAM LIVE.', False, {'context': context})
+                return request_id
         if context.get("requires_arm") and not self.armed and not emergency:
             self._remember_failure(
                 request_id,
@@ -1265,7 +1532,15 @@ class TradingGateway(QtCore.QObject):
                 {"context": context},
             )
             return request_id
-        symbol = str(order.get("symbol", ""))
+        try:
+            payload = self._validate_order_payload(order, context)
+            self._validate_position_mode(payload, emergency)
+        except ValueError as exc:
+            self._remember_failure(
+                request_id, f"Order validation failed: {exc}", False, {"context": context}
+            )
+            return request_id
+        symbol = payload['symbol']
         if symbol and symbol in self.cross_pending and not reducing:
             self._remember_failure(
                 request_id,
@@ -1281,14 +1556,6 @@ class TradingGateway(QtCore.QObject):
                 "Cross margin is still being verified for this symbol. Wait for CROSS READY, then submit again.",
                 False,
                 {"context": context},
-            )
-            return request_id
-        try:
-            payload = self._validate_order_payload(order, context)
-            self._validate_position_mode(payload, emergency)
-        except ValueError as exc:
-            self._remember_failure(
-                request_id, f"Order validation failed: {exc}", False, {"context": context}
             )
             return request_id
         fingerprint = self._order_fingerprint(payload)
@@ -1367,20 +1634,25 @@ class TradingGateway(QtCore.QObject):
                 raise ValueError("A Binance order identifier is required.")
             payload["symbol"] = symbol
             payload["side"] = side
+            if 'reduceOnly' in payload:
+                flag = exchange_bool(payload['reduceOnly'])
+                if flag is None:
+                    raise ValueError('reduceOnly must be true or false.')
+                payload['reduceOnly'] = flag
             if isinstance(rules, SymbolRules):
                 payload["quantity"] = validate_step(
-                    str(payload.get("quantity", "")), rules.lot_step, "Quantity"
+                    str(payload.get("quantity", "")), rules.lot_step, "Quantity", offset=str(rules.min_qty)
                 )
                 payload["price"] = validate_step(
-                    str(payload.get("price", "")), rules.tick_size, "Price"
+                    str(payload.get("price", "")), rules.tick_size, "Price", offset=str(rules.min_price)
                 )
                 quantity = safe_float(payload["quantity"])
                 price = safe_float(payload["price"])
-                if not (rules.min_qty <= quantity <= rules.max_qty):
+                if quantity <= 0 or not (rules.min_qty <= quantity <= rules.max_qty):
                     raise ValueError(
                         f"Quantity must be between {rules.min_qty:g} and {rules.max_qty:g}."
                     )
-                if not (rules.min_price <= price <= rules.max_price):
+                if price <= 0 or price < rules.min_price or (rules.max_price > 0 and price > rules.max_price):
                     raise ValueError(
                         f"Price must be between {rules.min_price:g} and {rules.max_price:g}."
                     )
@@ -1422,8 +1694,9 @@ class TradingGateway(QtCore.QObject):
             "batch": True,
             "rules": rules,
             "position_intent": position_intent,
+            '_server_time_ms': self.rest.cached_timestamp_ms(),
         }
-        if position_intent == 'OPEN' and (self._protection_recovery_pending or self.account_can_trade is not True):
+        if position_intent == 'OPEN' and (self._protection_recovery_pending or self._protection_cleanup_clients or self.account_can_trade is not True):
             self._remember_failure(request_id, 'New entries require confirmed account permissions and completed protection recovery.', False, {'context': context})
             return request_id
         if self.stopping or not self.has_credentials():
@@ -1435,28 +1708,13 @@ class TradingGateway(QtCore.QObject):
                 request_id, "Trading is disarmed.", False, {"context": context}
             )
             return request_id
-        symbol = str((orders[0] if orders else {}).get("symbol", ""))
-        if symbol and symbol in self.cross_pending and position_intent == 'OPEN':
-            self._remember_failure(
-                request_id,
-                "Margin mode or leverage is still being applied. Wait for CROSS READY, then submit the batch again.",
-                False,
-                {"context": context},
-            )
-            return request_id
-        if symbol and symbol not in self.cross_ready and position_intent == 'OPEN':
-            self.ensure_cross(symbol)
-            self._remember_failure(
-                request_id,
-                "Cross margin is still being verified. Wait for CROSS READY, then submit the batch again.",
-                False,
-                {"context": context},
-            )
-            return request_id
         if not orders:
             self._remember_failure(
                 request_id, "The batch contains no orders.", False, {"context": context}
             )
+            return request_id
+        if len({str(order.get('symbol') or '').upper() for order in orders}) != 1:
+            self._remember_failure(request_id, 'Each batch must use one symbol and its exchange rules; nothing was sent.', False, {'context': context})
             return request_id
         if len(orders) > 5:
             self._remember_failure(
@@ -1486,10 +1744,31 @@ class TradingGateway(QtCore.QObject):
                 self._validate_position_mode(item)
                 item.setdefault("newClientOrderId", self.client_order_id("nwb"))
                 prepared.append(item)
+            clients = [str(item.get('clientAlgoId') or item.get('newClientOrderId')) for item in prepared]
+            if len(set(clients)) != len(clients):
+                raise ValueError('Every order in a batch requires a different client identifier.')
         except ValueError as exc:
             self._remember_failure(
                 request_id,
                 f"Batch validation failed: {exc}",
+                False,
+                {"context": context},
+            )
+            return request_id
+        symbol = prepared[0]['symbol']
+        if symbol in self.cross_pending and position_intent == 'OPEN':
+            self._remember_failure(
+                request_id,
+                "Margin mode or leverage is still being applied. Wait for CROSS READY, then submit the batch again.",
+                False,
+                {"context": context},
+            )
+            return request_id
+        if symbol not in self.cross_ready and position_intent == 'OPEN':
+            self.ensure_cross(symbol)
+            self._remember_failure(
+                request_id,
+                "Cross margin is still being verified. Wait for CROSS READY, then submit the batch again.",
                 False,
                 {"context": context},
             )
@@ -1520,7 +1799,7 @@ class TradingGateway(QtCore.QObject):
             self.admitted_requests.discard(request_id)
             if request_id in self.terminal_requests:
                 return
-            rows = list(result) if isinstance(result, list) else []
+            rows = [normalize_order(row) if isinstance(row, dict) else row for row in result] if isinstance(result, list) else []
             if len(rows) != len(prepared):
                 self._begin_batch_reconciliation(
                     request_id,
@@ -1534,9 +1813,18 @@ class TradingGateway(QtCore.QObject):
                 if isinstance(row, dict) and safe_float(row.get("code")) < 0
             ]
             if errors:
-                accepted = len(rows) - len(errors)
+                accepted_rows = [row for row in rows if isinstance(row, dict) and safe_float(row.get('code')) >= 0]
+                accepted_clients = {str(row.get('clientAlgoId') or row.get('clientOrderId') or '') for row in accepted_rows}
+                accepted_intents = [order for order in prepared
+                                    if str(order.get('clientAlgoId') or order.get('newClientOrderId') or '') in accepted_clients]
+                if (len(accepted_rows) + len(errors) != len(prepared)
+                        or len(accepted_clients) != len(accepted_rows) or len(accepted_intents) != len(accepted_rows)
+                        or not self._batch_response_matches({'expected_orders': accepted_intents}, accepted_rows)):
+                    self._begin_batch_reconciliation(request_id, details, 'Binance returned unverifiable results inside a partial batch.')
+                    return
+                accepted = len(accepted_rows)
                 transport_uncertain = any(
-                    bool(row.get("_uncertain"))
+                    bool(row.get('_uncertain')) or (not row.get('_notSent') and execution_outcome_uncertain(row))
                     for row in errors
                     if isinstance(row, dict)
                 )
@@ -1545,16 +1833,16 @@ class TradingGateway(QtCore.QObject):
                 detail = str(first.get("msg") or first.get("message") or "rejected")
                 self._remember_failure(
                     request_id,
-                    f"Batch completed with {accepted} accepted and {len(errors)} rejected order(s). "
+                    f"Batch reported {accepted} accepted and {len(errors)} failed order(s). "
                     f"First rejection: {code} · {detail}. "
                     + (
                         "Do not resubmit the complete batch; review the accepted client IDs first."
-                        if accepted
-                        else "No order in the batch was accepted."
+                        if accepted else ('Acceptance of the failed orders remains unresolved.' if transport_uncertain else 'No order in the batch was accepted.')
                     ),
-                    accepted > 0 or transport_uncertain,
+                    transport_uncertain,
                     details,
                 )
+                self._queue_account_refresh(symbol)
                 return
             returned_ids = {
                 str(row.get("clientOrderId") or row.get("clientAlgoId") or "")
@@ -1596,8 +1884,9 @@ class TradingGateway(QtCore.QObject):
 
         def transmit() -> None:
             nonlocal task
+            api_key, api_secret = self.api_key, self.api_secret
             task = self._launch_task(
-                lambda: self.rest.place_batch_orders(self.api_key, self.api_secret, prepared),
+                lambda: self.rest.place_batch_orders(api_key, api_secret, prepared),
                 done, failed, self.task_pool,
             )
             self.tasks.add(task)
@@ -1633,6 +1922,7 @@ class TradingGateway(QtCore.QObject):
             self.unresolved_fingerprints[fingerprint] = request_id
         self.state_changed.emit(f"RECONCILING BATCH · {len(orders)} ORDERS")
         task: ApiTask
+        api_key, api_secret = self.api_key, self.api_secret
 
         def query() -> list[dict[str, Any]]:
             resolved: list[dict[str, Any]] = []
@@ -1647,13 +1937,13 @@ class TradingGateway(QtCore.QObject):
                     if attempt:
                         time.sleep(0.6)
                     try:
-                        found = self.rest.query_order_by_client_id(
-                            self.api_key,
-                            self.api_secret,
+                        found = normalize_order(self.rest.query_order_by_client_id(
+                            api_key,
+                            api_secret,
                             symbol,
                             client_id,
                             algo=algo,
-                        )
+                        ))
                         break
                     except (RuntimeError, TimeoutError, OSError) as exc:
                         last_error = str(exc)
@@ -1703,7 +1993,7 @@ class TradingGateway(QtCore.QObject):
         task = self._launch_task(query, done, failed, self.task_pool)
         self.tasks.add(task)
 
-    def submit_cancel(self, request: dict[str, Any], algo: bool = False) -> str:
+    def submit_cancel(self, request: dict[str, Any], algo: bool = False, *, context: dict | None = None) -> str:
         request_id = self._next_id("cancel")
         if self.stopping or not self.has_credentials():
             self._remember_failure(request_id, "API credentials are required; trading session unavailable.", False)
@@ -1732,7 +2022,7 @@ class TradingGateway(QtCore.QObject):
             request_id,
             "algoOrder.cancel" if algo else "order.cancel",
             payload,
-            {},
+            {**(context or {}), 'symbol': symbol},
         )
 
     def _send_or_rest(
@@ -1760,11 +2050,22 @@ class TradingGateway(QtCore.QObject):
                 lambda: self._send_or_rest(request_id, method, params, context, metadata),
             )
             return request_id
-        if (self.trade_connected and self.rest.has_fresh_time_offset()
+        plans = context.get('protections') or {}
+        if (method in {'order.place', 'algoOrder.place'} and (plans.get('tp') or plans.get('sl'))
+                and self.user_socket.state() != QtNetwork.QAbstractSocket.SocketState.ConnectedState):
+            self._remember_failure(request_id, 'Not sent: account stream disconnected before the protected entry was transmitted.', False, metadata)
+            return request_id
+        wire_params = ({key: value for key, value in params.items() if key in {'algoId', 'clientAlgoId'}}
+                       if method == 'algoOrder.cancel' else dict(params))
+        ws_compatible = method != 'algoOrder.place' or str(params.get('timeInForce') or 'GTC') in {'GTC', 'IOC', 'FOK'}
+        if (self.trade_connected and ws_compatible and self.rest.has_fresh_time_offset()
                 and self.trade_socket.state() == QtNetwork.QAbstractSocket.SocketState.ConnectedState):
 
             try:
-                signed = {key: value for key, value in params.items() if value is not None and value != ''}
+                signed = BinanceRest._encoded_params(wire_params)
+                for key in ('orderId', 'algoId', 'goodTillDate', 'modifyId', 'recvWindow'):
+                    if key in signed:
+                        signed[key] = int(signed[key])
                 signed.update(apiKey=self.api_key, timestamp=self.rest.cached_timestamp_ms(), recvWindow=5000)
                 signed['signature'] = self._ws_signature(signed, self.api_secret)
                 message = json.dumps({'id': request_id, 'method': method, 'params': signed}, separators=(',', ':'))
@@ -1816,16 +2117,17 @@ class TradingGateway(QtCore.QObject):
             else "ORDER LINK STARTING · USING REST ONCE"
         )
         task: ApiTask
+        api_key, api_secret = self.api_key, self.api_secret
 
         def execute() -> Any:
             if method in {"order.place", "algoOrder.place"}:
-                return self.rest.place_order(self.api_key, self.api_secret, params)
+                return self.rest.place_order(api_key, api_secret, params)
             if method == "order.modify":
-                return self.rest.modify_order(self.api_key, self.api_secret, params)
+                return self.rest.modify_order(api_key, api_secret, params)
             return self.rest.cancel_order(
-                self.api_key,
-                self.api_secret,
-                params,
+                api_key,
+                api_secret,
+                wire_params,
                 algo=method == "algoOrder.cancel",
             )
 
@@ -1862,6 +2164,8 @@ class TradingGateway(QtCore.QObject):
         try:
             payload = json.loads(message)
         except json.JSONDecodeError:
+            return
+        if not isinstance(payload, dict):
             return
         request_id = str(payload.get("id", ""))
         rate_limits = payload.get("rateLimits")
@@ -1994,6 +2298,24 @@ class TradingGateway(QtCore.QObject):
                 self._last_snapshot_mono = refresh_started
             payload['_read_started_mono'] = refresh_started
             self._cache_snapshot(payload)
+            self._last_account_snapshot = payload
+            live_orders = {str(row.get('clientAlgoId') or row.get('clientOrderId') or ''): normalize_order(row)
+                           for row in [*payload.get('orders', []), *payload.get('algoOrders', [])]}
+            live_children = {(str(row.get('symbol') or ''), str(row.get('orderId') or '')): normalize_order(row)
+                             for row in payload.get('orders', [])}
+            scope = str(payload.get('ordersScope') or '')
+            for client_id, record in self._protection_records.items():
+                if (record.get('last_status') not in {'NEW', 'TRIGGERED', 'TRIGGERING', 'PARTIALLY_FILLED', 'PENDING_NEW'}
+                        or scope not in {'ALL', str(record.get('order', {}).get('symbol') or '')}
+                        or self._client_requests.get(client_id) in self.admitted_requests):
+                    continue
+                row = live_orders.get(client_id)
+                if row is None:
+                    row = live_children.get((str(record.get('order', {}).get('symbol') or ''),
+                                             str(record.get('execution', {}).get('actualOrderId') or '')))
+                if row is None or safe_float(row.get('executedQty')) > safe_float(record.get('execution', {}).get('executedQty')):
+                    self._protection_recovery_pending = True
+                    break
             self._retire_closed_protections(payload)
             for request_id, reservation in tuple(self._collateral_reservations.items()):
                 accepted_at = reservation.get('accepted_at')
@@ -2255,6 +2577,9 @@ class TradingGateway(QtCore.QObject):
             return
         self.state_changed.emit("ACCOUNT STREAM LIVE")
         self.keepalive_timer.start()
+        self.protection_poll_timer.stop()
+        if self._protection_records:
+            self._protection_recovery_pending = True
 
 
         self._queue_account_refresh()
@@ -2372,10 +2697,21 @@ class TradingGateway(QtCore.QObject):
         api_key = self.api_key
         task: ApiTask
 
-        def done(_payload: Any) -> None:
+        def done(payload: Any) -> None:
             self.tasks.discard(task)
             if self.keepalive_task is task:
                 self.keepalive_task = None
+            if generation != self.stream_generation:
+                return
+            returned_key = str(payload.get('listenKey') or '') if isinstance(payload, dict) else ''
+            if not returned_key:
+                self.problem.emit('Unexpected response: account-stream keepalive omitted its listen key; replacing the stream.')
+                self._replace_user_stream()
+            elif returned_key != self.listen_key:
+                self.stream_generation += 1
+                self.listen_key = returned_key
+                self.user_socket.close()
+                self._open_user_socket(returned_key)
 
         def failed(message: str) -> None:
             self.tasks.discard(task)
@@ -2400,9 +2736,19 @@ class TradingGateway(QtCore.QObject):
 
     def _user_disconnected(self) -> None:
         if not self.stopping and self.has_credentials():
+            if self._protection_records:
+                self._protection_recovery_pending = True
+                self.protection_poll_timer.start()
+                self._queue_account_refresh()
             self.state_changed.emit("ACCOUNT STREAM RECONNECTING")
             if not self.user_reconnect.isActive():
                 self.user_reconnect.start()
+
+    def _poll_disconnected_protections(self) -> None:
+        if self.stopping or not self._protection_records or self.user_socket.state() == QtNetwork.QAbstractSocket.SocketState.ConnectedState:
+            self.protection_poll_timer.stop()
+            return
+        self._recover_protections()
 
     def _user_error(self, _error: object) -> None:
         self.state_changed.emit("ACCOUNT STREAM OFFLINE")
@@ -2431,30 +2777,26 @@ class TradingGateway(QtCore.QObject):
             self._replace_user_stream()
             return
         event_type = str(payload.get("e", ""))
-        order = payload.get("o") or payload.get("a") or payload.get("algoOrder") or {}
-        client_id = str(
-            order.get("c")
-            or order.get("caid")
-            or order.get("clientOrderId")
-            or order.get("clientAlgoId")
-            or ""
-        )
-        if client_id:
+        order = normalize_order(payload.get('o') or payload.get('algoOrder') or {})
+        if event_type in {'ORDER_TRADE_UPDATE', 'ALGO_UPDATE'} and not valid_order_fills(order):
+            self.problem.emit('Invalid order fill data in the account stream; reconciling saved protections.')
+            if self._protection_records:
+                self._protection_recovery_pending = True
+                self._recover_protections()
+            return
+        client_id = str(order.get('clientAlgoId') or order.get('clientOrderId') or '')
+        if client_id and event_type in {'ORDER_TRADE_UPDATE', 'ALGO_UPDATE'}:
             request_id = self._client_requests.get(client_id)
             details = self.request_details.get(request_id) if request_id else None
             if details is not None and str(details.get('client_id', '')) == client_id:
-                status = str(
-                    order.get("X")
-                    or order.get("orderStatus")
-                    or order.get("status")
-                    or "NEW"
-                ).upper()
+                status = str(order.get('status') or 'NEW').upper()
                 self.pending.pop(request_id, None)
                 if not self.pending:
                     self.pending_timeout_timer.stop()
                 self.admitted_requests.discard(request_id)
-                cumulative_fill = safe_float(order.get("z") or order.get("aq") or order.get("executedQty") or order.get("cumQty"))
+                cumulative_fill = safe_float(order.get('executedQty'))
                 if status in {"REJECTED", "EXPIRED"} and cumulative_fill <= 0:
+                    self._observe_protection_order(client_id, order)
                     reason = str(order.get("rm") or order.get("rejectReason") or "")
                     self._remember_failure(
                         request_id,
@@ -2464,36 +2806,7 @@ class TradingGateway(QtCore.QObject):
                         details,
                     )
                 else:
-                    normalized = {
-                        "symbol": order.get("s") or order.get("symbol"),
-                        "side": order.get("S") or order.get("side"),
-                        "type": order.get("o") or order.get("type") or order.get("orderType"),
-                        "clientOrderId": client_id if event_type == "ORDER_TRADE_UPDATE" else "",
-                        "clientAlgoId": client_id if event_type != "ORDER_TRADE_UPDATE" else "",
-                        "orderId": order.get("i") or order.get("orderId"),
-                        "algoId": order.get("aid") or order.get("algoId"),
-                        "status": status,
-                        "executedQty": (
-                            order.get("z")
-                            or order.get("aq")
-                            or order.get("executedQty")
-                            or order.get("cumQty")
-                        ),
-                        "avgPrice": order.get("ap") or order.get("avgPrice"),
-                        "_transport": "ACCOUNT STREAM",
-                    }
-                    for name, aliases in {
-                        "origQty": ("q", "origQty", "quantity"), "price": ("p", "price"),
-                        "stopPrice": ("sp", "triggerPrice", "stopPrice"), "positionSide": ("ps", "positionSide"),
-                        "reduceOnly": ("R", "reduceOnly"), "closePosition": ("cp", "closePosition"),
-                        "workingType": ("wt", "workingType"), "timeInForce": ("f", "timeInForce"),
-                        "activatePrice": ("AP", "activatePrice", "activationPrice"),
-                        "callbackRate": ("cr", "callbackRate", "priceRate"),
-                    }.items():
-                        source = next((key for key in aliases if key in order), None)
-                        if source is not None:
-                            normalized[name] = order[source]
-                    self._finish_request(request_id, normalized)
+                    self._finish_request(request_id, {**order, '_transport': 'ACCOUNT STREAM'})
         if event_type == "ACCOUNT_CONFIG_UPDATE":
             self.rest.invalidate_position_mode_cache()
             configuration = payload.get("ac") or {}
@@ -2533,6 +2846,11 @@ class TradingGateway(QtCore.QObject):
             )
         self._cache_account_event(payload)
         self.account_event.emit(payload)
+        if event_type == 'ALGO_UPDATE' and order.get('status') == 'FINISHED' and self._protection_records:
+            self._recover_protections()
+        if event_type == 'CONDITIONAL_ORDER_TRIGGER_REJECT' and self._protection_records:
+            self._protection_recovery_pending = True
+            self._recover_protections()
         if event_type in {
             "ACCOUNT_UPDATE",
             "ORDER_TRADE_UPDATE",
@@ -2607,12 +2925,7 @@ class TradingGateway(QtCore.QObject):
                 self._refresh_events_overflow = True
         if payload.get('e') in {'ORDER_TRADE_UPDATE', 'ALGO_UPDATE'}:
             order = payload.get('o') or payload.get('a') or {}
-            client_id = str(order.get('caid') or order.get('clientAlgoId') or order.get('c') or '')
-            record = self._protection_records.get(client_id)
-            if record is not None:
-                record['last_status'] = str(order.get('X') or order.get('algoStatus') or order.get('status') or '').upper()
-                record['_status_received_mono'] = time.monotonic()
-                self._persist_protection_record(record)
+            self._observe_protection_order(self.protection_client_id(order), order)
         if payload.get("e") != "ACCOUNT_UPDATE":
             return
 
@@ -2697,6 +3010,8 @@ class TradingGateway(QtCore.QObject):
         self._lifecycle += 1
         self._client_requests.clear()
         self.trade_connected = False
+        for task in tuple(self.tasks):
+            task.cancel()
 
 
         for request_id, details in list(self.request_details.items()):
@@ -2724,6 +3039,7 @@ class TradingGateway(QtCore.QObject):
         self.keepalive_timer.stop()
         self.pending_timeout_timer.stop()
         self.account_event_refresh_timer.stop()
+        self.protection_poll_timer.stop()
         self.stream_generation += 1
         self.account_event_refresh_symbols.clear()
         self.queued_leverage.clear()

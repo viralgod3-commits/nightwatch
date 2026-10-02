@@ -444,10 +444,19 @@ def binance_error_code(error: Any) -> int | None:
 
 def execution_outcome_uncertain(error: Any) -> bool:
     """True when Binance may have accepted a write despite transport failure."""
-    if binance_error_code(error) in _UNCERTAIN_EXECUTION_CODES:
+    if str(error).casefold().startswith('not sent:'):
+        return False
+    code = binance_error_code(error)
+    if code in _UNCERTAIN_EXECUTION_CODES:
         return True
     message = str(error).casefold()
-    return bool(re.search('http\\s+5\\d\\d', message) or any((token in message for token in ('network error', 'request timed out', 'connection timed out', 'connection reset', 'connection aborted', 'remote end closed', 'connection closed', 'broken pipe', 'incomplete read', 'incompleteread', 'temporarily unavailable', 'unexpected response', 'execution status unknown', 'execution status is unknown', 'order link closed', 'socket closed'))))
+    # Binance explicitly guarantees these overload/service responses were not
+    # executed. Other 503 variants and backend timeouts have unknown outcomes.
+    if code == -1008 or (re.search(r'http\s+503\b', message) and any(
+        text in message for text in ('service unavailable', 'internal error; unable to process your request')
+    )):
+        return False
+    return bool(re.search(r'http\s+(?:408|5\d\d)\b', message) or any((token in message for token in ('network error', 'request timeout', 'request timed out', 'connection timed out', 'connection reset', 'connection aborted', 'remote end closed', 'connection closed', 'broken pipe', 'incomplete read', 'incompleteread', 'temporarily unavailable', 'unexpected response', 'execution status unknown', 'execution status is unknown', 'order link closed', 'socket closed'))))
 
 class LocalRateLimitError(RuntimeError):
     """Rejected locally before transmission; never an uncertain execution."""
@@ -1256,7 +1265,9 @@ class BinanceRest:
         started = time.monotonic()
         payload = await self._request_async('/fapi/v1/time', priority=priority)
         finished = time.monotonic()
-        server_time = int(payload.get('serverTime', time.time() * 1000))
+        if not isinstance(payload, dict) or type(payload.get('serverTime')) is not int or payload['serverTime'] <= 0:
+            raise RuntimeError('Unexpected response: Binance omitted a valid serverTime.')
+        server_time = payload['serverTime']
         estimate = server_time + round((finished - started) * 500)
         rtt_ms = max(0.0, (finished - started) * 1000.0)
         state = self._time_state
@@ -1349,6 +1360,11 @@ class BinanceRest:
         headers = {'X-MBX-APIKEY': api_key, 'Content-Type': 'application/x-www-form-urlencoded'}
 
         async def send() -> Any:
+            if not self.has_fresh_time_offset():
+                try:
+                    await self._sync_time_once_async(priority=priority)
+                except (RuntimeError, TimeoutError, OSError) as exc:
+                    raise RuntimeError(f'Not sent: Binance clock synchronization failed: {exc}') from exc
             values['timestamp'] = str(self.cached_timestamp_ms())
             query = urllib.parse.urlencode(values)
             signature = hmac.new(api_secret.encode('utf-8'), query.encode('utf-8'), hashlib.sha256).hexdigest()
@@ -1362,7 +1378,6 @@ class BinanceRest:
             if '-1021' not in message and 'timestamp for this request' not in message:
                 raise
             self.invalidate_time_sync()
-            await self._sync_time_once_async(priority=priority)
             return await send()
 
     def exchange_info(self) -> dict[str, Any]:
@@ -1812,13 +1827,15 @@ class BinanceRest:
                     results.extend(({'code': -1, 'msg': 'Not sent after an earlier conditional-order failure.', '_notSent': True} for _order in orders[index + 1:]))
                     break
             return results
-        return self.signed_request(api_key, api_secret, '/fapi/v1/batchOrders', {'batchOrders': orders}, 'POST', order_count=5)
+        encoded_orders = [self._encoded_params(order) for order in orders]
+        return self.signed_request(api_key, api_secret, '/fapi/v1/batchOrders', {'batchOrders': encoded_orders}, 'POST', order_count=5)
 
     def modify_order(self, api_key: str, api_secret: str, changes: dict[str, Any]) -> dict[str, Any]:
         return self.signed_request(api_key, api_secret, '/fapi/v1/order', changes, 'PUT', order_count=1)
 
     def cancel_order(self, api_key: str, api_secret: str, request: dict[str, Any], algo: bool=False) -> dict[str, Any]:
-        return self.signed_request(api_key, api_secret, '/fapi/v1/algoOrder' if algo else '/fapi/v1/order', request, 'DELETE')
+        params = {key: value for key, value in request.items() if key in {'algoId', 'clientAlgoId'}} if algo else dict(request)
+        return self.signed_request(api_key, api_secret, '/fapi/v1/algoOrder' if algo else '/fapi/v1/order', params, 'DELETE')
 
     def cancel_all_orders(self, api_key: str, api_secret: str, symbol: str) -> dict[str, Any]:
         try:
@@ -1833,7 +1850,26 @@ class BinanceRest:
 
     def query_order_by_client_id(self, api_key: str, api_secret: str, symbol: str, client_id: str, algo: bool=False) -> dict[str, Any]:
         parameter = 'clientAlgoId' if algo else 'origClientOrderId'
-        return self.signed_request(api_key, api_secret, '/fapi/v1/algoOrder' if algo else '/fapi/v1/order', {'symbol': symbol, parameter: client_id}, 'GET')
+        params = {parameter: client_id}
+        if not algo:
+            params['symbol'] = symbol
+        return self.query_order_request(api_key, api_secret, params, algo=algo)
+
+    def query_order(self, api_key: str, api_secret: str, symbol: str, order_id: Any) -> dict[str, Any]:
+        return self.query_order_request(api_key, api_secret, {'symbol': symbol, 'orderId': order_id})
+
+    def query_order_request(self, api_key: str, api_secret: str, request: dict[str, Any], algo: bool=False) -> dict[str, Any]:
+        keys = {'algoId', 'clientAlgoId'} if algo else {'symbol', 'orderId', 'origClientOrderId'}
+        params = {key: value for key, value in request.items() if key in keys}
+        result = self.signed_request(api_key, api_secret, '/fapi/v1/algoOrder' if algo else '/fapi/v1/order', params, 'GET')
+        id_key, client_key = ('algoId', 'clientAlgoId') if algo else ('orderId', 'clientOrderId')
+        wanted_client = params.get('clientAlgoId' if algo else 'origClientOrderId')
+        if (not isinstance(result, dict) or safe_float(result.get(id_key)) <= 0
+                or (params.get(id_key) is not None and str(result.get(id_key)) != str(params[id_key]))
+                or (wanted_client and result.get(client_key) != wanted_client)
+                or (params.get('symbol') and result.get('symbol') != params['symbol'])):
+            raise RuntimeError('Unexpected response: queried Binance order identity could not be verified.')
+        return result
 
     def position_mode(self, api_key: str, api_secret: str, force: bool=False) -> dict[str, Any]:
         return run_async(self._position_mode_async(api_key, api_secret, force))
@@ -1935,7 +1971,7 @@ class BinanceRest:
         if not isinstance(fills, list):
             raise RuntimeError('Unexpected response: Binance trade-history payload is not a list.')
         if isinstance(algo_orders, dict):
-            algo_orders = algo_orders.get('orders') or algo_orders.get('rows') or algo_orders.get('data') or []
+            algo_orders = next((algo_orders[key] for key in ('orders', 'rows', 'data') if isinstance(algo_orders.get(key), list)), None)
         if not isinstance(algo_orders, list):
             raise RuntimeError('Unexpected response: Binance open-Algo payload is not a list.')
         return {'account': account, 'accountConfig': account_config, 'symbolConfig': symbol_config, 'positionRisk': position_risk, 'orders': open_orders, 'algoOrders': algo_orders, 'ordersScope': 'ALL' if all_open_orders or not symbol else symbol, 'fills': fills, 'fillsSymbol': symbol or '', 'positionMode': position_mode}

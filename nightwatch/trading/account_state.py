@@ -7,6 +7,7 @@ This module is deliberately independent of Qt and transport timing.
 from __future__ import annotations
 
 from copy import deepcopy
+from decimal import Decimal, InvalidOperation
 from typing import Any
 
 
@@ -16,6 +17,53 @@ def exchange_bool(value: Any) -> bool | None:
     if str(value).lower() in {"true", "false"}:
         return str(value).lower() == "true"
     return None
+
+
+def normalize_order(source: dict) -> dict:
+    """Use the same fill and identity fields for REST and user-stream orders."""
+    if not isinstance(source, dict):
+        return {}
+    row = dict(source)
+    for target, aliases in {
+        'symbol': ('s', 'symbol'), 'side': ('S', 'side'),
+        'type': ('o', 'type', 'orderType'), 'positionSide': ('ps', 'positionSide'),
+        'clientOrderId': ('c', 'clientOrderId'), 'clientAlgoId': ('caid', 'clientAlgoId'),
+        'orderId': ('i', 'orderId'), 'algoId': ('aid', 'algoId'),
+        'status': ('X', 'status', 'algoStatus', 'orderStatus'),
+        'origQty': ('q', 'origQty', 'quantity'),
+        'executedQty': ('z', 'aq', 'executedQty', 'actualQty', 'cumQty'),
+        'avgPrice': ('ap', 'avgPrice', 'actualPrice', 'averagePrice'),
+        'price': ('p', 'price'), 'stopPrice': ('tp', 'sp', 'triggerPrice', 'stopPrice'),
+        'actualOrderId': ('ai', 'actualOrderId'), 'actualType': ('act', 'actualType'),
+        'reduceOnly': ('R', 'reduceOnly'), 'closePosition': ('cp', 'closePosition'),
+        'priceProtect': ('pP', 'priceProtect'), 'timeInForce': ('f', 'timeInForce'),
+        'workingType': ('wt', 'workingType'), 'priceMatch': ('pm', 'priceMatch'),
+        'selfTradePreventionMode': ('V', 'selfTradePreventionMode'),
+        'goodTillDate': ('gtd', 'goodTillDate'),
+        'activatePrice': ('AP', 'activatePrice', 'activationPrice'),
+        'callbackRate': ('cr', 'callbackRate', 'priceRate'),
+    }.items():
+        # Keep verified child-query values when a normalized row still carries
+        # its parent's original stream fields (X/aq/ap).
+        key = next((alias for alias in (target, *aliases) if source.get(alias) not in (None, '')), None)
+        if key is not None:
+            row[target] = source[key]
+    if row.get('status'):
+        row['status'] = str(row['status']).upper()
+    return row
+
+
+def valid_order_fills(row: dict) -> bool:
+    for field in ('origQty', 'executedQty', 'avgPrice'):
+        if row.get(field) in (None, ''):
+            continue
+        try:
+            value = Decimal(str(row[field]))
+            if not value.is_finite() or value < 0:
+                return False
+        except (InvalidOperation, ValueError):
+            return False
+    return True
 
 
 def position_key(row: dict) -> tuple[str, str]:
@@ -117,17 +165,7 @@ def replay_account_events(snapshot: dict, events) -> dict:
                 row[client_field] = client
             if identifier is not None:
                 row[id_field] = identifier
-            for target, aliases in {
-                "side": ("S", "side"), "type": ("o", "type", "orderType"),
-                "positionSide": ("ps", "positionSide"), "price": ("p", "price"),
-                "origQty": ("q", "origQty", "quantity"), "executedQty": ("z", "aq", "executedQty"),
-                "avgPrice": ("ap", "avgPrice"), "stopPrice": ("sp", "triggerPrice", "stopPrice"),
-                "reduceOnly": ("R", "reduceOnly"), "closePosition": ("cp", "closePosition"),
-                "timeInForce": ("f", "timeInForce"), "workingType": ("wt", "workingType"),
-            }.items():
-                key = next((alias for alias in aliases if alias in source), None)
-                if key is not None:
-                    row[target] = source[key]
+            row.update(normalize_order(source))
             if status in {"NEW", "PARTIALLY_FILLED", "PENDING_NEW"}:
                 rows.append(row)
     return result

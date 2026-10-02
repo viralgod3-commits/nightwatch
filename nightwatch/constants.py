@@ -25,13 +25,13 @@ DEFAULT_INTERVAL = "15m"
 MAIN_REST = "https://fapi.binance.com"
 
 
-TEST_REST = "https://testnet.binancefuture.com"
+TEST_REST = "https://demo-fapi.binance.com"
 
 
 MAIN_WS = "wss://fstream.binance.com"
 
 
-TEST_WS = "wss://fstream.binancefuture.com"
+TEST_WS = "wss://demo-fstream.binance.com"
 
 
 MAIN_TRADE_WS = "wss://ws-fapi.binance.com/ws-fapi/v1"
@@ -43,7 +43,7 @@ TEST_TRADE_WS = "wss://testnet.binancefuture.com/ws-fapi/v1"
 MAIN_PRIVATE_WS = "wss://fstream.binance.com/private/ws/"
 
 
-TEST_PRIVATE_WS = "wss://fstream.binancefuture.com/private/ws/"
+TEST_PRIVATE_WS = "wss://demo-fstream.binance.com/private/ws/"
 
 
 STANDARD_ORDER_TYPES = (
