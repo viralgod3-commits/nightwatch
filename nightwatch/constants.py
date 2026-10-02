@@ -306,7 +306,7 @@ RIGHT_PANEL_MIN_HEIGHTS = {
 
 # Adjacent chart/panel windows use the same minimal black splitter gap.
 # The larger transparent grab surface overlaps this gap so resizing stays easy.
-RIGHT_PANEL_SPLITTER_VISUAL_WIDTH = 2
+RIGHT_PANEL_SPLITTER_VISUAL_WIDTH = 4
 RIGHT_PANEL_SPLITTER_HIT_WIDTH = 16
 
 

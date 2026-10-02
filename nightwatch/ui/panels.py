@@ -1290,7 +1290,10 @@ if QtWidgets is not None:
             self.rail = QtWidgets.QFrame()
             self.rail.setObjectName("rightRailHost")
             layout = QtWidgets.QVBoxLayout(self.rail)
-            layout.setContentsMargins(0, 0, 0, 0); layout.setSpacing(0)
+            # The chart splitter already supplies the left gap. Keep the other
+            # edges clear of window/toolbar borders with the same black gutter.
+            gap = RIGHT_PANEL_SPLITTER_VISUAL_WIDTH
+            layout.setContentsMargins(0, gap, gap, gap); layout.setSpacing(0)
             self._scroll = QtWidgets.QScrollArea(self.rail)
             self._scroll.setObjectName("rightRailScroll")
             self._scroll.viewport().setObjectName("rightRailViewport")
@@ -1706,7 +1709,8 @@ if QtWidgets is not None:
             if not self.visible_names():
                 return 0
             tree = self._resolved_tree(self.model.state.root)
-            return max(RIGHT_PANEL_SINGLE_MIN_WIDTH, int(self._tree_minimum(tree).width()))
+            margins = self.rail.layout().contentsMargins()
+            return max(RIGHT_PANEL_SINGLE_MIN_WIDTH, int(self._tree_minimum(tree).width())) + margins.left() + margins.right()
 
         def _effective_rail_minimum_width(self) -> int:
             required = self._required_rail_width()
