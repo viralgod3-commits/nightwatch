@@ -1142,6 +1142,11 @@ class InstrumentBar(QtWidgets.QFrame):
         cards = getattr(stats, "cards", {})
         cards = cards if isinstance(cards, dict) else {}
         self.identity_control = cards.get("last")
+        identity_layout = self.identity_control.layout() if self.identity_control is not None else None
+        identity_margins = identity_layout.contentsMargins() if identity_layout is not None else None
+        self._identity_horizontal_margins = (
+            (identity_margins.left(), identity_margins.right()) if identity_margins is not None else (0, 0)
+        )
         self.metric_controls = [cards[name] for name in ("volume", "oi", "long_short", "funding")
                                 if name in cards]
         stats_layout = stats.layout()
@@ -1164,9 +1169,11 @@ class InstrumentBar(QtWidgets.QFrame):
         self.row.addWidget(self.context_slot, 0)
         self.market_group = QtWidgets.QFrame(self)
         self.market_group.setObjectName("instrumentMarketGroup")
+        self.market_group.setFixedHeight(self.context_slot.height())
         self.market_row = QtWidgets.QHBoxLayout(self.market_group)
         self.market_row.setContentsMargins(0, 0, 0, 0)
         self.market_row.setSpacing(0)
+        self.market_row.setAlignment(QtCore.Qt.AlignmentFlag.AlignVCenter)
         self.market_row.setSizeConstraint(QtWidgets.QLayout.SizeConstraint.SetNoConstraint)
         self.row.setSpacing(12)
         self.row.addWidget(self.market_group, 1)
@@ -1230,6 +1237,12 @@ class InstrumentBar(QtWidgets.QFrame):
             left, right = self._normal_horizontal_margins
             available_width = self.contentsRect().width()
             identity_width = self._stable_widget_width(self.identity_control)
+            identity_margins = self._identity_horizontal_margins
+            measure_identity = getattr(self.identity_control, "identity_width", None)
+            set_identity_margins = getattr(self.identity_control, "set_identity_horizontal_margins", None)
+            can_shrink_identity = callable(measure_identity) and callable(set_identity_margins)
+            if can_shrink_identity:
+                identity_width = measure_identity(horizontal_margins=identity_margins)
             metric_widths = [width + 1 for width in self._metric_minimum_widths]
             normal_width = self._timeframe_width(collapsed=False)
             tight_width = self._timeframe_width(collapsed=False, tight=True)
@@ -1237,7 +1250,19 @@ class InstrumentBar(QtWidgets.QFrame):
             compact = available_width < left + right + normal_width + 8 + identity_width + sum(metric_widths) + 12
             timeframe_width = tight_width if compact else normal_width
             required = left + right + timeframe_width + 8 + identity_width + sum(metric_widths) + 12
-            # Collapse favorites before sacrificing ticker or market data.
+            # Use up to half of the ticker padding before collapsing favorites.
+            if can_shrink_identity and available_width < required:
+                max_left, max_right = (margin // 2 for margin in identity_margins)
+                budget = max_left + max_right
+                reduction = min(required - available_width, budget)
+                left_reduction = round(reduction * max_left / budget) if budget else 0
+                identity_margins = (
+                    identity_margins[0] - left_reduction,
+                    identity_margins[1] - (reduction - left_reduction),
+                )
+                compressed_width = measure_identity(horizontal_margins=identity_margins)
+                required -= identity_width - compressed_width
+                identity_width = compressed_width
             collapsed = available_width < required and timeframe_width > collapsed_width
             if collapsed:
                 required -= timeframe_width - collapsed_width
@@ -1250,11 +1275,13 @@ class InstrumentBar(QtWidgets.QFrame):
             if available_width < required and identity_visible:
                 identity_visible = False
                 required -= identity_width
-            state = (compact, count, identity_visible, collapsed, timeframe_width)
+            state = (compact, count, identity_visible, collapsed, timeframe_width, identity_margins)
             if state == self._responsive_state:
                 return
             self._responsive_state = state
             self.row.setContentsMargins(left, 0, right, 0)
+            if can_shrink_identity:
+                set_identity_margins(*identity_margins)
             set_tight = getattr(self.timeframes, "setTightSpacing", None)
             if callable(set_tight):
                 set_tight(compact)

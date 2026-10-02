@@ -300,7 +300,7 @@ class _WatchlistMoveHistory:
         return self.rows[index] if index < len(self.rows) else self.rows[0]
 
 
-COMPACT_METRIC_HEIGHT = 48
+COMPACT_METRIC_HEIGHT = 36
 COMPACT_METRIC_GAP = 1
 
 
@@ -1584,7 +1584,9 @@ class MetricCard(QtWidgets.QFrame):
         layout = (QtWidgets.QHBoxLayout if self.identity else QtWidgets.QVBoxLayout)(self)
         # The instrument row supplies the other 12 px of the 96 px left gap.
         layout.setContentsMargins(84 if self.identity else 12 if compact else 5,
-                                  5, 96 if self.identity else 12 if compact else 5, 5)
+                                  2 if compact else 5,
+                                  96 if self.identity else 12 if compact else 5,
+                                  2 if compact else 5)
         layout.setSpacing(32 if self.identity else 1 if compact else 2)
 
         self.title = (
@@ -1659,17 +1661,32 @@ class MetricCard(QtWidgets.QFrame):
         if self.identity:
             QtCore.QTimer.singleShot(0, self._sync_identity_width)
 
+    def identity_width(self, *, horizontal_margins: tuple[int, int] | None = None) -> int:
+        """Measure ticker content with the requested padding, independent of its current width."""
+        margins = self.layout().contentsMargins()
+        left, right = horizontal_margins if horizontal_margins is not None else (margins.left(), margins.right())
+        return max(COMPACT_IDENTITY_WIDTH,
+                   max(self.title.sizeHint().width(), self.title.fontMetrics().horizontalAdvance(self.title.text()))
+                   + max(self.value.sizeHint().width(), self.value.fontMetrics().horizontalAdvance(self.value.text()))
+                   + self.layout().spacing() + left + right)
+
+    def set_identity_horizontal_margins(self, left: int, right: int) -> None:
+        if not self.identity:
+            return
+        layout = self.layout()
+        margins = layout.contentsMargins()
+        if (margins.left(), margins.right()) == (left, right):
+            return
+        layout.setContentsMargins(left, margins.top(), right, margins.bottom())
+        self._sync_identity_width()
+
     def _sync_identity_width(self) -> None:
         if not self.identity:
             return
 
 
         if self.compact:
-            margins = self.layout().contentsMargins()
-            width = max(COMPACT_IDENTITY_WIDTH,
-                        max(self.title.sizeHint().width(), self.title.fontMetrics().horizontalAdvance(self.title.text()))
-                        + max(self.value.sizeHint().width(), self.value.fontMetrics().horizontalAdvance(self.value.text()))
-                        + self.layout().spacing() + margins.left() + margins.right())
+            width = self.identity_width()
             if self.property("instrumentFlexOwned"):
                 if self.width() != width or self.minimumWidth() != width:
                     self.setFixedWidth(width)
@@ -1822,11 +1839,11 @@ class MarketStatsWidget(QtWidgets.QWidget):
             card.metric_owner = self
         if compact:
             compact_titles = {
-                "volume": "24h volume",
+                "volume": "24H VOLUME",
                 "taker": "Taker volume",
-                "oi": "Open interest",
-                "long_short": "Long/short",
-                "funding": "Funding rate",
+                "oi": "OPEN INTEREST",
+                "long_short": "LONG/SHORT",
+                "funding": "FUNDING RATE",
             }
             for name, title in compact_titles.items():
                 self.cards[name].title.setText(title)
@@ -2028,7 +2045,7 @@ class MarketStatsWidget(QtWidgets.QWidget):
                 details.append(("Status", "Last available sample"))
         self.long_short_series = cache
         card = self.cards["long_short"]
-        card.title.setText("Long/short" if self.compact else "LONG/SHORT RATIO")
+        card.title.setText("LONG/SHORT" if self.compact else "LONG/SHORT RATIO")
 
 
         samples = cache.get("All accounts", [])
