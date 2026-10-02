@@ -3096,7 +3096,8 @@ class MainWindow(QtWidgets.QMainWindow):
             ("Ctrl+P", "Cycle quick right-panel layout"),
             ("Ctrl+PageDown", "Next saved right-panel preset"),
             ("Ctrl+PageUp", "Previous saved right-panel preset"),
-            ("Left / Right", "Select previous / next watchlist symbol"),
+            ("Up / Down", "Select previous / next watchlist symbol"),
+            ("Left / Right", "Select previous / next displayed timeframe"),
             ("Delete", "Delete a selected chart drawing"),
             ("Shift+Delete", "Clear drawings on the primary chart"),
             ("Ctrl+O", "Expand or collapse the account/orders drawer"),
@@ -5269,14 +5270,31 @@ class MainWindow(QtWidgets.QMainWindow):
                 not text_input
                 and self.symbol_search_dialog is None
                 and shortcut_modifiers == Qt.KeyboardModifier.NoModifier
-                and key in {int(Qt.Key.Key_Left), int(Qt.Key.Key_Right)}
+                and key in {int(Qt.Key.Key_Up), int(Qt.Key.Key_Down)}
             ):
-                # Global market cycling intentionally uses horizontal arrows so
-                # vertical arrows remain available to focused tables/lists.
-                # Right follows the same direction as the former Down shortcut.
                 self._cycle_watchlist_symbol(
-                    -1 if key == int(Qt.Key.Key_Left) else 1
+                    -1 if key == int(Qt.Key.Key_Up) else 1
                 )
+                return True
+            if (
+                not text_input
+                and self.symbol_search_dialog is None
+                and self.workspace_stack.currentIndex() == 0
+                and shortcut_modifiers == Qt.KeyboardModifier.NoModifier
+                and key in {int(Qt.Key.Key_Left), int(Qt.Key.Key_Right)}
+                and self.market_bar_timeframes
+            ):
+                step = -1 if key == int(Qt.Key.Key_Left) else 1
+                timeframes = self.market_bar_timeframes
+                index = (
+                    timeframes.index(self.current_interval)
+                    if self.current_interval in timeframes
+                    else (-1 if step > 0 else 0)
+                )
+                timeframe = timeframes[(index + step) % len(timeframes)]
+                self.switch_interval(timeframe)
+                timeframe_label = timeframe.upper() if timeframe in {"1d", "1w"} else timeframe
+                self.statusBar().showMessage(f"TIMEFRAME · {timeframe_label}", 1800)
                 return True
             if (
                 key == int(Qt.Key.Key_Delete)
