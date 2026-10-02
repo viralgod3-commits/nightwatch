@@ -863,6 +863,7 @@ class LeadershipTimelineWidget(QtWidgets.QWidget):
                 self.errors[symbol] = error
                 self.retry_after[symbol] = time.monotonic() + 120
             self._needs_clock = True
+            self.data_changed.emit()
         self.render()
         if self._load_pending and not self._interaction_paused:
             self.load_timer.start(1500 if self.active else 5000)
@@ -4654,33 +4655,39 @@ def _prepare_rotation(state):
         series = histories.get(symbol, {})
         item = _metrics(series, btc, end)
         x = _relative(series, btc, end, hours)
-        current, prior = _relative(series, btc, end), _relative(series, btc, end - HOUR)
-        y = current - prior if current is not None and prior is not None else None
+        prior = _relative(series, btc, end - HOUR, hours)
+        y = x - prior if x is not None and prior is not None else None
         share, delta = _spot_share(state["spot_series"].get(symbol, {}), series, end)
         item.update(x=x, y=y, spot_share=share, spot_delta=delta,
                     spot_confirmed=delta is not None and delta > 0)
         rows = _window(series, end, hours)
         item["turnover"] = sum(row.quote_volume for row in rows) if rows else None
+        item["usd_window"] = (rows[-1].close / rows[0].open - 1) * 100 if rows else None
         item["quadrant"] = _rotation_quadrant(x, y) if _rotation_finite(x) and _rotation_finite(y) else "Waiting"
         metrics[symbol] = item
         if _rotation_finite(x) and _rotation_finite(y):
             trail = []
             for at in range(end - 3 * HOUR, end + 1, HOUR):
                 tx = _relative(series, btc, at, hours)
-                r1, r0 = _relative(series, btc, at), _relative(series, btc, at - HOUR)
-                ty = r1 - r0 if r1 is not None and r0 is not None else None
+                r0 = _relative(series, btc, at - HOUR, hours)
+                ty = tx - r0 if tx is not None and r0 is not None else None
                 trail.append((tx, ty) if _rotation_finite(tx) and _rotation_finite(ty) else None)
             points.append(dict(symbol=symbol, x=x, y=y, trail=trail,
                                volume=item["turnover"] or 0, quadrant=item["quadrant"]))
         # Hourly samples with explicit gaps, suitable for an inspector without more requests.
-        at_values = range(end - max(hours, 4) * HOUR, end + 1, HOUR)
-        base = next((at for at in at_values if at in series and at in btc), None)
-        ratio = series[base].close / btc[base].close if base is not None and btc[base].close > 0 else None
-        relative = []
+        start = end - (hours - 1) * HOUR
+        at_values = range(start, end + 1, HOUR)
+        first, benchmark = series.get(start), btc.get(start)
+        ratio = (first.open / benchmark.open if first and benchmark
+                 and _rotation_finite(first.open) and first.open > 0
+                 and _rotation_finite(benchmark.open) and benchmark.open > 0 else None)
+        relative = [0.0 if ratio else None]
         for at in at_values:
             coin, benchmark = series.get(at), btc.get(at)
             relative.append((coin.close / benchmark.close / ratio - 1) * 100
-                            if ratio and coin and benchmark and benchmark.close > 0 else None)
+                            if ratio and coin and benchmark
+                            and _rotation_finite(coin.close) and coin.close > 0
+                            and _rotation_finite(benchmark.close) and benchmark.close > 0 else None)
         volumes = [series[at].quote_volume if at in series else None
                    for at in range(end - 23 * HOUR, end + 1, HOUR)]
         charts[symbol] = dict(relative=relative, volume=volumes)
@@ -4731,7 +4738,7 @@ class RotationBubbleChart(QtWidgets.QWidget):
     """Symmetric linear axes keep zero at the center and all four planes intact."""
     chosen = Signal(str)
     opened = Signal(str)
-    MAX_BUBBLES = 4
+    MAX_PER_QUADRANT = 3
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -4743,7 +4750,7 @@ class RotationBubbleChart(QtWidgets.QWidget):
         self._labels = []
         self._plot = QtCore.QRectF()
         self.x_extent, self.y_extent = 6.0, 3.0
-        self.setMinimumSize(400, 300)
+        self.setMinimumSize(600, 300)
         self.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Expanding)
         self.setMouseTracking(True)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
@@ -4774,28 +4781,21 @@ class RotationBubbleChart(QtWidgets.QWidget):
                     -volume if _rotation_finite(volume) and volume > 0 else 0,
                     point["symbol"])
 
-        ranked = sorted(candidates, key=rank)
-        leaders = {}
-        for point in ranked:
-            leaders.setdefault(_rotation_quadrant(point["x"], point["y"]), point)
-        # One major mover per populated quadrant, then the strongest remaining
-        # moves. A table selection never adds an ordinary coin to the plot.
-        shortlist = list(leaders.values())
-        symbols = {p["symbol"] for p in shortlist}
-        for point in ranked:
-            if len(shortlist) >= cls.MAX_BUBBLES:
-                break
-            if point["symbol"] not in symbols:
+        counts, shortlist, symbols = Counter(), [], set()
+        for point in sorted(candidates, key=rank):
+            quadrant = _rotation_quadrant(point["x"], point["y"])
+            if counts[quadrant] < cls.MAX_PER_QUADRANT and point["symbol"] not in symbols:
                 shortlist.append(point)
                 symbols.add(point["symbol"])
-        return sorted(shortlist, key=rank)
+                counts[quadrant] += 1
+        return shortlist
 
     def set_points(self, points, selected="", hours=4):
         self.points = self._major_points(points)
         self.selected, self.hours = selected, hours
         coordinates = [(p["x"], p["y"]) for p in self.points]
         # Historical outliers cannot stretch the axes and hide current leaders.
-        # Latest positions keep their exact values; trail spacing is normalized.
+        # Display spacing may move whole trails; observed values stay unchanged.
         def extent(values, minimum, step):
             maximum = max((abs(v) for v in values), default=0)
             return max(minimum, math.ceil(maximum * 1.22 / step) * step)
@@ -4836,7 +4836,7 @@ class RotationBubbleChart(QtWidgets.QWidget):
         return font
 
     def _trail_geometry(self, point, radius):
-        """Readable chronological trail; hover retains observed percentages."""
+        """Normalize spacing while preserving the observed movement heading."""
         history = list(point.get("trail", [])[:-1])[-3:]
         samples = [None] * (3 - len(history)) + history
         samples.append((point["x"], point["y"]))
@@ -4881,50 +4881,70 @@ class RotationBubbleChart(QtWidgets.QWidget):
             plot.height() / 2,
         ).adjusted(18, 34 if top else 14, -18, -14 if top else -34)
 
-        rotations = [0.0]
-        for k in (1, 2, 3, 4, 5, 6, 9, 12):
-            rotations.extend((k * math.pi / 12, -k * math.pi / 12))
-
-        best = None
+        unit = QtCore.QPointF(math.cos(heading), math.sin(heading))
+        offsets = [unit * distance for distance in distances]
         valid = [i for i, value in enumerate(raw) if value is not None]
-        for turn in rotations:
-            angle = heading + turn
-            unit = QtCore.QPointF(math.cos(angle), math.sin(angle))
-            offsets = [unit * distance for distance in distances]
-            low_x = area.left() - min(
-                offsets[i].x() - radii[i] for i in valid
-            )
-            high_x = area.right() - max(
-                offsets[i].x() + radii[i] for i in valid
-            )
-            low_y = area.top() - min(
-                offsets[i].y() - radii[i] for i in valid
-            )
-            high_y = area.bottom() - max(
-                offsets[i].y() + radii[i] for i in valid
-            )
-            if low_x > high_x or low_y > high_y:
-                continue
-            head = QtCore.QPointF(
-                min(high_x, max(low_x, raw[-1].x())),
-                min(high_y, max(low_y, raw[-1].y())),
-            )
-            delta = head - raw[-1]
-            cost = delta.x() ** 2 + delta.y() ** 2 + (turn * 16) ** 2
-            positions = [
-                head + offsets[i] if raw[i] is not None else None
-                for i in range(4)
-            ]
-            if best is None or cost < best[0]:
-                best = cost, positions
-
-        if best is None:
-            raise RuntimeError("Rotation plot is too small for its bubbles")
-
+        left = min(offsets[i].x() - radii[i] for i in valid)
+        right = max(offsets[i].x() + radii[i] for i in valid)
+        top = min(offsets[i].y() - radii[i] for i in valid)
+        bottom = max(offsets[i].y() + radii[i] for i in valid)
+        # A boundary may translate the trail, but must never rotate it.
+        low_x, high_x = area.left() - left, area.right() - right
+        low_y, high_y = area.top() - top, area.bottom() - bottom
+        if low_x > high_x:
+            low_x, high_x = plot.left() + 18 - left, plot.right() - 18 - right
+        if low_y > high_y:
+            low_y, high_y = plot.top() + 34 - top, plot.bottom() - 34 - bottom
+        head = QtCore.QPointF(min(high_x, max(low_x, raw[-1].x())),
+                             min(high_y, max(low_y, raw[-1].y())))
         return dict(
-            point=point, samples=samples, positions=best[1],
+            point=point, samples=samples,
+            positions=[head + offsets[i] if raw[i] is not None else None for i in range(4)],
             radii=radii, normalized=True, visible_gap=visible_gap,
         )
+
+    def _separate_trails(self, groups):
+        """Pack overlapping vertical bands sideways without changing any heading."""
+        bounds = []
+        for group in groups:
+            circles = [(at, radius) for at, radius in zip(group["positions"], group["radii"])
+                       if at is not None]
+            left = min(at.x() - radius for at, radius in circles)
+            right = max(at.x() + radius for at, radius in circles)
+            top = min(at.y() - radius for at, radius in circles)
+            bottom = max(at.y() + radius for at, radius in circles)
+            bounds.append((group, QtCore.QRectF(left, top, right - left, bottom - top)))
+        bands = []
+        for entry in sorted(bounds, key=lambda entry: (entry[1].top(), entry[0]["point"]["symbol"])):
+            if not bands or entry[1].top() >= max(box.bottom() for _, box in bands[-1]) + 6:
+                bands.append([])
+            bands[-1].append(entry)
+        plot = self.plot_rect().adjusted(18, 0, -18, 0)
+        for band in bands:
+            if len(band) < 2:
+                continue
+            band.sort(key=lambda entry: (entry[1].left(), entry[0]["point"]["symbol"]))
+            widths = [box.width() for _, box in band]
+            required = sum(widths) + 6 * (len(band) - 1)
+            low, high = plot.left(), plot.right()
+            sides = {group["point"]["x"] > 0 for group, _ in band}
+            if len(sides) == 1 and required <= plot.width() / 2 - 18:
+                if True in sides:
+                    low = plot.center().x() + 18
+                else:
+                    high = plot.center().x() - 18
+            lefts = []
+            for i, (_, box) in enumerate(band):
+                previous = lefts[-1] + widths[i - 1] + 6 if i else low
+                lefts.append(max(low, box.left(), previous))
+            # Backward pass keeps the complete band inside the plot.
+            for i in range(len(band) - 1, -1, -1):
+                limit = lefts[i + 1] - 6 if i + 1 < len(band) else high
+                lefts[i] = min(lefts[i], limit - widths[i])
+            for (group, box), left in zip(band, lefts):
+                offset = QtCore.QPointF(left - box.left(), 0)
+                group["positions"] = [at + offset if at is not None else None
+                                      for at in group["positions"]]
 
     @staticmethod
     def _label_clear(box, occupied, circles, segments):
@@ -4980,10 +5000,13 @@ class RotationBubbleChart(QtWidgets.QWidget):
         if not self.points:
             return
         max_volume = max((v["volume"] for v in self.points), default=1) or 1
-        # Large bubbles first; the selected bubble and its label always draw last.
-        ordered = sorted(self.points, key=lambda v: (v["symbol"] == self.selected, -v["volume"], v["symbol"]))
+        # Layout is independent of selection so clicking never moves a trail.
+        ordered = sorted(self.points, key=lambda v: (-v["volume"], v["symbol"]))
         self._geometry = [self._trail_geometry(point, max(10, 12 * math.sqrt(max(0, point["volume"]) / max_volume)))
                           for point in ordered]
+        self._separate_trails(self._geometry)
+        self._geometry.sort(key=lambda group: (group["point"]["symbol"] == self.selected,
+                                                -group["point"]["volume"], group["point"]["symbol"]))
         circles, segments = [], []
         p.save()
         p.setClipRect(r.adjusted(1, 1, -1, -1))
@@ -5044,8 +5067,7 @@ class RotationBubbleChart(QtWidgets.QWidget):
             offsets = [(radius + 7, -height / 2 - 4), (-radius - width - 7, -height / 2 - 4),
                        (radius + 7, 7), (-radius - width - 7, 7),
                        (-width / 2, -radius - height - 7), (-width / 2, radius + 7)]
-            # A small bounded search keeps all four names visible in crowded or
-            # narrow plots, while leaving the bubble coordinates untouched.
+            # Search clear space around each trail without moving its beads.
             def label_offsets():
                 yield from offsets
                 alternatives = [(dx, dy) for dx in range(-160, 161, 16) for dy in range(-96, 97, 16)]
@@ -5213,6 +5235,11 @@ class RotationScannerWidget(LeadershipTimelineWidget):
     def __init__(self, _ignored_theme=None, parent=None):
         self.leadership = None
         self._rotation_revision = None
+        self._rotation_view_dirty = False
+        self._rotation_pending_key = None
+        self._rotation_snapshot_end = None
+        self._rotation_universe = ()
+        self._rotation_turnover = {}
         self._filtered_points = []
         self._sort_column = 2
         self._sort_order = Qt.SortOrder.DescendingOrder
@@ -5245,6 +5272,7 @@ class RotationScannerWidget(LeadershipTimelineWidget):
         summary.addStretch(1)
         self.refresh_button = _rotation_button("↻  Refresh")
         self.refresh_button.clicked.connect(lambda: self.refresh(force=True))
+        self.refresh_button.clicked.connect(self._view_changed)
         summary.addWidget(self.refresh_button)
         root.addWidget(strip)
 
@@ -5267,7 +5295,7 @@ class RotationScannerWidget(LeadershipTimelineWidget):
         filters.setSpacing(12)
         filters.addWidget(_rotation_label("UNIVERSE", TextRole.PANEL_TITLE))
         self.limit = _rotation_combo([("Liquid USDT perps", 0), ("Top 80 liquid pairs", 80), ("Top 40 liquid pairs", 40), ("Top 160 liquid pairs", 160)])
-        self.limit.setToolTip("Ranked by the current Binance 24H USDT turnover. BTC is the benchmark and is excluded.")
+        self.limit.setToolTip("Ranked by USDT turnover in the last 24 completed hourly candles. BTC is excluded.")
         filters.addWidget(self.limit)
         self.category_filter = _rotation_combo([("All sectors", "All sectors")])
         filters.addWidget(self.category_filter)
@@ -5275,7 +5303,7 @@ class RotationScannerWidget(LeadershipTimelineWidget):
         filters.addWidget(_rotation_label("Relative window", name="rotationMuted"))
         self.span = _rotation_combo([("1H", 1), ("4H", 4), ("12H", 12), ("24H", 24)])
         self.span.setCurrentIndex(1)
-        self.span.setToolTip("X-axis return window vs BTC. The Y-axis always shows the hour-on-hour change in 1H relative return.")
+        self.span.setToolTip("Return vs BTC over this window, using completed 1H candles. Momentum is the change in that same window's return since the previous hour.")
         filters.addWidget(self.span)
         filters.addSpacing(4)
         filters.addWidget(_rotation_label("Minimum volume", name="rotationMuted"))
@@ -5285,7 +5313,7 @@ class RotationScannerWidget(LeadershipTimelineWidget):
         self.spot_confirmation = QtWidgets.QCheckBox("Spot confirmation")
         self.spot_confirmation.setToolTip("Only include coins with rising spot share over two consecutive 4H windows. Unavailable spot history does not pass.")
         self.hide_thin = QtWidgets.QCheckBox("Hide verified thin books")
-        self.hide_thin.setToolTip("Hide coins with a verified live spread above 0.15% or combined ±0.5% depth below $25K.\nBooks are checked on selection. Unknown or stale books stay visible; no historical books are inferred.")
+        self.hide_thin.setToolTip("Hide coins with a verified live spread above 0.15% or combined ±0.5% depth below $25K when filters are applied. Unknown or stale books stay visible.")
         self.watched_only = QtWidgets.QCheckBox("Watchlist only")
         filters.addSpacing(4)
         filters.addWidget(self.spot_confirmation)
@@ -5327,7 +5355,7 @@ class RotationScannerWidget(LeadershipTimelineWidget):
         self.candidates_title = _rotation_label("Improving candidates", TextRole.PANEL_TITLE)
         table_head.addWidget(self.candidates_title)
         table_head.addStretch(1)
-        self.candidate_mode = _rotation_combo([("Improving momentum", "improving"), ("All plotted coins", "all")])
+        self.candidate_mode = _rotation_combo([("Improving momentum", "improving"), ("All candidates", "all")])
         self.candidate_mode.setMinimumHeight(28)
         self.candidate_mode.setMaximumWidth(180)
         table_head.addWidget(self.candidate_mode)
@@ -5475,13 +5503,39 @@ class RotationScannerWidget(LeadershipTimelineWidget):
 
     def render(self):
         self._render_dirty = True
-        if (not self.active or self.closing or self._interaction_paused or self._cache_loading or self._rendering):
+        if (not self.active or not self._view_visible or self.closing or self._interaction_paused
+                or self._cache_loading or self._rendering or self._rotation_snapshot_end is None):
             return
+        view_key = self._analysis_view_key()
+        if self._prepared_analysis and view_key == self._rotation_revision:
+            if self._rotation_view_dirty:
+                self._rendering = True
+                try:
+                    self._render_view(self._prepared_analysis)
+                finally:
+                    self._rendering = False
+            else:
+                self._refresh_detail_view()
+            self._render_dirty = False
+            return
+        if view_key == self._rotation_pending_key:
+            return
+        self._rotation_pending_key = view_key
         self._analysis_serial += 1
         state = dict(symbols=tuple(self.symbols), series=dict(self.series),
                      spot_series=dict(self.spot_series), cursor=self.cursor_end(), hours=self.span.currentData() or 4)
         self._analysis_job.submit((self._analysis_view_key(), self._analysis_serial),
                                   _workspace_analysis, _prepare_rotation, state, self._history_transport)
+
+    def _analysis_ready(self, key, prepared):
+        if key[0] == self._rotation_pending_key:
+            self._rotation_pending_key = None
+        super()._analysis_ready(key, prepared)
+
+    def _analysis_failed(self, key, message):
+        if key[0] == self._rotation_pending_key:
+            self._rotation_pending_key = None
+        super()._analysis_failed(key, message)
 
     def _render(self, prepared):
         self.metrics = prepared["metrics"]
@@ -5503,12 +5557,16 @@ class RotationScannerWidget(LeadershipTimelineWidget):
     def _view_changed(self, *_):
         if self.closing:
             return
+        self._render_dirty = True
+        self._rotation_view_dirty = True
         context = (self.generation, self.cursor_end(), tuple(self.symbols), self.span.currentData())
-        if self._prepared_analysis and context == self._rotation_revision and self.active and not self._interaction_paused:
+        if (self._prepared_analysis and context == self._rotation_revision
+                and self.active and self._view_visible and not self._interaction_paused):
             was_rendering = self._rendering
             self._rendering = True
             try:
                 self._render_view(self._prepared_analysis)
+                self._render_dirty = False
             finally:
                 self._rendering = was_rendering
         else:
@@ -5534,6 +5592,7 @@ class RotationScannerWidget(LeadershipTimelineWidget):
         return True
 
     def _render_view(self, prepared):
+        self._rotation_view_dirty = False
         self._filtered_points = [p for p in prepared["points"] if self._visible(p)]
         visible = {p["symbol"] for p in self._filtered_points}
         if self.selected not in visible:
@@ -5542,7 +5601,7 @@ class RotationScannerWidget(LeadershipTimelineWidget):
         self.summary_btc.setText(f"BTC {prepared['hours']}H  {_pct(prepared['btc_return'], 1)}")
         covered = prepared["covered"]
         self.summary_breadth.setText(f"Alts beating BTC  {prepared['beating'] / covered * 100:.0f}%" if covered else "Alts beating BTC  —")
-        self.summary_count.setText(f"Candidates  {len(self._filtered_points)} / {len(self.symbols)}")
+        self.summary_count.setText(f"Bubbles  {len(self.bubbles.points)} · Candidates  {len(self._filtered_points)}")
         self.coverage.setText(f"{len(self.symbols)} liquid pairs\n{len(self._filtered_points)} showing · {covered} comparable")
         self.coverage.setToolTip("\n".join(f"{s}: {e}" for s, e in self.errors.items()) or "Only comparable completed hourly candles are plotted.")
         self.asof.setText(("Latest completed hour · " if self.replay.value() == 24 else "Replay · ") + (_stamp(prepared["end"], True) if prepared["end"] else "Waiting for history"))
@@ -5556,7 +5615,7 @@ class RotationScannerWidget(LeadershipTimelineWidget):
 
     def _populate_candidates(self):
         points = [p for p in self._filtered_points if self.candidate_mode.currentData() == "all" or p["y"] > 0]
-        points.sort(key=lambda p: (-self.metrics[p["symbol"]].get("rs1", 0), p["symbol"]))
+        points.sort(key=lambda p: (-p["x"], p["symbol"]))
         self.candidates_title.setText("Improving candidates" if self.candidate_mode.currentData() == "improving" else "Rotation candidates")
         table = self.table
         blocker = QtCore.QSignalBlocker(table)
@@ -5564,6 +5623,8 @@ class RotationScannerWidget(LeadershipTimelineWidget):
         table.setUpdatesEnabled(False)
         table.setSortingEnabled(False)
         try:
+            hours = self._prepared_analysis.get("hours", self.span.currentData() or 4)
+            table.horizontalHeaderItem(2).setText(f"{hours}H vs BTC")
             table.setRowCount(len(points))
             for row, point in enumerate(points):
                 symbol = point["symbol"]
@@ -5571,7 +5632,7 @@ class RotationScannerWidget(LeadershipTimelineWidget):
                 status = "Near range high" if point["y"] > 0 and _rotation_finite(metrics.get("high_distance")) and metrics["high_distance"] <= 1 else point["quadrant"]
                 rvol = metrics.get("rvol")
                 values = [(str(row + 1), row + 1), (symbol.removesuffix("USDT"), symbol),
-                          (_pct(metrics.get("rs1"), 1), metrics.get("rs1")),
+                          (_pct(point["x"], 1), point["x"]),
                           (f"{rvol:.1f}×" if rvol is not None else "—", rvol),
                           (_pct(details["oi"], 1), details["oi"]),
                           (f"{details['spread']:.2f}%" if details["spread"] is not None else "—", details["spread"]),
@@ -5591,11 +5652,11 @@ class RotationScannerWidget(LeadershipTimelineWidget):
                     elif col == 3 and rvol is not None and rvol >= 1:
                         color = QUADRANT_COLORS["Leading"]
                     item.setForeground(QtGui.QColor(color))
-                    tooltip = f"{symbol} · {self.identity(symbol)[0]}\n{self.span.currentText()} vs BTC: {_pct(point['x'])}\n1H change in RS: {point['y']:+.2f} pp\nDouble-click to open chart"
+                    tooltip = f"{symbol} · {self.identity(symbol)[0]}\n{hours}H vs BTC: {_pct(point['x'])}\nHourly change in {hours}H RS: {point['y']:+.2f} pp\nDouble-click to open chart"
                     if col == 3:
                         tooltip += "\nLatest completed hourly turnover / median of the prior 24 completed hours."
                     elif col in (4, 5):
-                        tooltip += "\nLoaded on selection; unavailable data stays blank. Spread is live and expires after 90 seconds."
+                        tooltip += "\nReuses details already loaded by Leaders. Spread is live and expires after 90 seconds."
                     elif col == 6:
                         tooltip += "\nNear range high: within 1% of the prior four-hour high, with positive RS acceleration."
                     item.setToolTip(tooltip)
@@ -5608,7 +5669,7 @@ class RotationScannerWidget(LeadershipTimelineWidget):
                     table.selectRow(row)
             if self.selected not in {p["symbol"] for p in points}:
                 table.clearSelection()
-            self.empty_candidates.setText("No improving candidates. Switch to All plotted coins or relax the filters." if not points else "")
+            self.empty_candidates.setText("No improving candidates. Switch to All candidates or relax the filters." if not points else "")
             self.empty_candidates.setVisible(not points)
         finally:
             table.setUpdatesEnabled(True)
@@ -5681,11 +5742,12 @@ class RotationScannerWidget(LeadershipTimelineWidget):
         ticker_price = safe_float(self.tickers.get(symbol, {}).get("c")) if live else 0
         self.selected_price.setText(_price(ticker_price if ticker_price > 0 else metrics.get("price")))
         self.selected_price.setToolTip("Live ticker price" if ticker_price > 0 else "Selected completed hourly close")
-        self.selected_change.setText(_pct(metrics.get("usd4"), 1) + " · 4H")
-        self.selected_change.setToolTip("4H completed-candle return in USD")
-        self.selected_change.setStyleSheet("color: " + (QUADRANT_COLORS["Leading"] if (metrics.get("usd4") or 0) >= 0 else QUADRANT_COLORS["Lagging"]))
+        hours = self._prepared_analysis.get("hours", self.span.currentData() or 4)
+        self.selected_change.setText(_pct(metrics.get("usd_window"), 1) + f" · {hours}H")
+        self.selected_change.setToolTip(f"{hours}H completed-candle return in USD")
+        self.selected_change.setStyleSheet("color: " + (QUADRANT_COLORS["Leading"] if (metrics.get("usd_window") or 0) >= 0 else QUADRANT_COLORS["Lagging"]))
         self.relative_value.setText(f"vs BTC  {_pct(metrics.get('x'), 1)} · {metrics.get('quadrant', 'Waiting')}")
-        self.price_caption.setText(f"Relative price ({max(4, self.span.currentData())}H) · vs BTC")
+        self.price_caption.setText(f"Relative price ({hours}H) · vs BTC")
         self.relative_chart.set_values(values.get("relative", []))
         self.volume_chart.set_values(values.get("volume", []))
         numbers = self._numbers(symbol)
@@ -5718,20 +5780,21 @@ class RotationScannerWidget(LeadershipTimelineWidget):
         self._sync_watch()
 
     def _refresh_detail_view(self):
-        if self.active and not self._interaction_paused and self._prepared_analysis:
-            self._view_changed()
+        if self.active and self._view_visible and not self._interaction_paused and self._prepared_analysis:
+            # Book expiry and live facts must not re-filter or re-rank the map.
+            self._populate_candidates()
+            self._render_facts()
 
-    def set_active(self, active):
-        super().set_active(active)
-        if self.active:
+    def set_active(self, active, *, visible=True):
+        super().set_active(active, visible=visible)
+        if self.active and self._view_visible:
             self.detail_freshness_timer.start()
         else:
             self.detail_freshness_timer.stop()
 
     def _details_finished(self, result):
         super()._details_finished(result)
-        if self.active and self._prepared_analysis:
-            self._view_changed()
+        self._refresh_detail_view()
 
     def _details_failed(self, error):
         super()._details_failed(error)
@@ -5748,7 +5811,7 @@ class RotationScannerWidget(LeadershipTimelineWidget):
 
     def update_tickers(self, updates):
         super().update_tickers(updates)
-        if self.active and not self._interaction_paused and self.selected:
+        if self.active and self._view_visible and not self._interaction_paused and self.selected:
             if not self.detail_timer.isActive():
                 self.detail_timer.start()
 
@@ -5762,7 +5825,6 @@ class RotationScannerWidget(LeadershipTimelineWidget):
             widget.clear() if widget is self.search else widget.setChecked(False)
             del blocker
         self._filters_changed()
-        self.render()
 
     def bind_leadership(self, leadership):
         """Bind to the existing Leaders loader; Rotation never issues network requests."""
@@ -5778,6 +5840,8 @@ class RotationScannerWidget(LeadershipTimelineWidget):
         self.cancel.set()
         self._load_pending = False
         self.generation += 1
+        self._rotation_snapshot_end = None
+        self._rotation_pending_key = None
         self.leadership = leadership
         if leadership is not None:
             leadership.data_changed.connect(self._leaders_changed)
@@ -5811,12 +5875,38 @@ class RotationScannerWidget(LeadershipTimelineWidget):
             return
         self._adopt_shared_bindings()
         snapshot = self.leadership.sector_hourly_snapshot()
-        self.end, self.clock_offset = snapshot["end"], snapshot["clock_offset"]
-        self.series, self.spot_series = snapshot["series"], snapshot["spot"]
+        end = snapshot["end"]
+        if end <= 0 or (self._rotation_snapshot_end is not None and end <= self._rotation_snapshot_end):
+            return
+        source = self.leadership
+        if getattr(source, "_load_pending", False) or getattr(source, "task", None) is not None:
+            fetched, retries = getattr(source, "fetched_for", {}), getattr(source, "retry_after", {})
+            now = time.monotonic()
+            if any(fetched.get(symbol) != end and retries.get(symbol, 0) <= now
+                   for symbol in (BENCHMARK, *snapshot["symbols"])):
+                # Publish one coherent snapshot after success/failure of the batch.
+                if self._rotation_snapshot_end is None:
+                    self.asof.setText("Loading completed hourly data")
+                return
+        self._rotation_snapshot_end = end
+        self._set_end(end)
+        self.clock_offset = snapshot["clock_offset"]
+        self.series, self.spot_series = dict(snapshot["series"]), dict(snapshot["spot"])
         self.categories = dict(snapshot["categories"])
-        minimum = self.liquidity.currentData()
-        symbols = [s for s in snapshot["symbols"] if safe_float(self.tickers.get(s, {}).get("q")) >= minimum]
-        symbols.sort(key=lambda s: (-safe_float(self.tickers.get(s, {}).get("q")), s))
+        self.errors = dict(getattr(source, "errors", {}))
+        self._rotation_universe = tuple(symbol for symbol in snapshot["symbols"] if symbol != BENCHMARK)
+        self._rotation_turnover = {}
+        for symbol in self._rotation_universe:
+            rows = _window(self.series.get(symbol, {}), end, 24)
+            if rows:
+                self._rotation_turnover[symbol] = sum(row.quote_volume for row in rows)
+        self._apply_rotation_universe()
+
+    def _apply_rotation_universe(self):
+        minimum = self.liquidity.currentData() or 0
+        symbols = [symbol for symbol in self._rotation_universe
+                   if self._rotation_turnover.get(symbol, 0) >= minimum]
+        symbols.sort(key=lambda symbol: (-self._rotation_turnover.get(symbol, 0), symbol))
         count = self.limit.currentData()
         self.symbols = symbols[:count] if count else symbols
         self.eligible_count = len(symbols)
@@ -5841,7 +5931,10 @@ class RotationScannerWidget(LeadershipTimelineWidget):
         self._leaders_changed()
 
     def _filters_changed(self):
-        self.refresh(force=True)
+        if self._rotation_snapshot_end is None:
+            self.refresh(force=True)
+        else:
+            self._apply_rotation_universe()
 
     def _next_batch(self):
         # Histories are owned exclusively by Leaders.
@@ -5856,7 +5949,7 @@ class RotationScannerWidget(LeadershipTimelineWidget):
 
     def _request_details(self):
         # Coalesce ticker presentation; this timer never starts backend work.
-        if self.active and not self._interaction_paused:
+        if self.active and self._view_visible and not self._interaction_paused:
             self._render_facts()
 
     def shutdown(self):
@@ -5891,7 +5984,6 @@ class RotationScannerWidget(LeadershipTimelineWidget):
         self._sort_order = Qt.SortOrder.DescendingOrder if descending else Qt.SortOrder.AscendingOrder
         self.table.horizontalHeader().setSortIndicator(self._sort_column, self._sort_order)
         self._filters_changed()
-        self.render()
 
     def save_ui_state(self, settings):
         values = dict(window=self.span.currentData(), liquidity=self.liquidity.currentData(), limit=self.limit.currentData(),
