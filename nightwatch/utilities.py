@@ -1071,7 +1071,7 @@ def alpha_color(value: str, alpha: int) -> QtGui.QColor:
     return color
 
 
-INSTRUMENT_BAR_HEIGHT = 48
+INSTRUMENT_BAR_HEIGHT = 44
 
 
 class MainToolbar(QtWidgets.QFrame):

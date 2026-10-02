@@ -1830,7 +1830,7 @@ class MainWindow(QtWidgets.QMainWindow):
         instrument_host.setObjectName("instrumentBarHost")
         instrument_host.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         instrument_layout = QtWidgets.QHBoxLayout(instrument_host)
-        instrument_layout.setContentsMargins(0, 0, 0, 0)
+        instrument_layout.setContentsMargins(0, 4, 0, 0)
         instrument_layout.setSpacing(0)
         instrument_layout.addWidget(self.instrument_bar)
         chart_column_layout.addWidget(instrument_host)
