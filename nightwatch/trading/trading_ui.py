@@ -2667,7 +2667,8 @@ class OrderPanel(QtWidgets.QWidget):
             raise ValueError(
                 f"Resulting quantity must be between {minimum_qty:g} and {maximum_qty:g}."
             )
-        if self.rules.min_notional and reference > 0 and value * reference < self.rules.min_notional:
+        if (not self.reduce_only.isChecked() and self.rules.min_notional
+                and reference > 0 and value * reference < self.rules.min_notional):
             raise ValueError(
                 f"Order value must be at least {self.rules.min_notional:g} {self.rules.quote_asset}."
             )
@@ -3535,6 +3536,17 @@ class AccountCardList(QtWidgets.QListWidget):
     def _schedule_card_heights(self) -> None:
         self._height_refresh.start()
 
+    @QtCore.Slot()
+    def _select_requested_card(self) -> None:
+        # A QObject receiver avoids retaining the list through a child signal
+        # callback while Qt clears and defers deletion of the old row widgets.
+        card = self.sender()
+        for index in range(self.count()):
+            item = self.item(index)
+            if self.itemWidget(item) is card:
+                self.setCurrentItem(item)
+                return
+
     def _sync_card_heights(self) -> None:
         for index in range(self.count()):
             item = self.item(index)
@@ -3847,7 +3859,7 @@ def _populate_account_cards(
                 view.addItem(item)
                 view.setItemWidget(item, card)
                 if hasattr(card, "selected_requested"):
-                    card.selected_requested.connect(lambda item=item: view.setCurrentItem(item))
+                    card.selected_requested.connect(view._select_requested_card)
                 live_rows[key] = (item, card)
 
             live_keys = [
@@ -3928,7 +3940,7 @@ def _populate_account_cards(
             view.addItem(item)
             view.setItemWidget(item, card)
             if hasattr(card, "selected_requested"):
-                card.selected_requested.connect(lambda item=item: view.setCurrentItem(item))
+                card.selected_requested.connect(view._select_requested_card)
             if selected_key == _account_key(payload):
                 selection = item
         view.setCurrentItem(selection or view.item(0))
@@ -5187,10 +5199,6 @@ class TradingWorkspace(QtWidgets.QWidget):
         if not (rules.min_market_qty <= quantity_value <= rules.max_market_qty):
             self.status.setText("CLOSE SIZE IS OUTSIDE THE EXCHANGE MARKET-ORDER RANGE")
             return
-        mark = safe_float(position.get("markPrice"))
-        if rules.min_notional and mark > 0 and quantity_value * mark < rules.min_notional:
-            self.status.setText("CLOSE VALUE IS BELOW THE EXCHANGE MINIMUM")
-            return
         position_side = str(position.get("positionSide", "BOTH"))
         order: dict[str, Any] = {
             "symbol": position.get("symbol"),
@@ -5251,10 +5259,6 @@ class TradingWorkspace(QtWidgets.QWidget):
                     raise ValueError("Limit price is above Binance's current price band.")
                 if rules.price_multiplier_down and price_value < mark * rules.price_multiplier_down:
                     raise ValueError("Limit price is below Binance's current price band.")
-            if rules.min_notional and quantity_value * price_value < rules.min_notional:
-                raise ValueError(
-                    f"Close value must be at least {rules.min_notional:g} {rules.quote_asset}."
-                )
         except ValueError as exc:
             QtWidgets.QMessageBox.warning(self, "Invalid close limit", str(exc))
             return

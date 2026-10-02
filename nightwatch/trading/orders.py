@@ -79,6 +79,9 @@ def build_quick_order_request(
         raise ValueError(
             "Binance position mode is still loading. Refresh the account before using quick orders."
         )
+    reduce_only = bool(preset.get("reduce_only"))
+    if hedge_mode and reduce_only:
+        raise ValueError("Reduce-only shortcuts are available in one-way mode; use a close preset in hedge mode.")
     collateral_percent = safe_float(preset.get("collateral_percent"))
     if not (0 < collateral_percent <= 100):
         raise ValueError("Collateral allocation must be between 0% and 100%.")
@@ -130,15 +133,12 @@ def build_quick_order_request(
         raise ValueError(
             f"Resulting size must be between {minimum_qty:g} and {maximum_qty:g}."
         )
-    if rules.min_notional and Decimal(quantity) * sizing_price < Decimal(str(rules.min_notional)):
+    if not reduce_only and rules.min_notional and Decimal(quantity) * sizing_price < Decimal(str(rules.min_notional)):
         raise ValueError(
             f"Order value must be at least {rules.min_notional:g} {rules.quote_asset}."
         )
 
     position_side = "LONG" if hedge_mode and side == "BUY" else "SHORT" if hedge_mode else "BOTH"
-    reduce_only = bool(preset.get("reduce_only"))
-    if hedge_mode and reduce_only:
-        raise ValueError("Reduce-only shortcuts are available in one-way mode; use a close preset in hedge mode.")
     order: dict[str, Any] = {
         "symbol": symbol,
         "side": side,
@@ -158,16 +158,24 @@ def build_quick_order_request(
         ("tp", "take_profit_enabled", "take_profit_percent", "take_profit_close_percent", direction),
         ("sl", "stop_loss_enabled", "stop_loss_percent", "stop_loss_close_percent", -direction),
     ):
-        if not preset.get(enabled_key):
+        if reduce_only or not preset.get(enabled_key):
             continue
         distance = safe_float(preset.get(distance_key))
         close_percent = safe_float(preset.get(close_key))
         if distance <= 0 or not (0 < close_percent <= 100):
             raise ValueError("Quick TP/SL distance and close percentage must be positive.")
         trigger = reference * (1.0 + direction_sign * distance / 100.0)
+        trigger = safe_float(quantize_step(
+            str(trigger), rules.tick_size,
+            rounding=ROUND_UP if direction_sign > 0 else ROUND_DOWN,
+        ))
+        if not (rules.min_price <= trigger <= rules.max_price):
+            raise ValueError("Quick TP/SL trigger is outside the exchange price range.")
+        if direction_sign * (trigger - reference) <= 0:
+            raise ValueError("Quick TP/SL distance must move the trigger beyond the entry price.")
         protections[key].append(
             {
-                "price": safe_float(quantize_step(str(trigger), rules.tick_size)),
+                "price": trigger,
                 "percent": close_percent,
             }
         )
@@ -498,7 +506,8 @@ def build_smart_exit_orders(
         if all(
             quantity >= minimum
             and (
-                rules.min_notional <= 0
+                position_side == "BOTH"
+                or rules.min_notional <= 0
                 or float(quantity) * safe_float(levels[index]) >= rules.min_notional
             )
             for index, quantity in enumerate(trial)
