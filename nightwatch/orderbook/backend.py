@@ -3368,6 +3368,12 @@ class _LocalOrderFlowRuntime(QtCore.QObject):
 
 import multiprocessing
 import threading
+from .ipc import install_snapshot_reducers
+
+
+# Both parent and spawned workers import this module before sending records.
+# Reduce per-frame Python/GIL work without changing the ordered wire protocol.
+install_snapshot_reducers()
 
 
 class _OrderBookProcessLink(QtCore.QObject):
