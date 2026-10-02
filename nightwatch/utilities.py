@@ -1227,25 +1227,26 @@ class InstrumentBar(QtWidgets.QFrame):
         self._responsive_layout_active = True
         try:
             left, right = self._normal_horizontal_margins
+            available_width = self.contentsRect().width()
             identity_width = self._stable_widget_width(self.identity_control)
             metric_widths = [width + 1 for width in self._metric_minimum_widths]
             normal_width = self._timeframe_width(collapsed=False)
             tight_width = self._timeframe_width(collapsed=False, tight=True)
             collapsed_width = self._timeframe_width(collapsed=True)
-            compact = self.width() < left + right + normal_width + 8 + identity_width + sum(metric_widths) + 12
+            compact = available_width < left + right + normal_width + 8 + identity_width + sum(metric_widths) + 12
             timeframe_width = tight_width if compact else normal_width
             required = left + right + timeframe_width + 8 + identity_width + sum(metric_widths) + 12
             # Collapse favorites before sacrificing ticker or market data.
-            collapsed = self.width() < required and timeframe_width > collapsed_width
+            collapsed = available_width < required and timeframe_width > collapsed_width
             if collapsed:
                 required -= timeframe_width - collapsed_width
                 timeframe_width = collapsed_width
             count = len(self.metric_controls)
-            while self.width() < required and count:
+            while available_width < required and count:
                 count -= 1
                 required -= metric_widths[count]
             identity_visible = self.identity_control is not None
-            if self.width() < required and identity_visible:
+            if available_width < required and identity_visible:
                 identity_visible = False
                 required -= identity_width
             state = (compact, count, identity_visible, collapsed, timeframe_width)

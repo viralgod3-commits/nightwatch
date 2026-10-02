@@ -197,10 +197,13 @@ def build_shell_stylesheet(theme_name: str, theme: dict[str, str], surfaces: dic
     timeframe_controls = f"""
         QFrame#instrumentBar {{
             background: {t['header']}; border: 0;
+            border-left: 1px solid {t['border']};
+            border-right: 1px solid {t['border']};
             border-bottom: 1px solid {t['border']};
+            margin: 0 4px;
         }}
         QFrame#instrumentContextSlot {{
-            background: {t['panel2']}; border: 1px solid {t['border']};
+            background: {t['panel2']}; border: 0;
             border-radius: 4px;
         }}
         QFrame#instrumentMarketGroup {{ background: transparent; border: 0; }}
