@@ -547,9 +547,9 @@ if QtWidgets is not None:
         def sizeHint(self) -> QtCore.QSize:
             hint = super().sizeHint()
             if self.orientation() == Qt.Orientation.Horizontal:
-                hint.setWidth(RIGHT_PANEL_SPLITTER_VISUAL_WIDTH)
+                hint.setWidth(self.splitter().handleWidth())
             else:
-                hint.setHeight(RIGHT_PANEL_SPLITTER_VISUAL_WIDTH)
+                hint.setHeight(self.splitter().handleWidth())
             return hint
 
 
@@ -1290,8 +1290,8 @@ if QtWidgets is not None:
             self.rail = QtWidgets.QFrame()
             self.rail.setObjectName("rightRailHost")
             layout = QtWidgets.QVBoxLayout(self.rail)
-            # The chart splitter already supplies the left gap. Keep the other
-            # edges clear of window/toolbar borders with the same black gutter.
+            # Keep the chart-facing edge flush and clear the other edges of
+            # window/toolbar borders with the same black gutter.
             gap = RIGHT_PANEL_SPLITTER_VISUAL_WIDTH
             layout.setContentsMargins(0, gap, gap, gap); layout.setSpacing(0)
             self._scroll = QtWidgets.QScrollArea(self.rail)
@@ -1412,6 +1412,7 @@ if QtWidgets is not None:
             self._main_splitter, self._chart_widget = splitter, chart_widget
             self._chart_minimum_width = max(1, int(chart_minimum_width))
             chart_widget.setMinimumWidth(self._chart_minimum_width)
+            splitter.setHandleWidth(0)
             self._configure_splitter(splitter)
             splitter.installEventFilter(self)
             splitter.splitterMoved.connect(self._outer_splitter_moved)
