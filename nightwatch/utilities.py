@@ -1199,6 +1199,9 @@ class InstrumentBar(QtWidgets.QFrame):
             card.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding,
                                QtWidgets.QSizePolicy.Policy.Fixed)
             self.market_row.addWidget(card, 1)
+            width_changed = getattr(card, "width_changed", None)
+            if width_changed is not None:
+                width_changed.connect(self._apply_responsive_layout)
         stats.setParent(self)
         stats.hide()
         self.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Fixed)
@@ -1243,7 +1246,10 @@ class InstrumentBar(QtWidgets.QFrame):
             can_shrink_identity = callable(measure_identity) and callable(set_identity_margins)
             if can_shrink_identity:
                 identity_width = measure_identity(horizontal_margins=identity_margins)
-            metric_widths = [width + 1 for width in self._metric_minimum_widths]
+            metric_widths = []
+            for card, minimum in zip(self.metric_controls, self._metric_minimum_widths):
+                measure = getattr(card, "metric_width", None)
+                metric_widths.append(max(minimum, measure() if callable(measure) else minimum) + 1)
             normal_width = self._timeframe_width(collapsed=False)
             tight_width = self._timeframe_width(collapsed=False, tight=True)
             collapsed_width = self._timeframe_width(collapsed=True)
@@ -1275,7 +1281,7 @@ class InstrumentBar(QtWidgets.QFrame):
             if available_width < required and identity_visible:
                 identity_visible = False
                 required -= identity_width
-            state = (compact, count, identity_visible, collapsed, timeframe_width, identity_margins)
+            state = (compact, count, identity_visible, collapsed, timeframe_width, identity_margins, tuple(metric_widths))
             if state == self._responsive_state:
                 return
             self._responsive_state = state
@@ -1292,6 +1298,7 @@ class InstrumentBar(QtWidgets.QFrame):
             if self.identity_control is not None:
                 self.identity_control.setVisible(identity_visible)
             for index, card in enumerate(self.metric_controls):
+                card.setMinimumWidth(metric_widths[index] - 1)
                 card.setVisible(index < count)
                 self.metric_separators[index].setVisible(index < count)
             self.row.invalidate()

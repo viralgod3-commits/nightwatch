@@ -315,6 +315,63 @@ COMPACT_SECONDARY_METRICS: tuple[str, ...] = ("taker",)
 FUNDING_COLOR_THRESHOLD_PCT = 0.08
 
 
+def _compact_market_notional(value: float) -> str:
+    """Show quote notionals with consistent precision and clean unit boundaries."""
+    if not math.isfinite(value) or value < 0:
+        return "—"
+    scales = ((1.0, ""), (1e3, "K"), (1e6, "M"), (1e9, "B"), (1e12, "T"))
+    index = max(i for i, (scale, _suffix) in enumerate(scales) if value >= scale) if value >= 1 else 0
+    while True:
+        scale, suffix = scales[index]
+        shown = value / scale
+        if not suffix:
+            if round(shown, 2) >= 1000:
+                index += 1
+                continue
+            text = f"{shown:.3g}" if 0 < shown < 1 else f"{shown:,.2f}"
+            break
+        decimals = 2
+        if round(shown, decimals) >= 1000 and index < len(scales) - 1:
+            index += 1
+            continue
+        text = f"{shown:.{decimals}f}"
+        break
+    if "." in text and "e" not in text:
+        text = text.rstrip("0").rstrip(".")
+    return f"${text}{suffix}"
+
+
+def _market_funding_rate(value: float) -> str:
+    if not math.isfinite(value):
+        return "—"
+    if value == 0:
+        return "0%"
+    decimals = 4
+    if abs(value) < 0.0001:
+        decimals = min(10, max(4, 2 - math.floor(math.log10(abs(value)))))
+    if round(value, decimals) == 0:
+        return f"{value:+.3g}%"
+    return f"{value:+.{decimals}f}".rstrip("0").rstrip(".") + "%"
+
+
+def _market_funding_time(next_ms: float, event_ms: float = 0.0) -> tuple[str, str]:
+    """Return a compact countdown and exact UTC time from the exchange schedule."""
+    if not math.isfinite(next_ms) or next_ms <= 0:
+        return "", "—"
+    try:
+        exact = datetime.fromtimestamp(next_ms / 1000, timezone.utc).strftime("%d %b %H:%M UTC")
+    except (OverflowError, OSError, ValueError):
+        return "", "—"
+    now_ms = event_ms if math.isfinite(event_ms) and event_ms > 0 else time.time() * 1000
+    seconds = max(0, math.ceil((next_ms - now_ms) / 1000))
+    if seconds == 0:
+        return "due", exact
+    if seconds < 60:
+        return f"{seconds}s", exact
+    hours, minutes = divmod(seconds // 60, 60)
+    return f"{hours:02d}:{minutes:02d}", exact
+
+
 class TimeframeStrip(QtWidgets.QWidget):
     """Always-visible compact chart-timeframe button strip."""
 
@@ -1574,6 +1631,7 @@ class MetricCard(QtWidgets.QFrame):
         self.detail_popup = None
         self.identity = bool(identity and compact)
         self.compact = bool(compact)
+        self._reported_metric_width = None
         self.setObjectName(
             "topMarketIdentity"
             if self.identity
@@ -1584,16 +1642,12 @@ class MetricCard(QtWidgets.QFrame):
         layout = (QtWidgets.QHBoxLayout if self.identity else QtWidgets.QVBoxLayout)(self)
         # The instrument row supplies the other 12 px of the 96 px left gap.
         layout.setContentsMargins(84 if self.identity else 12 if compact else 5,
-                                  2 if compact else 5,
+                                  1 if compact else 5,
                                   96 if self.identity else 12 if compact else 5,
-                                  2 if compact else 5)
+                                  1 if compact else 5)
         layout.setSpacing(32 if self.identity else 1 if compact else 2)
 
-        self.title = (
-            QtWidgets.QLabel(title.upper())
-            if self.identity
-            else ElidedLabel(title.upper()) if compact else QtWidgets.QLabel(title.upper())
-        )
+        self.title = QtWidgets.QLabel(title.upper())
         self.title.setObjectName(
             "topTickerSymbol"
             if self.identity
@@ -1656,10 +1710,38 @@ class MetricCard(QtWidgets.QFrame):
         layout.addWidget(self.title)
         layout.addWidget(self.value)
         if compact:
-            layout.setAlignment(self.title, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
-            layout.setAlignment(self.value, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+            alignment = Qt.AlignmentFlag.AlignVCenter
+            if self.identity:
+                alignment |= Qt.AlignmentFlag.AlignLeft
+            layout.setAlignment(self.title, alignment)
+            layout.setAlignment(self.value, alignment)
         if self.identity:
             QtCore.QTimer.singleShot(0, self._sync_identity_width)
+        elif compact:
+            self.title.installEventFilter(self)
+            self.value.installEventFilter(self)
+            self._sync_metric_width()
+
+    def metric_width(self) -> int:
+        margins = self.layout().contentsMargins()
+        content = max(self.title.fontMetrics().horizontalAdvance(self.title.text()),
+                      self.value.fontMetrics().horizontalAdvance(self.value.text()))
+        return max(COMPACT_EQUAL_METRIC_WIDTH,
+                   content + margins.left() + margins.right() + 2 * self.frameWidth())
+
+    def _sync_metric_width(self) -> None:
+        if not self.compact or self.identity:
+            return
+        width = self.metric_width()
+        if width != self._reported_metric_width:
+            self._reported_metric_width = width
+            self.updateGeometry()
+            self.width_changed.emit()
+
+    def eventFilter(self, watched: QtCore.QObject, event: QtCore.QEvent) -> bool:
+        if event.type() in (QtCore.QEvent.Type.FontChange, QtCore.QEvent.Type.StyleChange):
+            self._sync_metric_width()
+        return super().eventFilter(watched, event)
 
     def identity_width(self, *, horizontal_margins: tuple[int, int] | None = None) -> int:
         """Measure ticker content with the requested padding, independent of its current width."""
@@ -1714,6 +1796,7 @@ class MetricCard(QtWidgets.QFrame):
         if self.value.styleSheet() != stylesheet:
             self.value.setStyleSheet(stylesheet)
         self._sync_identity_width()
+        self._sync_metric_width()
 
     def set_detail(self, _title: str, rows: list[tuple[str, str]]) -> None:
         rows = [(label, value) for label, value in rows if label or value]
@@ -2051,7 +2134,19 @@ class MarketStatsWidget(QtWidgets.QWidget):
         samples = cache.get("All accounts", [])
         ratio = safe_float(samples[-1].get("longShortRatio"), -1) if samples else -1
         ratio_text = f"{ratio:.2f}" if math.isfinite(ratio) and ratio >= 0 else "—"
-        card.set_value(ratio_text, None)
+        shown = ratio_text
+        if self.compact and samples:
+            long_share = safe_float(samples[-1].get("longAccount"), float("nan"))
+            short_share = safe_float(samples[-1].get("shortAccount"), float("nan"))
+            if not (0 <= long_share <= 1 and 0 <= short_share <= 1
+                    and math.isclose(long_share + short_share, 1, abs_tol=0.001)):
+                long_share = ratio / (1 + ratio) if ratio >= 0 else float("nan")
+            if 0 <= long_share <= 1:
+                long_pct = round(long_share * 100, 1)
+                shown = f"{long_pct:.1f}% / {100 - long_pct:.1f}%"
+            else:
+                shown = "—"
+        card.set_value(shown, None)
         card.set_detail(f"{perpetual_display_symbol(self.symbol)} · LONG / SHORT", details)
         card.set_histories(histories, ratio=True)
         if self.compact:
@@ -2171,7 +2266,7 @@ class MarketStatsWidget(QtWidgets.QWidget):
             None,
         )
         self.cards["volume"].set_value(
-            human_number(volume, money=True)
+            (_compact_market_notional(volume) if self.compact else human_number(volume, money=True))
             if math.isfinite(volume) and volume >= 0
             else "—",
             None,
@@ -2211,24 +2306,26 @@ class MarketStatsWidget(QtWidgets.QWidget):
             funding_color = self.theme.get("metric_funding_negative", self.theme["red"])
         else:
             funding_color = self.theme.get("metric_funding_neutral", self.theme["text"])
+        rate_text = _market_funding_rate(funding)
+        countdown, next_funding = _market_funding_time(
+            safe_float(payload.get("T")), safe_float(payload.get("E")))
+        funding_text = f"{rate_text} · {countdown}" if self.compact and countdown and math.isfinite(funding) else rate_text
+        direction = "—"
+        if math.isfinite(funding):
+            direction = "Longs pay shorts" if funding > 0 else "Shorts pay longs" if funding < 0 else "No transfer"
         self.cards["funding"].set_value(
-            f"{funding:+.4f}%" if math.isfinite(funding) else "—",
+            funding_text if self.compact else f"{funding:+.4f}%" if math.isfinite(funding) else "—",
             funding_color if math.isfinite(funding) else None,
         )
         index_price = safe_float(payload.get("i"))
-        next_funding_ms = safe_float(payload.get("T"))
-        next_funding = (
-            datetime.fromtimestamp(next_funding_ms / 1000.0, timezone.utc).strftime("%d %b %H:%M UTC")
-            if next_funding_ms > 0
-            else "—"
-        )
         self.cards["funding"].set_detail(
             f"{perpetual_display_symbol(self.symbol)} · FUNDING",
             [
-                ("Funding rate", f"{funding:+.4f}%" if math.isfinite(funding) else "—"),
+                ("Funding rate", rate_text),
                 ("Mark price", format_price(self.mark) if math.isfinite(self.mark) and self.mark > 0 else "—"),
                 ("Index price", format_price(index_price) if math.isfinite(index_price) and index_price > 0 else "—"),
                 ("Next funding", next_funding),
+                ("Payment direction", direction),
             ],
         )
         self._sync_last_detail()
@@ -2246,7 +2343,8 @@ class MarketStatsWidget(QtWidgets.QWidget):
         )
         notional = units * reference if valid else float("nan")
         self.cards["oi"].set_value(
-            human_number(notional, money=True) if math.isfinite(notional) else "—",
+            (_compact_market_notional(notional) if self.compact else human_number(notional, money=True))
+            if math.isfinite(notional) else "—",
             None,
         )
         self.cards["oi"].set_detail(
