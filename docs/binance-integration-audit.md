@@ -100,3 +100,20 @@ These are source-review coverage statements, not executed scenario results.
 - A rejected protection can invoke the existing risk-reducing close, but that close can also be rejected or have an unknown outcome. The application reports such failures and does not guarantee a fill or silently repeat the close.
 
 The changes address confirmed contract and lifecycle defects found in this audit. Static inspection cannot establish that every order will execute exactly as expected under all exchange, account and network conditions.
+
+## Follow-up review — 2026-10-03
+
+Starting commit: `c240bbcceb8cf857ecd111050adf6526995886bf`. The current official Futures trading catalog, account-stream lifecycle documentation, and change log were re-read before continuing the source review. The exchange execution acceptance status above remains outstanding; no tests or exchange orders were run during this follow-up.
+
+| Confirmed defect | Repair |
+|---|---|
+| In Hedge Mode, an open SHORT could keep a closed LONG's protection plan active, or the reverse. | Protection recovery, flat confirmation, retirement and recovered fail-safe checks use the saved `positionSide`. Symbol-wide queries still support callers that need both sides. |
+| A queued protection leg could be transmitted after another leg completed its fill tranche or a fresh account read confirmed the position closed. | Every new leg receives a thread-safe cancellation token. Dispatch checks it before sending and REST checks it again after clock synchronization. An unsent obsolete leg becomes a known canceled outcome, without starting another fail-safe close. |
+| An acceptance arriving after tranche completion could leave a sibling active; an early cancel of a not-yet-accepted leg could consume cleanup attempts. | Cleanup is deferred when no exchange identity has been observed. Every leg update rechecks tranche completion, including zero-fill acceptance updates. Once an exchange ID is known, a late accepted parent or matching-engine child can be canceled. |
+| An empty account snapshot begun before a leg's acceptance could prematurely retire the entire plan. | Queued/unresolved placements keep the records alive. Retirement requires a read begun after every related status change, with a follow-up refresh when needed. A live exit child is canceled when the entry is terminal and its side is flat; it does not prevent cancellation of other siblings. |
+| A stale recovery query could publish fewer fills than the journal had already observed. | The recovery result always includes the monotonic cumulative execution quantities retained by the record, including observations made before that query started. |
+| A crash after saving a definitive non-accepted protection outcome but before deleting its placement row could restore a permanently unknown placement. | Journal restoration recognizes the saved definitive outcome and completes deletion locally. Actual uncertain writes continue to require read-only reconciliation. |
+| A terminal entry with no fills could remain attached to another position in the same symbol/side. | A verified zero-fill terminal entry with no issued legs can retire independently. The UI also removes its pending plan. |
+| Credentials could change after an amendment/cancel reconciliation failed, leaving the unresolved operation attached to the wrong account session. | Credential replacement is blocked while any operation still has an uncertain transport outcome. |
+
+The changed Python files were parsed and the diff was checked for whitespace errors. Cancellation tokens reduce the pre-transmission race; once a request has reached Binance, cancellation and confirmation remain exchange operations and cannot be guaranteed by local inspection. No claim of atomic entry/TP/SL execution or production certification is made.

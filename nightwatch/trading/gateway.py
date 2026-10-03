@@ -8,6 +8,7 @@ import json
 import os
 import re
 import sqlite3
+import threading
 import time
 from collections import deque
 from dataclasses import asdict
@@ -226,6 +227,7 @@ class TradingGateway(QtCore.QObject):
         self._protection_records: dict[str, dict[str, Any]] = {}
         self._protection_cleanup_clients: set[str] = set()
         self._protection_cleanup_attempts: dict[str, int] = {}
+        self._protection_cancel_tokens: dict[str, threading.Event] = {}
         self._protection_recovery_pending = False
         self._protection_recovery_task = None
         self._protection_reserved_slots = 0
@@ -275,15 +277,24 @@ class TradingGateway(QtCore.QObject):
                 return
             self._protection_records = records
             self._protection_recovery_pending = bool(records)
+            unknown_count = 0
             for request_id, details in restored_details:
-                self._set_request_details(request_id, details)
                 self._journal_requests.add(request_id)
+                record = records.get(str(details.get('client_id') or ''))
+                if record is not None and record.get('not_accepted') and record.get('method') == details.get('method'):
+                    # The final protection state may commit before deletion of
+                    # its placement row. It already proves this write failed or
+                    # was canceled before transmission; do not query it forever.
+                    self._mark_terminal(request_id)
+                    continue
+                self._set_request_details(request_id, details)
                 self.unresolved_fingerprints[details["fingerprint"]] = request_id
+                unknown_count += 1
             self._journal_loading = False
             if records:
                 self._recover_protections()
-            if restored_details:
-                self.state_changed.emit(f"RESTORED {len(restored_details)} UNRESOLVED ORDER INTENTS")
+            if unknown_count:
+                self.state_changed.emit(f"RESTORED {unknown_count} UNRESOLVED ORDER INTENTS")
                 self.reconcile_unknown_orders()
 
         task = self._launch_task(lambda: journal.run("load"), restored, self._journal_failed, self._journal_pool)
@@ -316,6 +327,7 @@ class TradingGateway(QtCore.QObject):
         for order, context in legs:
             records.append({'kind': 'leg', 'client_id': context['client_id'], 'context': dict(context),
                             'order': dict(order), 'method': 'algoOrder.place'})
+            self._protection_cancel_tokens.setdefault(context['client_id'], threading.Event())
         serialized = _journal_json(records)
         self._protection_reserved_slots += len(legs)
         self._protection_records.update({record['client_id']: record for record in records})
@@ -352,7 +364,7 @@ class TradingGateway(QtCore.QObject):
                 symbol = str(order.get('symbol') or record['context'].get('symbol') or '')
                 try:
                     if record.get('not_accepted'):
-                        recovered.append({**record, 'result': {'symbol': symbol, 'status': 'REJECTED', 'executedQty': '0'}})
+                        recovered.append({**record, 'result': {'symbol': symbol, 'status': record.get('last_status') or 'REJECTED', 'executedQty': '0'}})
                         continue
                     result = normalize_order(self.rest.query_order_by_client_id(api_key, api_secret, symbol,
                                                                record['client_id'], algo=record['method'] == 'algoOrder.place'))
@@ -372,8 +384,7 @@ class TradingGateway(QtCore.QObject):
                 status = str(recovered['result'].get('status') or recovered['result'].get('algoStatus') or '').upper()
                 if current.get('_status_received_mono', 0.0) <= query_started:
                     self._observe_protection_order(recovered['client_id'], recovered['result'], received_at=query_started)
-                else:
-                    recovered['result'] = {**recovered['result'], **current.get('execution', {}), 'status': current.get('last_status') or status}
+                recovered['result'] = {**recovered['result'], **current.get('execution', {}), 'status': current.get('last_status') or status}
                 restored.append({**recovered, **current})
             result = {**result, 'records': restored}
             self._protection_recovery_pending = bool(result['errors'])
@@ -383,7 +394,7 @@ class TradingGateway(QtCore.QObject):
             flat_unconfirmed = any(
                 (record.get('last_status') in {'FILLED', 'FINISHED', 'CANCELED', 'EXPIRED', 'EXPIRED_IN_MATCH', 'REJECTED'}
                  or (record['kind'] == 'entry' and safe_float(record.get('execution', {}).get('executedQty')) > 0))
-                and not self.has_open_position(str(record['order'].get('symbol') or ''))
+                and not self.has_open_position(str(record['order'].get('symbol') or ''), str(record['order'].get('positionSide') or 'BOTH'))
                 and record.get('_status_received_mono', 0.0) > self._last_snapshot_mono
                 for record in restored
             )
@@ -394,7 +405,7 @@ class TradingGateway(QtCore.QObject):
             for record in restored:
                 symbol = str(record['order'].get('symbol') or '')
                 if (record['kind'] == 'leg' and record.get('last_status') in {'REJECTED', 'EXPIRED', 'EXPIRED_IN_MATCH'}
-                        and self.has_open_position(symbol)):
+                        and self.has_open_position(symbol, str(record['order'].get('positionSide') or 'BOTH'))):
                     result['errors'].append(f"{symbol} · {record['client_id']} · recovered protection ended with {record['last_status']}; inspect exposure")
             self._protection_recovery_pending = bool(result['errors'])
             if not result['errors'] and self._last_account_snapshot is not None:
@@ -457,7 +468,7 @@ class TradingGateway(QtCore.QObject):
             self._persist_protection_record(record)
         if status in {'CANCELED', 'FILLED', 'FINISHED', 'EXPIRED', 'EXPIRED_IN_MATCH', 'REJECTED'}:
             self._protection_cleanup_clients.discard(client_id)
-        if record.get('kind') == 'leg' and safe_float(execution.get('executedQty')) > 0:
+        if record.get('kind') == 'leg':
             self._cancel_completed_protection_tranche(record)
 
     def _with_child_execution(self, api_key: str, api_secret: str, symbol: str, source: dict) -> dict:
@@ -486,14 +497,22 @@ class TradingGateway(QtCore.QObject):
 
     def _cancel_protection_record(self, record: dict) -> None:
         client_id = str(record['client_id'])
+        self._protection_cleanup_clients.add(client_id)
+        token = self._protection_cancel_tokens.get(client_id)
+        if token is not None:
+            token.set()
+        execution = record.get('execution') or {}
+        if (not (execution.get('algoId') or execution.get('orderId'))
+                and (self._client_requests.get(client_id) in self.admitted_requests or token is not None)):
+            # A durable placement may still be waiting for its worker or clock
+            # sync. Stop it locally, or cancel after its acceptance is observed.
+            return
         if any(details.get('context', {}).get('cleanup_client') == client_id for details in self.request_details.values()):
             return
         attempts = self._protection_cleanup_attempts.get(client_id, 0)
         if attempts >= 3:
             return
         self._protection_cleanup_attempts[client_id] = attempts + 1
-        self._protection_cleanup_clients.add(client_id)
-        execution = record.get('execution') or {}
         symbol = str(record.get('order', {}).get('symbol') or '')
         if safe_float(execution.get('actualOrderId')) > 0:
             request, algo = {'symbol': symbol, 'orderId': execution['actualOrderId']}, False
@@ -536,21 +555,47 @@ class TradingGateway(QtCore.QObject):
             return
         scope = str(snapshot.get('ordersScope') or '')
         live_ids = {str(row.get('clientOrderId') or row.get('clientAlgoId') or '') for row in [*snapshot.get('orders', []), *snapshot.get('algoOrders', [])]}
+        live_engine_ids = {(str(row.get('symbol') or ''), str(row.get('orderId')))
+                           for row in snapshot.get('orders', []) if row.get('orderId')}
+        terminal = {'FILLED', 'FINISHED', 'CANCELED', 'EXPIRED', 'EXPIRED_IN_MATCH', 'REJECTED'}
         for client_id, entry in tuple(self._protection_records.items()):
-            if entry['kind'] != 'entry' or str(entry.get('last_status') or '').upper() not in {'FILLED', 'FINISHED', 'CANCELED', 'EXPIRED', 'EXPIRED_IN_MATCH', 'REJECTED'}:
+            if entry['kind'] != 'entry' or str(entry.get('last_status') or '').upper() not in terminal:
                 continue
             symbol = str(entry['order'].get('symbol') or '')
+            position_side = str(entry['order'].get('positionSide') or 'BOTH')
             if scope not in {'ALL', symbol} or entry.get('_status_received_mono', 0) > snapshot.get('_read_started_mono', 0):
                 continue
             related = [key for key, record in self._protection_records.items() if key == client_id or record['context'].get('entry_client_id') == client_id]
+            unfilled_entry = (len(related) == 1 and entry.get('last_status') in {'CANCELED', 'EXPIRED', 'EXPIRED_IN_MATCH', 'REJECTED'}
+                              and safe_float(entry.get('execution', {}).get('executedQty'), -1) == 0
+                              and safe_float(entry.get('context', {}).get('filled_quantity')) <= 0
+                              and safe_float(entry.get('context', {}).get('protected_quantity')) <= 0)
+            has_position = self.has_open_position(symbol, position_side) and not unfilled_entry
             engine_ids = {str(self._protection_records[key].get('execution', {}).get('actualOrderId') or '') for key in related}
-            live_engine = any(str(row.get('symbol') or '') == symbol and str(row.get('orderId') or '') in engine_ids
-                              for row in snapshot.get('orders', []))
-            if self.has_open_position(symbol) or any(key in live_ids for key in related) or live_engine:
-                if not self.has_open_position(symbol) and not live_engine and client_id not in live_ids:
+            live_engine = any((symbol, engine_id) in live_engine_ids for engine_id in engine_ids)
+            entry_engine_id = str(entry.get('execution', {}).get('actualOrderId') or '')
+            live_entry_engine = (symbol, entry_engine_id) in live_engine_ids
+            pending_related = any(
+                self._client_requests.get(key) in self.request_details
+                or (key in self._protection_cancel_tokens
+                    and self._protection_records[key].get('last_status') not in terminal
+                    and not self._protection_records[key].get('execution', {}).get('algoId')
+                    and not self._protection_records[key].get('execution', {}).get('orderId'))
+                for key in related
+            )
+            recent_related = any(self._protection_records[key].get('_status_received_mono', 0) > snapshot.get('_read_started_mono', 0)
+                                 for key in related)
+            if recent_related:
+                self._queue_account_refresh(symbol)
+            if has_position or any(key in live_ids for key in related) or live_engine or pending_related or recent_related:
+                if not has_position and not live_entry_engine and client_id not in live_ids:
                     for key in related:
                         record = self._protection_records[key]
-                        if record.get('kind') == 'leg' and key in live_ids:
+                        if (record.get('kind') == 'leg'
+                                and (key in live_ids or (key in self._protection_cancel_tokens and record.get('last_status') not in terminal)
+                                     or (record.get('last_status') not in terminal
+                                         and (record.get('execution', {}).get('algoId') or record.get('execution', {}).get('orderId')))
+                                     or (symbol, str(record.get('execution', {}).get('actualOrderId') or '')) in live_engine_ids)):
                             self._cancel_protection_record(record)
                 continue
             journal = self._journal
@@ -558,6 +603,9 @@ class TradingGateway(QtCore.QObject):
                 self._protection_records.pop(key, None)
                 self._protection_cleanup_clients.discard(key)
                 self._protection_cleanup_attempts.pop(key, None)
+                token = self._protection_cancel_tokens.pop(key, None)
+                if token is not None:
+                    token.set()
                 task = self._launch_task(lambda key=key: journal.run('retire_protection', key), lambda _result: None, self._journal_failed, self._journal_pool)
                 self.tasks.add(task)
         if not self._protection_records:
@@ -691,6 +739,7 @@ class TradingGateway(QtCore.QObject):
             or self.cross_pending
             or self.account_task is not None
             or self._protection_records
+            or any(details.get('transport_state') == 'uncertain' for details in self.request_details.values())
         ):
             self.problem.emit(
                 "Credentials cannot be replaced while a request is in flight, unresolved, or protection monitoring is active. "
@@ -730,6 +779,7 @@ class TradingGateway(QtCore.QObject):
         self._last_account_snapshot = None
         self._protection_cleanup_clients.clear()
         self._protection_cleanup_attempts.clear()
+        self._protection_cancel_tokens.clear()
         self.account_event_refresh_symbols.clear()
         self.cross_ready.clear()
         self.cross_pending.clear()
@@ -1058,10 +1108,14 @@ class TradingGateway(QtCore.QObject):
         client_id = str(details.get('client_id') or '')
         record = self._protection_records.get(client_id)
         if record is not None and not uncertain:
-            record['last_status'] = 'REJECTED'
+            obsolete = isinstance(context, dict) and context.get('protection_obsolete')
+            record['last_status'] = 'CANCELED' if obsolete else 'REJECTED'
+            if obsolete:
+                record['context']['protection_obsolete'] = True
             record['_status_received_mono'] = time.monotonic()
             if not (record.get('execution', {}).get('orderId') or record.get('execution', {}).get('algoId')):
                 record['not_accepted'] = True
+            self._protection_cleanup_clients.discard(client_id)
             self._persist_protection_record(record)
         if isinstance(context, dict):
             self.failure_contexts[request_id] = dict(context)
@@ -1077,6 +1131,8 @@ class TradingGateway(QtCore.QObject):
             self._mark_terminal(request_id)
         if isinstance(context, dict) and context.get('cleanup_client'):
             self._protection_recovery_pending = True
+            self._queue_account_refresh(str(context.get('symbol') or ''))
+        elif isinstance(context, dict) and context.get('protection_obsolete'):
             self._queue_account_refresh(str(context.get('symbol') or ''))
         self.request_failed.emit(request_id, message, uncertain)
 
@@ -1581,6 +1637,14 @@ class TradingGateway(QtCore.QObject):
             payload.setdefault("newOrderRespType", "RESULT")
             method = "order.place"
         client_id = str(payload.get("clientAlgoId") or payload.get("newClientOrderId") or "")
+        if protective:
+            token = self._protection_cancel_tokens.setdefault(client_id, threading.Event())
+            try:
+                if self.remaining_protection_quantity(context) <= 0:
+                    token.set()
+            except (ValueError, ArithmeticError) as exc:
+                self._remember_failure(request_id, f'Protection quantity could not be verified: {exc}', False, {'context': context})
+                return request_id
         details = {
             "method": method,
             "context": context,
@@ -2050,6 +2114,18 @@ class TradingGateway(QtCore.QObject):
                 lambda: self._send_or_rest(request_id, method, params, context, metadata),
             )
             return request_id
+        token = self._protection_cancel_tokens.get(client_id) if context.get('protective_leg') else None
+
+        def before_send() -> None:
+            if token is not None and token.is_set():
+                raise RuntimeError('Not sent: protection tranche already exited or closed.')
+
+        try:
+            before_send()
+        except RuntimeError as exc:
+            metadata['context'] = {**context, 'protection_obsolete': True}
+            self._remember_failure(request_id, str(exc), False, metadata)
+            return request_id
         plans = context.get('protections') or {}
         if (method in {'order.place', 'algoOrder.place'} and (plans.get('tp') or plans.get('sl'))
                 and self.user_socket.state() != QtNetwork.QAbstractSocket.SocketState.ConnectedState):
@@ -2121,7 +2197,7 @@ class TradingGateway(QtCore.QObject):
 
         def execute() -> Any:
             if method in {"order.place", "algoOrder.place"}:
-                return self.rest.place_order(api_key, api_secret, params)
+                return self.rest.place_order(api_key, api_secret, params, before_send=before_send)
             if method == "order.modify":
                 return self.rest.modify_order(api_key, api_secret, params)
             return self.rest.cancel_order(
@@ -2141,6 +2217,8 @@ class TradingGateway(QtCore.QObject):
         def failed(message: str) -> None:
             self.tasks.discard(task)
             self.admitted_requests.discard(request_id)
+            if message.startswith('Not sent: protection tranche already exited or closed.'):
+                metadata['context'] = {**context, 'protection_obsolete': True}
             if 'rate window' in message.lower() or 'published rate limit' in message.lower():
                 metadata['transport_state'] = 'rate_limited'
                 self._remember_failure(request_id, 'Local rate limit; not sent: ' + message, False, metadata)
@@ -2976,10 +3054,11 @@ class TradingGateway(QtCore.QObject):
         ]
         return values[0] if values and len(set(values)) == 1 else 0
 
-    def has_open_position(self, symbol: str) -> bool:
+    def has_open_position(self, symbol: str, position_side: str | None = None) -> bool:
         return any(
-            cached_symbol == symbol and abs(safe_float(row.get("positionAmt"))) > 0
-            for (cached_symbol, _side), row in self.position_cache.items()
+            cached_symbol == symbol and (position_side is None or side == position_side)
+            and abs(safe_float(row.get("positionAmt"))) > 0
+            for (cached_symbol, side), row in self.position_cache.items()
         )
 
     def open_position_symbols(self) -> tuple[str, ...]:
@@ -3010,6 +3089,8 @@ class TradingGateway(QtCore.QObject):
         self._lifecycle += 1
         self._client_requests.clear()
         self.trade_connected = False
+        for token in self._protection_cancel_tokens.values():
+            token.set()
         for task in tuple(self.tasks):
             task.cancel()
 

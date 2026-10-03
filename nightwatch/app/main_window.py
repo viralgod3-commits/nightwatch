@@ -9186,6 +9186,8 @@ class MainWindow(QtWidgets.QMainWindow):
         if client_id and not uncertain:
             self.pending_protections.pop(client_id, None)
         title = "ORDER OUTCOME UNKNOWN" if uncertain else "ORDER REJECTED"
+        if not uncertain and failure_context.get('protection_obsolete'):
+            title = 'PROTECTION CANCELED'
         detail = f"{request_id} · {message}"
         if uncertain:
             detail += " · No retry was attempted; inspect orders and fills."
@@ -9199,7 +9201,8 @@ class MainWindow(QtWidgets.QMainWindow):
             self.active_protection_legs.pop(
                 str(failure_context.get("client_id") or ""), None
             )
-            self._start_emergency_close(failure_context, message)
+            if not failure_context.get('protection_obsolete'):
+                self._start_emergency_close(failure_context, message)
 
     def _restore_saved_protections(self, recovered: dict) -> None:
         """Restore monitoring and cumulative allocation before processing new fills."""
@@ -9217,7 +9220,7 @@ class MainWindow(QtWidgets.QMainWindow):
                           and safe_float(result.get('executedQty')) < safe_float(context.get('quantity')))):
                     self.active_protection_legs.pop(client_id, None)
                     self.alerts_panel.append_alert("RECOVERED PROTECTION REJECTED", f"{client_id} · inspect position risk before resuming trading")
-                    if self.trading_gateway.has_open_position(str(context.get('symbol') or '')):
+                    if self.trading_gateway.has_open_position(str(context.get('symbol') or ''), str(context.get('position_side') or 'BOTH')):
                         self._start_emergency_close(context, f'Saved protection ended with {status} while offline or disconnected.')
                 else:
                     self.active_protection_legs.pop(client_id, None)
@@ -9233,7 +9236,9 @@ class MainWindow(QtWidgets.QMainWindow):
             self.alerts_panel.append_alert("PROTECTION RECOVERY NEEDS REVIEW", "\n".join(recovered["errors"]))
         for context, status in entries:
             symbol = str((context.get('entry') or {}).get('symbol') or '')
-            if status in {"FILLED", "FINISHED", "CANCELED", "EXPIRED", 'EXPIRED_IN_MATCH', "REJECTED"} and not self.trading_gateway.has_open_position(symbol):
+            position_side = str((context.get('entry') or {}).get('positionSide') or 'BOTH')
+            if (status in {"FILLED", "FINISHED", "CANCELED", "EXPIRED", 'EXPIRED_IN_MATCH', "REJECTED"}
+                    and (context['filled_quantity'] <= 0 or not self.trading_gateway.has_open_position(symbol, position_side))):
                 self.submitted_protection_clients.add(str(context['client_id']))
                 self.pending_protections.pop(str(context['client_id']), None)
                 continue

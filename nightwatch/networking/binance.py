@@ -1351,20 +1351,24 @@ class BinanceRest:
         fresh = age_s <= 90.0
         return {'synced': True, 'fresh': fresh, 'age_s': age_s, 'offset_ms': offset_ms, 'rtt_ms': rtt_ms, 'sync_count': sync_count, 'last_error': last_error}
 
-    def signed_request(self, api_key: str, api_secret: str, path: str, params: dict[str, Any] | None=None, method: str='GET', order_count: int=0) -> Any:
-        return run_async(self._signed_request_async(api_key, api_secret, path, params, method, order_count))
+    def signed_request(self, api_key: str, api_secret: str, path: str, params: dict[str, Any] | None=None, method: str='GET', order_count: int=0, *, before_send: Callable[[], None] | None = None) -> Any:
+        return run_async(self._signed_request_async(api_key, api_secret, path, params, method, order_count, before_send=before_send))
 
-    async def _signed_request_async(self, api_key: str, api_secret: str, path: str, params: dict[str, Any] | None=None, method: str='GET', order_count: int=0, *, priority: str='manual') -> Any:
+    async def _signed_request_async(self, api_key: str, api_secret: str, path: str, params: dict[str, Any] | None=None, method: str='GET', order_count: int=0, *, priority: str='manual', before_send: Callable[[], None] | None = None) -> Any:
         values = self._encoded_params(params or {})
         values.setdefault('recvWindow', '5000')
         headers = {'X-MBX-APIKEY': api_key, 'Content-Type': 'application/x-www-form-urlencoded'}
 
         async def send() -> Any:
+            if before_send is not None:
+                before_send()
             if not self.has_fresh_time_offset():
                 try:
                     await self._sync_time_once_async(priority=priority)
                 except (RuntimeError, TimeoutError, OSError) as exc:
                     raise RuntimeError(f'Not sent: Binance clock synchronization failed: {exc}') from exc
+            if before_send is not None:
+                before_send()
             values['timestamp'] = str(self.cached_timestamp_ms())
             query = urllib.parse.urlencode(values)
             signature = hmac.new(api_secret.encode('utf-8'), query.encode('utf-8'), hashlib.sha256).hexdigest()
@@ -1803,16 +1807,16 @@ class BinanceRest:
     def current_interest(self, symbol: str) -> dict[str, Any]:
         return self.get('/fapi/v1/openInterest', {'symbol': symbol})
 
-    def place_order(self, api_key: str, api_secret: str, order: dict[str, Any]) -> dict[str, Any]:
+    def place_order(self, api_key: str, api_secret: str, order: dict[str, Any], *, before_send: Callable[[], None] | None = None) -> dict[str, Any]:
         """Place exactly one order; conditional orders use Binance's Algo service."""
         params = dict(order)
         order_type = str(params.get('type', '')).upper()
         if order_type in CONDITIONAL_ORDER_TYPES:
             params.setdefault('algoType', 'CONDITIONAL')
             params.setdefault('clientAlgoId', params.pop('newClientOrderId', ''))
-            return self.signed_request(api_key, api_secret, '/fapi/v1/algoOrder', params, 'POST', order_count=1)
+            return self.signed_request(api_key, api_secret, '/fapi/v1/algoOrder', params, 'POST', order_count=1, before_send=before_send)
         params.setdefault('newOrderRespType', 'RESULT')
-        return self.signed_request(api_key, api_secret, '/fapi/v1/order', params, 'POST', order_count=1)
+        return self.signed_request(api_key, api_secret, '/fapi/v1/order', params, 'POST', order_count=1, before_send=before_send)
 
     def place_batch_orders(self, api_key: str, api_secret: str, orders: list[dict[str, Any]]) -> list[dict[str, Any]]:
         if not orders:
