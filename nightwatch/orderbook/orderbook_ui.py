@@ -458,6 +458,7 @@ from datetime import datetime, timezone
 from PySide6 import QtCore, QtGui, QtWidgets
 from PySide6.QtCore import Qt, Signal
 from ..models import OrderFlowSnapshot, OrderFlowTradePrint
+from .ipc import SnapshotDecoder, SnapshotSeedRequired
 from ..models import human_number
 from ..utilities import (
     ElidedLabel, TextRole, apply_text_render_hints, device_pixel_value, set_text_role,
@@ -5875,6 +5876,8 @@ class _DomRasterWorkerCanvas(_DomRasterCanvas):
 
 
 class _DomRasterProcess:
+    SNAPSHOT_INPUT = True
+
     def __init__(self, options):
         import os
         os.environ['QT_QPA_PLATFORM'] = 'offscreen'
@@ -5891,6 +5894,7 @@ class _DomRasterProcess:
         self.previous_slot = None
         self.pointer = None
         self.last_diagnostics = 0.0
+        self._snapshot_decoder = SnapshotDecoder()
 
     def _configure(self, value):
         self.epoch, config = value
@@ -5898,6 +5902,7 @@ class _DomRasterProcess:
         if config['market_epoch'] != self.market_epoch:
             canvas.set_symbol(config['symbol'])
             canvas.reset()
+            self._snapshot_decoder = SnapshotDecoder()
             self.market_epoch = config['market_epoch']
         if old.get('typography') != config['typography']:
             profiles, globals_ = config['typography']
@@ -5972,6 +5977,7 @@ class _DomRasterProcess:
         if 'config' in commands:
             self._configure(commands.pop('config'))
         canvas = self.canvas
+        seed_required = False
         # Old-market commands are rejected independently of their arrival order.
         for name, tagged in commands.items():
             market_epoch, args = tagged
@@ -5981,6 +5987,13 @@ class _DomRasterProcess:
                 self.pointer = args
             elif name == 'snapshot':
                 if args is not None:
+                    try:
+                        args = self._snapshot_decoder.decode(args, market_epoch)
+                    except SnapshotSeedRequired:
+                        # Keep the last complete image until the sender reseeds.
+                        # No partial levels or trades enter the renderer.
+                        seed_required = True
+                        continue
                     canvas.set_snapshot(args)
                     if not canvas._interaction_priority_active:
                         canvas._snapshot_prepare_timer.stop()
@@ -6003,6 +6016,8 @@ class _DomRasterProcess:
                 canvas.mouseMoveEvent(event)
         result = {'epoch': self.epoch, 'market_epoch': self.market_epoch,
                   'frame': None}
+        if seed_required:
+            result['_snapshot_seed_required'] = self.market_epoch
         if not canvas._dirty_pixels.isEmpty():
             slot, target = self._surface(lease)
             dirty, canvas._dirty_pixels = canvas._dirty_pixels, QtGui.QRegion()
@@ -6022,6 +6037,7 @@ class _DomRasterProcess:
         now = time.monotonic()
         if now - self.last_diagnostics >= 1.0:
             result['diagnostics'] = canvas.performance_state()
+            result['diagnostics']['snapshot_transport_received'] = self._snapshot_decoder.diagnostic_state()
             self.last_diagnostics = now
         result['_map'] = _map_dom_frame
         return result
@@ -6366,6 +6382,9 @@ class OrderFlowDomCanvas(_DomRasterCanvas):
         state['gui_blit_ms'] = self.last_paint_ms
         state['gui_blit_max_ms'] = self.max_paint_ms
         state['gui_paint_fps'] = self._actual_fps()
+        transport_state = getattr(self._process_link, 'snapshot_transport_state', None)
+        if callable(transport_state):
+            state['snapshot_transport'] = transport_state()
         state['worker_error'] = self._remote_error
         return state
 

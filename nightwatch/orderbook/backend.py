@@ -3368,7 +3368,10 @@ class _LocalOrderFlowRuntime(QtCore.QObject):
 
 import multiprocessing
 import threading
-from .ipc import install_snapshot_reducers
+from .ipc import (
+    SnapshotDecoder, SnapshotDelta, SnapshotEncoder, SnapshotSeedRequired,
+    install_snapshot_reducers,
+)
 
 
 # Both parent and spawned workers import this module before sending records.
@@ -3397,6 +3400,7 @@ class _OrderBookProcessLink(QtCore.QObject):
         self._thread = None
         self._pending_bytes = 0
         self._oldest_pending = 0.0
+        self._snapshot_wire_state = {}
         self.destroyed.connect(lambda *_: self.close())
 
     def enable(self, active):
@@ -3445,9 +3449,43 @@ class _OrderBookProcessLink(QtCore.QObject):
             self._closed = True
             self._condition.notify_all()
 
+    def snapshot_transport_state(self):
+        with self._condition:
+            return {name: dict(counts) for name, counts in self._snapshot_wire_state.items()}
+
+    def _exchange(self, connection, process, commands, lease):
+        if self._closed:
+            return None
+        connection.send((commands, lease))
+        while not connection.poll(0.05):
+            if self._closed:
+                return None
+            if not process.is_alive():
+                raise RuntimeError(f'Orderbook worker exited ({process.exitcode})')
+        result = connection.recv()
+        if 'error' in result:
+            raise RuntimeError(result['error'])
+        return result
+
+    @staticmethod
+    def _decode_snapshot_events(result, decoder):
+        # Reconstruct every pipe message before the lossy presentation mailbox.
+        # Even a GUI-superseded frame must advance the resident decoding base.
+        events = []
+        for name, generation, value in result['events']:
+            if name == 'snapshot_ready':
+                value = decoder.decode(value, generation)
+            elif name == 'diagnostic_ready' and isinstance(value, dict):
+                value = {**value, 'snapshot_transport_received': decoder.diagnostic_state()}
+            events.append((name, generation, value))
+        result['events'] = events
+
     def _run(self):
         process = connection = None
         try:
+            sender = SnapshotEncoder() if getattr(self._factory, 'SNAPSHOT_INPUT', False) else None
+            receiver = SnapshotDecoder() if getattr(self._factory, 'SNAPSHOT_OUTPUT', False) else None
+            last_snapshot = None
             context = multiprocessing.get_context('spawn')
             connection, child = context.Pipe()
             process = context.Process(target=_orderbook_process_main,
@@ -3470,15 +3508,49 @@ class _OrderBookProcessLink(QtCore.QObject):
                     self._pending_bytes = 0
                     self._oldest_pending = 0.0
                     lease = self._lease
-                connection.send((commands, lease))
-                while not connection.poll(0.05):
-                    if self._closed:
-                        return
-                    if not process.is_alive():
-                        raise RuntimeError(f'Orderbook worker exited ({process.exitcode})')
-                result = connection.recv()
-                if 'error' in result:
-                    raise RuntimeError(result['error'])
+                if sender is not None:
+                    encoded = []
+                    for name, value in commands:
+                        if name == 'snapshot':
+                            epoch, payload = value
+                            wire = sender.encode(payload, epoch)
+                            if isinstance(wire, SnapshotDelta):
+                                last_snapshot = (epoch, payload)
+                            value = (epoch, wire)
+                        encoded.append((name, value))
+                    commands = encoded
+                result = self._exchange(connection, process, commands, lease)
+                if result is None:
+                    return
+
+                if sender is not None:
+                    required = result.pop('_snapshot_seed_required', None)
+                    if required is not None:
+                        if last_snapshot is None or last_snapshot[0] != required:
+                            raise SnapshotSeedRequired('Renderer requested an unavailable snapshot base')
+                        epoch, payload = last_snapshot
+                        seed = sender.encode(payload, epoch, force_seed=True)
+                        # Retry only derived presentation; exchange commands and
+                        # market inputs already processed are never replayed.
+                        result = self._exchange(connection, process,
+                                                [('snapshot', (epoch, seed))], lease)
+                        if result is None:
+                            return
+                        if result.pop('_snapshot_seed_required', None) is not None:
+                            raise SnapshotSeedRequired('Renderer rejected a complete snapshot seed')
+
+                if receiver is not None:
+                    try:
+                        self._decode_snapshot_events(result, receiver)
+                    except SnapshotSeedRequired:
+                        retained = [event for event in result['events'] if event[0] != 'snapshot_ready']
+                        result = self._exchange(connection, process, [('_snapshot_seed', ())], lease)
+                        if result is None:
+                            return
+                        self._decode_snapshot_events(result, receiver)
+                        # Failures are ordered and lossless even when a derived
+                        # frame needs reseeding. Diagnostics may be superseded.
+                        result['events'] = retained + result['events']
 
                 mapper = result.pop('_map', None)
                 if mapper is not None:
@@ -3489,6 +3561,10 @@ class _OrderBookProcessLink(QtCore.QObject):
 
                     self._due = result.get('next_at', float('inf'))
                     self._awaiting_consumer = True
+                    self._snapshot_wire_state = {
+                        **({'sent': sender.diagnostic_state()} if sender is not None else {}),
+                        **({'received': receiver.diagnostic_state()} if receiver is not None else {}),
+                    }
                 if self._closed:
                     break
                 try:
@@ -3549,22 +3625,44 @@ def _orderbook_process_main(connection, factory, options):
 
 
 class _OrderFlowAnalysisProcess:
+    SNAPSHOT_OUTPUT = True
+
     def __init__(self, options):
         self.application = QtCore.QCoreApplication.instance() or QtCore.QCoreApplication([])
         self.runtime = _LocalOrderFlowRuntime(**options)
         self.events = []
+        self._snapshot_encoder = SnapshotEncoder()
+        self._latest_snapshot = None
         for name in ('snapshot_ready', 'microstructure_ready', 'diagnostic_ready', 'failed'):
             getattr(self.runtime, name).connect(
                 lambda generation, value, name=name: self.events.append((name, generation, value)))
 
     def step(self, commands, _lease):
+        seed_requested = False
         for name, args in commands:
+            if name == '_snapshot_seed':
+                seed_requested = True
+                continue
+            if name == 'reset_model':
+                self._latest_snapshot = None
             getattr(self.runtime, name)(*args)
         self.application.processEvents()
         events, self.events = self.events, []
+        if (seed_requested and self._latest_snapshot is not None
+                and not any(name == 'snapshot_ready' for name, _, _ in events)):
+            generation, payload = self._latest_snapshot
+            events.append(('snapshot_ready', generation, payload))
+        encoded = []
+        for name, generation, value in events:
+            if name == 'snapshot_ready':
+                self._latest_snapshot = (generation, value)
+                value = self._snapshot_encoder.encode(value, generation, force_seed=seed_requested)
+            elif name == 'diagnostic_ready' and isinstance(value, dict):
+                value = {**value, 'snapshot_transport_sent': self._snapshot_encoder.diagnostic_state()}
+            encoded.append((name, generation, value))
         due = [max(1, timer.remainingTime()) for timer in
                (self.runtime._snapshot_timer, self.runtime._decay_timer) if timer.isActive()]
-        return {'events': events, 'next_at': time.monotonic() + min(due, default=float('inf')) / 1000.0}
+        return {'events': encoded, 'next_at': time.monotonic() + min(due, default=float('inf')) / 1000.0}
 
     def close(self):
         self.runtime.shutdown()

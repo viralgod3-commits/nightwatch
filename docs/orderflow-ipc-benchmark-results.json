@@ -1,0 +1,411 @@
+{
+  "date_utc": "2026-10-03",
+  "base_commit": "11b269e70a54acf8b7b53a91d31837661aaeed4e",
+  "synthetic_runs": [
+    {
+      "python": "3.12.14",
+      "platform": "Linux-6.18.44-x86_64-with-glibc2.39",
+      "levels_per_side": 120,
+      "retained_prints": 2048,
+      "dom_receives_every_nth_frame": 3,
+      "measurement": "synthetic two-hop encoding/pickle/reconstruction; excludes kernel pipes and FPS",
+      "cases": [
+        {
+          "case": "bbo_only",
+          "samples": 24,
+          "complete_fields_preserved": true,
+          "seed_bytes_two_hops": 458636,
+          "full": {
+            "bytes": 6616288,
+            "median_ms": 5.9194,
+            "p95_ms": 11.5909,
+            "max_ms": 14.4883
+          },
+          "incremental": {
+            "bytes": 14144,
+            "median_ms": 0.2201,
+            "p95_ms": 0.4268,
+            "max_ms": 0.6106
+          },
+          "transfer_reduction_pct": 99.786,
+          "analysis_sent": {
+            "seeds": 1,
+            "deltas": 24,
+            "level_records": 240,
+            "print_records": 2048,
+            "field_values": 40320,
+            "removed_records": 0
+          },
+          "dom_sent": {
+            "seeds": 1,
+            "deltas": 8,
+            "level_records": 240,
+            "print_records": 2048,
+            "field_values": 40320,
+            "removed_records": 0
+          }
+        },
+        {
+          "case": "sparse_corrections",
+          "samples": 24,
+          "complete_fields_preserved": true,
+          "seed_bytes_two_hops": 458636,
+          "full": {
+            "bytes": 6619392,
+            "median_ms": 5.3852,
+            "p95_ms": 12.8226,
+            "max_ms": 18.8916
+          },
+          "incremental": {
+            "bytes": 26784,
+            "median_ms": 0.9741,
+            "p95_ms": 1.8085,
+            "max_ms": 1.8373
+          },
+          "transfer_reduction_pct": 99.595,
+          "analysis_sent": {
+            "seeds": 1,
+            "deltas": 24,
+            "level_records": 360,
+            "print_records": 2288,
+            "field_values": 41280,
+            "removed_records": 0
+          },
+          "dom_sent": {
+            "seeds": 1,
+            "deltas": 8,
+            "level_records": 280,
+            "print_records": 2128,
+            "field_values": 40640,
+            "removed_records": 0
+          }
+        },
+        {
+          "case": "rolling_prints",
+          "samples": 24,
+          "complete_fields_preserved": true,
+          "seed_bytes_two_hops": 458636,
+          "full": {
+            "bytes": 6622528,
+            "median_ms": 5.7937,
+            "p95_ms": 14.199,
+            "max_ms": 14.3565
+          },
+          "incremental": {
+            "bytes": 284466,
+            "median_ms": 0.8496,
+            "p95_ms": 1.6401,
+            "max_ms": 1.6729
+          },
+          "transfer_reduction_pct": 95.705,
+          "analysis_sent": {
+            "seeds": 1,
+            "deltas": 24,
+            "level_records": 240,
+            "print_records": 2528,
+            "field_values": 47520,
+            "removed_records": 480
+          },
+          "dom_sent": {
+            "seeds": 1,
+            "deltas": 8,
+            "level_records": 240,
+            "print_records": 2528,
+            "field_values": 47520,
+            "removed_records": 480
+          }
+        },
+        {
+          "case": "age_refresh",
+          "samples": 24,
+          "complete_fields_preserved": true,
+          "seed_bytes_two_hops": 458636,
+          "full": {
+            "bytes": 6670048,
+            "median_ms": 5.8238,
+            "p95_ms": 11.6931,
+            "max_ms": 12.6558
+          },
+          "incremental": {
+            "bytes": 185888,
+            "median_ms": 2.3271,
+            "p95_ms": 4.3435,
+            "max_ms": 4.4801
+          },
+          "transfer_reduction_pct": 97.213,
+          "analysis_sent": {
+            "seeds": 1,
+            "deltas": 24,
+            "level_records": 6000,
+            "print_records": 2048,
+            "field_values": 51840,
+            "removed_records": 0
+          },
+          "dom_sent": {
+            "seeds": 1,
+            "deltas": 8,
+            "level_records": 2160,
+            "print_records": 2048,
+            "field_values": 44160,
+            "removed_records": 0
+          }
+        },
+        {
+          "case": "dense_levels",
+          "samples": 24,
+          "complete_fields_preserved": true,
+          "seed_bytes_two_hops": 458636,
+          "full": {
+            "bytes": 6728128,
+            "median_ms": 5.7339,
+            "p95_ms": 12.6449,
+            "max_ms": 14.1589
+          },
+          "incremental": {
+            "bytes": 1824928,
+            "median_ms": 1.9104,
+            "p95_ms": 3.5254,
+            "max_ms": 3.6458
+          },
+          "transfer_reduction_pct": 72.876,
+          "analysis_sent": {
+            "seeds": 1,
+            "deltas": 24,
+            "level_records": 6000,
+            "print_records": 2048,
+            "field_values": 270720,
+            "removed_records": 0
+          },
+          "dom_sent": {
+            "seeds": 1,
+            "deltas": 8,
+            "level_records": 2160,
+            "print_records": 2048,
+            "field_values": 117120,
+            "removed_records": 0
+          }
+        }
+      ]
+    },
+    {
+      "python": "3.12.14",
+      "platform": "Linux-6.18.44-x86_64-with-glibc2.39",
+      "levels_per_side": 1000,
+      "retained_prints": 2048,
+      "dom_receives_every_nth_frame": 1,
+      "measurement": "synthetic two-hop encoding/pickle/reconstruction; excludes kernel pipes and FPS",
+      "cases": [
+        {
+          "case": "bbo_only",
+          "samples": 24,
+          "complete_fields_preserved": true,
+          "seed_bytes_two_hops": 1266584,
+          "full": {
+            "bytes": 29948784,
+            "median_ms": 33.6675,
+            "p95_ms": 44.9246,
+            "max_ms": 45.7002
+          },
+          "incremental": {
+            "bytes": 21216,
+            "median_ms": 0.5526,
+            "p95_ms": 0.9073,
+            "max_ms": 0.9624
+          },
+          "transfer_reduction_pct": 99.929,
+          "analysis_sent": {
+            "seeds": 1,
+            "deltas": 24,
+            "level_records": 2000,
+            "print_records": 2048,
+            "field_values": 110720,
+            "removed_records": 0
+          },
+          "dom_sent": {
+            "seeds": 1,
+            "deltas": 24,
+            "level_records": 2000,
+            "print_records": 2048,
+            "field_values": 110720,
+            "removed_records": 0
+          }
+        },
+        {
+          "case": "sparse_corrections",
+          "samples": 24,
+          "complete_fields_preserved": true,
+          "seed_bytes_two_hops": 1266584,
+          "full": {
+            "bytes": 29953440,
+            "median_ms": 29.345,
+            "p95_ms": 40.7228,
+            "max_ms": 45.47
+          },
+          "incremental": {
+            "bytes": 40176,
+            "median_ms": 2.5687,
+            "p95_ms": 3.3117,
+            "max_ms": 3.4398
+          },
+          "transfer_reduction_pct": 99.866,
+          "analysis_sent": {
+            "seeds": 1,
+            "deltas": 24,
+            "level_records": 2120,
+            "print_records": 2288,
+            "field_values": 111680,
+            "removed_records": 0
+          },
+          "dom_sent": {
+            "seeds": 1,
+            "deltas": 24,
+            "level_records": 2120,
+            "print_records": 2288,
+            "field_values": 111680,
+            "removed_records": 0
+          }
+        },
+        {
+          "case": "rolling_prints",
+          "samples": 24,
+          "complete_fields_preserved": true,
+          "seed_bytes_two_hops": 1266584,
+          "full": {
+            "bytes": 29958024,
+            "median_ms": 30.5057,
+            "p95_ms": 39.077,
+            "max_ms": 39.1229
+          },
+          "incremental": {
+            "bytes": 389994,
+            "median_ms": 1.6348,
+            "p95_ms": 2.0481,
+            "max_ms": 3.0113
+          },
+          "transfer_reduction_pct": 98.698,
+          "analysis_sent": {
+            "seeds": 1,
+            "deltas": 24,
+            "level_records": 2000,
+            "print_records": 2528,
+            "field_values": 117920,
+            "removed_records": 480
+          },
+          "dom_sent": {
+            "seeds": 1,
+            "deltas": 24,
+            "level_records": 2000,
+            "print_records": 2528,
+            "field_values": 117920,
+            "removed_records": 480
+          }
+        },
+        {
+          "case": "age_refresh",
+          "samples": 24,
+          "complete_fields_preserved": true,
+          "seed_bytes_two_hops": 1266584,
+          "full": {
+            "bytes": 30620784,
+            "median_ms": 31.365,
+            "p95_ms": 42.3039,
+            "max_ms": 44.8971
+          },
+          "incremental": {
+            "bytes": 2137392,
+            "median_ms": 28.8049,
+            "p95_ms": 37.6206,
+            "max_ms": 44.4231
+          },
+          "transfer_reduction_pct": 93.02,
+          "analysis_sent": {
+            "seeds": 1,
+            "deltas": 24,
+            "level_records": 50000,
+            "print_records": 2048,
+            "field_values": 206720,
+            "removed_records": 0
+          },
+          "dom_sent": {
+            "seeds": 1,
+            "deltas": 24,
+            "level_records": 50000,
+            "print_records": 2048,
+            "field_values": 206720,
+            "removed_records": 0
+          }
+        },
+        {
+          "case": "dense_levels",
+          "samples": 24,
+          "complete_fields_preserved": true,
+          "seed_bytes_two_hops": 1266584,
+          "full": {
+            "bytes": 31340856,
+            "median_ms": 35.3267,
+            "p95_ms": 57.9601,
+            "max_ms": 164.1935
+          },
+          "incremental": {
+            "bytes": 22592496,
+            "median_ms": 28.627,
+            "p95_ms": 40.2389,
+            "max_ms": 55.9064
+          },
+          "transfer_reduction_pct": 27.914,
+          "analysis_sent": {
+            "seeds": 1,
+            "deltas": 24,
+            "level_records": 50000,
+            "print_records": 2048,
+            "field_values": 2030720,
+            "removed_records": 0
+          },
+          "dom_sent": {
+            "seeds": 1,
+            "deltas": 24,
+            "level_records": 50000,
+            "print_records": 2048,
+            "field_values": 2030720,
+            "removed_records": 0
+          }
+        }
+      ]
+    }
+  ],
+  "actual_process_session": {
+    "generation": 8,
+    "updates": 105,
+    "snapshots": 95,
+    "errors": [],
+    "contexts": [
+      7,
+      8
+    ],
+    "elapsed_seconds": 3.202,
+    "analysis_transport": {
+      "received": {
+        "seeds": 2,
+        "deltas": 93,
+        "level_records": 1920,
+        "print_records": 0,
+        "field_values": 16000,
+        "removed_records": 0
+      }
+    },
+    "dom_transport": {
+      "sent": {
+        "seeds": 2,
+        "deltas": 87,
+        "level_records": 1920,
+        "print_records": 0,
+        "field_values": 16000,
+        "removed_records": 0
+      }
+    },
+    "raster_market_epoch": 1,
+    "raster_sequence": 94,
+    "worker_error": ""
+  },
+  "limits": "Offline Linux timings; excludes kernel pipe timing from synthetic runs and does not measure Windows onscreen FPS."
+}
