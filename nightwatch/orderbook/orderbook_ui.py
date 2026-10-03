@@ -460,7 +460,7 @@ from PySide6.QtCore import Qt, Signal
 from ..models import OrderFlowSnapshot, OrderFlowTradePrint
 from ..models import human_number
 from ..utilities import (
-    ElidedLabel, TextRole, apply_text_render_hints, set_text_role,
+    ElidedLabel, TextRole, apply_text_render_hints, device_pixel_value, set_text_role,
     typography_font, typography_font_at_pixel_size, typography_min_pixel_size,
     typography_state_opacity,
 )
@@ -722,6 +722,8 @@ class _TradePriceDelegate(QtWidgets.QStyledItemDelegate):
             painter.setPen(color)
             x = rect.right() - line.naturalTextWidth()
             y = rect.top() + (rect.height() - line.height()) / 2
+            x = device_pixel_value(device, x)
+            y = device_pixel_value(device, y + line.ascent()) - line.ascent()
             layout.draw(painter, QtCore.QPointF(x, y))
         finally:
             painter.restore()
@@ -5938,7 +5940,8 @@ class _DomRasterProcess:
         canvas = self.canvas
         dpr = canvas.devicePixelRatioF()
         width, height = max(1, math.ceil(canvas.width()*dpr)), max(1, math.ceil(canvas.height()*dpr))
-        shape = (width, height, dpr)
+        dpi = (canvas.logicalDpiX(), canvas.logicalDpiY())
+        shape = (width, height, dpr, *dpi)
         if shape != self.shape:
             self._release_memory()
             size = width*height*4
@@ -5948,6 +5951,9 @@ class _DomRasterProcess:
                            for i in range(2)]
             for image in self.images:
                 image.setDevicePixelRatio(dpr)
+                # Match point-sized text to the canvas's measured logical DPI.
+                image.setDotsPerMeterX(round(dpi[0] / 0.0254))
+                image.setDotsPerMeterY(round(dpi[1] / 0.0254))
                 image.fill(canvas._bg)
             self.shape, self.previous_slot = shape, None
             canvas._dirty_pixels = QtGui.QRegion(canvas.rect())
@@ -6003,7 +6009,7 @@ class _DomRasterProcess:
             canvas._paint_target = target
             canvas.paintEvent(QtGui.QPaintEvent(dirty))
             canvas._paint_target = None
-            result['frame'] = (self.memory.name, slot, *self.shape)
+            result['frame'] = (self.memory.name, slot, *self.shape[:3])
             result['geometry'] = canvas._geometry
             ready = canvas.snapshot is not None and canvas.snapshot.ready
             result['prices'] = (tuple(row.level.price for row in canvas._ask_rows) if ready else (),
@@ -6299,9 +6305,16 @@ class OrderFlowDomCanvas(_DomRasterCanvas):
                 painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, self._remote_error)
         else:
             image = frame['pixels'].images[frame['frame'][1]]
-            # Exact device pixels normally; resizing temporarily scales only the
-            # last finished image until the new geometry arrives.
-            painter.drawImage(QtCore.QRectF(self.rect()), image)
+            dpr = self.devicePixelRatioF()
+            if (math.isclose(image.devicePixelRatioF(), dpr)
+                    and image.width() == math.ceil(self.width() * dpr)
+                    and image.height() == math.ceil(self.height() * dpr)):
+                # Ceil-rounded fractional-DPI images extend past rect() slightly.
+                # Clip native pixels instead of squeezing/resampling the glyphs.
+                painter.drawImage(QtCore.QPointF(), image)
+            else:
+                # Keep resize feedback until the new-size/DPI frame arrives.
+                painter.drawImage(QtCore.QRectF(self.rect()), image)
         painter.end()
         self.last_paint_ms = (time.perf_counter()-started)*1000.0
         self.max_paint_ms = max(self.max_paint_ms, self.last_paint_ms)

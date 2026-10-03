@@ -341,22 +341,10 @@ def main() -> int:
 
 
     dpi_mode = bootstrap_settings.value("developer/typography_dpi_rounding_v1", "auto", str)
-    policy_map = {
-        "round": Qt.HighDpiScaleFactorRoundingPolicy.Round,
-        "passthrough": Qt.HighDpiScaleFactorRoundingPolicy.PassThrough,
-        "round_prefer_floor": Qt.HighDpiScaleFactorRoundingPolicy.RoundPreferFloor,
-        "floor": Qt.HighDpiScaleFactorRoundingPolicy.Floor,
-        "ceil": Qt.HighDpiScaleFactorRoundingPolicy.Ceil,
-    }
-    if dpi_mode == "auto" or dpi_mode not in policy_map:
-        dpi_rounding_policy = (
-            Qt.HighDpiScaleFactorRoundingPolicy.Round
-            if sys.platform.startswith("win")
-            else Qt.HighDpiScaleFactorRoundingPolicy.PassThrough
-        )
-    else:
-        dpi_rounding_policy = policy_map[dpi_mode]
-    QtGui.QGuiApplication.setHighDpiScaleFactorRoundingPolicy(dpi_rounding_policy)
+    from .utilities import typography_dpi_rounding_policy
+    QtGui.QGuiApplication.setHighDpiScaleFactorRoundingPolicy(
+        typography_dpi_rounding_policy(dpi_mode)
+    )
     QtWidgets.QApplication.setAttribute(
         Qt.ApplicationAttribute.AA_DontUseNativeDialogs,
         True,

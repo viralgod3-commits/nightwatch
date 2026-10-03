@@ -31,4 +31,6 @@ jobs:
           sudo apt-get install -y libegl1 libopengl0 libxkbcommon0
       - run: python -m pip install -r requirements-dev.txt
       - run: python -m compileall -q nightwatch nightwatch_futures.py
+      - name: Typography UI at 1080p and 1440p
+        run: python -m pytest -q tests/test_typography_ui.py
       - run: python -m pytest -q

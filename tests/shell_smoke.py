@@ -19,7 +19,7 @@ def check_market_bar(window, app):
     assert window.market_bar_timeframes == DEFAULT_MARKET_BAR_TIMEFRAMES
     assert window.instrument_bar.row.contentsMargins().left() == 8
     assert window.instrument_bar.row.contentsMargins().right() == 8
-    assert window.instrument_bar.height() == 48
+    assert window.instrument_bar.height() == 44
     assert window.stats.timeframe_selector.count() == 8
     QTest.keyClick(window.chart, QtCore.Qt.Key.Key_6)
     assert window.current_interval == '1d', 'Default key 6 must select 1D after removing 12h'

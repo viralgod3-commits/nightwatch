@@ -181,7 +181,7 @@ TYPOGRAPHY_DEFAULTS: dict[str, dict[str, Any]] = {
     TextRole.MARKET_VALUE_HERO: _font_profile("numeric", 17.0, 600, hinting="full", fixed_pitch=True, numeric_width="extended"),
     TextRole.TABLE_TEXT: _font_profile("ui", 9.0, 400, hinting="vertical"),
     TextRole.TABLE_VALUE: _font_profile("numeric", 9.0, 500, hinting="full", fixed_pitch=True),
-    TextRole.CHART_AXIS: _font_profile("numeric", 8.5, 400, hinting="vertical", fixed_pitch=True),
+    TextRole.CHART_AXIS: _font_profile("numeric", 9.0, 500, hinting="full", fixed_pitch=True),
     TextRole.CHART_OVERLAY: _font_profile("numeric", 9.0, 500, hinting="full", fixed_pitch=True),
     # Painted DOM text is pixel-sized so row geometry stays deterministic.
     # Comfortable default spacing and tabular numerics support quick scanning;
@@ -195,7 +195,7 @@ TYPOGRAPHY_DEFAULTS: dict[str, dict[str, Any]] = {
     TextRole.ORDERBOOK_SYMBOL: _font_profile("ui", 14.0, 600, hinting="vertical", size_mode="pixel"),
     TextRole.ORDERBOOK_FOOTER_VALUE: _font_profile("numeric", 11.0, 500, hinting="full", fixed_pitch=True, size_mode="pixel"),
     TextRole.ORDERBOOK_CENTER_PRICE: _font_profile("numeric", 20.0, 600, hinting="full", fixed_pitch=True, size_mode="pixel"),
-    TextRole.MAGNETIC_RAIL_PRICE: _font_profile("numeric", 8.5, 500, hinting="vertical", fixed_pitch=True),
+    TextRole.MAGNETIC_RAIL_PRICE: _font_profile("numeric", 8.5, 500, hinting="full", fixed_pitch=True),
     TextRole.RAIL_LABEL: _font_profile("ui", 7.5, 500, hinting="vertical"),
     TextRole.RAIL_CONTROL: _font_profile("ui", 6.75, 600, hinting="vertical"),
     TextRole.ALERT_TEXT: {
@@ -211,13 +211,13 @@ TYPOGRAPHY_DEFAULTS: dict[str, dict[str, Any]] = {
     },
     TextRole.STATUS_TEXT: _font_profile("ui", 7.5, 400, hinting="vertical"),
     TextRole.STATUS_MESSAGE: _font_profile("ui", 7.5, 400, hinting="vertical"),
-    TextRole.STATUS_LATENCY: _font_profile("numeric", 7.5, 400, hinting="vertical", fixed_pitch=True),
+    TextRole.STATUS_LATENCY: _font_profile("numeric", 7.5, 500, hinting="full", fixed_pitch=True),
 }
 
 TYPOGRAPHY_GLOBAL_DEFAULTS: dict[str, Any] = {
     "painter_text_antialias": True,
-    # Applied by entrypoint before QApplication. 'auto' = Round on Windows,
-    # PassThrough elsewhere, matching the previous Nightwatch behavior.
+    # Applied before QApplication. Preserve the monitor's native scale,
+    # including Windows 125% and 150%, unless explicitly overridden.
     "dpi_rounding": "auto",
 }
 
@@ -342,15 +342,20 @@ def _weight_enum(value: int) -> QtGui.QFont.Weight:
 _UI_FONT_FAMILY = "Inter"
 _NUMERIC_FONT_FAMILY = "Iosevka"
 _NUMERIC_FONT_FAMILIES: dict[tuple[str, int], str] = {}
+_NUMERIC_FONT_STYLES: dict[tuple[str, int], str] = {}
+
+
+def _numeric_font_key(width: str, weight: int) -> tuple[str, int]:
+    normalized_width = "extended" if width == "extended" else "normal"
+    candidates = (500, 600) if normalized_width == "extended" else (400, 500, 600, 700)
+    nearest = min(candidates, key=lambda candidate: abs(candidate - int(weight)))
+    return normalized_width, nearest
 
 
 def _numeric_font_family(width: str, weight: int) -> str:
     """Return the closest bundled Iosevka static face registered with Qt."""
-    normalized_width = "extended" if width == "extended" else "normal"
-    candidates = (500, 600) if normalized_width == "extended" else (400, 500, 600, 700)
-    nearest = min(candidates, key=lambda candidate: abs(candidate - int(weight)))
     return (
-        _NUMERIC_FONT_FAMILIES.get((normalized_width, nearest))
+        _NUMERIC_FONT_FAMILIES.get(_numeric_font_key(width, weight))
         or _NUMERIC_FONT_FAMILY
         or "Iosevka"
     )
@@ -392,6 +397,8 @@ def _apply_numeric_opentype_features(font: QtGui.QFont) -> None:
     for tag, value in (
         ("zero", 1),
         ("lnum", 1),
+        ("tnum", 1),
+        ("pnum", 0),
         ("onum", 0),
         ("calt", 0),
         ("dlig", 0),
@@ -536,6 +543,16 @@ class TypographyController(QtCore.QObject):
         else:
             font.setPointSizeF(float(profile["size"]))
         font.setWeight(_weight_enum(int(profile["weight"])))
+        # Normal and Extended Iosevka share a typographic family. Bind the
+        # actual static style so wider roles use their designed outlines.
+        style = (
+            _NUMERIC_FONT_STYLES.get(_numeric_font_key(
+                str(profile.get("numeric_width", "normal")), int(profile["weight"])
+            ), "")
+            if numeric and profile.get("numeric_width") == "extended" else ""
+        )
+        if style or font.styleName():
+            font.setStyleName(style)
         font.setStyleHint(
             QtGui.QFont.StyleHint.Monospace
             if profile["family"] == "numeric"
@@ -696,6 +713,18 @@ def apply_text_render_hints(painter: QtGui.QPainter) -> None:
     )
 
 
+def typography_dpi_rounding_policy(mode: str = "auto") -> Qt.HighDpiScaleFactorRoundingPolicy:
+    """Use native per-monitor scaling unless the developer explicitly overrides it."""
+    policies = {
+        "round": Qt.HighDpiScaleFactorRoundingPolicy.Round,
+        "passthrough": Qt.HighDpiScaleFactorRoundingPolicy.PassThrough,
+        "round_prefer_floor": Qt.HighDpiScaleFactorRoundingPolicy.RoundPreferFloor,
+        "floor": Qt.HighDpiScaleFactorRoundingPolicy.Floor,
+        "ceil": Qt.HighDpiScaleFactorRoundingPolicy.Ceil,
+    }
+    return policies.get(str(mode).lower(), Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
+
+
 def _font_path(font_root: str, filename: str) -> str:
     path = os.path.join(font_root, filename)
     if os.path.isfile(path):
@@ -706,12 +735,18 @@ def _font_path(font_root: str, filename: str) -> str:
     )
 
 
-def _register_font(font_root: str, filename: str) -> str:
-    identifier = QtGui.QFontDatabase.addApplicationFont(_font_path(font_root, filename))
+def _register_font(font_root: str, filename: str) -> tuple[str, str]:
+    path = _font_path(font_root, filename)
+    identifier = QtGui.QFontDatabase.addApplicationFont(path)
     families = QtGui.QFontDatabase.applicationFontFamilies(identifier)
     if not families:
         raise ValueError(f"Qt could not load {filename} from {font_root!r}.")
-    return families[0]
+    style = QtGui.QRawFont(path, 12.0).styleName()
+    for family in families:
+        if style in QtGui.QFontDatabase.styles(family):
+            return family, style
+    # Some platform databases expose only the legacy static-face family.
+    return families[-1], "Regular"
 
 
 def _apply_typography_if_alive(widget: QtWidgets.QWidget) -> None:
@@ -951,18 +986,20 @@ def load_app_fonts(application: QtGui.QGuiApplication, package_root: str) -> Non
             # Source checkouts and packaged builds without optional fonts must
             # still start. Resolve resources independently of the launch CWD.
             fallback = QtGui.QFontDatabase.SystemFont.FixedFont if key.startswith("numeric") else QtGui.QFontDatabase.SystemFont.GeneralFont
-            registered[key] = QtGui.QFontDatabase.systemFont(fallback).family()
-    _UI_FONT_FAMILY = registered["ui_regular"]
-    _NUMERIC_FONT_FAMILY = registered["numeric_regular"]
+            registered[key] = (QtGui.QFontDatabase.systemFont(fallback).family(), "")
+    _UI_FONT_FAMILY = registered["ui_regular"][0]
+    _NUMERIC_FONT_FAMILY = registered["numeric_regular"][0]
     _NUMERIC_FONT_FAMILIES.clear()
-    _NUMERIC_FONT_FAMILIES.update({
-        ("normal", 400): registered["numeric_regular"],
-        ("normal", 500): registered["numeric_medium"],
-        ("normal", 600): registered["numeric_semibold"],
-        ("normal", 700): registered["numeric_bold"],
-        ("extended", 500): registered["numeric_extended_medium"],
-        ("extended", 600): registered["numeric_extended_semibold"],
-    })
+    _NUMERIC_FONT_STYLES.clear()
+    for face_key, key in (
+        (("normal", 400), "numeric_regular"),
+        (("normal", 500), "numeric_medium"),
+        (("normal", 600), "numeric_semibold"),
+        (("normal", 700), "numeric_bold"),
+        (("extended", 500), "numeric_extended_medium"),
+        (("extended", 600), "numeric_extended_semibold"),
+    ):
+        _NUMERIC_FONT_FAMILIES[face_key], _NUMERIC_FONT_STYLES[face_key] = registered[key]
 
     # leadership.py is intentionally untouched; keep its legacy constants in
     # sync without allowing constants.py to own typography configuration.
@@ -991,7 +1028,7 @@ from PySide6 import QtCore, QtGui, QtWidgets
 from PySide6.QtCore import Qt
 
 
-def device_pixel_value(widget: QtWidgets.QWidget, value: float) -> float:
+def device_pixel_value(widget: QtGui.QPaintDevice, value: float) -> float:
     """Snap one logical coordinate to the nearest physical device pixel."""
     ratio = max(1.0, float(widget.devicePixelRatioF()))
     return round(float(value) * ratio) / ratio

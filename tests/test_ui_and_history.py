@@ -189,7 +189,7 @@ def test_fonts_are_resolved_independently_of_cwd(qapp, tmp_path, monkeypatch):
     from nightwatch import utilities
     seen = []
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(utilities, '_register_font', lambda root, filename: seen.append(root) or 'Sans Serif')
+    monkeypatch.setattr(utilities, '_register_font', lambda root, filename: seen.append(root) or ('Sans Serif', ''))
     utilities.load_app_fonts(qapp, str(tmp_path / 'project' / 'nightwatch'))
     assert set(seen) == {str(tmp_path / 'project' / 'fonts')}
 
