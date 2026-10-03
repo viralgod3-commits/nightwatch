@@ -121,6 +121,7 @@ def test_desktop_ui_at_1080p_and_1440p(scale, tmp_path):
     assert result.returncode == 0, result.stdout + result.stderr
     report = json.loads((tmp_path / 'report.json').read_text())
     assert report['dpr'] == float(scale)
+    assert report['platform'] == ('windows' if sys.platform == 'win32' else 'offscreen')
     assert len(report['screens']) == 2
     assert report['dom_pixels_unchanged']
 
@@ -152,12 +153,20 @@ def probe(output):
     from nightwatch.app.main_window import MainWindow
     MainWindow._run_deferred_startup_stage = lambda self: None
     MainWindow._on_order_flow_runtime_snapshot = lambda *args: None
+    MainWindow._fit_normal_window_to_available_height = lambda self: None
     window = MainWindow(testnet=True)
     window.start_fullscreen = window.start_maximized = False
+    # A CI Windows desktop can be smaller than either requested resolution.
+    # Render a child viewport to keep the native Windows font backend without
+    # letting the window manager constrain the tested application geometry.
+    host = QtWidgets.QWidget()
+    host.resize(640, 480)
+    window.setParent(host, QtCore.Qt.WindowType.Widget)
     output = Path(output)
     output.mkdir(parents=True, exist_ok=True)
-    report = {'screens': []}
+    report = {'screens': [], 'platform': app.platformName()}
     try:
+        host.show()
         window.show()
         settle(app)
         dpr = window.devicePixelRatioF()
@@ -193,7 +202,7 @@ def probe(output):
             assert tape.model.rowCount() == len(prints)
             # At high desktop zoom the existing minimum width can require a
             # wider window; text must retain its font size and fit every card.
-            assert window.height() == logical.height()
+            assert window.height() == logical.height(), (window.size(), logical, window.screen().size())
             for key in ('volume', 'oi', 'long_short', 'funding'):
                 card = window.stats.cards[key]
                 if not card.isVisible():
@@ -271,6 +280,7 @@ def probe(output):
             app.processEvents()
             QtTest.QTest.qWait(10)
         assert not window._order_flow_runtime_thread.isRunning()
+        host.close()
 
 
 if __name__ == '__main__':
