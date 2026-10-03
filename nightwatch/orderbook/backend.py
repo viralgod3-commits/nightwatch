@@ -10,6 +10,7 @@ from typing import Any
 
 from ..models import OrderFlowDisplayLevel, OrderFlowLevelMetrics, OrderFlowSnapshot, OrderFlowTradePrint
 from ..models import BOOK_BBO_FRESH_SECONDS, BOOK_DEPTH_FRESH_SECONDS, book_data_is_fresh
+from .revisions import OrderFlowRevisionTracker
 
 def _number(value: Any) -> float:
     try:
@@ -242,6 +243,7 @@ class OrderFlowAnalyzer:
     STATE_CALIBRATION_EVENT_CAPACITY = 256
 
     def __init__(self, symbol: str, tick_size: Any=0.0):
+        self._presentation_revisions = OrderFlowRevisionTracker()
         self.symbol = ''
         self.tick_size = 0.0
         self.trade_buckets: deque[_OrderFlowTradeBucket] = deque(maxlen=512)
@@ -362,6 +364,7 @@ class OrderFlowAnalyzer:
         return result if result > 0.0 else 0.0
 
     def reset(self, symbol: str, *, tick_size: Any | None=None) -> None:
+        self._presentation_revisions.reset()
         normalized_symbol = str(symbol).upper()
         symbol_changed = normalized_symbol != self.symbol
         self.symbol = normalized_symbol
@@ -2632,7 +2635,9 @@ class OrderFlowAnalyzer:
         live = bool(metrics.ready and book_data_is_fresh(depth_age, bbo_age))
         recent_activity = any((value > 1e-09 for value in (metrics.buy_notional_15s, metrics.sell_notional_15s, metrics.added_notional_5s, metrics.cancelled_notional_5s, metrics.replenished_notional_5s)))
         self._snapshot_sequence += 1
-        return OrderFlowSnapshot(symbol=self.symbol, sequence=self._snapshot_sequence, generated_monotonic=current, ready=metrics.ready, live=live, bbo_source=bbo_source, depth_age_seconds=depth_age, bbo_age_seconds=bbo_age, trade_age_seconds=trade_age, best_bid=metrics.best_bid, best_ask=metrics.best_ask, best_bid_quantity=metrics.best_bid_quantity, best_ask_quantity=metrics.best_ask_quantity, midpoint=metrics.midpoint, spread=max(0.0, metrics.best_ask - metrics.best_bid), spread_bps=metrics.spread_bps, microprice=metrics.microprice, microprice_bias_bps=metrics.microprice_bias_bps, near_pressure_pct=metrics.near_pressure_pct, touch_imbalance_pct=metrics.touch_imbalance_pct, buy_notional_1s=metrics.buy_notional_1s, sell_notional_1s=metrics.sell_notional_1s, buy_notional_5s=metrics.buy_notional_5s, sell_notional_5s=metrics.sell_notional_5s, buy_notional_15s=metrics.buy_notional_15s, sell_notional_15s=metrics.sell_notional_15s, aggressor_imbalance_5s_pct=metrics.aggressor_imbalance_5s_pct, rpi_notional_5s=metrics.rpi_notional_5s, rpi_share_5s_pct=metrics.rpi_share_5s_pct, added_notional_5s=metrics.added_notional_5s, cancelled_notional_5s=metrics.cancelled_notional_5s, replenished_notional_5s=metrics.replenished_notional_5s, add_cancel_pressure_5s_pct=metrics.add_cancel_pressure_5s_pct, bid_liquidity_delta_5s=metrics.bid_liquidity_delta_5s, ask_liquidity_delta_5s=metrics.ask_liquidity_delta_5s, has_recent_activity=recent_activity, liquidity_scale=scales[0], delta_scale=scales[1], trade_scale=scales[2], cumulative_depth_scale=max(bids[-1].cumulative_depth_notional if bids else 0.0, asks[-1].cumulative_depth_notional if asks else 0.0), large_trade_threshold=max(1.0, self._adaptive_print_threshold(current)), recent_prints=self._recent_prints_snapshot(current), bid_levels=bids, ask_levels=asks)
+        prints = self._recent_prints_snapshot(current)
+        components = self._presentation_revisions.update(bids, asks, prints)
+        return OrderFlowSnapshot(symbol=self.symbol, sequence=self._snapshot_sequence, generated_monotonic=current, ready=metrics.ready, live=live, bbo_source=bbo_source, depth_age_seconds=depth_age, bbo_age_seconds=bbo_age, trade_age_seconds=trade_age, best_bid=metrics.best_bid, best_ask=metrics.best_ask, best_bid_quantity=metrics.best_bid_quantity, best_ask_quantity=metrics.best_ask_quantity, midpoint=metrics.midpoint, spread=max(0.0, metrics.best_ask - metrics.best_bid), spread_bps=metrics.spread_bps, microprice=metrics.microprice, microprice_bias_bps=metrics.microprice_bias_bps, near_pressure_pct=metrics.near_pressure_pct, touch_imbalance_pct=metrics.touch_imbalance_pct, buy_notional_1s=metrics.buy_notional_1s, sell_notional_1s=metrics.sell_notional_1s, buy_notional_5s=metrics.buy_notional_5s, sell_notional_5s=metrics.sell_notional_5s, buy_notional_15s=metrics.buy_notional_15s, sell_notional_15s=metrics.sell_notional_15s, aggressor_imbalance_5s_pct=metrics.aggressor_imbalance_5s_pct, rpi_notional_5s=metrics.rpi_notional_5s, rpi_share_5s_pct=metrics.rpi_share_5s_pct, added_notional_5s=metrics.added_notional_5s, cancelled_notional_5s=metrics.cancelled_notional_5s, replenished_notional_5s=metrics.replenished_notional_5s, add_cancel_pressure_5s_pct=metrics.add_cancel_pressure_5s_pct, bid_liquidity_delta_5s=metrics.bid_liquidity_delta_5s, ask_liquidity_delta_5s=metrics.ask_liquidity_delta_5s, has_recent_activity=recent_activity, liquidity_scale=scales[0], delta_scale=scales[1], trade_scale=scales[2], cumulative_depth_scale=max(bids[-1].cumulative_depth_notional if bids else 0.0, asks[-1].cumulative_depth_notional if asks else 0.0), large_trade_threshold=max(1.0, self._adaptive_print_threshold(current)), recent_prints=prints, bid_levels=bids, ask_levels=asks, component_revisions=components)
 
 
     def diagnostic_state(self) -> dict[str, Any]:

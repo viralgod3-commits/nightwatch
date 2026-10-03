@@ -1,0 +1,1493 @@
+{
+  "date_utc": "2026-10-03",
+  "base_commit": "a4aa2affc9b3dc88521837d1e90e2d961b2c1843",
+  "baseline": [
+    {
+      "label": "baseline-a4aa2af",
+      "python": "3.12.14",
+      "qt": "6.11.2",
+      "platform": "Linux-6.18.44-x86_64-with-glibc2.39",
+      "levels_per_side": 120,
+      "retained_prints": 2048,
+      "measurement": "cache work after two incremental codecs; excludes serialization, pipes, paint and FPS",
+      "revision_metadata": false,
+      "cases": [
+        {
+          "case": "bbo_only",
+          "samples": 24,
+          "complete_display_fields_preserved": true,
+          "timings": {
+            "producer_revision": {
+              "median_ms": 0.0002,
+              "p95_ms": 0.0003,
+              "p99_ms": 0.0003
+            },
+            "tapes": {
+              "median_ms": 0.0151,
+              "p95_ms": 0.0167,
+              "p99_ms": 0.017
+            },
+            "aggregation": {
+              "median_ms": 0.0134,
+              "p95_ms": 0.0197,
+              "p99_ms": 0.0833
+            },
+            "amount_width": {
+              "median_ms": 0.0016,
+              "p95_ms": 0.0025,
+              "p99_ms": 0.0026
+            },
+            "raster_prepare": {
+              "median_ms": 0.9328,
+              "p95_ms": 1.6443,
+              "p99_ms": 1.9412
+            },
+            "cache_work": {
+              "median_ms": 0.9477,
+              "p95_ms": 1.6591,
+              "p99_ms": 1.9556
+            }
+          },
+          "amount_width_formatting_calls_including_seed": 49,
+          "aggregation_revision_reuses": null,
+          "amount_width_cache_hits": null,
+          "amount_width_cache_misses": null,
+          "tape_print_cache_hits": [
+            null,
+            null
+          ],
+          "retained_tape_rows": [
+            500,
+            500
+          ]
+        },
+        {
+          "case": "age_refresh",
+          "samples": 24,
+          "complete_display_fields_preserved": true,
+          "timings": {
+            "producer_revision": {
+              "median_ms": 0.0003,
+              "p95_ms": 0.0004,
+              "p99_ms": 0.0005
+            },
+            "tapes": {
+              "median_ms": 0.0152,
+              "p95_ms": 0.0617,
+              "p99_ms": 0.0772
+            },
+            "aggregation": {
+              "median_ms": 0.7327,
+              "p95_ms": 1.6914,
+              "p99_ms": 2.0196
+            },
+            "amount_width": {
+              "median_ms": 0.3213,
+              "p95_ms": 1.0829,
+              "p99_ms": 1.7248
+            },
+            "raster_prepare": {
+              "median_ms": 2.0182,
+              "p95_ms": 3.9696,
+              "p99_ms": 4.3542
+            },
+            "cache_work": {
+              "median_ms": 2.033,
+              "p95_ms": 3.989,
+              "p99_ms": 4.3696
+            }
+          },
+          "amount_width_formatting_calls_including_seed": 1225,
+          "aggregation_revision_reuses": null,
+          "amount_width_cache_hits": null,
+          "amount_width_cache_misses": null,
+          "tape_print_cache_hits": [
+            null,
+            null
+          ],
+          "retained_tape_rows": [
+            500,
+            500
+          ]
+        },
+        {
+          "case": "amount_corrections",
+          "samples": 24,
+          "complete_display_fields_preserved": true,
+          "timings": {
+            "producer_revision": {
+              "median_ms": 0.0002,
+              "p95_ms": 0.0003,
+              "p99_ms": 0.0003
+            },
+            "tapes": {
+              "median_ms": 0.015,
+              "p95_ms": 0.0172,
+              "p99_ms": 0.0175
+            },
+            "aggregation": {
+              "median_ms": 0.7904,
+              "p95_ms": 1.2233,
+              "p99_ms": 2.4202
+            },
+            "amount_width": {
+              "median_ms": 0.3193,
+              "p95_ms": 0.5736,
+              "p99_ms": 1.4662
+            },
+            "raster_prepare": {
+              "median_ms": 2.2721,
+              "p95_ms": 4.1535,
+              "p99_ms": 4.386
+            },
+            "cache_work": {
+              "median_ms": 2.2867,
+              "p95_ms": 4.1676,
+              "p99_ms": 4.4012
+            }
+          },
+          "amount_width_formatting_calls_including_seed": 1225,
+          "aggregation_revision_reuses": null,
+          "amount_width_cache_hits": null,
+          "amount_width_cache_misses": null,
+          "tape_print_cache_hits": [
+            null,
+            null
+          ],
+          "retained_tape_rows": [
+            500,
+            500
+          ]
+        },
+        {
+          "case": "far_amount_corrections",
+          "samples": 24,
+          "complete_display_fields_preserved": true,
+          "timings": {
+            "producer_revision": {
+              "median_ms": 0.0002,
+              "p95_ms": 0.0003,
+              "p99_ms": 0.0003
+            },
+            "tapes": {
+              "median_ms": 0.0154,
+              "p95_ms": 0.0174,
+              "p99_ms": 0.0182
+            },
+            "aggregation": {
+              "median_ms": 0.4353,
+              "p95_ms": 1.2586,
+              "p99_ms": 2.9022
+            },
+            "amount_width": {
+              "median_ms": 0.3327,
+              "p95_ms": 0.5875,
+              "p99_ms": 0.6057
+            },
+            "raster_prepare": {
+              "median_ms": 1.7568,
+              "p95_ms": 2.9029,
+              "p99_ms": 4.0147
+            },
+            "cache_work": {
+              "median_ms": 1.7724,
+              "p95_ms": 2.9211,
+              "p99_ms": 4.0304
+            }
+          },
+          "amount_width_formatting_calls_including_seed": 1225,
+          "aggregation_revision_reuses": null,
+          "amount_width_cache_hits": null,
+          "amount_width_cache_misses": null,
+          "tape_print_cache_hits": [
+            null,
+            null
+          ],
+          "retained_tape_rows": [
+            500,
+            500
+          ]
+        },
+        {
+          "case": "outcome_corrections",
+          "samples": 24,
+          "complete_display_fields_preserved": true,
+          "timings": {
+            "producer_revision": {
+              "median_ms": 0.0003,
+              "p95_ms": 0.0003,
+              "p99_ms": 0.0003
+            },
+            "tapes": {
+              "median_ms": 0.177,
+              "p95_ms": 0.3866,
+              "p99_ms": 0.5437
+            },
+            "aggregation": {
+              "median_ms": 0.0152,
+              "p95_ms": 0.0185,
+              "p99_ms": 2.9361
+            },
+            "amount_width": {
+              "median_ms": 0.0017,
+              "p95_ms": 0.0026,
+              "p99_ms": 0.0027
+            },
+            "raster_prepare": {
+              "median_ms": 0.8642,
+              "p95_ms": 1.1271,
+              "p99_ms": 4.0997
+            },
+            "cache_work": {
+              "median_ms": 1.0468,
+              "p95_ms": 1.5733,
+              "p99_ms": 4.254
+            }
+          },
+          "amount_width_formatting_calls_including_seed": 49,
+          "aggregation_revision_reuses": null,
+          "amount_width_cache_hits": null,
+          "amount_width_cache_misses": null,
+          "tape_print_cache_hits": [
+            null,
+            null
+          ],
+          "retained_tape_rows": [
+            500,
+            500
+          ]
+        },
+        {
+          "case": "reseeded_bbo",
+          "samples": 24,
+          "complete_display_fields_preserved": true,
+          "timings": {
+            "producer_revision": {
+              "median_ms": 0.0002,
+              "p95_ms": 0.0003,
+              "p99_ms": 0.0003
+            },
+            "tapes": {
+              "median_ms": 0.2237,
+              "p95_ms": 3.0361,
+              "p99_ms": 6.0526
+            },
+            "aggregation": {
+              "median_ms": 0.3885,
+              "p95_ms": 0.5941,
+              "p99_ms": 1.2325
+            },
+            "amount_width": {
+              "median_ms": 0.3357,
+              "p95_ms": 0.458,
+              "p99_ms": 0.756
+            },
+            "raster_prepare": {
+              "median_ms": 1.7341,
+              "p95_ms": 4.7101,
+              "p99_ms": 5.702
+            },
+            "cache_work": {
+              "median_ms": 1.992,
+              "p95_ms": 5.9376,
+              "p99_ms": 7.7155
+            }
+          },
+          "amount_width_formatting_calls_including_seed": 1225,
+          "aggregation_revision_reuses": null,
+          "amount_width_cache_hits": null,
+          "amount_width_cache_misses": null,
+          "tape_print_cache_hits": [
+            null,
+            null
+          ],
+          "retained_tape_rows": [
+            500,
+            500
+          ]
+        },
+        {
+          "case": "signed_flow",
+          "samples": 24,
+          "complete_display_fields_preserved": false,
+          "timings": {
+            "producer_revision": {
+              "median_ms": 0.0002,
+              "p95_ms": 0.0003,
+              "p99_ms": 0.0004
+            },
+            "tapes": {
+              "median_ms": 0.0146,
+              "p95_ms": 0.0409,
+              "p99_ms": 0.0854
+            },
+            "aggregation": {
+              "median_ms": 0.3183,
+              "p95_ms": 0.4805,
+              "p99_ms": 0.9446
+            },
+            "amount_width": {
+              "median_ms": 0.3022,
+              "p95_ms": 0.44,
+              "p99_ms": 0.5796
+            },
+            "raster_prepare": {
+              "median_ms": 1.482,
+              "p95_ms": 1.7878,
+              "p99_ms": 2.0257
+            },
+            "cache_work": {
+              "median_ms": 1.499,
+              "p95_ms": 1.8681,
+              "p99_ms": 2.0406
+            }
+          },
+          "amount_width_formatting_calls_including_seed": 1225,
+          "aggregation_revision_reuses": null,
+          "amount_width_cache_hits": null,
+          "amount_width_cache_misses": null,
+          "tape_print_cache_hits": [
+            null,
+            null
+          ],
+          "retained_tape_rows": [
+            500,
+            500
+          ]
+        }
+      ]
+    },
+    {
+      "label": "baseline-a4aa2af",
+      "python": "3.12.14",
+      "qt": "6.11.2",
+      "platform": "Linux-6.18.44-x86_64-with-glibc2.39",
+      "levels_per_side": 1000,
+      "retained_prints": 2048,
+      "measurement": "cache work after two incremental codecs; excludes serialization, pipes, paint and FPS",
+      "revision_metadata": false,
+      "cases": [
+        {
+          "case": "bbo_only",
+          "samples": 24,
+          "complete_display_fields_preserved": true,
+          "timings": {
+            "producer_revision": {
+              "median_ms": 0.0002,
+              "p95_ms": 0.0003,
+              "p99_ms": 0.0003
+            },
+            "tapes": {
+              "median_ms": 0.0154,
+              "p95_ms": 0.0182,
+              "p99_ms": 0.0183
+            },
+            "aggregation": {
+              "median_ms": 0.0145,
+              "p95_ms": 0.0283,
+              "p99_ms": 0.0452
+            },
+            "amount_width": {
+              "median_ms": 0.0014,
+              "p95_ms": 0.0023,
+              "p99_ms": 0.0027
+            },
+            "raster_prepare": {
+              "median_ms": 0.9201,
+              "p95_ms": 2.5364,
+              "p99_ms": 2.7044
+            },
+            "cache_work": {
+              "median_ms": 0.9365,
+              "p95_ms": 2.5518,
+              "p99_ms": 2.7211
+            }
+          },
+          "amount_width_formatting_calls_including_seed": 128,
+          "aggregation_revision_reuses": null,
+          "amount_width_cache_hits": null,
+          "amount_width_cache_misses": null,
+          "tape_print_cache_hits": [
+            null,
+            null
+          ],
+          "retained_tape_rows": [
+            500,
+            500
+          ]
+        },
+        {
+          "case": "age_refresh",
+          "samples": 24,
+          "complete_display_fields_preserved": true,
+          "timings": {
+            "producer_revision": {
+              "median_ms": 0.0004,
+              "p95_ms": 0.0004,
+              "p99_ms": 0.0004
+            },
+            "tapes": {
+              "median_ms": 0.0182,
+              "p95_ms": 0.0231,
+              "p99_ms": 0.2213
+            },
+            "aggregation": {
+              "median_ms": 8.3665,
+              "p95_ms": 14.4783,
+              "p99_ms": 15.3116
+            },
+            "amount_width": {
+              "median_ms": 0.8403,
+              "p95_ms": 1.69,
+              "p99_ms": 3.6882
+            },
+            "raster_prepare": {
+              "median_ms": 10.7762,
+              "p95_ms": 17.5588,
+              "p99_ms": 19.0338
+            },
+            "cache_work": {
+              "median_ms": 10.8217,
+              "p95_ms": 17.5771,
+              "p99_ms": 19.0522
+            }
+          },
+          "amount_width_formatting_calls_including_seed": 3200,
+          "aggregation_revision_reuses": null,
+          "amount_width_cache_hits": null,
+          "amount_width_cache_misses": null,
+          "tape_print_cache_hits": [
+            null,
+            null
+          ],
+          "retained_tape_rows": [
+            500,
+            500
+          ]
+        },
+        {
+          "case": "amount_corrections",
+          "samples": 24,
+          "complete_display_fields_preserved": true,
+          "timings": {
+            "producer_revision": {
+              "median_ms": 0.0003,
+              "p95_ms": 0.0004,
+              "p99_ms": 0.0138
+            },
+            "tapes": {
+              "median_ms": 0.0174,
+              "p95_ms": 0.7374,
+              "p99_ms": 0.8523
+            },
+            "aggregation": {
+              "median_ms": 7.8906,
+              "p95_ms": 12.3848,
+              "p99_ms": 14.9976
+            },
+            "amount_width": {
+              "median_ms": 0.9131,
+              "p95_ms": 3.6167,
+              "p99_ms": 4.8748
+            },
+            "raster_prepare": {
+              "median_ms": 11.322,
+              "p95_ms": 17.5041,
+              "p99_ms": 27.0581
+            },
+            "cache_work": {
+              "median_ms": 11.7562,
+              "p95_ms": 17.5198,
+              "p99_ms": 27.246
+            }
+          },
+          "amount_width_formatting_calls_including_seed": 3200,
+          "aggregation_revision_reuses": null,
+          "amount_width_cache_hits": null,
+          "amount_width_cache_misses": null,
+          "tape_print_cache_hits": [
+            null,
+            null
+          ],
+          "retained_tape_rows": [
+            500,
+            500
+          ]
+        },
+        {
+          "case": "far_amount_corrections",
+          "samples": 24,
+          "complete_display_fields_preserved": true,
+          "timings": {
+            "producer_revision": {
+              "median_ms": 0.0003,
+              "p95_ms": 0.0004,
+              "p99_ms": 0.0004
+            },
+            "tapes": {
+              "median_ms": 0.0159,
+              "p95_ms": 0.0199,
+              "p99_ms": 0.5793
+            },
+            "aggregation": {
+              "median_ms": 3.6921,
+              "p95_ms": 7.8199,
+              "p99_ms": 7.8495
+            },
+            "amount_width": {
+              "median_ms": 1.0447,
+              "p95_ms": 5.8173,
+              "p99_ms": 138.0117
+            },
+            "raster_prepare": {
+              "median_ms": 6.6304,
+              "p95_ms": 12.8412,
+              "p99_ms": 142.9343
+            },
+            "cache_work": {
+              "median_ms": 6.6977,
+              "p95_ms": 12.8596,
+              "p99_ms": 142.95
+            }
+          },
+          "amount_width_formatting_calls_including_seed": 3200,
+          "aggregation_revision_reuses": null,
+          "amount_width_cache_hits": null,
+          "amount_width_cache_misses": null,
+          "tape_print_cache_hits": [
+            null,
+            null
+          ],
+          "retained_tape_rows": [
+            500,
+            500
+          ]
+        },
+        {
+          "case": "outcome_corrections",
+          "samples": 24,
+          "complete_display_fields_preserved": true,
+          "timings": {
+            "producer_revision": {
+              "median_ms": 0.0003,
+              "p95_ms": 0.0003,
+              "p99_ms": 0.0003
+            },
+            "tapes": {
+              "median_ms": 0.1853,
+              "p95_ms": 0.2481,
+              "p99_ms": 0.4416
+            },
+            "aggregation": {
+              "median_ms": 0.016,
+              "p95_ms": 0.0178,
+              "p99_ms": 0.0189
+            },
+            "amount_width": {
+              "median_ms": 0.0014,
+              "p95_ms": 0.0019,
+              "p99_ms": 0.0024
+            },
+            "raster_prepare": {
+              "median_ms": 0.8411,
+              "p95_ms": 1.0353,
+              "p99_ms": 1.2544
+            },
+            "cache_work": {
+              "median_ms": 1.0387,
+              "p95_ms": 1.282,
+              "p99_ms": 1.4413
+            }
+          },
+          "amount_width_formatting_calls_including_seed": 128,
+          "aggregation_revision_reuses": null,
+          "amount_width_cache_hits": null,
+          "amount_width_cache_misses": null,
+          "tape_print_cache_hits": [
+            null,
+            null
+          ],
+          "retained_tape_rows": [
+            500,
+            500
+          ]
+        },
+        {
+          "case": "reseeded_bbo",
+          "samples": 24,
+          "complete_display_fields_preserved": true,
+          "timings": {
+            "producer_revision": {
+              "median_ms": 0.0003,
+              "p95_ms": 0.0003,
+              "p99_ms": 0.0003
+            },
+            "tapes": {
+              "median_ms": 0.2334,
+              "p95_ms": 0.4637,
+              "p99_ms": 1.2769
+            },
+            "aggregation": {
+              "median_ms": 3.7734,
+              "p95_ms": 5.2196,
+              "p99_ms": 5.6689
+            },
+            "amount_width": {
+              "median_ms": 0.8493,
+              "p95_ms": 1.8798,
+              "p99_ms": 1.9041
+            },
+            "raster_prepare": {
+              "median_ms": 5.8286,
+              "p95_ms": 8.6621,
+              "p99_ms": 8.7853
+            },
+            "cache_work": {
+              "median_ms": 6.2913,
+              "p95_ms": 8.8591,
+              "p99_ms": 8.9812
+            }
+          },
+          "amount_width_formatting_calls_including_seed": 3200,
+          "aggregation_revision_reuses": null,
+          "amount_width_cache_hits": null,
+          "amount_width_cache_misses": null,
+          "tape_print_cache_hits": [
+            null,
+            null
+          ],
+          "retained_tape_rows": [
+            500,
+            500
+          ]
+        },
+        {
+          "case": "signed_flow",
+          "samples": 24,
+          "complete_display_fields_preserved": false,
+          "timings": {
+            "producer_revision": {
+              "median_ms": 0.0003,
+              "p95_ms": 0.0003,
+              "p99_ms": 0.0004
+            },
+            "tapes": {
+              "median_ms": 0.0152,
+              "p95_ms": 0.0168,
+              "p99_ms": 0.0644
+            },
+            "aggregation": {
+              "median_ms": 2.8577,
+              "p95_ms": 4.291,
+              "p99_ms": 5.081
+            },
+            "amount_width": {
+              "median_ms": 0.831,
+              "p95_ms": 1.2967,
+              "p99_ms": 1.6649
+            },
+            "raster_prepare": {
+              "median_ms": 4.9616,
+              "p95_ms": 7.0126,
+              "p99_ms": 9.3548
+            },
+            "cache_work": {
+              "median_ms": 4.9773,
+              "p95_ms": 7.0293,
+              "p99_ms": 9.37
+            }
+          },
+          "amount_width_formatting_calls_including_seed": 3200,
+          "aggregation_revision_reuses": null,
+          "amount_width_cache_hits": null,
+          "amount_width_cache_misses": null,
+          "tape_print_cache_hits": [
+            null,
+            null
+          ],
+          "retained_tape_rows": [
+            500,
+            500
+          ]
+        }
+      ]
+    }
+  ],
+  "patched": [
+    {
+      "label": "component-revisions",
+      "python": "3.12.14",
+      "qt": "6.11.2",
+      "platform": "Linux-6.18.44-x86_64-with-glibc2.39",
+      "levels_per_side": 120,
+      "retained_prints": 2048,
+      "measurement": "cache work after two incremental codecs; excludes serialization, pipes, paint and FPS",
+      "revision_metadata": true,
+      "cases": [
+        {
+          "case": "bbo_only",
+          "samples": 24,
+          "complete_display_fields_preserved": true,
+          "timings": {
+            "producer_revision": {
+              "median_ms": 0.0016,
+              "p95_ms": 0.0021,
+              "p99_ms": 0.0043
+            },
+            "tapes": {
+              "median_ms": 0.0175,
+              "p95_ms": 0.0206,
+              "p99_ms": 0.022
+            },
+            "aggregation": {
+              "median_ms": 0.0204,
+              "p95_ms": 0.047,
+              "p99_ms": 0.3316
+            },
+            "amount_width": {
+              "median_ms": 0.0032,
+              "p95_ms": 0.0048,
+              "p99_ms": 0.0051
+            },
+            "raster_prepare": {
+              "median_ms": 0.858,
+              "p95_ms": 1.2832,
+              "p99_ms": 1.4187
+            },
+            "cache_work": {
+              "median_ms": 0.8757,
+              "p95_ms": 1.3021,
+              "p99_ms": 1.439
+            }
+          },
+          "amount_width_formatting_calls_including_seed": 49,
+          "aggregation_revision_reuses": 24,
+          "amount_width_cache_hits": 24,
+          "amount_width_cache_misses": 1,
+          "tape_print_cache_hits": [
+            24,
+            24
+          ],
+          "retained_tape_rows": [
+            500,
+            500
+          ]
+        },
+        {
+          "case": "age_refresh",
+          "samples": 24,
+          "complete_display_fields_preserved": true,
+          "timings": {
+            "producer_revision": {
+              "median_ms": 0.0284,
+              "p95_ms": 0.0371,
+              "p99_ms": 0.0511
+            },
+            "tapes": {
+              "median_ms": 0.0178,
+              "p95_ms": 0.0393,
+              "p99_ms": 0.0441
+            },
+            "aggregation": {
+              "median_ms": 0.7437,
+              "p95_ms": 2.0056,
+              "p99_ms": 2.0745
+            },
+            "amount_width": {
+              "median_ms": 0.0034,
+              "p95_ms": 0.0039,
+              "p99_ms": 0.0047
+            },
+            "raster_prepare": {
+              "median_ms": 1.7107,
+              "p95_ms": 3.4701,
+              "p99_ms": 3.5176
+            },
+            "cache_work": {
+              "median_ms": 1.7289,
+              "p95_ms": 3.4905,
+              "p99_ms": 3.5429
+            }
+          },
+          "amount_width_formatting_calls_including_seed": 49,
+          "aggregation_revision_reuses": 0,
+          "amount_width_cache_hits": 24,
+          "amount_width_cache_misses": 1,
+          "tape_print_cache_hits": [
+            24,
+            24
+          ],
+          "retained_tape_rows": [
+            500,
+            500
+          ]
+        },
+        {
+          "case": "amount_corrections",
+          "samples": 24,
+          "complete_display_fields_preserved": true,
+          "timings": {
+            "producer_revision": {
+              "median_ms": 0.0312,
+              "p95_ms": 0.0675,
+              "p99_ms": 0.0685
+            },
+            "tapes": {
+              "median_ms": 0.0175,
+              "p95_ms": 0.0353,
+              "p99_ms": 0.0561
+            },
+            "aggregation": {
+              "median_ms": 0.8336,
+              "p95_ms": 1.2576,
+              "p99_ms": 1.7117
+            },
+            "amount_width": {
+              "median_ms": 0.3448,
+              "p95_ms": 0.686,
+              "p99_ms": 1.8273
+            },
+            "raster_prepare": {
+              "median_ms": 2.3055,
+              "p95_ms": 3.7506,
+              "p99_ms": 4.3968
+            },
+            "cache_work": {
+              "median_ms": 2.3246,
+              "p95_ms": 3.77,
+              "p99_ms": 4.4133
+            }
+          },
+          "amount_width_formatting_calls_including_seed": 1225,
+          "aggregation_revision_reuses": 0,
+          "amount_width_cache_hits": 0,
+          "amount_width_cache_misses": 25,
+          "tape_print_cache_hits": [
+            24,
+            24
+          ],
+          "retained_tape_rows": [
+            500,
+            500
+          ]
+        },
+        {
+          "case": "far_amount_corrections",
+          "samples": 24,
+          "complete_display_fields_preserved": true,
+          "timings": {
+            "producer_revision": {
+              "median_ms": 0.0335,
+              "p95_ms": 0.066,
+              "p99_ms": 0.1777
+            },
+            "tapes": {
+              "median_ms": 0.0169,
+              "p95_ms": 0.0392,
+              "p99_ms": 0.101
+            },
+            "aggregation": {
+              "median_ms": 0.4015,
+              "p95_ms": 0.5538,
+              "p99_ms": 0.5915
+            },
+            "amount_width": {
+              "median_ms": 0.3246,
+              "p95_ms": 0.6466,
+              "p99_ms": 2.5025
+            },
+            "raster_prepare": {
+              "median_ms": 1.6541,
+              "p95_ms": 2.5812,
+              "p99_ms": 4.1722
+            },
+            "cache_work": {
+              "median_ms": 1.6716,
+              "p95_ms": 2.5981,
+              "p99_ms": 4.1959
+            }
+          },
+          "amount_width_formatting_calls_including_seed": 1225,
+          "aggregation_revision_reuses": 0,
+          "amount_width_cache_hits": 0,
+          "amount_width_cache_misses": 25,
+          "tape_print_cache_hits": [
+            24,
+            24
+          ],
+          "retained_tape_rows": [
+            500,
+            500
+          ]
+        },
+        {
+          "case": "outcome_corrections",
+          "samples": 24,
+          "complete_display_fields_preserved": true,
+          "timings": {
+            "producer_revision": {
+              "median_ms": 0.0038,
+              "p95_ms": 0.0043,
+              "p99_ms": 0.0043
+            },
+            "tapes": {
+              "median_ms": 0.1854,
+              "p95_ms": 0.276,
+              "p99_ms": 0.3141
+            },
+            "aggregation": {
+              "median_ms": 0.0225,
+              "p95_ms": 0.0253,
+              "p99_ms": 0.0585
+            },
+            "amount_width": {
+              "median_ms": 0.0036,
+              "p95_ms": 0.005,
+              "p99_ms": 0.0061
+            },
+            "raster_prepare": {
+              "median_ms": 0.8803,
+              "p95_ms": 1.1603,
+              "p99_ms": 1.2169
+            },
+            "cache_work": {
+              "median_ms": 1.0815,
+              "p95_ms": 1.3226,
+              "p99_ms": 1.3438
+            }
+          },
+          "amount_width_formatting_calls_including_seed": 49,
+          "aggregation_revision_reuses": 24,
+          "amount_width_cache_hits": 24,
+          "amount_width_cache_misses": 1,
+          "tape_print_cache_hits": [
+            0,
+            0
+          ],
+          "retained_tape_rows": [
+            500,
+            500
+          ]
+        },
+        {
+          "case": "reseeded_bbo",
+          "samples": 24,
+          "complete_display_fields_preserved": true,
+          "timings": {
+            "producer_revision": {
+              "median_ms": 0.0015,
+              "p95_ms": 0.0017,
+              "p99_ms": 0.0017
+            },
+            "tapes": {
+              "median_ms": 0.019,
+              "p95_ms": 0.0224,
+              "p99_ms": 0.08
+            },
+            "aggregation": {
+              "median_ms": 0.0265,
+              "p95_ms": 0.0521,
+              "p99_ms": 0.0922
+            },
+            "amount_width": {
+              "median_ms": 0.0035,
+              "p95_ms": 0.0044,
+              "p99_ms": 0.0069
+            },
+            "raster_prepare": {
+              "median_ms": 0.9408,
+              "p95_ms": 1.2638,
+              "p99_ms": 1.4898
+            },
+            "cache_work": {
+              "median_ms": 0.9606,
+              "p95_ms": 1.2824,
+              "p99_ms": 1.5099
+            }
+          },
+          "amount_width_formatting_calls_including_seed": 49,
+          "aggregation_revision_reuses": 24,
+          "amount_width_cache_hits": 24,
+          "amount_width_cache_misses": 1,
+          "tape_print_cache_hits": [
+            24,
+            24
+          ],
+          "retained_tape_rows": [
+            500,
+            500
+          ]
+        },
+        {
+          "case": "signed_flow",
+          "samples": 24,
+          "complete_display_fields_preserved": true,
+          "timings": {
+            "producer_revision": {
+              "median_ms": 0.0341,
+              "p95_ms": 0.0371,
+              "p99_ms": 0.0376
+            },
+            "tapes": {
+              "median_ms": 0.0177,
+              "p95_ms": 0.0197,
+              "p99_ms": 0.0551
+            },
+            "aggregation": {
+              "median_ms": 0.4587,
+              "p95_ms": 0.7908,
+              "p99_ms": 0.8247
+            },
+            "amount_width": {
+              "median_ms": 0.0034,
+              "p95_ms": 0.0051,
+              "p99_ms": 0.0077
+            },
+            "raster_prepare": {
+              "median_ms": 1.6568,
+              "p95_ms": 2.3287,
+              "p99_ms": 4.3335
+            },
+            "cache_work": {
+              "median_ms": 1.6738,
+              "p95_ms": 2.3451,
+              "p99_ms": 4.3501
+            }
+          },
+          "amount_width_formatting_calls_including_seed": 49,
+          "aggregation_revision_reuses": 0,
+          "amount_width_cache_hits": 24,
+          "amount_width_cache_misses": 1,
+          "tape_print_cache_hits": [
+            24,
+            24
+          ],
+          "retained_tape_rows": [
+            500,
+            500
+          ]
+        }
+      ]
+    },
+    {
+      "label": "component-revisions",
+      "python": "3.12.14",
+      "qt": "6.11.2",
+      "platform": "Linux-6.18.44-x86_64-with-glibc2.39",
+      "levels_per_side": 1000,
+      "retained_prints": 2048,
+      "measurement": "cache work after two incremental codecs; excludes serialization, pipes, paint and FPS",
+      "revision_metadata": true,
+      "cases": [
+        {
+          "case": "bbo_only",
+          "samples": 24,
+          "complete_display_fields_preserved": true,
+          "timings": {
+            "producer_revision": {
+              "median_ms": 0.0015,
+              "p95_ms": 0.0017,
+              "p99_ms": 0.0032
+            },
+            "tapes": {
+              "median_ms": 0.0188,
+              "p95_ms": 0.0244,
+              "p99_ms": 0.043
+            },
+            "aggregation": {
+              "median_ms": 0.0205,
+              "p95_ms": 0.0237,
+              "p99_ms": 0.0269
+            },
+            "amount_width": {
+              "median_ms": 0.0033,
+              "p95_ms": 0.0041,
+              "p99_ms": 0.0042
+            },
+            "raster_prepare": {
+              "median_ms": 0.9041,
+              "p95_ms": 1.9621,
+              "p99_ms": 2.1315
+            },
+            "cache_work": {
+              "median_ms": 0.9221,
+              "p95_ms": 1.9808,
+              "p99_ms": 2.1515
+            }
+          },
+          "amount_width_formatting_calls_including_seed": 128,
+          "aggregation_revision_reuses": 24,
+          "amount_width_cache_hits": 24,
+          "amount_width_cache_misses": 1,
+          "tape_print_cache_hits": [
+            24,
+            24
+          ],
+          "retained_tape_rows": [
+            500,
+            500
+          ]
+        },
+        {
+          "case": "age_refresh",
+          "samples": 24,
+          "complete_display_fields_preserved": true,
+          "timings": {
+            "producer_revision": {
+              "median_ms": 0.1868,
+              "p95_ms": 0.6287,
+              "p99_ms": 20.0853
+            },
+            "tapes": {
+              "median_ms": 0.0205,
+              "p95_ms": 0.0456,
+              "p99_ms": 0.0484
+            },
+            "aggregation": {
+              "median_ms": 6.4937,
+              "p95_ms": 11.496,
+              "p99_ms": 66.3442
+            },
+            "amount_width": {
+              "median_ms": 0.0035,
+              "p95_ms": 0.0044,
+              "p99_ms": 0.0065
+            },
+            "raster_prepare": {
+              "median_ms": 7.6151,
+              "p95_ms": 12.9917,
+              "p99_ms": 67.7173
+            },
+            "cache_work": {
+              "median_ms": 7.6361,
+              "p95_ms": 13.0122,
+              "p99_ms": 67.7379
+            }
+          },
+          "amount_width_formatting_calls_including_seed": 128,
+          "aggregation_revision_reuses": 0,
+          "amount_width_cache_hits": 24,
+          "amount_width_cache_misses": 1,
+          "tape_print_cache_hits": [
+            24,
+            24
+          ],
+          "retained_tape_rows": [
+            500,
+            500
+          ]
+        },
+        {
+          "case": "amount_corrections",
+          "samples": 24,
+          "complete_display_fields_preserved": true,
+          "timings": {
+            "producer_revision": {
+              "median_ms": 0.1829,
+              "p95_ms": 0.2862,
+              "p99_ms": 0.4245
+            },
+            "tapes": {
+              "median_ms": 0.018,
+              "p95_ms": 0.0592,
+              "p99_ms": 0.2124
+            },
+            "aggregation": {
+              "median_ms": 4.4587,
+              "p95_ms": 5.2004,
+              "p99_ms": 6.2778
+            },
+            "amount_width": {
+              "median_ms": 0.81,
+              "p95_ms": 1.0261,
+              "p99_ms": 1.0804
+            },
+            "raster_prepare": {
+              "median_ms": 6.3719,
+              "p95_ms": 7.6547,
+              "p99_ms": 8.5697
+            },
+            "cache_work": {
+              "median_ms": 6.3904,
+              "p95_ms": 7.675,
+              "p99_ms": 8.588
+            }
+          },
+          "amount_width_formatting_calls_including_seed": 3200,
+          "aggregation_revision_reuses": 0,
+          "amount_width_cache_hits": 0,
+          "amount_width_cache_misses": 25,
+          "tape_print_cache_hits": [
+            24,
+            24
+          ],
+          "retained_tape_rows": [
+            500,
+            500
+          ]
+        },
+        {
+          "case": "far_amount_corrections",
+          "samples": 24,
+          "complete_display_fields_preserved": true,
+          "timings": {
+            "producer_revision": {
+              "median_ms": 0.1955,
+              "p95_ms": 0.2992,
+              "p99_ms": 0.3048
+            },
+            "tapes": {
+              "median_ms": 0.0181,
+              "p95_ms": 0.0196,
+              "p99_ms": 0.0204
+            },
+            "aggregation": {
+              "median_ms": 2.9371,
+              "p95_ms": 19.1991,
+              "p99_ms": 19.9417
+            },
+            "amount_width": {
+              "median_ms": 0.0235,
+              "p95_ms": 0.0255,
+              "p99_ms": 0.0511
+            },
+            "raster_prepare": {
+              "median_ms": 3.9083,
+              "p95_ms": 20.0144,
+              "p99_ms": 20.7901
+            },
+            "cache_work": {
+              "median_ms": 3.9269,
+              "p95_ms": 20.0338,
+              "p99_ms": 20.8081
+            }
+          },
+          "amount_width_formatting_calls_including_seed": 128,
+          "aggregation_revision_reuses": 0,
+          "amount_width_cache_hits": 24,
+          "amount_width_cache_misses": 1,
+          "tape_print_cache_hits": [
+            24,
+            24
+          ],
+          "retained_tape_rows": [
+            500,
+            500
+          ]
+        },
+        {
+          "case": "outcome_corrections",
+          "samples": 24,
+          "complete_display_fields_preserved": true,
+          "timings": {
+            "producer_revision": {
+              "median_ms": 0.0036,
+              "p95_ms": 0.004,
+              "p99_ms": 0.004
+            },
+            "tapes": {
+              "median_ms": 0.1841,
+              "p95_ms": 0.3106,
+              "p99_ms": 0.3944
+            },
+            "aggregation": {
+              "median_ms": 0.0226,
+              "p95_ms": 0.0474,
+              "p99_ms": 0.0502
+            },
+            "amount_width": {
+              "median_ms": 0.0034,
+              "p95_ms": 0.0048,
+              "p99_ms": 0.0755
+            },
+            "raster_prepare": {
+              "median_ms": 0.8835,
+              "p95_ms": 1.0659,
+              "p99_ms": 1.3402
+            },
+            "cache_work": {
+              "median_ms": 1.0646,
+              "p95_ms": 1.3118,
+              "p99_ms": 1.6122
+            }
+          },
+          "amount_width_formatting_calls_including_seed": 128,
+          "aggregation_revision_reuses": 24,
+          "amount_width_cache_hits": 24,
+          "amount_width_cache_misses": 1,
+          "tape_print_cache_hits": [
+            0,
+            0
+          ],
+          "retained_tape_rows": [
+            500,
+            500
+          ]
+        },
+        {
+          "case": "reseeded_bbo",
+          "samples": 24,
+          "complete_display_fields_preserved": true,
+          "timings": {
+            "producer_revision": {
+              "median_ms": 0.0015,
+              "p95_ms": 0.0017,
+              "p99_ms": 0.0018
+            },
+            "tapes": {
+              "median_ms": 0.0215,
+              "p95_ms": 0.0262,
+              "p99_ms": 0.1884
+            },
+            "aggregation": {
+              "median_ms": 0.0305,
+              "p95_ms": 0.0815,
+              "p99_ms": 0.1284
+            },
+            "amount_width": {
+              "median_ms": 0.0033,
+              "p95_ms": 0.0037,
+              "p99_ms": 0.0353
+            },
+            "raster_prepare": {
+              "median_ms": 1.2446,
+              "p95_ms": 1.976,
+              "p99_ms": 2.0897
+            },
+            "cache_work": {
+              "median_ms": 1.28,
+              "p95_ms": 1.998,
+              "p99_ms": 2.111
+            }
+          },
+          "amount_width_formatting_calls_including_seed": 128,
+          "aggregation_revision_reuses": 24,
+          "amount_width_cache_hits": 24,
+          "amount_width_cache_misses": 1,
+          "tape_print_cache_hits": [
+            24,
+            24
+          ],
+          "retained_tape_rows": [
+            500,
+            500
+          ]
+        },
+        {
+          "case": "signed_flow",
+          "samples": 24,
+          "complete_display_fields_preserved": true,
+          "timings": {
+            "producer_revision": {
+              "median_ms": 0.2075,
+              "p95_ms": 0.3321,
+              "p99_ms": 0.5058
+            },
+            "tapes": {
+              "median_ms": 0.0183,
+              "p95_ms": 0.0205,
+              "p99_ms": 0.0214
+            },
+            "aggregation": {
+              "median_ms": 3.0836,
+              "p95_ms": 3.596,
+              "p99_ms": 6.1084
+            },
+            "amount_width": {
+              "median_ms": 0.0034,
+              "p95_ms": 0.0042,
+              "p99_ms": 0.0047
+            },
+            "raster_prepare": {
+              "median_ms": 4.2472,
+              "p95_ms": 6.1908,
+              "p99_ms": 7.1769
+            },
+            "cache_work": {
+              "median_ms": 4.2657,
+              "p95_ms": 6.2101,
+              "p99_ms": 7.1948
+            }
+          },
+          "amount_width_formatting_calls_including_seed": 128,
+          "aggregation_revision_reuses": 0,
+          "amount_width_cache_hits": 24,
+          "amount_width_cache_misses": 1,
+          "tape_print_cache_hits": [
+            24,
+            24
+          ],
+          "retained_tape_rows": [
+            500,
+            500
+          ]
+        }
+      ]
+    }
+  ],
+  "actual_process_session": {
+    "generation": 8,
+    "updates": 104,
+    "snapshots": 96,
+    "errors": [],
+    "contexts": [
+      7,
+      8
+    ],
+    "source_sessions": [
+      "da9eb958c91546bd99c8c1b66ed3ba9b",
+      "a9d996ad90f94aac95f5621541c3af44"
+    ],
+    "elapsed_seconds": 3.172,
+    "analysis_transport": {
+      "received": {
+        "seeds": 2,
+        "deltas": 94,
+        "level_records": 1948,
+        "print_records": 34,
+        "field_values": 16463,
+        "removed_records": 0
+      }
+    },
+    "dom_transport": {
+      "sent": {
+        "seeds": 2,
+        "deltas": 91,
+        "level_records": 1947,
+        "print_records": 34,
+        "field_values": 16455,
+        "removed_records": 0
+      }
+    },
+    "raster_market_epoch": 1,
+    "raster_sequence": 96,
+    "worker_error": "",
+    "component_caches": {
+      "aggregation_revision_reuses": 41,
+      "aggregation_rebuilds": 27,
+      "row_revision_reuses": 41,
+      "amount_width_cache_hits": 66,
+      "amount_width_cache_misses": 2
+    },
+    "tape_print_cache_hits": [
+      64,
+      64
+    ],
+    "retained_tape_rows": [
+      20,
+      20
+    ],
+    "supplied_trade_events": 20,
+    "print_streams": [
+      [
+        "a9d996ad90f94aac95f5621541c3af44",
+        23
+      ],
+      [
+        "a9d996ad90f94aac95f5621541c3af44",
+        23
+      ]
+    ]
+  },
+  "limits": "Offline Linux cache-work timings; excludes synthetic serialization, kernel pipes, paint, display FPS and Windows GPU behavior."
+}

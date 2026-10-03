@@ -7,6 +7,7 @@ from operator import attrgetter
 from typing import Any
 
 from ..models import (
+    OrderFlowComponentRevisions,
     OrderFlowDisplayLevel,
     OrderFlowPresentationFrame,
     OrderFlowSnapshot,
@@ -399,6 +400,7 @@ def install_snapshot_reducers() -> None:
     reused mutable command containers must never acquire stale cached state.
     """
     for model in (
+        OrderFlowComponentRevisions,
         OrderFlowTradePrint,
         OrderFlowDisplayLevel,
         OrderFlowSnapshot,

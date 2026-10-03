@@ -415,6 +415,22 @@ class OrderFlowDisplayLevel:
 
 
 @dataclass(frozen=True, slots=True)
+class OrderFlowComponentRevisions:
+    """Producer-owned content versions, valid within one analyzer session.
+
+    Level/print versions cover every record field and ordering. Amounts cover
+    ordered price/quantity/notional inputs independently of age and analytics.
+    Display aggregation changes ``view`` without changing the source versions.
+    """
+    stream: str
+    bid_levels: int = 0
+    ask_levels: int = 0
+    recent_prints: int = 0
+    amounts: int = 0
+    view: tuple[tuple[int, float], ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
 class OrderFlowSnapshot:
     """Stable backend -> DOM contract for one current-symbol frame.
 
@@ -466,6 +482,9 @@ class OrderFlowSnapshot:
     recent_prints: tuple[OrderFlowTradePrint, ...] = ()
     bid_levels: tuple[OrderFlowDisplayLevel, ...] = ()
     ask_levels: tuple[OrderFlowDisplayLevel, ...] = ()
+    # None keeps legacy/direct snapshot producers compatible. Such consumers
+    # compare contents instead of assuming that a missing version means zero.
+    component_revisions: OrderFlowComponentRevisions | None = None
 
 
 @dataclass(frozen=True, slots=True)

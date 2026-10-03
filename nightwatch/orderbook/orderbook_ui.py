@@ -58,6 +58,10 @@ from ..models import (
     OrderFlowDisplayLevel, OrderFlowPresentationFrame,
     OrderFlowSnapshot, OrderFlowTradePrint,
 )
+from .revisions import (
+    amount_inputs, amount_revision_key, levels_unchanged,
+    print_revision_key, prints_equal,
+)
 
 from ..presentation import display_frame_interval_ms
 from ..chart.analysis import LatestJob
@@ -99,6 +103,7 @@ def _aggregation_source_signature(level: OrderFlowDisplayLevel) -> tuple[object,
         level.notional,
         level.delta_notional_5s,
         level.trade_notional_5s,
+        level.signed_trade_notional_5s,
         level.rpi_trade_notional_5s,
         # Aggregated LIQ 30s is reconstructed from the native normalized strip
         # and its native peak, so both participate in cache invalidation.
@@ -356,7 +361,10 @@ def aggregate_order_flow_snapshot(
         for cache_key in tuple(bucket_cache):
             if cache_key not in active_cache_keys:
                 bucket_cache.pop(cache_key, None)
-    return replace(snapshot, liquidity_scale=liquidity_scale, delta_scale=delta_scale, trade_scale=trade_scale, cumulative_depth_scale=depth_scale, bid_levels=bids, ask_levels=asks)
+    revisions = snapshot.component_revisions
+    if revisions is not None:
+        revisions = replace(revisions, view=(*revisions.view, (multiplier, tick_size)))
+    return replace(snapshot, liquidity_scale=liquidity_scale, delta_scale=delta_scale, trade_scale=trade_scale, cumulative_depth_scale=depth_scale, bid_levels=bids, ask_levels=asks, component_revisions=revisions)
 
 
 class _DomAggregation:
@@ -367,6 +375,7 @@ class _DomAggregation:
         self.cache = {}
         self.source = None
         self.display = None
+        self.reused = self.rebuilt = 0
 
     def prepare(self, context, snapshot):
         started = time.perf_counter()
@@ -375,17 +384,27 @@ class _DomAggregation:
             self.cache.clear()
             self.source = self.display = None
         _epoch, _symbol, multiplier, tick_size = context
-        if (self.source is not None and self.display is not None
-                and snapshot.bid_levels is self.source.bid_levels
-                and snapshot.ask_levels is self.source.ask_levels):
+        if (multiplier <= 1 or multiplier not in ORDER_FLOW_AGGREGATION_MULTIPLIERS
+                or tick_size <= 0.0 or not math.isfinite(tick_size) or not snapshot.ready):
+            self.cache.clear()
+            display = snapshot
+        elif (self.source is not None and self.display is not None
+                and self.source.ready == snapshot.ready
+                and levels_unchanged(snapshot, self.source)):
+            self.reused += 1
             previous = self.display
+            revisions = snapshot.component_revisions
+            if revisions is not None:
+                revisions = replace(revisions, view=(*revisions.view, (multiplier, tick_size)))
             display = replace(
                 snapshot, liquidity_scale=previous.liquidity_scale,
                 delta_scale=previous.delta_scale, trade_scale=previous.trade_scale,
                 cumulative_depth_scale=previous.cumulative_depth_scale,
                 bid_levels=previous.bid_levels, ask_levels=previous.ask_levels,
+                component_revisions=revisions,
             )
         else:
+            self.rebuilt += 1
             display = aggregate_order_flow_snapshot(
                 snapshot, multiplier, tick_size, self.cache
             )
@@ -756,6 +775,8 @@ class TradesTapeWidget(QtWidgets.QWidget):
         self._snapshot_sequence = 0
         self._epoch = 0
         self._latest_snapshot_prints = ()
+        self._snapshot_print_key = None
+        self._print_cache_hits = self._print_cache_misses = 0
         self._history: dict[tuple[int, int], OrderFlowTradePrint] = {}
         self._large_history: dict[tuple[int, int], OrderFlowTradePrint] = {}
         self._unresolved: set[int] = set()
@@ -883,6 +904,7 @@ class TradesTapeWidget(QtWidgets.QWidget):
         self._epoch += 1
         self._unresolved.clear()
         self._latest_snapshot_prints = ()
+        self._snapshot_print_key = None
         self._last_snapshot_print_sequence = self._snapshot_sequence = 0
         self._dirty = True
         if not preserve_history:
@@ -975,14 +997,25 @@ class TradesTapeWidget(QtWidgets.QWidget):
         if not isinstance(snapshot, OrderFlowSnapshot) or snapshot.symbol != self.symbol:
             return
         prints = snapshot.recent_prints
-        if (snapshot.sequence < self._snapshot_sequence or
+        print_key = print_revision_key(snapshot)
+        stream_changed = (print_key is not None and self._snapshot_print_key is not None
+                          and print_key[0] != self._snapshot_print_key[0])
+        if (stream_changed or snapshot.sequence < self._snapshot_sequence or
                 (prints and prints[-1].sequence < self._last_snapshot_print_sequence)):
             self.reset(preserve_history=True)
         self._snapshot_sequence = snapshot.sequence
         threshold = max(1.0, float(snapshot.large_trade_threshold or 1.0))
         self._dirty |= threshold != self.current_threshold
         self.current_threshold = threshold
-        if prints is not self._latest_snapshot_prints:
+        if print_key is not None and self._snapshot_print_key is not None:
+            unchanged = print_key == self._snapshot_print_key
+        else:
+            unchanged = prints_equal(prints, self._latest_snapshot_prints)
+        self._snapshot_print_key = print_key
+        if unchanged:
+            self._print_cache_hits += 1
+        else:
+            self._print_cache_misses += 1
             self._latest_snapshot_prints = prints
             fresh = []
             for trade in reversed(prints):
@@ -1877,14 +1910,13 @@ class _DomRasterCanvas(QtWidgets.QWidget):
         self._text_layout_cache: OrderedDict[tuple[str, str, int], str] = OrderedDict()
         self._price_metrics_cache: OrderedDict[tuple[str, float, float], QtGui.QFontMetricsF] = OrderedDict()
         self._price_fit_cache: OrderedDict[tuple[object, ...], float] = OrderedDict()
-        # Amount-lane measurement is expensive (formatting + QFontMetrics). Cache
-        # against the immutable level tuples so BBO/trade-only snapshots do not
-        # remeasure up to 128 unchanged rows on the GUI thread.
-        self._amount_width_cache_bid_levels: tuple[OrderFlowDisplayLevel, ...] | None = None
-        self._amount_width_cache_ask_levels: tuple[OrderFlowDisplayLevel, ...] | None = None
-        self._amount_width_cache_mode = ''
-        self._amount_width_cache_font_key = ''
+        # Amount versions survive process transfer and ignore age/state-only
+        # changes. Typography and units remain part of the measurement key.
+        self._amount_width_cache_key = None
+        self._amount_width_cache_context = self._amount_width_cache_inputs = None
         self._amount_width_cache_value = 36.0
+        self._amount_width_cache_hits = self._amount_width_cache_misses = 0
+        self._row_revision_reuses = 0
         self._geometry_cache_key: tuple[object, ...] | None = None
         self._price_protection_active = False
         self._suppress_change_cues_once = False
@@ -1949,10 +1981,8 @@ class _DomRasterCanvas(QtWidgets.QWidget):
         self._text_layout_cache.clear()
         self._price_metrics_cache.clear()
         self._price_fit_cache.clear()
-        self._amount_width_cache_bid_levels = None
-        self._amount_width_cache_ask_levels = None
-        self._amount_width_cache_mode = ''
-        self._amount_width_cache_font_key = ''
+        self._amount_width_cache_key = None
+        self._amount_width_cache_context = self._amount_width_cache_inputs = None
         self._amount_width_cache_value = 36.0
         self._geometry_cache_key = None
         self._prepared_sequence = -1
@@ -2384,9 +2414,8 @@ class _DomRasterCanvas(QtWidgets.QWidget):
         if normalized == self._value_mode:
             return
         self._value_mode = normalized
-        self._amount_width_cache_bid_levels = None
-        self._amount_width_cache_ask_levels = None
-        self._amount_width_cache_mode = ''
+        self._amount_width_cache_key = None
+        self._amount_width_cache_context = self._amount_width_cache_inputs = None
         self._prepared_sequence = -1
         self._prepare_display(reuse_rows=False)
         self.update()
@@ -2486,6 +2515,8 @@ class _DomRasterCanvas(QtWidgets.QWidget):
         self.source_snapshot = None
         self._applied_source_snapshot = None
         self.snapshot = None
+        self._amount_width_cache_key = None
+        self._amount_width_cache_context = self._amount_width_cache_inputs = None
         self._invalidate_aggregation()
         self._latest_received_sequence = -1
         self._latest_applied_sequence = -1
@@ -3205,16 +3236,12 @@ class _DomRasterCanvas(QtWidgets.QWidget):
         prepared_size_matches = self._prepared_size == (max(1, self.width()), max(1, self.height()))
         rows_unchanged = False
         if previous is not None and prepared_size_matches:
-            if (
-                display_snapshot.bid_levels is previous.bid_levels
-                and display_snapshot.ask_levels is previous.ask_levels
-            ):
+            if levels_unchanged(display_snapshot, previous):
                 rows_unchanged = True
+                self._row_revision_reuses += 1
             else:
-                # Snapshot tuples are immutable but partial analytical refreshes
-                # may create new tuple objects even when the rows currently
-                # visible in the DOM are value-identical. Avoid rebuilding
-                # those rows merely because container identity changed.
+                # Changed components can leave the currently visible subset
+                # unchanged. Keep the existing presentation-field comparison.
                 visible_rows = max(0, int(self._geometry.get('rows_per_side', 0)))
                 if visible_rows > 0:
                     rows_unchanged = (
@@ -3423,23 +3450,29 @@ class _DomRasterCanvas(QtWidgets.QWidget):
     def _required_amount_lane_width(self, snapshot: OrderFlowSnapshot | None) -> float:
         if snapshot is None or self._book_depth:
             return 36.0
-        if (
-            snapshot.bid_levels is self._amount_width_cache_bid_levels
-            and snapshot.ask_levels is self._amount_width_cache_ask_levels
-            and self._amount_width_cache_mode == self._value_mode
-            and self._amount_width_cache_font_key == self._row_font_key
-        ):
+        revision = amount_revision_key(snapshot)
+        context = (snapshot.symbol, self._value_mode, self._row_font_key)
+        key = (context, revision)
+        if revision is not None and key == self._amount_width_cache_key:
+            self._amount_width_cache_hits += 1
             return self._amount_width_cache_value
+        # A changed source version can affect only far-depth rows, or group
+        # into the same displayed amounts. Verify the measured inputs before
+        # paying for formatting/font metrics. Legacy producers use this path.
+        inputs = amount_inputs(snapshot, 64)
+        if context == self._amount_width_cache_context and inputs == self._amount_width_cache_inputs:
+            self._amount_width_cache_key = key
+            self._amount_width_cache_hits += 1
+            return self._amount_width_cache_value
+        self._amount_width_cache_misses += 1
         texts = [
-            self._row_amount(level.notional, level.price, quantity=level.quantity)
-            for level in (*snapshot.bid_levels[:64], *snapshot.ask_levels[:64])
+            self._row_amount(notional, price, quantity=quantity)
+            for side in inputs for price, quantity, notional in side
         ]
         widest = max((self._row_metrics.horizontalAdvance(text) for text in texts), default=0.0)
         measured = max(36.0, min(112.0, float(math.ceil(widest + 7.0))))
-        self._amount_width_cache_bid_levels = snapshot.bid_levels
-        self._amount_width_cache_ask_levels = snapshot.ask_levels
-        self._amount_width_cache_mode = self._value_mode
-        self._amount_width_cache_font_key = self._row_font_key
+        self._amount_width_cache_key = key
+        self._amount_width_cache_context, self._amount_width_cache_inputs = context, inputs
         self._amount_width_cache_value = measured
         return measured
 
@@ -5636,6 +5669,11 @@ class _DomRasterCanvas(QtWidgets.QWidget):
             'text_cache_misses': self._text_cache_misses,
             'text_cache_evictions': self._text_cache_evictions,
             'text_cache_entries': len(self._text_layout_cache),
+            'aggregation_revision_reuses': self._aggregation_worker.reused,
+            'aggregation_rebuilds': self._aggregation_worker.rebuilt,
+            'row_revision_reuses': self._row_revision_reuses,
+            'amount_width_cache_hits': self._amount_width_cache_hits,
+            'amount_width_cache_misses': self._amount_width_cache_misses,
             'rows_per_side': int(self._geometry['rows_per_side']),
             'snapshot_sequence': max(self._prepared_sequence, self._latest_applied_sequence),
             'row_snapshot_sequence': self._prepared_sequence,
@@ -6842,6 +6880,9 @@ class OrderBookWidget(QtWidgets.QWidget):
     def performance_state(self) -> dict[str, float | int | str]:
         state = self.canvas.performance_state()
         state['tape_visible'] = int(bool(self._tape is not None and self._tape.isVisible()))
+        if self._tape is not None:
+            state['tape_print_cache_hits'] = self._tape._print_cache_hits
+            state['tape_print_cache_misses'] = self._tape._print_cache_misses
         state['presentation_preset'] = str(self.canvas.presentation_state().get('preset', 'execution'))
         state['row_density'] = self.canvas.row_density()
         state['value_mode'] = self.canvas.value_mode()
