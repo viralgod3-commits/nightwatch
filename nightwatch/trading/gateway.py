@@ -453,14 +453,31 @@ class TradingGateway(QtCore.QObject):
             return
         order = normalize_order(source)
         previous_execution = dict(record.get('execution') or {})
+        if not valid_order_fills(order):
+            self._protection_recovery_pending = True
+            self.problem.emit('Invalid protection fill data; reconciling before changing saved execution state.')
+            self._queue_account_refresh(str(record.get('order', {}).get('symbol') or ''))
+            return
+        stamp = event_timestamp({'T': order.get('updateTime')}, order)
+        if (older_than_row(stamp, previous_execution)
+                or ('executedQty' in order and safe_float(order['executedQty']) < safe_float(previous_execution.get('executedQty')))):
+            return
         execution = dict(previous_execution)
         for key in ('orderId', 'algoId', 'actualOrderId', 'actualType', 'avgPrice'):
             if order.get(key) not in (None, '', '0', 0):
                 execution[key] = order[key]
         if safe_float(order.get('executedQty')) >= safe_float(execution.get('executedQty')):
             execution['executedQty'] = order.get('executedQty', execution.get('executedQty', '0'))
+        if stamp:
+            execution['updateTime'] = stamp
         record['execution'] = execution
         status = str(order.get('status') or record.get('last_status') or 'NEW').upper()
+        previous_status = record.get('last_status')
+        terminal = {'CANCELED', 'FILLED', 'FINISHED', 'EXPIRED', 'EXPIRED_IN_MATCH', 'REJECTED'}
+        verified_child = (order.get('_child_reconciled') or
+                          (order.get('orderId') and str(order['orderId']) == str(previous_execution.get('actualOrderId'))))
+        if previous_status in terminal and status not in terminal and not (previous_status == 'FINISHED' and verified_child):
+            status = previous_status
         changed = execution != previous_execution or status != record.get('last_status')
         record['last_status'] = status
         if changed:
@@ -1052,9 +1069,10 @@ class TradingGateway(QtCore.QObject):
             callback = safe_float(payload.get("callbackRate"))
             if not (0.1 <= callback <= 10.0):
                 raise ValueError("Trailing callback rate must be between 0.1% and 10%.")
-        client_id = str(payload.get("newClientOrderId") or payload.get("clientAlgoId") or "")
-        if client_id and (len(client_id) > 36 or re.fullmatch(r"[.A-Z:/a-z0-9_-]+", client_id) is None):
-            raise ValueError("Client order ID contains unsupported characters or exceeds 36 characters.")
+        for key in ('newClientOrderId', 'clientAlgoId'):
+            client_id = str(payload.get(key) or '')
+            if client_id and (len(client_id) > 36 or re.fullmatch(r"[.A-Z:/a-z0-9_-]+", client_id) is None):
+                raise ValueError("Client order ID contains unsupported characters or exceeds 36 characters.")
         return payload
 
     def _validate_position_mode(
@@ -1807,6 +1825,9 @@ class TradingGateway(QtCore.QObject):
                 )
                 self._validate_position_mode(item)
                 item.setdefault("newClientOrderId", self.client_order_id("nwb"))
+                if item['type'] in CONDITIONAL_ORDER_TYPES:
+                    item.setdefault('algoType', 'CONDITIONAL')
+                    item.setdefault('clientAlgoId', item.pop('newClientOrderId'))
                 prepared.append(item)
             clients = [str(item.get('clientAlgoId') or item.get('newClientOrderId')) for item in prepared]
             if len(set(clients)) != len(clients):
@@ -1852,7 +1873,7 @@ class TradingGateway(QtCore.QObject):
             "method": "batchOrders.place",
             "context": context,
             "expected_orders": [dict(order) for order in prepared],
-            "client_ids": [str(order.get("newClientOrderId", "")) for order in prepared],
+            "client_ids": [str(order.get('clientAlgoId') or order.get("newClientOrderId", "")) for order in prepared],
             "fingerprint": fingerprint,
             "sent": time.monotonic(),
         }
@@ -2856,6 +2877,8 @@ class TradingGateway(QtCore.QObject):
             return
         event_type = str(payload.get("e", ""))
         order = normalize_order(payload.get('o') or payload.get('algoOrder') or {})
+        if order and event_type in {'ORDER_TRADE_UPDATE', 'ALGO_UPDATE'}:
+            order.setdefault('updateTime', event_timestamp(payload, order))
         if event_type in {'ORDER_TRADE_UPDATE', 'ALGO_UPDATE'} and not valid_order_fills(order):
             self.problem.emit('Invalid order fill data in the account stream; reconciling saved protections.')
             if self._protection_records:
@@ -3002,7 +3025,9 @@ class TradingGateway(QtCore.QObject):
             else:
                 self._refresh_events_overflow = True
         if payload.get('e') in {'ORDER_TRADE_UPDATE', 'ALGO_UPDATE'}:
-            order = payload.get('o') or payload.get('a') or {}
+            order = normalize_order(payload.get('o') or payload.get('a') or {})
+            if order:
+                order.setdefault('updateTime', event_timestamp(payload, order))
             self._observe_protection_order(self.protection_client_id(order), order)
         if payload.get("e") != "ACCOUNT_UPDATE":
             return

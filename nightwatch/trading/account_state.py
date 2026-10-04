@@ -42,6 +42,7 @@ def normalize_order(source: dict) -> dict:
         'goodTillDate': ('gtd', 'goodTillDate'),
         'activatePrice': ('AP', 'activatePrice', 'activationPrice'),
         'callbackRate': ('cr', 'callbackRate', 'priceRate'),
+        'updateTime': ('T', 'updateTime'),
     }.items():
         # Keep verified child-query values when a normalized row still carries
         # its parent's original stream fields (X/aq/ap).
@@ -54,6 +55,7 @@ def normalize_order(source: dict) -> dict:
 
 
 def valid_order_fills(row: dict) -> bool:
+    values = {}
     for field in ('origQty', 'executedQty', 'avgPrice'):
         if row.get(field) in (None, ''):
             continue
@@ -61,8 +63,15 @@ def valid_order_fills(row: dict) -> bool:
             value = Decimal(str(row[field]))
             if not value.is_finite() or value < 0:
                 return False
+            values[field] = value
         except (InvalidOperation, ValueError):
             return False
+    # Close-All parents can report a zero quantity while their child executes
+    # the current position. Fixed-quantity orders cannot overfill their intent.
+    if (exchange_bool(row.get('closePosition')) is not True
+            and 'origQty' in values and 'executedQty' in values
+            and values['executedQty'] > values['origQty']):
+        return False
     return True
 
 

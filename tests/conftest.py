@@ -22,6 +22,9 @@ def gateway(qapp, monkeypatch):
     monkeypatch.setattr(BinanceRest, '_ensure_time_sync_loop', lambda self: None)
     monkeypatch.setattr(TradingGateway, '_restore_placement_journal', lambda self: None)
     instance = TradingGateway()
+    async def unexpected_network(*args, **kwargs):
+        raise AssertionError('Trading tests must inject exchange responses; outbound HTTP was attempted.')
+    monkeypatch.setattr(instance.rest, '_request_async', unexpected_network)
     instance.api_key, instance.api_secret = 'test-key', 'test-secret'
     instance._journal_loading = False
     instance.account_can_trade = True

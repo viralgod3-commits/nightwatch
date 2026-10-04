@@ -2,7 +2,7 @@
 
 Scope: Nightwatch's Binance USD-M Futures integration and public Spot comparison data, reviewed against the official documentation available on 2026-10-02. Starting commit: `510859a5d0c7e069e8fd89a01ba6c04c27cc2e69`.
 
-**Status: documentation and source audit completed; production execution acceptance remains outstanding.** No automated tests, authenticated account checks, demo orders, or live orders were run. Syntax parsing and `git diff --check` were performed. This audit does not certify bug-free trading or exchange execution under every condition.
+**Status updated 2026-10-04: 326 automated checks passed on Python 3.14.6; authenticated exchange execution remains unverified.** The original October 2 audit below was a source/documentation review without executed tests. See the October 4 verification section for the executed scope and exchange-access blocker.
 
 ## Official contracts reviewed
 
@@ -117,3 +117,45 @@ Starting commit: `c240bbcceb8cf857ecd111050adf6526995886bf`. The current officia
 | Credentials could change after an amendment/cancel reconciliation failed, leaving the unresolved operation attached to the wrong account session. | Credential replacement is blocked while any operation still has an uncertain transport outcome. |
 
 The changed Python files were parsed and the diff was checked for whitespace errors. Cancellation tokens reduce the pre-transmission race; once a request has reached Binance, cancellation and confirmation remain exchange operations and cannot be guaranteed by local inspection. No claim of atomic entry/TP/SL execution or production certification is made.
+
+## Executed verification — 2026-10-04
+
+Starting commit: `3b1817b53363f52fd3024176bc81c22dbadf57ae`, freshly cloned and pulled from the official repository. Runtime: CPython **3.14.6**, PySide6 **6.11.2**, pytest **9.1.1**, Linux with Qt's offscreen platform.
+
+**Result: 326 passed, 0 failed, 0 skipped in 482.82 seconds.** Python compilation and `git diff --check` also passed. The application methods, SQLite journal transactions, HTTP response parsing and Qt controls were executed; exchange replies and worker/socket scheduling were injected. The trading fixture blocks outbound HTTP. This is offline contract and regression verification, not authenticated Binance acceptance.
+
+The current official REST, WebSocket API and user-stream schemas were downloaded and reviewed, together with their general-information pages. Schema SHA-256 prefixes: REST `9c3f92d02d8b84f6`, WebSocket API `307cbf971319f564`, user streams `b81aab5381fa00f2`. WebSocket decimal values follow the general-information requirement to send strings; the downloaded OpenAPI numeric annotations do not override that wire-format instruction.
+
+| Trading capability | Executed scenarios |
+|---|---|
+| Placement | All seven supported backend order types; all five manual-ticket types; one-way and LONG/SHORT opening/reduction combinations; close-all exclusions |
+| Exchange constraints | Tick and lot grids, market LOT_SIZE compatibility, malformed/non-finite values, client IDs, all supported price-match modes, LIMIT time-in-force options, GTD truncation, trailing callback boundaries |
+| Wire and transport | REST HMAC over exact encoded bytes for GET/POST/PUT/DELETE; sorted unescaped WebSocket signing; integer identifiers/timestamps, string decimal/flag values; conditional Algo routing and REST fallback for unsupported WebSocket TIF combinations |
+| Outcomes and reconciliation | Definitive rejections, HTTP 408/500/503 distinctions, invalid JSON, clock failure before transmission, lost acknowledgements, unknown client IDs, duplicate acknowledgements, account-stream confirmation before the trade acknowledgement |
+| Batches | Successful standard/conditional batches, explicit Algo client IDs, partial acceptance/rejection, nested flag serialization, stopping conditional submission after a failed member without sending the remainder |
+| Amendments and cancellation | Reduce-only LIMIT modification with total quantity including fills; read-only reconciliation after uncertain modify/cancel; standard/Algo cancellation; cancel-all attempts both services; conditional replacement requires a confirmed canceled parent without a child and re-reads remaining quantity |
+| Sizing and closes | Quick-order collateral/slippage limits and TP/SL directions; magnetic entry/TP/SL sizing; passive smart-exit ladders conserving unreserved quantity; market-close and manual-reduce controls in one-way/hedge modes |
+| Protection lifecycle | Durable tranches before transmission, partial-fill accumulation, duplicate fills, terminal dust, monotonic fills/status, verified Algo child fills, completed-tranche sibling cleanup, canceling obsolete queued legs, one bounded fail-safe close per tranche, hedge-side retirement |
+| Account and settings | V3 account/configuration merging, buffered-event replay, stale account updates, balance reservations, cross/leverage confirmation and queued setting changes, position-mode mismatch, stream creation/renewal/key rotation/expiry |
+| Persistence and shutdown | Actual journal transactions and credential/venue isolation, failed journal writes prevent transmission, unresolved intent survives shutdown, restart queries the saved client ID without retransmission, credentials cannot change during unresolved operations |
+
+### Defects reproduced and repaired
+
+- Conditional batches now save and verify the same canonical `clientAlgoId` used on the wire. Both supplied client-ID fields are validated.
+- Fixed-quantity orders with cumulative fills above their original quantity require reconciliation. Close-All parents retain their documented dynamic-quantity behavior.
+- Older or decreasing-fill observations cannot reset a terminal protection status. Exchange timestamps from the stream envelope are retained; a verified matching-engine child can still replace its parent's `FINISHED` status with the child's working status.
+- Cancel-all needs a documented success code from each service; malformed replies remain uncertain rather than reporting success.
+- Leverage changes need the requested symbol/value in the reply, and cross-margin changes need a success code or the documented already-configured response.
+- Existing protection tests now model cancellable worker tasks, side-aware position queries and the follow-up account read before retirement.
+
+File-level statement coverage: account reconciliation **87%**, trading gateway **67%**, order builders/amendments **56%**, trading UI **70%**. These measurements include presentation and lifecycle branches and do not establish exhaustive coverage of every timing interleaving.
+
+Reproduce with Python 3.14.6:
+
+```sh
+python -m pytest tests/test_trading_regressions.py tests/test_protection_lifecycle.py tests/test_trading_layout_ui.py tests/test_account_list_performance.py tests/test_runtime_error_regressions.py -q
+```
+
+### Exchange execution blocker
+
+Direct public GET requests to Binance's demo `/fapi/v1/time` and `/fapi/v1/exchangeInfo` returned **HTTP 451** with Binance's restricted-location response from this execution environment. No test-account credentials were available. No authenticated account reads, demo orders, or live orders were placed. Actual authentication, matching-engine fills/triggering, account-specific margin/leverage eligibility and exchange-side races still need acceptance on a Binance demo account from an environment Binance permits.

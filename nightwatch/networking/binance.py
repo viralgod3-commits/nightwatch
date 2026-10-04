@@ -1844,10 +1844,14 @@ class BinanceRest:
     def cancel_all_orders(self, api_key: str, api_secret: str, symbol: str) -> dict[str, Any]:
         try:
             standard = self.signed_request(api_key, api_secret, '/fapi/v1/allOpenOrders', {'symbol': symbol}, 'DELETE')
+            if not isinstance(standard, dict) or str(standard.get('code')) != '200':
+                raise RuntimeError('Unexpected response: standard cancel-all success was not confirmed.')
         except (RuntimeError, TimeoutError, OSError) as exc:
             standard = {'error': str(exc), 'uncertain': execution_outcome_uncertain(exc)}
         try:
             algo = self.signed_request(api_key, api_secret, '/fapi/v1/algoOpenOrders', {'symbol': symbol}, 'DELETE')
+            if not isinstance(algo, dict) or str(algo.get('code')) != '200':
+                raise RuntimeError('Unexpected response: Algo cancel-all success was not confirmed.')
         except (RuntimeError, TimeoutError, OSError) as exc:
             algo = {'error': str(exc), 'uncertain': execution_outcome_uncertain(exc)}
         return {'standard': standard, 'algo': algo}
@@ -1899,11 +1903,19 @@ class BinanceRest:
             self._position_mode_cache = None
 
     def change_leverage(self, api_key: str, api_secret: str, symbol: str, leverage: int) -> dict[str, Any]:
-        return self.signed_request(api_key, api_secret, '/fapi/v1/leverage', {'symbol': symbol, 'leverage': max(1, min(125, int(leverage)))}, 'POST')
+        requested = max(1, min(125, int(leverage)))
+        result = self.signed_request(api_key, api_secret, '/fapi/v1/leverage', {'symbol': symbol, 'leverage': requested}, 'POST')
+        if (not isinstance(result, dict) or result.get('symbol') != symbol
+                or str(result.get('leverage')) != str(requested)):
+            raise RuntimeError('Unexpected response: Binance leverage setting could not be verified.')
+        return result
 
     def ensure_cross_margin(self, api_key: str, api_secret: str, symbol: str) -> dict[str, Any]:
         try:
-            return self.signed_request(api_key, api_secret, '/fapi/v1/marginType', {'symbol': symbol, 'marginType': 'CROSSED'}, 'POST')
+            result = self.signed_request(api_key, api_secret, '/fapi/v1/marginType', {'symbol': symbol, 'marginType': 'CROSSED'}, 'POST')
+            if not isinstance(result, dict) or str(result.get('code')) != '200':
+                raise RuntimeError('Unexpected response: Binance cross-margin setting could not be verified.')
+            return result
         except RuntimeError as exc:
             if 'No need to change margin type' in str(exc) or '-4046' in str(exc):
                 return {'symbol': symbol, 'marginType': 'CROSSED', 'unchanged': True}

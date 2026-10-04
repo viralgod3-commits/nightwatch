@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+from decimal import Decimal
 from pathlib import Path
 
 import pytest
@@ -15,6 +16,8 @@ from nightwatch.trading.trading_ui import TradingWorkspace
 from nightwatch.ui.dialogs import RightPanelPresetsDialog
 from nightwatch.ui.panels import PanelSpec, RightRailController, RightRailState, panel_ids
 from nightwatch.utilities import load_app_fonts
+from nightwatch.trading.gateway import TradingGateway
+from nightwatch.trading.trading_ui import BatchOrderDialog, ModifyOrderDialog
 
 
 @pytest.fixture
@@ -22,6 +25,7 @@ def workspace(qapp, gateway, monkeypatch):
     load_app_fonts(qapp, str(Path(__file__).resolve().parents[1] / 'nightwatch'))
     monkeypatch.setattr(gateway, 'refresh_account', lambda *a, **k: None)
     monkeypatch.setattr(gateway, 'ensure_cross', lambda *a, **k: None)
+    monkeypatch.setattr(gateway, 'apply_cross_leverage', lambda *a, **k: None)
     widget = TradingWorkspace(THEMES['Nightwatch'], gateway)
     widget.set_symbol('BTCUSDT', SymbolRules())
     widget.resize(330, 540)
@@ -261,3 +265,128 @@ def test_legacy_orders_removed_and_preset_rename_retains_topology(qapp):
     assert dialog.definitions()['My balanced desk']['tree'] == RIGHT_LAYOUT_PRESETS['Balanced']['tree']
     dialog.close()
     dialog.deleteLater()
+
+
+def ready_ticket(workspace, gateway, *, hedge=False):
+    snapshot = account_snapshot()
+    snapshot['positionMode'] = {'dualSidePosition': hedge}
+    snapshot['accountConfig'] = {'canTrade': True, 'multiAssetsMargin': False}
+    snapshot['symbolConfig'] = [{'symbol': 'BTCUSDT', 'leverage': 10, 'marginType': 'CROSSED'}]
+    snapshot['account']['positions'] = [
+        {'symbol': 'BTCUSDT', 'positionSide': 'LONG' if hedge else 'BOTH', 'positionAmt': '0.29',
+         'entryPrice': '100', 'markPrice': '100', 'leverage': 10, 'marginType': 'cross'}]
+    gateway._cache_snapshot(snapshot)
+    gateway.snapshot_ready.emit(snapshot)
+    workspace.set_mark_price(100, 'BTCUSDT')
+    ticket = workspace.ticket
+    ticket._market_live = ticket._book_valid = True
+    ticket._leverage_apply_timer.stop()
+    return ticket
+
+
+@pytest.mark.parametrize('kind', ['LIMIT', 'MARKET', 'STOP', 'STOP_MARKET', 'TRAILING_STOP_MARKET'])
+@pytest.mark.parametrize('hedge,side', [(False, 'BUY'), (False, 'SELL'), (True, 'BUY'), (True, 'SELL')])
+def test_manual_ticket_emits_binance_compatible_open_orders(workspace, gateway, qapp, kind, hedge, side):
+    ticket = ready_ticket(workspace, gateway, hedge=hedge)
+    ticket.type_combo.setCurrentIndex(ticket.type_combo.findData(kind))
+    ticket.buy_button.setChecked(side == 'BUY')
+    ticket.sell_button.setChecked(side == 'SELL')
+    ticket.size_mode.setCurrentIndex(ticket.size_mode.findData('CONTRACTS'))
+    ticket.quantity_edit.setText('0.1')
+    ticket.price_edit.setText('100')
+    ticket.trigger_edit.setText('110' if side == 'BUY' else '90')
+    ticket.activation_edit.setText('90' if side == 'BUY' else '110')
+    ticket._leverage_apply_timer.stop()
+    emitted = []
+    workspace.order_requested.connect(emitted.append)
+    ticket.prepare_order()
+    assert len(emitted) == 1, ticket.validation_label.text()
+    request = emitted[0]
+    valid = TradingGateway._validate_order_payload(request['order'], request)
+    assert valid['type'] == kind and valid['side'] == side
+    assert valid['positionSide'] == (('LONG' if side == 'BUY' else 'SHORT') if hedge else 'BOTH')
+    assert request['position_intent'] == 'OPEN'
+
+
+@pytest.mark.parametrize('hedge', [False, True])
+def test_manual_reduce_ticket_uses_position_percentage_and_exit_side(workspace, gateway, qapp, hedge):
+    ticket = ready_ticket(workspace, gateway, hedge=hedge)
+    ticket.reduce_only.setChecked(True)
+    ticket.type_combo.setCurrentIndex(ticket.type_combo.findData('MARKET'))
+    ticket.buy_button.setChecked(False)
+    ticket.sell_button.setChecked(True)
+    ticket.size_mode.setCurrentIndex(ticket.size_mode.findData('POSITION %'))
+    ticket.quantity_edit.setText('100')
+    emitted = []
+    workspace.order_requested.connect(emitted.append)
+    ticket.prepare_order()
+    assert len(emitted) == 1, ticket.validation_label.text()
+    valid = TradingGateway._validate_order_payload(emitted[0]['order'], emitted[0])
+    assert Decimal(valid['quantity']) == Decimal('0.29') and valid['side'] == 'SELL'
+    assert valid.get('reduceOnly') is True if not hedge else 'reduceOnly' not in valid
+
+
+@pytest.mark.parametrize('position_side,amount,side', [('BOTH', '0.29', 'SELL'), ('BOTH', '-0.29', 'BUY'), ('LONG', '0.29', 'SELL'), ('SHORT', '-0.29', 'BUY')])
+@pytest.mark.parametrize('percent,quantity', [(100, '0.29'), (50, '0.145')])
+def test_position_close_button_emits_correct_reduction(workspace, gateway, position_side, amount, side, percent, quantity):
+    ready_ticket(workspace, gateway, hedge=position_side != 'BOTH')
+    emitted = []
+    workspace.order_requested.connect(emitted.append)
+    workspace._close_position_payload({'symbol': 'BTCUSDT', 'positionSide': position_side, 'positionAmt': amount}, percent)
+    assert len(emitted) == 1
+    valid = TradingGateway._validate_order_payload(emitted[0]['order'], emitted[0])
+    assert valid['side'] == side and valid['quantity'] == quantity
+    assert emitted[0]['position_intent'] == 'REDUCE'
+    assert valid.get('reduceOnly') is True if position_side == 'BOTH' else 'reduceOnly' not in valid
+
+
+def test_manual_stale_market_and_immediate_stop_are_blocked(workspace, gateway):
+    ticket = ready_ticket(workspace, gateway)
+    ticket.quantity_edit.setText('0.1')
+    emitted = []
+    workspace.order_requested.connect(emitted.append)
+    ticket.type_combo.setCurrentIndex(ticket.type_combo.findData('MARKET'))
+    ticket._last_mark_mono = 0
+    ticket.prepare_order()
+    assert not emitted and 'STALE' in ticket.validation_label.text()
+    ticket.set_mark_price(100)
+    ticket.type_combo.setCurrentIndex(ticket.type_combo.findData('STOP_MARKET'))
+    ticket.buy_button.setChecked(True)
+    ticket.working_type.setCurrentIndex(ticket.working_type.findData('MARK_PRICE'))
+    ticket.trigger_edit.setText('90')
+    ticket.prepare_order()
+    assert not emitted and 'above' in ticket.validation_label.text()
+
+
+def test_batch_dialog_preserves_size_and_rejects_incomplete_row(qapp):
+    dialog = BatchOrderDialog('BTCUSDT', SymbolRules(), 'BUY', 'BOTH')
+    try:
+        _side, price, quantity = dialog.rows[0]
+        price.setText('100.01')
+        with pytest.raises(ValueError, match='both'):
+            dialog.orders()
+        quantity.setText('0.123')
+        orders = dialog.orders()
+        assert len(orders) == 1 and orders[0]['quantity'] == '0.123'
+        TradingGateway._validate_order_payload(orders[0], {'rules': SymbolRules(), 'position_intent': 'OPEN'})
+        price.setText('100.001')
+        with pytest.raises(ValueError, match='increments'):
+            dialog.orders()
+    finally:
+        dialog.close()
+
+
+def test_modify_dialog_uses_total_quantity_and_preserves_reduce_only(qapp):
+    order = {'symbol': 'BTCUSDT', 'orderId': 42, 'side': 'SELL', 'type': 'LIMIT',
+             'origQty': '1', 'executedQty': '0.3', 'price': '100', 'reduceOnly': True}
+    dialog = ModifyOrderDialog(order, SymbolRules())
+    try:
+        dialog.quantity.setText('0.3')
+        with pytest.raises(ValueError, match='exceed'):
+            dialog.changes()
+        dialog.quantity.setText('0.5')
+        changes = dialog.changes()
+        assert changes['quantity'] == '0.5' and changes['_minimumExecutedQty'] == '0.3'
+        assert changes['reduceOnly'] is True
+    finally:
+        dialog.close()

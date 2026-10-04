@@ -1,6 +1,8 @@
 import json
 import time
+from decimal import Decimal
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 from nightwatch.models import SymbolRules
 from nightwatch.trading.gateway import _PlacementJournal
@@ -18,7 +20,7 @@ def test_tranche_is_durable_before_any_transmission_and_keeps_status(gateway, tm
     gateway._protection_records['entry'] = entry_record(last_status='FILLED', _status_received_mono=100)
     tasks = []
     sent = []
-    monkeypatch.setattr(gateway, '_launch_task', lambda f, done, failed, pool=None: tasks.append((f, done)) or object())
+    monkeypatch.setattr(gateway, '_launch_task', lambda f, done, failed, pool=None: tasks.append((f, done)) or Mock())
     monkeypatch.setattr(gateway, 'submit_order', lambda order, context: sent.append(context['client_id']))
     legs = [({'symbol': 'BTCUSDT'}, {'client_id': name, 'entry_client_id': 'entry', 'protective_leg': True})
             for name in ['stop', 'tp']]
@@ -42,7 +44,7 @@ def test_recovery_saves_terminal_status_and_confirms_flat_position(gateway, tmp_
     gateway._protection_records['entry'] = entry_record(last_status='NEW')
     monkeypatch.setattr(gateway.rest, 'query_order_by_client_id', lambda *a, **k: {'status': 'FILLED', 'executedQty': '2'})
     tasks, refreshed, delivered = [], [], []
-    monkeypatch.setattr(gateway, '_launch_task', lambda f, done, failed, pool=None: tasks.append((f, done)) or object())
+    monkeypatch.setattr(gateway, '_launch_task', lambda f, done, failed, pool=None: tasks.append((f, done)) or Mock())
     monkeypatch.setattr(gateway, 'refresh_account', lambda *a, **k: refreshed.append(k))
     gateway.protections_recovered.connect(delivered.append)
     gateway._recover_protections()
@@ -53,8 +55,11 @@ def test_recovery_saves_terminal_status_and_confirms_flat_position(gateway, tmp_
     assert refreshed == [{'all_open_orders': True, 'follow_up': True}]
     assert not delivered and gateway._protection_recovery_pending
     gateway._last_snapshot_mono = time.monotonic()
-    gateway._retire_closed_protections({'ordersScope': 'ALL', 'orders': [], 'algoOrders': [],
-                                        '_read_started_mono': gateway._last_snapshot_mono})
+    gateway._last_account_snapshot = {'ordersScope': 'ALL', 'orders': [], 'algoOrders': [],
+                                      '_read_started_mono': gateway._last_snapshot_mono}
+    # The follow-up account read resumes recovery before retiring saved plans.
+    gateway._recover_protections()
+    tasks[-1][1](tasks[-1][0]())
     assert not gateway._protection_records and not gateway._protection_recovery_pending
 
 
@@ -73,7 +78,7 @@ def protection_ui():
     gateway = SimpleNamespace(_protection_recovery_pending=False,
                               client_order_id=lambda prefix: next(client_ids),
                               submit_protection_tranche=lambda plan, legs: sent.append((plan, legs)),
-                              has_open_position=lambda symbol: True)
+                              has_open_position=lambda symbol, position_side=None: True)
     ui = SimpleNamespace(trading_gateway=gateway, submitted_protection_clients=set(), pending_protections={},
                          active_protection_legs={}, symbol_rules={},
                          _set_ticket_protection_state=lambda symbol, state: states.append(state),
@@ -120,7 +125,34 @@ def test_recovery_preserves_newer_allocation_and_skips_closed_entry(qapp):
     MainWindow._restore_saved_protections(ui, {'records': [saved], 'errors': []})
     assert not sent and not closes
     assert ui.pending_protections['entry']['protected_quantity'] == 2
-    ui.trading_gateway.has_open_position = lambda symbol: False
+    ui.trading_gateway.has_open_position = lambda symbol, position_side=None: False
     saved['result']['status'] = 'FILLED'
     MainWindow._restore_saved_protections(ui, {'records': [saved], 'errors': []})
     assert not sent and 'entry' in ui.submitted_protection_clients
+
+
+def test_fail_safe_closes_remaining_tranche_once_even_if_both_legs_fail(qapp):
+    from nightwatch.app.main_window import MainWindow
+    ui, sent, closes, states = protection_ui()
+    transmitted = []
+    gateway = ui.trading_gateway
+    gateway.remaining_protection_quantity = lambda context: Decimal('0.6')
+    gateway.position_cache = {('BTCUSDT', 'BOTH'): {'positionAmt': '1'}}
+    gateway.submit_order = lambda order, context: transmitted.append((order, context)) or 'close'
+    gateway.request_was_admitted = lambda request: True
+    ui._emergency_tranches = set()
+    ui.emergency_reserved = {}
+    ui.emergency_guards = {}
+    ui.emergency_close_requests = {}
+    ui.emergency_timer = SimpleNamespace(stop=lambda: None)
+    ui._submit_emergency_close = lambda *a: MainWindow._submit_emergency_close(ui, *a)
+    context = {'symbol': 'BTCUSDT', 'position_side': 'BOTH', 'entry_side': 'BUY',
+               'quantity': '1', 'tranche_quantity': '1', 'entry_client_id': 'entry',
+               'fill_total': 1, 'client_id': 'tp', 'rules': SymbolRules(market_step='0.1'), 'kind': 'tp'}
+    MainWindow._start_emergency_close(ui, context, 'trigger rejected')
+    MainWindow._start_emergency_close(ui, {**context, 'client_id': 'sl', 'kind': 'sl'}, 'trigger rejected')
+    assert len(transmitted) == 1
+    order, details = transmitted[0]
+    assert order['quantity'] == '0.6' and order['side'] == 'SELL' and order['reduceOnly'] is True
+    assert details['emergency_close'] and details['reserved'] == .6
+    assert not ui.emergency_guards and ui.emergency_close_requests['close'] == details
