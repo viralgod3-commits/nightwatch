@@ -62,6 +62,9 @@ from .revisions import (
     amount_inputs, amount_revision_key, levels_unchanged,
     print_revision_key, prints_equal,
 )
+from .raster_regions import (
+    bounded_region, copy_pixel_region, draw_native_region, pixel_region, region_area,
+)
 
 from ..presentation import display_frame_interval_ms
 from ..chart.analysis import LatestJob
@@ -5930,6 +5933,13 @@ class _DomRasterProcess:
         self.images = []
         self.shape = None
         self.previous_slot = None
+        self._slot_damage = [QtGui.QRegion(), QtGui.QRegion()]
+        self._slot_revisions = [0, 0]
+        self._frame_revision = 0
+        self._sync_stats = dict(raster_sync_bytes=0, raster_sync_avoided_bytes=0,
+                               raster_sync_copies=0, raster_sync_full_copies=0,
+                               raster_sync_skipped=0, raster_sync_last_bytes=0,
+                               raster_sync_last_ms=0.0, raster_sync_max_ms=0.0)
         self.pointer = None
         self.last_diagnostics = 0.0
         self._snapshot_decoder = SnapshotDecoder()
@@ -5977,6 +5987,10 @@ class _DomRasterProcess:
             self.memory.close()
             self.memory.unlink()
             self.memory = None
+        self.shape = None
+        self.previous_slot = None
+        self._slot_damage = [QtGui.QRegion(), QtGui.QRegion()]
+        self._slot_revisions = [0, 0]
 
     def _surface(self, lease):
         from multiprocessing.shared_memory import SharedMemory
@@ -6001,14 +6015,69 @@ class _DomRasterProcess:
             self.shape, self.previous_slot = shape, None
             canvas._dirty_pixels = QtGui.QRegion(canvas.rect())
         slot = 1 - lease[1] if lease is not None and lease[0] == self.memory.name else 0
+        return slot, self.images[slot]
+
+    def _synchronize_surface(self, slot, dirty):
+        stats = self._sync_stats
+        stats['raster_sync_last_bytes'] = 0
+        stats['raster_sync_last_ms'] = 0.0
+        if self.previous_slot is None or self.previous_slot == slot:
+            return
+        started = time.perf_counter()
         target = self.images[slot]
-        if self.previous_slot is not None and self.previous_slot != slot:
-            painter = QtGui.QPainter(target)
-            painter.setCompositionMode(QtGui.QPainter.CompositionMode.CompositionMode_Source)
-            painter.drawImage(QtCore.QPointF(), self.images[self.previous_slot])
-            painter.end()
+        # Debt contains every paint missed by this slot, including unpublished
+        # frames from a seed retry. Pixels fully replaced below need no copy.
+        debt = pixel_region(self._slot_damage[slot], self.shape[2], target.rect())
+        covered = pixel_region(dirty, self.shape[2], target.rect(), inward=True)
+        copied = bounded_region(debt.subtracted(covered), target.rect())
+        copied_bytes = region_area(copied) * 4
+        full_bytes = target.width() * target.height() * 4
+        copy_pixel_region(target, self.images[self.previous_slot], copied)
+        elapsed = (time.perf_counter() - started) * 1000.0
+        stats['raster_sync_bytes'] += copied_bytes
+        stats['raster_sync_avoided_bytes'] += full_bytes - copied_bytes
+        stats['raster_sync_last_bytes'] = copied_bytes
+        stats['raster_sync_last_ms'] = elapsed
+        stats['raster_sync_max_ms'] = max(stats['raster_sync_max_ms'], elapsed)
+        stats['raster_sync_copies'] += int(bool(copied_bytes))
+        stats['raster_sync_full_copies'] += int(copied_bytes == full_bytes)
+        stats['raster_sync_skipped'] += int(not copied_bytes)
+
+    def _surface_painted(self, slot, dirty):
+        other = 1 - slot
+        self._slot_damage[other] = bounded_region(
+            self._slot_damage[other].united(dirty), self.canvas.rect())
+        self._slot_damage[slot] = QtGui.QRegion()
+        self._frame_revision += 1
+        self._slot_revisions[slot] = self._frame_revision
         self.previous_slot = slot
-        return slot, target
+
+    def _lease_matches(self, lease):
+        return (lease is not None and len(lease) == 3 and self.memory is not None
+                and lease[0] == self.memory.name and lease[1] in (0, 1)
+                and lease[2] == self._slot_revisions[lease[1]])
+
+    def _publish_surface(self, result, lease):
+        slot = self.previous_slot
+        if slot is None:
+            return
+        revision = self._slot_revisions[slot]
+        if self._lease_matches(lease) and lease[1] == slot:
+            return  # This complete image is already held by the GUI.
+        base = tuple(lease) if self._lease_matches(lease) else None
+        damage = self._slot_damage[lease[1]] if base is not None else QtGui.QRegion(self.canvas.rect())
+        result['frame'] = (self.memory.name, slot, *self.shape[:3])
+        result['frame_revision'] = revision
+        result['frame_base'] = base
+        # QRegion stays process-local; only bounded integer rectangles cross IPC.
+        result['dirty_rects'] = tuple((r.x(), r.y(), r.width(), r.height()) for r in damage)
+        canvas = self.canvas
+        result['geometry'] = canvas._geometry
+        ready = canvas.snapshot is not None and canvas.snapshot.ready
+        result['prices'] = (tuple(row.level.price for row in canvas._ask_rows) if ready else (),
+                            tuple(row.level.price for row in canvas._bid_rows) if ready else ())
+        result['sequence'] = canvas._latest_applied_sequence
+        result['layout'] = canvas.layout_state()
 
     def step(self, commands, lease):
         commands = dict(commands)
@@ -6058,23 +6127,25 @@ class _DomRasterProcess:
             result['_snapshot_seed_required'] = self.market_epoch
         if not canvas._dirty_pixels.isEmpty():
             slot, target = self._surface(lease)
-            dirty, canvas._dirty_pixels = canvas._dirty_pixels, QtGui.QRegion()
+            dirty = bounded_region(canvas._dirty_pixels, canvas.rect())
+            canvas._dirty_pixels = QtGui.QRegion()
+            self._synchronize_surface(slot, dirty)
             canvas._paint_target = target
-            canvas.paintEvent(QtGui.QPaintEvent(dirty))
-            canvas._paint_target = None
-            result['frame'] = (self.memory.name, slot, *self.shape[:3])
-            result['geometry'] = canvas._geometry
-            ready = canvas.snapshot is not None and canvas.snapshot.ready
-            result['prices'] = (tuple(row.level.price for row in canvas._ask_rows) if ready else (),
-                                tuple(row.level.price for row in canvas._bid_rows) if ready else ())
-            result['sequence'] = canvas._latest_applied_sequence
-            result['layout'] = canvas.layout_state()
+            try:
+                canvas.paintEvent(QtGui.QPaintEvent(dirty))
+            finally:
+                canvas._paint_target = None
+            self._surface_painted(slot, dirty)
+        # A discarded seed-recovery reply can contain the only new paint.
+        # Republish that complete image even if the retry itself paints nothing.
+        self._publish_surface(result, lease)
         timers = canvas.findChildren(QTimer)
         due = [max(1, timer.remainingTime()) for timer in timers if timer.isActive()]
         result['next_at'] = time.monotonic() + min(due, default=float('inf')) / 1000.0
         now = time.monotonic()
         if now - self.last_diagnostics >= 1.0:
             result['diagnostics'] = canvas.performance_state()
+            result['diagnostics'].update(self._sync_stats)
             result['diagnostics']['snapshot_transport_received'] = self._snapshot_decoder.diagnostic_state()
             self.last_diagnostics = now
         result['_map'] = _map_dom_frame
@@ -6152,6 +6223,9 @@ class OrderFlowDomCanvas(_DomRasterCanvas):
         self._remote_diagnostics = {}
         self._remote_error = ''
         self._remote_typography = None
+        self._unpainted_region = QtGui.QRegion()
+        self._blit_stats = dict(gui_blit_pixels=0, gui_blit_last_pixels=0,
+                               gui_full_paints=0, gui_partial_paints=0)
         super().__init__(theme, parent)
         self._aggregation_job.close()
         for timer in self.findChildren(QTimer):
@@ -6261,6 +6335,7 @@ class OrderFlowDomCanvas(_DomRasterCanvas):
         self._market_epoch += 1
         self._pending_raster = None
         self._display_frame = None
+        self._unpainted_region = QtGui.QRegion(self.rect())
         self._latest_received_sequence = -1
         self._queue_configuration()
         QtWidgets.QWidget.update(self)
@@ -6276,6 +6351,7 @@ class OrderFlowDomCanvas(_DomRasterCanvas):
         return result
 
     def showEvent(self, event):
+        self._unpainted_region = QtGui.QRegion(self.rect())
         self._queue_configuration()
         if self._process_link is not None:
             self._process_link.enable(True)
@@ -6318,16 +6394,42 @@ class OrderFlowDomCanvas(_DomRasterCanvas):
         repaint = False
         if result['market_epoch'] == self._market_epoch:
             if result.get('frame') is not None:
+                previous = self._display_frame
+                if (previous is not None
+                        and result.get('frame_base') == self._frame_lease(previous)
+                        and previous['frame'][2:] == result['frame'][2:]
+                        and self._native_frame(result)
+                        and 'dirty_rects' in result):
+                    damage = QtGui.QRegion()
+                    for rect in result['dirty_rects']:
+                        damage += QtCore.QRect(*rect)
+                else:
+                    # A new mapping, missing base, resized image or changed DPI
+                    # cannot be applied as a delta to the current backing store.
+                    damage = QtGui.QRegion(self.rect())
                 self._display_frame = result
                 self._geometry = result['geometry']
                 self._publish_visible_depth_rows()
                 self._publish_layout_state()
-                QtWidgets.QWidget.update(self)
-                repaint = True
+                self._unpainted_region = bounded_region(
+                    self._unpainted_region.united(damage), self.rect())
+                if not self._unpainted_region.isEmpty():
+                    QtWidgets.QWidget.update(self, self._unpainted_region)
+                    repaint = True
             if 'diagnostics' in result:
                 self._remote_diagnostics.update(result['diagnostics'])
         if not repaint or not self.isVisible():
             self._release_raster()
+
+    @staticmethod
+    def _frame_lease(frame):
+        return (*frame['frame'][:2], frame.get('frame_revision')) if frame is not None else None
+
+    def _native_frame(self, frame):
+        _, _, width, height, dpr = frame['frame']
+        return (math.isclose(dpr, self.devicePixelRatioF())
+                and width == math.ceil(self.width() * dpr)
+                and height == math.ceil(self.height() * dpr))
 
     def _release_raster(self):
         # A paint of the previous image (for example during a window resize)
@@ -6336,7 +6438,7 @@ class OrderFlowDomCanvas(_DomRasterCanvas):
             return
         self._raster_ack_pending = False
         frame = self._display_frame
-        lease = frame['frame'][:2] if frame is not None else None
+        lease = self._frame_lease(frame)
         self._process_link.consumed(lease=lease)
 
     @QtCore.Slot(str)
@@ -6346,11 +6448,15 @@ class OrderFlowDomCanvas(_DomRasterCanvas):
         self._remote_error = 'Order book renderer unavailable'
         self._pending_raster = None
         self._display_frame = None
+        self._unpainted_region = QtGui.QRegion(self.rect())
         QtWidgets.QWidget.update(self)
 
     def paintEvent(self, event):
         started = time.perf_counter()
         painter = QtGui.QPainter(self)
+        region = event.region().intersected(self.rect())
+        painter.setClipRegion(region)
+        blit_pixels = 0
         frame = self._display_frame
         if frame is None:
             painter.fillRect(event.rect(), self._bg)
@@ -6359,17 +6465,23 @@ class OrderFlowDomCanvas(_DomRasterCanvas):
                 painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, self._remote_error)
         else:
             image = frame['pixels'].images[frame['frame'][1]]
-            dpr = self.devicePixelRatioF()
-            if (math.isclose(image.devicePixelRatioF(), dpr)
-                    and image.width() == math.ceil(self.width() * dpr)
-                    and image.height() == math.ceil(self.height() * dpr)):
+            if self._native_frame(frame):
                 # Ceil-rounded fractional-DPI images extend past rect() slightly.
                 # Clip native pixels instead of squeezing/resampling the glyphs.
-                painter.drawImage(QtCore.QPointF(), image)
+                blit_pixels = draw_native_region(painter, image, region)
             else:
                 # Keep resize feedback until the new-size/DPI frame arrives.
                 painter.drawImage(QtCore.QRectF(self.rect()), image)
+                dpr = self.devicePixelRatioF()
+                bounds = QtCore.QRect(0, 0, math.ceil(self.width() * dpr), math.ceil(self.height() * dpr))
+                blit_pixels = region_area(pixel_region(region, dpr, bounds))
         painter.end()
+        self._unpainted_region = bounded_region(
+            self._unpainted_region.subtracted(region), self.rect())
+        self._blit_stats['gui_blit_pixels'] += blit_pixels
+        self._blit_stats['gui_blit_last_pixels'] = blit_pixels
+        full = QtGui.QRegion(self.rect()).subtracted(region).isEmpty()
+        self._blit_stats['gui_full_paints' if full else 'gui_partial_paints'] += 1
         self.last_paint_ms = (time.perf_counter()-started)*1000.0
         self.max_paint_ms = max(self.max_paint_ms, self.last_paint_ms)
         self._paint_timestamps.append(time.monotonic())
@@ -6416,6 +6528,7 @@ class OrderFlowDomCanvas(_DomRasterCanvas):
 
     def performance_state(self):
         state = dict(self._remote_diagnostics)
+        state.update(self._blit_stats)
         state['renderer'] = 'isolated process / shared image'
         state['gui_blit_ms'] = self.last_paint_ms
         state['gui_blit_max_ms'] = self.max_paint_ms

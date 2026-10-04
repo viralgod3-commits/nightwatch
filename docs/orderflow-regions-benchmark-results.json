@@ -1,0 +1,3218 @@
+{
+  "before": {
+    "label": "before",
+    "python": "3.12.14",
+    "qt": "6.11.2",
+    "platform": "Linux-6.18.44-x86_64-with-glibc2.39",
+    "regional_raster": false,
+    "measurement": "synthetic damage; actual shared buffers and native blits; excludes ladder preparation, pipes and display FPS",
+    "cases": [
+      {
+        "case": "bbo_bands",
+        "dpr": 1,
+        "frames": 50,
+        "adopted_frames": 50,
+        "held_frames": 0,
+        "complete_buffer_pixels_preserved": true,
+        "leased_pixels_immutable": true,
+        "gui_pixels_match_full_native_blit": true,
+        "no_paint_reply_republished": null,
+        "max_region_rects": 1,
+        "copied_bytes": 139837632,
+        "baseline_copy_bytes": 139837632,
+        "submitted_blit_pixels": 34959408,
+        "baseline_blit_pixels": 34959408,
+        "timings": {
+          "buffer_sync": {
+            "median_ms": 0.29959,
+            "p95_ms": 0.55619,
+            "p99_ms": 0.96745
+          },
+          "gui_blit": {
+            "median_ms": 0.27515,
+            "p95_ms": 0.56035,
+            "p99_ms": 1.19058
+          }
+        }
+      },
+      {
+        "case": "same_row",
+        "dpr": 1,
+        "frames": 50,
+        "adopted_frames": 50,
+        "held_frames": 0,
+        "complete_buffer_pixels_preserved": true,
+        "leased_pixels_immutable": true,
+        "gui_pixels_match_full_native_blit": true,
+        "no_paint_reply_republished": null,
+        "max_region_rects": 1,
+        "copied_bytes": 139837632,
+        "baseline_copy_bytes": 139837632,
+        "submitted_blit_pixels": 34959408,
+        "baseline_blit_pixels": 34959408,
+        "timings": {
+          "buffer_sync": {
+            "median_ms": 0.30046,
+            "p95_ms": 0.68644,
+            "p99_ms": 1.64401
+          },
+          "gui_blit": {
+            "median_ms": 0.24618,
+            "p95_ms": 0.76381,
+            "p99_ms": 2.56507
+          }
+        }
+      },
+      {
+        "case": "moving_row",
+        "dpr": 1,
+        "frames": 50,
+        "adopted_frames": 50,
+        "held_frames": 0,
+        "complete_buffer_pixels_preserved": true,
+        "leased_pixels_immutable": true,
+        "gui_pixels_match_full_native_blit": true,
+        "no_paint_reply_republished": null,
+        "max_region_rects": 1,
+        "copied_bytes": 139837632,
+        "baseline_copy_bytes": 139837632,
+        "submitted_blit_pixels": 34959408,
+        "baseline_blit_pixels": 34959408,
+        "timings": {
+          "buffer_sync": {
+            "median_ms": 0.29404,
+            "p95_ms": 0.55842,
+            "p99_ms": 0.93258
+          },
+          "gui_blit": {
+            "median_ms": 0.22685,
+            "p95_ms": 0.33465,
+            "p99_ms": 0.50562
+          }
+        }
+      },
+      {
+        "case": "disjoint_rows",
+        "dpr": 1,
+        "frames": 50,
+        "adopted_frames": 50,
+        "held_frames": 0,
+        "complete_buffer_pixels_preserved": true,
+        "leased_pixels_immutable": true,
+        "gui_pixels_match_full_native_blit": true,
+        "no_paint_reply_republished": null,
+        "max_region_rects": 1,
+        "copied_bytes": 139837632,
+        "baseline_copy_bytes": 139837632,
+        "submitted_blit_pixels": 34959408,
+        "baseline_blit_pixels": 34959408,
+        "timings": {
+          "buffer_sync": {
+            "median_ms": 0.29314,
+            "p95_ms": 1.24564,
+            "p99_ms": 2.81628
+          },
+          "gui_blit": {
+            "median_ms": 0.26671,
+            "p95_ms": 1.04758,
+            "p99_ms": 1.68253
+          }
+        }
+      },
+      {
+        "case": "held_lease",
+        "dpr": 1,
+        "frames": 50,
+        "adopted_frames": 10,
+        "held_frames": 40,
+        "complete_buffer_pixels_preserved": true,
+        "leased_pixels_immutable": true,
+        "gui_pixels_match_full_native_blit": true,
+        "no_paint_reply_republished": null,
+        "max_region_rects": 1,
+        "copied_bytes": 23306272,
+        "baseline_copy_bytes": 23306272,
+        "submitted_blit_pixels": 6554889,
+        "baseline_blit_pixels": 6554889,
+        "timings": {
+          "buffer_sync": {
+            "median_ms": 0.0413,
+            "p95_ms": 0.39303,
+            "p99_ms": 1.19168
+          },
+          "gui_blit": {
+            "median_ms": 0.46062,
+            "p95_ms": 2.55567,
+            "p99_ms": 2.55567
+          }
+        }
+      },
+      {
+        "case": "unpublished_reply",
+        "dpr": 1,
+        "frames": 50,
+        "adopted_frames": 50,
+        "held_frames": 0,
+        "complete_buffer_pixels_preserved": true,
+        "leased_pixels_immutable": true,
+        "gui_pixels_match_full_native_blit": true,
+        "no_paint_reply_republished": null,
+        "max_region_rects": 1,
+        "copied_bytes": 139837632,
+        "baseline_copy_bytes": 139837632,
+        "submitted_blit_pixels": 34959408,
+        "baseline_blit_pixels": 34959408,
+        "timings": {
+          "buffer_sync": {
+            "median_ms": 0.3126,
+            "p95_ms": 1.91016,
+            "p99_ms": 2.08553
+          },
+          "gui_blit": {
+            "median_ms": 0.25383,
+            "p95_ms": 1.78441,
+            "p99_ms": 2.29481
+          }
+        }
+      },
+      {
+        "case": "full_churn",
+        "dpr": 1,
+        "frames": 50,
+        "adopted_frames": 50,
+        "held_frames": 0,
+        "complete_buffer_pixels_preserved": true,
+        "leased_pixels_immutable": true,
+        "gui_pixels_match_full_native_blit": true,
+        "no_paint_reply_republished": null,
+        "max_region_rects": 1,
+        "copied_bytes": 139837632,
+        "baseline_copy_bytes": 139837632,
+        "submitted_blit_pixels": 34959408,
+        "baseline_blit_pixels": 34959408,
+        "timings": {
+          "buffer_sync": {
+            "median_ms": 0.36032,
+            "p95_ms": 2.27162,
+            "p99_ms": 3.54374
+          },
+          "gui_blit": {
+            "median_ms": 0.37907,
+            "p95_ms": 1.93975,
+            "p99_ms": 2.56795
+          }
+        }
+      },
+      {
+        "case": "fragmented",
+        "dpr": 1,
+        "frames": 50,
+        "adopted_frames": 50,
+        "held_frames": 0,
+        "complete_buffer_pixels_preserved": true,
+        "leased_pixels_immutable": true,
+        "gui_pixels_match_full_native_blit": true,
+        "no_paint_reply_republished": null,
+        "max_region_rects": 1,
+        "copied_bytes": 139837632,
+        "baseline_copy_bytes": 139837632,
+        "submitted_blit_pixels": 34959408,
+        "baseline_blit_pixels": 34959408,
+        "timings": {
+          "buffer_sync": {
+            "median_ms": 0.43126,
+            "p95_ms": 0.93868,
+            "p99_ms": 1.45882
+          },
+          "gui_blit": {
+            "median_ms": 0.44047,
+            "p95_ms": 0.85631,
+            "p99_ms": 1.55291
+          }
+        }
+      },
+      {
+        "case": "resize_reset",
+        "dpr": 1,
+        "frames": 50,
+        "adopted_frames": 50,
+        "held_frames": 0,
+        "complete_buffer_pixels_preserved": true,
+        "leased_pixels_immutable": true,
+        "gui_pixels_match_full_native_blit": true,
+        "no_paint_reply_republished": null,
+        "max_region_rects": 1,
+        "copied_bytes": 149424460,
+        "baseline_copy_bytes": 149424460,
+        "submitted_blit_pixels": 44119895,
+        "baseline_blit_pixels": 44119895,
+        "timings": {
+          "buffer_sync": {
+            "median_ms": 0.63043,
+            "p95_ms": 6.12346,
+            "p99_ms": 7.34457
+          },
+          "gui_blit": {
+            "median_ms": 0.70184,
+            "p95_ms": 2.30523,
+            "p99_ms": 2.66122
+          }
+        }
+      },
+      {
+        "case": "bbo_bands",
+        "dpr": 1.1,
+        "frames": 50,
+        "adopted_frames": 50,
+        "held_frames": 0,
+        "complete_buffer_pixels_preserved": true,
+        "leased_pixels_immutable": true,
+        "gui_pixels_match_full_native_blit": true,
+        "no_paint_reply_republished": null,
+        "max_region_rects": 1,
+        "copied_bytes": 169388544,
+        "baseline_copy_bytes": 169388544,
+        "submitted_blit_pixels": 42347136,
+        "baseline_blit_pixels": 42347136,
+        "timings": {
+          "buffer_sync": {
+            "median_ms": 0.51335,
+            "p95_ms": 2.81075,
+            "p99_ms": 3.35925
+          },
+          "gui_blit": {
+            "median_ms": 0.60851,
+            "p95_ms": 2.26677,
+            "p99_ms": 4.3002
+          }
+        }
+      },
+      {
+        "case": "same_row",
+        "dpr": 1.1,
+        "frames": 50,
+        "adopted_frames": 50,
+        "held_frames": 0,
+        "complete_buffer_pixels_preserved": true,
+        "leased_pixels_immutable": true,
+        "gui_pixels_match_full_native_blit": true,
+        "no_paint_reply_republished": null,
+        "max_region_rects": 1,
+        "copied_bytes": 169388544,
+        "baseline_copy_bytes": 169388544,
+        "submitted_blit_pixels": 42347136,
+        "baseline_blit_pixels": 42347136,
+        "timings": {
+          "buffer_sync": {
+            "median_ms": 0.43713,
+            "p95_ms": 1.29499,
+            "p99_ms": 2.68546
+          },
+          "gui_blit": {
+            "median_ms": 0.62137,
+            "p95_ms": 2.09672,
+            "p99_ms": 3.0424
+          }
+        }
+      },
+      {
+        "case": "moving_row",
+        "dpr": 1.1,
+        "frames": 50,
+        "adopted_frames": 50,
+        "held_frames": 0,
+        "complete_buffer_pixels_preserved": true,
+        "leased_pixels_immutable": true,
+        "gui_pixels_match_full_native_blit": true,
+        "no_paint_reply_republished": null,
+        "max_region_rects": 1,
+        "copied_bytes": 169388544,
+        "baseline_copy_bytes": 169388544,
+        "submitted_blit_pixels": 42347136,
+        "baseline_blit_pixels": 42347136,
+        "timings": {
+          "buffer_sync": {
+            "median_ms": 0.41668,
+            "p95_ms": 1.0077,
+            "p99_ms": 1.63347
+          },
+          "gui_blit": {
+            "median_ms": 0.6175,
+            "p95_ms": 1.457,
+            "p99_ms": 3.34197
+          }
+        }
+      },
+      {
+        "case": "disjoint_rows",
+        "dpr": 1.1,
+        "frames": 50,
+        "adopted_frames": 50,
+        "held_frames": 0,
+        "complete_buffer_pixels_preserved": true,
+        "leased_pixels_immutable": true,
+        "gui_pixels_match_full_native_blit": true,
+        "no_paint_reply_republished": null,
+        "max_region_rects": 1,
+        "copied_bytes": 169388544,
+        "baseline_copy_bytes": 169388544,
+        "submitted_blit_pixels": 42347136,
+        "baseline_blit_pixels": 42347136,
+        "timings": {
+          "buffer_sync": {
+            "median_ms": 0.40723,
+            "p95_ms": 0.84122,
+            "p99_ms": 0.97148
+          },
+          "gui_blit": {
+            "median_ms": 0.60144,
+            "p95_ms": 1.24084,
+            "p99_ms": 2.83782
+          }
+        }
+      },
+      {
+        "case": "held_lease",
+        "dpr": 1.1,
+        "frames": 50,
+        "adopted_frames": 10,
+        "held_frames": 40,
+        "complete_buffer_pixels_preserved": true,
+        "leased_pixels_immutable": true,
+        "gui_pixels_match_full_native_blit": true,
+        "no_paint_reply_republished": null,
+        "max_region_rects": 1,
+        "copied_bytes": 28231424,
+        "baseline_copy_bytes": 28231424,
+        "submitted_blit_pixels": 7940088,
+        "baseline_blit_pixels": 7940088,
+        "timings": {
+          "buffer_sync": {
+            "median_ms": 0.03897,
+            "p95_ms": 0.9182,
+            "p99_ms": 3.23198
+          },
+          "gui_blit": {
+            "median_ms": 0.52473,
+            "p95_ms": 0.62731,
+            "p99_ms": 0.62731
+          }
+        }
+      },
+      {
+        "case": "unpublished_reply",
+        "dpr": 1.1,
+        "frames": 50,
+        "adopted_frames": 50,
+        "held_frames": 0,
+        "complete_buffer_pixels_preserved": true,
+        "leased_pixels_immutable": true,
+        "gui_pixels_match_full_native_blit": true,
+        "no_paint_reply_republished": null,
+        "max_region_rects": 1,
+        "copied_bytes": 169388544,
+        "baseline_copy_bytes": 169388544,
+        "submitted_blit_pixels": 42347136,
+        "baseline_blit_pixels": 42347136,
+        "timings": {
+          "buffer_sync": {
+            "median_ms": 0.49604,
+            "p95_ms": 1.9608,
+            "p99_ms": 3.71107
+          },
+          "gui_blit": {
+            "median_ms": 0.58511,
+            "p95_ms": 2.39799,
+            "p99_ms": 2.66353
+          }
+        }
+      },
+      {
+        "case": "full_churn",
+        "dpr": 1.1,
+        "frames": 50,
+        "adopted_frames": 50,
+        "held_frames": 0,
+        "complete_buffer_pixels_preserved": true,
+        "leased_pixels_immutable": true,
+        "gui_pixels_match_full_native_blit": true,
+        "no_paint_reply_republished": null,
+        "max_region_rects": 1,
+        "copied_bytes": 169388544,
+        "baseline_copy_bytes": 169388544,
+        "submitted_blit_pixels": 42347136,
+        "baseline_blit_pixels": 42347136,
+        "timings": {
+          "buffer_sync": {
+            "median_ms": 0.46358,
+            "p95_ms": 1.02059,
+            "p99_ms": 4.92655
+          },
+          "gui_blit": {
+            "median_ms": 0.64282,
+            "p95_ms": 1.25958,
+            "p99_ms": 4.15015
+          }
+        }
+      },
+      {
+        "case": "fragmented",
+        "dpr": 1.1,
+        "frames": 50,
+        "adopted_frames": 50,
+        "held_frames": 0,
+        "complete_buffer_pixels_preserved": true,
+        "leased_pixels_immutable": true,
+        "gui_pixels_match_full_native_blit": true,
+        "no_paint_reply_republished": null,
+        "max_region_rects": 1,
+        "copied_bytes": 169388544,
+        "baseline_copy_bytes": 169388544,
+        "submitted_blit_pixels": 42347136,
+        "baseline_blit_pixels": 42347136,
+        "timings": {
+          "buffer_sync": {
+            "median_ms": 0.52664,
+            "p95_ms": 1.82042,
+            "p99_ms": 2.22776
+          },
+          "gui_blit": {
+            "median_ms": 0.73189,
+            "p95_ms": 1.40364,
+            "p99_ms": 3.63896
+          }
+        }
+      },
+      {
+        "case": "resize_reset",
+        "dpr": 1.1,
+        "frames": 50,
+        "adopted_frames": 50,
+        "held_frames": 0,
+        "complete_buffer_pixels_preserved": true,
+        "leased_pixels_immutable": true,
+        "gui_pixels_match_full_native_blit": true,
+        "no_paint_reply_republished": null,
+        "max_region_rects": 1,
+        "copied_bytes": 163650824,
+        "baseline_copy_bytes": 163650824,
+        "submitted_blit_pixels": 48140992,
+        "baseline_blit_pixels": 48140992,
+        "timings": {
+          "buffer_sync": {
+            "median_ms": 0.5554,
+            "p95_ms": 7.70526,
+            "p99_ms": 8.30188
+          },
+          "gui_blit": {
+            "median_ms": 0.79647,
+            "p95_ms": 1.7075,
+            "p99_ms": 2.16028
+          }
+        }
+      },
+      {
+        "case": "bbo_bands",
+        "dpr": 1.25,
+        "frames": 50,
+        "adopted_frames": 50,
+        "held_frames": 0,
+        "complete_buffer_pixels_preserved": true,
+        "leased_pixels_immutable": true,
+        "gui_pixels_match_full_native_blit": true,
+        "no_paint_reply_republished": null,
+        "max_region_rects": 1,
+        "copied_bytes": 218598912,
+        "baseline_copy_bytes": 218598912,
+        "submitted_blit_pixels": 54649728,
+        "baseline_blit_pixels": 54649728,
+        "timings": {
+          "buffer_sync": {
+            "median_ms": 0.50257,
+            "p95_ms": 0.83547,
+            "p99_ms": 1.49105
+          },
+          "gui_blit": {
+            "median_ms": 0.73415,
+            "p95_ms": 1.42092,
+            "p99_ms": 1.86743
+          }
+        }
+      },
+      {
+        "case": "same_row",
+        "dpr": 1.25,
+        "frames": 50,
+        "adopted_frames": 50,
+        "held_frames": 0,
+        "complete_buffer_pixels_preserved": true,
+        "leased_pixels_immutable": true,
+        "gui_pixels_match_full_native_blit": true,
+        "no_paint_reply_republished": null,
+        "max_region_rects": 1,
+        "copied_bytes": 218598912,
+        "baseline_copy_bytes": 218598912,
+        "submitted_blit_pixels": 54649728,
+        "baseline_blit_pixels": 54649728,
+        "timings": {
+          "buffer_sync": {
+            "median_ms": 0.48537,
+            "p95_ms": 0.91498,
+            "p99_ms": 1.63048
+          },
+          "gui_blit": {
+            "median_ms": 0.74414,
+            "p95_ms": 1.87545,
+            "p99_ms": 2.34318
+          }
+        }
+      },
+      {
+        "case": "moving_row",
+        "dpr": 1.25,
+        "frames": 50,
+        "adopted_frames": 50,
+        "held_frames": 0,
+        "complete_buffer_pixels_preserved": true,
+        "leased_pixels_immutable": true,
+        "gui_pixels_match_full_native_blit": true,
+        "no_paint_reply_republished": null,
+        "max_region_rects": 1,
+        "copied_bytes": 218598912,
+        "baseline_copy_bytes": 218598912,
+        "submitted_blit_pixels": 54649728,
+        "baseline_blit_pixels": 54649728,
+        "timings": {
+          "buffer_sync": {
+            "median_ms": 0.48022,
+            "p95_ms": 0.97314,
+            "p99_ms": 1.38522
+          },
+          "gui_blit": {
+            "median_ms": 0.70314,
+            "p95_ms": 1.25608,
+            "p99_ms": 1.52782
+          }
+        }
+      },
+      {
+        "case": "disjoint_rows",
+        "dpr": 1.25,
+        "frames": 50,
+        "adopted_frames": 50,
+        "held_frames": 0,
+        "complete_buffer_pixels_preserved": true,
+        "leased_pixels_immutable": true,
+        "gui_pixels_match_full_native_blit": true,
+        "no_paint_reply_republished": null,
+        "max_region_rects": 1,
+        "copied_bytes": 218598912,
+        "baseline_copy_bytes": 218598912,
+        "submitted_blit_pixels": 54649728,
+        "baseline_blit_pixels": 54649728,
+        "timings": {
+          "buffer_sync": {
+            "median_ms": 0.48908,
+            "p95_ms": 0.72211,
+            "p99_ms": 1.32752
+          },
+          "gui_blit": {
+            "median_ms": 0.75145,
+            "p95_ms": 1.14194,
+            "p99_ms": 2.55657
+          }
+        }
+      },
+      {
+        "case": "held_lease",
+        "dpr": 1.25,
+        "frames": 50,
+        "adopted_frames": 10,
+        "held_frames": 40,
+        "complete_buffer_pixels_preserved": true,
+        "leased_pixels_immutable": true,
+        "gui_pixels_match_full_native_blit": true,
+        "no_paint_reply_republished": null,
+        "max_region_rects": 1,
+        "copied_bytes": 36433152,
+        "baseline_copy_bytes": 36433152,
+        "submitted_blit_pixels": 10246824,
+        "baseline_blit_pixels": 10246824,
+        "timings": {
+          "buffer_sync": {
+            "median_ms": 0.03798,
+            "p95_ms": 0.51569,
+            "p99_ms": 0.70346
+          },
+          "gui_blit": {
+            "median_ms": 0.77183,
+            "p95_ms": 1.21348,
+            "p99_ms": 1.21348
+          }
+        }
+      },
+      {
+        "case": "unpublished_reply",
+        "dpr": 1.25,
+        "frames": 50,
+        "adopted_frames": 50,
+        "held_frames": 0,
+        "complete_buffer_pixels_preserved": true,
+        "leased_pixels_immutable": true,
+        "gui_pixels_match_full_native_blit": true,
+        "no_paint_reply_republished": null,
+        "max_region_rects": 1,
+        "copied_bytes": 218598912,
+        "baseline_copy_bytes": 218598912,
+        "submitted_blit_pixels": 54649728,
+        "baseline_blit_pixels": 54649728,
+        "timings": {
+          "buffer_sync": {
+            "median_ms": 0.48543,
+            "p95_ms": 1.03455,
+            "p99_ms": 2.63894
+          },
+          "gui_blit": {
+            "median_ms": 0.71617,
+            "p95_ms": 1.18971,
+            "p99_ms": 1.32469
+          }
+        }
+      },
+      {
+        "case": "full_churn",
+        "dpr": 1.25,
+        "frames": 50,
+        "adopted_frames": 50,
+        "held_frames": 0,
+        "complete_buffer_pixels_preserved": true,
+        "leased_pixels_immutable": true,
+        "gui_pixels_match_full_native_blit": true,
+        "no_paint_reply_republished": null,
+        "max_region_rects": 1,
+        "copied_bytes": 218598912,
+        "baseline_copy_bytes": 218598912,
+        "submitted_blit_pixels": 54649728,
+        "baseline_blit_pixels": 54649728,
+        "timings": {
+          "buffer_sync": {
+            "median_ms": 0.53295,
+            "p95_ms": 1.00105,
+            "p99_ms": 1.9011
+          },
+          "gui_blit": {
+            "median_ms": 0.80685,
+            "p95_ms": 1.11517,
+            "p99_ms": 1.71961
+          }
+        }
+      },
+      {
+        "case": "fragmented",
+        "dpr": 1.25,
+        "frames": 50,
+        "adopted_frames": 50,
+        "held_frames": 0,
+        "complete_buffer_pixels_preserved": true,
+        "leased_pixels_immutable": true,
+        "gui_pixels_match_full_native_blit": true,
+        "no_paint_reply_republished": null,
+        "max_region_rects": 1,
+        "copied_bytes": 218598912,
+        "baseline_copy_bytes": 218598912,
+        "submitted_blit_pixels": 54649728,
+        "baseline_blit_pixels": 54649728,
+        "timings": {
+          "buffer_sync": {
+            "median_ms": 0.56179,
+            "p95_ms": 0.98271,
+            "p99_ms": 1.12346
+          },
+          "gui_blit": {
+            "median_ms": 0.91506,
+            "p95_ms": 1.21381,
+            "p99_ms": 1.29624
+          }
+        }
+      },
+      {
+        "case": "resize_reset",
+        "dpr": 1.25,
+        "frames": 50,
+        "adopted_frames": 50,
+        "held_frames": 0,
+        "complete_buffer_pixels_preserved": true,
+        "leased_pixels_immutable": true,
+        "gui_pixels_match_full_native_blit": true,
+        "no_paint_reply_republished": null,
+        "max_region_rects": 1,
+        "copied_bytes": 187323696,
+        "baseline_copy_bytes": 187323696,
+        "submitted_blit_pixels": 54831993,
+        "baseline_blit_pixels": 54831993,
+        "timings": {
+          "buffer_sync": {
+            "median_ms": 0.58638,
+            "p95_ms": 5.13598,
+            "p99_ms": 6.62113
+          },
+          "gui_blit": {
+            "median_ms": 0.91984,
+            "p95_ms": 1.73452,
+            "p99_ms": 2.56383
+          }
+        }
+      },
+      {
+        "case": "bbo_bands",
+        "dpr": 1.5,
+        "frames": 50,
+        "adopted_frames": 50,
+        "held_frames": 0,
+        "complete_buffer_pixels_preserved": true,
+        "leased_pixels_immutable": true,
+        "gui_pixels_match_full_native_blit": true,
+        "no_paint_reply_republished": null,
+        "max_region_rects": 1,
+        "copied_bytes": 314880960,
+        "baseline_copy_bytes": 314880960,
+        "submitted_blit_pixels": 78720240,
+        "baseline_blit_pixels": 78720240,
+        "timings": {
+          "buffer_sync": {
+            "median_ms": 0.8669,
+            "p95_ms": 2.86283,
+            "p99_ms": 3.87211
+          },
+          "gui_blit": {
+            "median_ms": 1.32051,
+            "p95_ms": 3.47195,
+            "p99_ms": 6.05114
+          }
+        }
+      },
+      {
+        "case": "same_row",
+        "dpr": 1.5,
+        "frames": 50,
+        "adopted_frames": 50,
+        "held_frames": 0,
+        "complete_buffer_pixels_preserved": true,
+        "leased_pixels_immutable": true,
+        "gui_pixels_match_full_native_blit": true,
+        "no_paint_reply_republished": null,
+        "max_region_rects": 1,
+        "copied_bytes": 314880960,
+        "baseline_copy_bytes": 314880960,
+        "submitted_blit_pixels": 78720240,
+        "baseline_blit_pixels": 78720240,
+        "timings": {
+          "buffer_sync": {
+            "median_ms": 0.73293,
+            "p95_ms": 2.4566,
+            "p99_ms": 3.30376
+          },
+          "gui_blit": {
+            "median_ms": 1.29907,
+            "p95_ms": 2.17064,
+            "p99_ms": 3.43188
+          }
+        }
+      },
+      {
+        "case": "moving_row",
+        "dpr": 1.5,
+        "frames": 50,
+        "adopted_frames": 50,
+        "held_frames": 0,
+        "complete_buffer_pixels_preserved": true,
+        "leased_pixels_immutable": true,
+        "gui_pixels_match_full_native_blit": true,
+        "no_paint_reply_republished": null,
+        "max_region_rects": 1,
+        "copied_bytes": 314880960,
+        "baseline_copy_bytes": 314880960,
+        "submitted_blit_pixels": 78720240,
+        "baseline_blit_pixels": 78720240,
+        "timings": {
+          "buffer_sync": {
+            "median_ms": 0.67385,
+            "p95_ms": 1.26686,
+            "p99_ms": 3.53497
+          },
+          "gui_blit": {
+            "median_ms": 1.26908,
+            "p95_ms": 2.17947,
+            "p99_ms": 2.71007
+          }
+        }
+      },
+      {
+        "case": "disjoint_rows",
+        "dpr": 1.5,
+        "frames": 50,
+        "adopted_frames": 50,
+        "held_frames": 0,
+        "complete_buffer_pixels_preserved": true,
+        "leased_pixels_immutable": true,
+        "gui_pixels_match_full_native_blit": true,
+        "no_paint_reply_republished": null,
+        "max_region_rects": 1,
+        "copied_bytes": 314880960,
+        "baseline_copy_bytes": 314880960,
+        "submitted_blit_pixels": 78720240,
+        "baseline_blit_pixels": 78720240,
+        "timings": {
+          "buffer_sync": {
+            "median_ms": 0.75131,
+            "p95_ms": 1.52144,
+            "p99_ms": 1.70643
+          },
+          "gui_blit": {
+            "median_ms": 1.33982,
+            "p95_ms": 2.29696,
+            "p99_ms": 2.8383
+          }
+        }
+      },
+      {
+        "case": "held_lease",
+        "dpr": 1.5,
+        "frames": 50,
+        "adopted_frames": 10,
+        "held_frames": 40,
+        "complete_buffer_pixels_preserved": true,
+        "leased_pixels_immutable": true,
+        "gui_pixels_match_full_native_blit": true,
+        "no_paint_reply_republished": null,
+        "max_region_rects": 1,
+        "copied_bytes": 52480160,
+        "baseline_copy_bytes": 52480160,
+        "submitted_blit_pixels": 14760045,
+        "baseline_blit_pixels": 14760045,
+        "timings": {
+          "buffer_sync": {
+            "median_ms": 0.04695,
+            "p95_ms": 0.70852,
+            "p99_ms": 3.12527
+          },
+          "gui_blit": {
+            "median_ms": 1.7362,
+            "p95_ms": 3.19999,
+            "p99_ms": 3.19999
+          }
+        }
+      },
+      {
+        "case": "unpublished_reply",
+        "dpr": 1.5,
+        "frames": 50,
+        "adopted_frames": 50,
+        "held_frames": 0,
+        "complete_buffer_pixels_preserved": true,
+        "leased_pixels_immutable": true,
+        "gui_pixels_match_full_native_blit": true,
+        "no_paint_reply_republished": null,
+        "max_region_rects": 1,
+        "copied_bytes": 314880960,
+        "baseline_copy_bytes": 314880960,
+        "submitted_blit_pixels": 78720240,
+        "baseline_blit_pixels": 78720240,
+        "timings": {
+          "buffer_sync": {
+            "median_ms": 0.75025,
+            "p95_ms": 3.00789,
+            "p99_ms": 4.20821
+          },
+          "gui_blit": {
+            "median_ms": 1.22597,
+            "p95_ms": 2.42543,
+            "p99_ms": 3.33163
+          }
+        }
+      },
+      {
+        "case": "full_churn",
+        "dpr": 1.5,
+        "frames": 50,
+        "adopted_frames": 50,
+        "held_frames": 0,
+        "complete_buffer_pixels_preserved": true,
+        "leased_pixels_immutable": true,
+        "gui_pixels_match_full_native_blit": true,
+        "no_paint_reply_republished": null,
+        "max_region_rects": 1,
+        "copied_bytes": 314880960,
+        "baseline_copy_bytes": 314880960,
+        "submitted_blit_pixels": 78720240,
+        "baseline_blit_pixels": 78720240,
+        "timings": {
+          "buffer_sync": {
+            "median_ms": 0.78823,
+            "p95_ms": 3.16934,
+            "p99_ms": 4.25043
+          },
+          "gui_blit": {
+            "median_ms": 1.4868,
+            "p95_ms": 3.45021,
+            "p99_ms": 6.81117
+          }
+        }
+      },
+      {
+        "case": "fragmented",
+        "dpr": 1.5,
+        "frames": 50,
+        "adopted_frames": 50,
+        "held_frames": 0,
+        "complete_buffer_pixels_preserved": true,
+        "leased_pixels_immutable": true,
+        "gui_pixels_match_full_native_blit": true,
+        "no_paint_reply_republished": null,
+        "max_region_rects": 1,
+        "copied_bytes": 314880960,
+        "baseline_copy_bytes": 314880960,
+        "submitted_blit_pixels": 78720240,
+        "baseline_blit_pixels": 78720240,
+        "timings": {
+          "buffer_sync": {
+            "median_ms": 0.91307,
+            "p95_ms": 2.11121,
+            "p99_ms": 2.84867
+          },
+          "gui_blit": {
+            "median_ms": 1.71434,
+            "p95_ms": 3.51529,
+            "p99_ms": 3.70376
+          }
+        }
+      },
+      {
+        "case": "resize_reset",
+        "dpr": 1.5,
+        "frames": 50,
+        "adopted_frames": 50,
+        "held_frames": 0,
+        "complete_buffer_pixels_preserved": true,
+        "leased_pixels_immutable": true,
+        "gui_pixels_match_full_native_blit": true,
+        "no_paint_reply_republished": null,
+        "max_region_rects": 1,
+        "copied_bytes": 233567516,
+        "baseline_copy_bytes": 233567516,
+        "submitted_blit_pixels": 67901883,
+        "baseline_blit_pixels": 67901883,
+        "timings": {
+          "buffer_sync": {
+            "median_ms": 0.93472,
+            "p95_ms": 11.58814,
+            "p99_ms": 18.28714
+          },
+          "gui_blit": {
+            "median_ms": 1.49436,
+            "p95_ms": 4.34369,
+            "p99_ms": 7.02969
+          }
+        }
+      },
+      {
+        "case": "bbo_bands",
+        "dpr": 1.75,
+        "frames": 50,
+        "adopted_frames": 50,
+        "held_frames": 0,
+        "complete_buffer_pixels_preserved": true,
+        "leased_pixels_immutable": true,
+        "gui_pixels_match_full_native_blit": true,
+        "no_paint_reply_republished": null,
+        "max_region_rects": 1,
+        "copied_bytes": 428683776,
+        "baseline_copy_bytes": 428683776,
+        "submitted_blit_pixels": 107170944,
+        "baseline_blit_pixels": 107170944,
+        "timings": {
+          "buffer_sync": {
+            "median_ms": 1.05816,
+            "p95_ms": 2.74514,
+            "p99_ms": 5.13018
+          },
+          "gui_blit": {
+            "median_ms": 2.15121,
+            "p95_ms": 5.03754,
+            "p99_ms": 7.61707
+          }
+        }
+      },
+      {
+        "case": "same_row",
+        "dpr": 1.75,
+        "frames": 50,
+        "adopted_frames": 50,
+        "held_frames": 0,
+        "complete_buffer_pixels_preserved": true,
+        "leased_pixels_immutable": true,
+        "gui_pixels_match_full_native_blit": true,
+        "no_paint_reply_republished": null,
+        "max_region_rects": 1,
+        "copied_bytes": 428683776,
+        "baseline_copy_bytes": 428683776,
+        "submitted_blit_pixels": 107170944,
+        "baseline_blit_pixels": 107170944,
+        "timings": {
+          "buffer_sync": {
+            "median_ms": 3.21245,
+            "p95_ms": 6.98714,
+            "p99_ms": 11.15561
+          },
+          "gui_blit": {
+            "median_ms": 5.53709,
+            "p95_ms": 8.9933,
+            "p99_ms": 13.3826
+          }
+        }
+      },
+      {
+        "case": "moving_row",
+        "dpr": 1.75,
+        "frames": 50,
+        "adopted_frames": 50,
+        "held_frames": 0,
+        "complete_buffer_pixels_preserved": true,
+        "leased_pixels_immutable": true,
+        "gui_pixels_match_full_native_blit": true,
+        "no_paint_reply_republished": null,
+        "max_region_rects": 1,
+        "copied_bytes": 428683776,
+        "baseline_copy_bytes": 428683776,
+        "submitted_blit_pixels": 107170944,
+        "baseline_blit_pixels": 107170944,
+        "timings": {
+          "buffer_sync": {
+            "median_ms": 1.39714,
+            "p95_ms": 5.0012,
+            "p99_ms": 9.31447
+          },
+          "gui_blit": {
+            "median_ms": 2.44287,
+            "p95_ms": 5.74129,
+            "p99_ms": 65.37799
+          }
+        }
+      },
+      {
+        "case": "disjoint_rows",
+        "dpr": 1.75,
+        "frames": 50,
+        "adopted_frames": 50,
+        "held_frames": 0,
+        "complete_buffer_pixels_preserved": true,
+        "leased_pixels_immutable": true,
+        "gui_pixels_match_full_native_blit": true,
+        "no_paint_reply_republished": null,
+        "max_region_rects": 1,
+        "copied_bytes": 428683776,
+        "baseline_copy_bytes": 428683776,
+        "submitted_blit_pixels": 107170944,
+        "baseline_blit_pixels": 107170944,
+        "timings": {
+          "buffer_sync": {
+            "median_ms": 1.37984,
+            "p95_ms": 4.33192,
+            "p99_ms": 6.97076
+          },
+          "gui_blit": {
+            "median_ms": 2.44655,
+            "p95_ms": 6.85225,
+            "p99_ms": 9.64012
+          }
+        }
+      },
+      {
+        "case": "held_lease",
+        "dpr": 1.75,
+        "frames": 50,
+        "adopted_frames": 10,
+        "held_frames": 40,
+        "complete_buffer_pixels_preserved": true,
+        "leased_pixels_immutable": true,
+        "gui_pixels_match_full_native_blit": true,
+        "no_paint_reply_republished": null,
+        "max_region_rects": 1,
+        "copied_bytes": 71447296,
+        "baseline_copy_bytes": 71447296,
+        "submitted_blit_pixels": 20094552,
+        "baseline_blit_pixels": 20094552,
+        "timings": {
+          "buffer_sync": {
+            "median_ms": 0.07862,
+            "p95_ms": 2.69425,
+            "p99_ms": 5.11623
+          },
+          "gui_blit": {
+            "median_ms": 2.15737,
+            "p95_ms": 4.266,
+            "p99_ms": 4.266
+          }
+        }
+      },
+      {
+        "case": "unpublished_reply",
+        "dpr": 1.75,
+        "frames": 50,
+        "adopted_frames": 50,
+        "held_frames": 0,
+        "complete_buffer_pixels_preserved": true,
+        "leased_pixels_immutable": true,
+        "gui_pixels_match_full_native_blit": true,
+        "no_paint_reply_republished": null,
+        "max_region_rects": 1,
+        "copied_bytes": 428683776,
+        "baseline_copy_bytes": 428683776,
+        "submitted_blit_pixels": 107170944,
+        "baseline_blit_pixels": 107170944,
+        "timings": {
+          "buffer_sync": {
+            "median_ms": 3.15333,
+            "p95_ms": 8.35361,
+            "p99_ms": 38.98777
+          },
+          "gui_blit": {
+            "median_ms": 4.52399,
+            "p95_ms": 13.83239,
+            "p99_ms": 16.59624
+          }
+        }
+      },
+      {
+        "case": "full_churn",
+        "dpr": 1.75,
+        "frames": 50,
+        "adopted_frames": 50,
+        "held_frames": 0,
+        "complete_buffer_pixels_preserved": true,
+        "leased_pixels_immutable": true,
+        "gui_pixels_match_full_native_blit": true,
+        "no_paint_reply_republished": null,
+        "max_region_rects": 1,
+        "copied_bytes": 428683776,
+        "baseline_copy_bytes": 428683776,
+        "submitted_blit_pixels": 107170944,
+        "baseline_blit_pixels": 107170944,
+        "timings": {
+          "buffer_sync": {
+            "median_ms": 2.65273,
+            "p95_ms": 7.37116,
+            "p99_ms": 14.63307
+          },
+          "gui_blit": {
+            "median_ms": 4.95451,
+            "p95_ms": 9.56988,
+            "p99_ms": 14.37478
+          }
+        }
+      },
+      {
+        "case": "fragmented",
+        "dpr": 1.75,
+        "frames": 50,
+        "adopted_frames": 50,
+        "held_frames": 0,
+        "complete_buffer_pixels_preserved": true,
+        "leased_pixels_immutable": true,
+        "gui_pixels_match_full_native_blit": true,
+        "no_paint_reply_republished": null,
+        "max_region_rects": 1,
+        "copied_bytes": 428683776,
+        "baseline_copy_bytes": 428683776,
+        "submitted_blit_pixels": 107170944,
+        "baseline_blit_pixels": 107170944,
+        "timings": {
+          "buffer_sync": {
+            "median_ms": 1.80139,
+            "p95_ms": 6.7692,
+            "p99_ms": 9.10723
+          },
+          "gui_blit": {
+            "median_ms": 3.81636,
+            "p95_ms": 8.35661,
+            "p99_ms": 14.07343
+          }
+        }
+      },
+      {
+        "case": "resize_reset",
+        "dpr": 1.75,
+        "frames": 50,
+        "adopted_frames": 50,
+        "held_frames": 0,
+        "complete_buffer_pixels_preserved": true,
+        "leased_pixels_immutable": true,
+        "gui_pixels_match_full_native_blit": true,
+        "no_paint_reply_republished": null,
+        "max_region_rects": 1,
+        "copied_bytes": 288250120,
+        "baseline_copy_bytes": 288250120,
+        "submitted_blit_pixels": 83357040,
+        "baseline_blit_pixels": 83357040,
+        "timings": {
+          "buffer_sync": {
+            "median_ms": 1.07524,
+            "p95_ms": 12.26415,
+            "p99_ms": 13.38095
+          },
+          "gui_blit": {
+            "median_ms": 2.00088,
+            "p95_ms": 4.17817,
+            "p99_ms": 5.7531
+          }
+        }
+      },
+      {
+        "case": "bbo_bands",
+        "dpr": 2,
+        "frames": 50,
+        "adopted_frames": 50,
+        "held_frames": 0,
+        "complete_buffer_pixels_preserved": true,
+        "leased_pixels_immutable": true,
+        "gui_pixels_match_full_native_blit": true,
+        "no_paint_reply_republished": null,
+        "max_region_rects": 1,
+        "copied_bytes": 559350528,
+        "baseline_copy_bytes": 559350528,
+        "submitted_blit_pixels": 139837632,
+        "baseline_blit_pixels": 139837632,
+        "timings": {
+          "buffer_sync": {
+            "median_ms": 1.63765,
+            "p95_ms": 3.40871,
+            "p99_ms": 9.11218
+          },
+          "gui_blit": {
+            "median_ms": 2.80536,
+            "p95_ms": 5.6347,
+            "p99_ms": 6.16996
+          }
+        }
+      },
+      {
+        "case": "same_row",
+        "dpr": 2,
+        "frames": 50,
+        "adopted_frames": 50,
+        "held_frames": 0,
+        "complete_buffer_pixels_preserved": true,
+        "leased_pixels_immutable": true,
+        "gui_pixels_match_full_native_blit": true,
+        "no_paint_reply_republished": null,
+        "max_region_rects": 1,
+        "copied_bytes": 559350528,
+        "baseline_copy_bytes": 559350528,
+        "submitted_blit_pixels": 139837632,
+        "baseline_blit_pixels": 139837632,
+        "timings": {
+          "buffer_sync": {
+            "median_ms": 1.6665,
+            "p95_ms": 3.32326,
+            "p99_ms": 4.38159
+          },
+          "gui_blit": {
+            "median_ms": 3.18725,
+            "p95_ms": 5.50788,
+            "p99_ms": 6.82718
+          }
+        }
+      },
+      {
+        "case": "moving_row",
+        "dpr": 2,
+        "frames": 50,
+        "adopted_frames": 50,
+        "held_frames": 0,
+        "complete_buffer_pixels_preserved": true,
+        "leased_pixels_immutable": true,
+        "gui_pixels_match_full_native_blit": true,
+        "no_paint_reply_republished": null,
+        "max_region_rects": 1,
+        "copied_bytes": 559350528,
+        "baseline_copy_bytes": 559350528,
+        "submitted_blit_pixels": 139837632,
+        "baseline_blit_pixels": 139837632,
+        "timings": {
+          "buffer_sync": {
+            "median_ms": 1.33651,
+            "p95_ms": 2.98392,
+            "p99_ms": 5.79728
+          },
+          "gui_blit": {
+            "median_ms": 2.66394,
+            "p95_ms": 5.23296,
+            "p99_ms": 9.29804
+          }
+        }
+      },
+      {
+        "case": "disjoint_rows",
+        "dpr": 2,
+        "frames": 50,
+        "adopted_frames": 50,
+        "held_frames": 0,
+        "complete_buffer_pixels_preserved": true,
+        "leased_pixels_immutable": true,
+        "gui_pixels_match_full_native_blit": true,
+        "no_paint_reply_republished": null,
+        "max_region_rects": 1,
+        "copied_bytes": 559350528,
+        "baseline_copy_bytes": 559350528,
+        "submitted_blit_pixels": 139837632,
+        "baseline_blit_pixels": 139837632,
+        "timings": {
+          "buffer_sync": {
+            "median_ms": 1.70222,
+            "p95_ms": 5.53799,
+            "p99_ms": 6.63651
+          },
+          "gui_blit": {
+            "median_ms": 4.6646,
+            "p95_ms": 8.52033,
+            "p99_ms": 9.50864
+          }
+        }
+      },
+      {
+        "case": "held_lease",
+        "dpr": 2,
+        "frames": 50,
+        "adopted_frames": 10,
+        "held_frames": 40,
+        "complete_buffer_pixels_preserved": true,
+        "leased_pixels_immutable": true,
+        "gui_pixels_match_full_native_blit": true,
+        "no_paint_reply_republished": null,
+        "max_region_rects": 1,
+        "copied_bytes": 93225088,
+        "baseline_copy_bytes": 93225088,
+        "submitted_blit_pixels": 26219556,
+        "baseline_blit_pixels": 26219556,
+        "timings": {
+          "buffer_sync": {
+            "median_ms": 0.06854,
+            "p95_ms": 1.66457,
+            "p99_ms": 2.14567
+          },
+          "gui_blit": {
+            "median_ms": 2.39866,
+            "p95_ms": 3.1925,
+            "p99_ms": 3.1925
+          }
+        }
+      },
+      {
+        "case": "unpublished_reply",
+        "dpr": 2,
+        "frames": 50,
+        "adopted_frames": 50,
+        "held_frames": 0,
+        "complete_buffer_pixels_preserved": true,
+        "leased_pixels_immutable": true,
+        "gui_pixels_match_full_native_blit": true,
+        "no_paint_reply_republished": null,
+        "max_region_rects": 1,
+        "copied_bytes": 559350528,
+        "baseline_copy_bytes": 559350528,
+        "submitted_blit_pixels": 139837632,
+        "baseline_blit_pixels": 139837632,
+        "timings": {
+          "buffer_sync": {
+            "median_ms": 1.3321,
+            "p95_ms": 2.01918,
+            "p99_ms": 2.78661
+          },
+          "gui_blit": {
+            "median_ms": 2.4955,
+            "p95_ms": 3.87292,
+            "p99_ms": 3.97976
+          }
+        }
+      },
+      {
+        "case": "full_churn",
+        "dpr": 2,
+        "frames": 50,
+        "adopted_frames": 50,
+        "held_frames": 0,
+        "complete_buffer_pixels_preserved": true,
+        "leased_pixels_immutable": true,
+        "gui_pixels_match_full_native_blit": true,
+        "no_paint_reply_republished": null,
+        "max_region_rects": 1,
+        "copied_bytes": 559350528,
+        "baseline_copy_bytes": 559350528,
+        "submitted_blit_pixels": 139837632,
+        "baseline_blit_pixels": 139837632,
+        "timings": {
+          "buffer_sync": {
+            "median_ms": 1.41074,
+            "p95_ms": 2.539,
+            "p99_ms": 4.30868
+          },
+          "gui_blit": {
+            "median_ms": 2.46076,
+            "p95_ms": 3.38795,
+            "p99_ms": 3.85863
+          }
+        }
+      },
+      {
+        "case": "fragmented",
+        "dpr": 2,
+        "frames": 50,
+        "adopted_frames": 50,
+        "held_frames": 0,
+        "complete_buffer_pixels_preserved": true,
+        "leased_pixels_immutable": true,
+        "gui_pixels_match_full_native_blit": true,
+        "no_paint_reply_republished": null,
+        "max_region_rects": 1,
+        "copied_bytes": 559350528,
+        "baseline_copy_bytes": 559350528,
+        "submitted_blit_pixels": 139837632,
+        "baseline_blit_pixels": 139837632,
+        "timings": {
+          "buffer_sync": {
+            "median_ms": 1.27921,
+            "p95_ms": 2.28888,
+            "p99_ms": 2.80957
+          },
+          "gui_blit": {
+            "median_ms": 2.61244,
+            "p95_ms": 3.48735,
+            "p99_ms": 3.89204
+          }
+        }
+      },
+      {
+        "case": "resize_reset",
+        "dpr": 2,
+        "frames": 50,
+        "adopted_frames": 50,
+        "held_frames": 0,
+        "complete_buffer_pixels_preserved": true,
+        "leased_pixels_immutable": true,
+        "gui_pixels_match_full_native_blit": true,
+        "no_paint_reply_republished": null,
+        "max_region_rects": 1,
+        "copied_bytes": 351158104,
+        "baseline_copy_bytes": 351158104,
+        "submitted_blit_pixels": 101138072,
+        "baseline_blit_pixels": 101138072,
+        "timings": {
+          "buffer_sync": {
+            "median_ms": 1.25153,
+            "p95_ms": 11.83734,
+            "p99_ms": 13.38604
+          },
+          "gui_blit": {
+            "median_ms": 2.18481,
+            "p95_ms": 3.10986,
+            "p99_ms": 3.18723
+          }
+        }
+      }
+    ]
+  },
+  "after": {
+    "label": "after",
+    "python": "3.12.14",
+    "qt": "6.11.2",
+    "platform": "Linux-6.18.44-x86_64-with-glibc2.39",
+    "regional_raster": true,
+    "measurement": "synthetic damage; actual shared buffers and native blits; excludes ladder preparation, pipes and display FPS",
+    "cases": [
+      {
+        "case": "bbo_bands",
+        "dpr": 1,
+        "frames": 50,
+        "adopted_frames": 50,
+        "held_frames": 0,
+        "complete_buffer_pixels_preserved": true,
+        "leased_pixels_immutable": true,
+        "gui_pixels_match_full_native_blit": true,
+        "no_paint_reply_republished": true,
+        "max_region_rects": 2,
+        "copied_bytes": 0,
+        "baseline_copy_bytes": 139837632,
+        "submitted_blit_pixels": 2289600,
+        "baseline_blit_pixels": 34959408,
+        "timings": {
+          "buffer_sync": {
+            "median_ms": 0.09508,
+            "p95_ms": 0.15966,
+            "p99_ms": 0.16979
+          },
+          "gui_blit": {
+            "median_ms": 0.04869,
+            "p95_ms": 0.07018,
+            "p99_ms": 0.08041
+          }
+        }
+      },
+      {
+        "case": "same_row",
+        "dpr": 1,
+        "frames": 50,
+        "adopted_frames": 50,
+        "held_frames": 0,
+        "complete_buffer_pixels_preserved": true,
+        "leased_pixels_immutable": true,
+        "gui_pixels_match_full_native_blit": true,
+        "no_paint_reply_republished": true,
+        "max_region_rects": 1,
+        "copied_bytes": 0,
+        "baseline_copy_bytes": 139837632,
+        "submitted_blit_pixels": 801360,
+        "baseline_blit_pixels": 34959408,
+        "timings": {
+          "buffer_sync": {
+            "median_ms": 0.10441,
+            "p95_ms": 0.90916,
+            "p99_ms": 2.16754
+          },
+          "gui_blit": {
+            "median_ms": 0.04049,
+            "p95_ms": 0.22436,
+            "p99_ms": 0.3713
+          }
+        }
+      },
+      {
+        "case": "moving_row",
+        "dpr": 1,
+        "frames": 50,
+        "adopted_frames": 50,
+        "held_frames": 0,
+        "complete_buffer_pixels_preserved": true,
+        "leased_pixels_immutable": true,
+        "gui_pixels_match_full_native_blit": true,
+        "no_paint_reply_republished": true,
+        "max_region_rects": 1,
+        "copied_bytes": 3205440,
+        "baseline_copy_bytes": 139837632,
+        "submitted_blit_pixels": 801360,
+        "baseline_blit_pixels": 34959408,
+        "timings": {
+          "buffer_sync": {
+            "median_ms": 0.1612,
+            "p95_ms": 0.76206,
+            "p99_ms": 1.11693
+          },
+          "gui_blit": {
+            "median_ms": 0.0395,
+            "p95_ms": 0.182,
+            "p99_ms": 0.65767
+          }
+        }
+      },
+      {
+        "case": "disjoint_rows",
+        "dpr": 1,
+        "frames": 50,
+        "adopted_frames": 50,
+        "held_frames": 0,
+        "complete_buffer_pixels_preserved": true,
+        "leased_pixels_immutable": true,
+        "gui_pixels_match_full_native_blit": true,
+        "no_paint_reply_republished": true,
+        "max_region_rects": 6,
+        "copied_bytes": 1545480,
+        "baseline_copy_bytes": 139837632,
+        "submitted_blit_pixels": 3892320,
+        "baseline_blit_pixels": 34959408,
+        "timings": {
+          "buffer_sync": {
+            "median_ms": 0.26043,
+            "p95_ms": 0.70874,
+            "p99_ms": 1.48242
+          },
+          "gui_blit": {
+            "median_ms": 0.09839,
+            "p95_ms": 0.23863,
+            "p99_ms": 2.18041
+          }
+        }
+      },
+      {
+        "case": "held_lease",
+        "dpr": 1,
+        "frames": 50,
+        "adopted_frames": 10,
+        "held_frames": 40,
+        "complete_buffer_pixels_preserved": true,
+        "leased_pixels_immutable": true,
+        "gui_pixels_match_full_native_blit": true,
+        "no_paint_reply_republished": true,
+        "max_region_rects": 6,
+        "copied_bytes": 3205440,
+        "baseline_copy_bytes": 23306272,
+        "submitted_blit_pixels": 818055,
+        "baseline_blit_pixels": 6554889,
+        "timings": {
+          "buffer_sync": {
+            "median_ms": 0.07173,
+            "p95_ms": 2.12614,
+            "p99_ms": 2.41603
+          },
+          "gui_blit": {
+            "median_ms": 0.28502,
+            "p95_ms": 2.326,
+            "p99_ms": 2.326
+          }
+        }
+      },
+      {
+        "case": "unpublished_reply",
+        "dpr": 1,
+        "frames": 50,
+        "adopted_frames": 50,
+        "held_frames": 0,
+        "complete_buffer_pixels_preserved": true,
+        "leased_pixels_immutable": true,
+        "gui_pixels_match_full_native_blit": true,
+        "no_paint_reply_republished": true,
+        "max_region_rects": 1,
+        "copied_bytes": 3205440,
+        "baseline_copy_bytes": 139837632,
+        "submitted_blit_pixels": 801360,
+        "baseline_blit_pixels": 34959408,
+        "timings": {
+          "buffer_sync": {
+            "median_ms": 0.14897,
+            "p95_ms": 0.31615,
+            "p99_ms": 0.49755
+          },
+          "gui_blit": {
+            "median_ms": 0.03442,
+            "p95_ms": 0.15411,
+            "p99_ms": 0.24948
+          }
+        }
+      },
+      {
+        "case": "full_churn",
+        "dpr": 1,
+        "frames": 50,
+        "adopted_frames": 50,
+        "held_frames": 0,
+        "complete_buffer_pixels_preserved": true,
+        "leased_pixels_immutable": true,
+        "gui_pixels_match_full_native_blit": true,
+        "no_paint_reply_republished": true,
+        "max_region_rects": 1,
+        "copied_bytes": 0,
+        "baseline_copy_bytes": 139837632,
+        "submitted_blit_pixels": 34959408,
+        "baseline_blit_pixels": 34959408,
+        "timings": {
+          "buffer_sync": {
+            "median_ms": 0.105,
+            "p95_ms": 0.28563,
+            "p99_ms": 1.23254
+          },
+          "gui_blit": {
+            "median_ms": 0.31294,
+            "p95_ms": 0.53917,
+            "p99_ms": 1.01786
+          }
+        }
+      },
+      {
+        "case": "fragmented",
+        "dpr": 1,
+        "frames": 50,
+        "adopted_frames": 50,
+        "held_frames": 0,
+        "complete_buffer_pixels_preserved": true,
+        "leased_pixels_immutable": true,
+        "gui_pixels_match_full_native_blit": true,
+        "no_paint_reply_republished": true,
+        "max_region_rects": 1,
+        "copied_bytes": 0,
+        "baseline_copy_bytes": 139837632,
+        "submitted_blit_pixels": 20466432,
+        "baseline_blit_pixels": 34959408,
+        "timings": {
+          "buffer_sync": {
+            "median_ms": 0.10288,
+            "p95_ms": 0.19204,
+            "p99_ms": 0.5507
+          },
+          "gui_blit": {
+            "median_ms": 0.25947,
+            "p95_ms": 0.59507,
+            "p99_ms": 3.16335
+          }
+        }
+      },
+      {
+        "case": "resize_reset",
+        "dpr": 1,
+        "frames": 50,
+        "adopted_frames": 50,
+        "held_frames": 0,
+        "complete_buffer_pixels_preserved": true,
+        "leased_pixels_immutable": true,
+        "gui_pixels_match_full_native_blit": true,
+        "no_paint_reply_republished": true,
+        "max_region_rects": 1,
+        "copied_bytes": 25425640,
+        "baseline_copy_bytes": 149424460,
+        "submitted_blit_pixels": 7631875,
+        "baseline_blit_pixels": 44119895,
+        "timings": {
+          "buffer_sync": {
+            "median_ms": 0.22862,
+            "p95_ms": 5.23185,
+            "p99_ms": 9.43635
+          },
+          "gui_blit": {
+            "median_ms": 0.05669,
+            "p95_ms": 0.83386,
+            "p99_ms": 4.49933
+          }
+        }
+      },
+      {
+        "case": "bbo_bands",
+        "dpr": 1.1,
+        "frames": 50,
+        "adopted_frames": 50,
+        "held_frames": 0,
+        "complete_buffer_pixels_preserved": true,
+        "leased_pixels_immutable": true,
+        "gui_pixels_match_full_native_blit": true,
+        "no_paint_reply_republished": true,
+        "max_region_rects": 2,
+        "copied_bytes": 696576,
+        "baseline_copy_bytes": 169388544,
+        "submitted_blit_pixels": 2856000,
+        "baseline_blit_pixels": 42347136,
+        "timings": {
+          "buffer_sync": {
+            "median_ms": 0.29175,
+            "p95_ms": 0.65392,
+            "p99_ms": 5.07431
+          },
+          "gui_blit": {
+            "median_ms": 0.05759,
+            "p95_ms": 0.09978,
+            "p99_ms": 0.15644
+          }
+        }
+      },
+      {
+        "case": "same_row",
+        "dpr": 1.1,
+        "frames": 50,
+        "adopted_frames": 50,
+        "held_frames": 0,
+        "complete_buffer_pixels_preserved": true,
+        "leased_pixels_immutable": true,
+        "gui_pixels_match_full_native_blit": true,
+        "no_paint_reply_republished": true,
+        "max_region_rects": 1,
+        "copied_bytes": 344448,
+        "baseline_copy_bytes": 169388544,
+        "submitted_blit_pixels": 1008000,
+        "baseline_blit_pixels": 42347136,
+        "timings": {
+          "buffer_sync": {
+            "median_ms": 0.15917,
+            "p95_ms": 0.2991,
+            "p99_ms": 0.98085
+          },
+          "gui_blit": {
+            "median_ms": 0.04014,
+            "p95_ms": 0.10166,
+            "p99_ms": 0.31742
+          }
+        }
+      },
+      {
+        "case": "moving_row",
+        "dpr": 1.1,
+        "frames": 50,
+        "adopted_frames": 50,
+        "held_frames": 0,
+        "complete_buffer_pixels_preserved": true,
+        "leased_pixels_immutable": true,
+        "gui_pixels_match_full_native_blit": true,
+        "no_paint_reply_republished": true,
+        "max_region_rects": 1,
+        "copied_bytes": 4035500,
+        "baseline_copy_bytes": 169388544,
+        "submitted_blit_pixels": 1008875,
+        "baseline_blit_pixels": 42347136,
+        "timings": {
+          "buffer_sync": {
+            "median_ms": 0.14693,
+            "p95_ms": 0.46095,
+            "p99_ms": 1.07444
+          },
+          "gui_blit": {
+            "median_ms": 0.04192,
+            "p95_ms": 0.08689,
+            "p99_ms": 0.1353
+          }
+        }
+      },
+      {
+        "case": "disjoint_rows",
+        "dpr": 1.1,
+        "frames": 50,
+        "adopted_frames": 50,
+        "held_frames": 0,
+        "complete_buffer_pixels_preserved": true,
+        "leased_pixels_immutable": true,
+        "gui_pixels_match_full_native_blit": true,
+        "no_paint_reply_republished": true,
+        "max_region_rects": 6,
+        "copied_bytes": 2863348,
+        "baseline_copy_bytes": 169388544,
+        "submitted_blit_pixels": 4954250,
+        "baseline_blit_pixels": 42347136,
+        "timings": {
+          "buffer_sync": {
+            "median_ms": 0.30372,
+            "p95_ms": 0.71512,
+            "p99_ms": 0.78823
+          },
+          "gui_blit": {
+            "median_ms": 0.08818,
+            "p95_ms": 0.17548,
+            "p99_ms": 0.21143
+          }
+        }
+      },
+      {
+        "case": "held_lease",
+        "dpr": 1.1,
+        "frames": 50,
+        "adopted_frames": 10,
+        "held_frames": 40,
+        "complete_buffer_pixels_preserved": true,
+        "leased_pixels_immutable": true,
+        "gui_pixels_match_full_native_blit": true,
+        "no_paint_reply_republished": true,
+        "max_region_rects": 6,
+        "copied_bytes": 4035500,
+        "baseline_copy_bytes": 28231424,
+        "submitted_blit_pixels": 1029875,
+        "baseline_blit_pixels": 7940088,
+        "timings": {
+          "buffer_sync": {
+            "median_ms": 0.05387,
+            "p95_ms": 0.27934,
+            "p99_ms": 0.53392
+          },
+          "gui_blit": {
+            "median_ms": 0.18389,
+            "p95_ms": 0.2393,
+            "p99_ms": 0.2393
+          }
+        }
+      },
+      {
+        "case": "unpublished_reply",
+        "dpr": 1.1,
+        "frames": 50,
+        "adopted_frames": 50,
+        "held_frames": 0,
+        "complete_buffer_pixels_preserved": true,
+        "leased_pixels_immutable": true,
+        "gui_pixels_match_full_native_blit": true,
+        "no_paint_reply_republished": true,
+        "max_region_rects": 1,
+        "copied_bytes": 4035500,
+        "baseline_copy_bytes": 169388544,
+        "submitted_blit_pixels": 1008875,
+        "baseline_blit_pixels": 42347136,
+        "timings": {
+          "buffer_sync": {
+            "median_ms": 0.1528,
+            "p95_ms": 0.25972,
+            "p99_ms": 0.29676
+          },
+          "gui_blit": {
+            "median_ms": 0.04253,
+            "p95_ms": 0.09297,
+            "p99_ms": 0.28466
+          }
+        }
+      },
+      {
+        "case": "full_churn",
+        "dpr": 1.1,
+        "frames": 50,
+        "adopted_frames": 50,
+        "held_frames": 0,
+        "complete_buffer_pixels_preserved": true,
+        "leased_pixels_immutable": true,
+        "gui_pixels_match_full_native_blit": true,
+        "no_paint_reply_republished": true,
+        "max_region_rects": 1,
+        "copied_bytes": 361152,
+        "baseline_copy_bytes": 169388544,
+        "submitted_blit_pixels": 42347136,
+        "baseline_blit_pixels": 42347136,
+        "timings": {
+          "buffer_sync": {
+            "median_ms": 0.39902,
+            "p95_ms": 1.0789,
+            "p99_ms": 2.09965
+          },
+          "gui_blit": {
+            "median_ms": 0.56026,
+            "p95_ms": 1.45324,
+            "p99_ms": 6.14167
+          }
+        }
+      },
+      {
+        "case": "fragmented",
+        "dpr": 1.1,
+        "frames": 50,
+        "adopted_frames": 50,
+        "held_frames": 0,
+        "complete_buffer_pixels_preserved": true,
+        "leased_pixels_immutable": true,
+        "gui_pixels_match_full_native_blit": true,
+        "no_paint_reply_republished": true,
+        "max_region_rects": 1,
+        "copied_bytes": 551808,
+        "baseline_copy_bytes": 169388544,
+        "submitted_blit_pixels": 24847200,
+        "baseline_blit_pixels": 42347136,
+        "timings": {
+          "buffer_sync": {
+            "median_ms": 0.47621,
+            "p95_ms": 0.8871,
+            "p99_ms": 1.39888
+          },
+          "gui_blit": {
+            "median_ms": 0.36048,
+            "p95_ms": 0.55699,
+            "p99_ms": 1.58424
+          }
+        }
+      },
+      {
+        "case": "resize_reset",
+        "dpr": 1.1,
+        "frames": 50,
+        "adopted_frames": 50,
+        "held_frames": 0,
+        "complete_buffer_pixels_preserved": true,
+        "leased_pixels_immutable": true,
+        "gui_pixels_match_full_native_blit": true,
+        "no_paint_reply_republished": true,
+        "max_region_rects": 1,
+        "copied_bytes": 27632704,
+        "baseline_copy_bytes": 163650824,
+        "submitted_blit_pixels": 8196613,
+        "baseline_blit_pixels": 48140992,
+        "timings": {
+          "buffer_sync": {
+            "median_ms": 0.16294,
+            "p95_ms": 4.71245,
+            "p99_ms": 5.53716
+          },
+          "gui_blit": {
+            "median_ms": 0.0499,
+            "p95_ms": 0.86161,
+            "p99_ms": 0.92738
+          }
+        }
+      },
+      {
+        "case": "bbo_bands",
+        "dpr": 1.25,
+        "frames": 50,
+        "adopted_frames": 50,
+        "held_frames": 0,
+        "complete_buffer_pixels_preserved": true,
+        "leased_pixels_immutable": true,
+        "gui_pixels_match_full_native_blit": true,
+        "no_paint_reply_republished": true,
+        "max_region_rects": 2,
+        "copied_bytes": 586560,
+        "baseline_copy_bytes": 218598912,
+        "submitted_blit_pixels": 3626112,
+        "baseline_blit_pixels": 54649728,
+        "timings": {
+          "buffer_sync": {
+            "median_ms": 0.18982,
+            "p95_ms": 0.30211,
+            "p99_ms": 0.53736
+          },
+          "gui_blit": {
+            "median_ms": 0.07629,
+            "p95_ms": 0.1745,
+            "p99_ms": 0.31314
+          }
+        }
+      },
+      {
+        "case": "same_row",
+        "dpr": 1.25,
+        "frames": 50,
+        "adopted_frames": 50,
+        "held_frames": 0,
+        "complete_buffer_pixels_preserved": true,
+        "leased_pixels_immutable": true,
+        "gui_pixels_match_full_native_blit": true,
+        "no_paint_reply_republished": true,
+        "max_region_rects": 1,
+        "copied_bytes": 195840,
+        "baseline_copy_bytes": 218598912,
+        "submitted_blit_pixels": 1288224,
+        "baseline_blit_pixels": 54649728,
+        "timings": {
+          "buffer_sync": {
+            "median_ms": 0.18498,
+            "p95_ms": 0.36574,
+            "p99_ms": 3.36289
+          },
+          "gui_blit": {
+            "median_ms": 0.04986,
+            "p95_ms": 0.09327,
+            "p99_ms": 1.7493
+          }
+        }
+      },
+      {
+        "case": "moving_row",
+        "dpr": 1.25,
+        "frames": 50,
+        "adopted_frames": 50,
+        "held_frames": 0,
+        "complete_buffer_pixels_preserved": true,
+        "leased_pixels_immutable": true,
+        "gui_pixels_match_full_native_blit": true,
+        "no_paint_reply_republished": true,
+        "max_region_rects": 1,
+        "copied_bytes": 5152896,
+        "baseline_copy_bytes": 218598912,
+        "submitted_blit_pixels": 1288224,
+        "baseline_blit_pixels": 54649728,
+        "timings": {
+          "buffer_sync": {
+            "median_ms": 0.18847,
+            "p95_ms": 0.78927,
+            "p99_ms": 2.23246
+          },
+          "gui_blit": {
+            "median_ms": 0.05578,
+            "p95_ms": 0.10306,
+            "p99_ms": 3.16799
+          }
+        }
+      },
+      {
+        "case": "disjoint_rows",
+        "dpr": 1.25,
+        "frames": 50,
+        "adopted_frames": 50,
+        "held_frames": 0,
+        "complete_buffer_pixels_preserved": true,
+        "leased_pixels_immutable": true,
+        "gui_pixels_match_full_native_blit": true,
+        "no_paint_reply_republished": true,
+        "max_region_rects": 6,
+        "copied_bytes": 3290328,
+        "baseline_copy_bytes": 218598912,
+        "submitted_blit_pixels": 6297984,
+        "baseline_blit_pixels": 54649728,
+        "timings": {
+          "buffer_sync": {
+            "median_ms": 0.27451,
+            "p95_ms": 1.44426,
+            "p99_ms": 3.66435
+          },
+          "gui_blit": {
+            "median_ms": 0.14561,
+            "p95_ms": 0.71014,
+            "p99_ms": 2.58188
+          }
+        }
+      },
+      {
+        "case": "held_lease",
+        "dpr": 1.25,
+        "frames": 50,
+        "adopted_frames": 10,
+        "held_frames": 40,
+        "complete_buffer_pixels_preserved": true,
+        "leased_pixels_immutable": true,
+        "gui_pixels_match_full_native_blit": true,
+        "no_paint_reply_republished": true,
+        "max_region_rects": 6,
+        "copied_bytes": 5152896,
+        "baseline_copy_bytes": 36433152,
+        "submitted_blit_pixels": 1315062,
+        "baseline_blit_pixels": 10246824,
+        "timings": {
+          "buffer_sync": {
+            "median_ms": 0.06384,
+            "p95_ms": 0.77201,
+            "p99_ms": 2.5311
+          },
+          "gui_blit": {
+            "median_ms": 0.3015,
+            "p95_ms": 0.68119,
+            "p99_ms": 0.68119
+          }
+        }
+      },
+      {
+        "case": "unpublished_reply",
+        "dpr": 1.25,
+        "frames": 50,
+        "adopted_frames": 50,
+        "held_frames": 0,
+        "complete_buffer_pixels_preserved": true,
+        "leased_pixels_immutable": true,
+        "gui_pixels_match_full_native_blit": true,
+        "no_paint_reply_republished": true,
+        "max_region_rects": 1,
+        "copied_bytes": 5152896,
+        "baseline_copy_bytes": 218598912,
+        "submitted_blit_pixels": 1288224,
+        "baseline_blit_pixels": 54649728,
+        "timings": {
+          "buffer_sync": {
+            "median_ms": 0.1915,
+            "p95_ms": 0.41605,
+            "p99_ms": 1.12093
+          },
+          "gui_blit": {
+            "median_ms": 0.05648,
+            "p95_ms": 0.08661,
+            "p99_ms": 0.15798
+          }
+        }
+      },
+      {
+        "case": "full_churn",
+        "dpr": 1.25,
+        "frames": 50,
+        "adopted_frames": 50,
+        "held_frames": 0,
+        "complete_buffer_pixels_preserved": true,
+        "leased_pixels_immutable": true,
+        "gui_pixels_match_full_native_blit": true,
+        "no_paint_reply_republished": true,
+        "max_region_rects": 1,
+        "copied_bytes": 410304,
+        "baseline_copy_bytes": 218598912,
+        "submitted_blit_pixels": 54649728,
+        "baseline_blit_pixels": 54649728,
+        "timings": {
+          "buffer_sync": {
+            "median_ms": 0.60156,
+            "p95_ms": 2.41478,
+            "p99_ms": 3.20957
+          },
+          "gui_blit": {
+            "median_ms": 0.82701,
+            "p95_ms": 1.72515,
+            "p99_ms": 2.00993
+          }
+        }
+      },
+      {
+        "case": "fragmented",
+        "dpr": 1.25,
+        "frames": 50,
+        "adopted_frames": 50,
+        "held_frames": 0,
+        "complete_buffer_pixels_preserved": true,
+        "leased_pixels_immutable": true,
+        "gui_pixels_match_full_native_blit": true,
+        "no_paint_reply_republished": true,
+        "max_region_rects": 1,
+        "copied_bytes": 627072,
+        "baseline_copy_bytes": 218598912,
+        "submitted_blit_pixels": 32076672,
+        "baseline_blit_pixels": 54649728,
+        "timings": {
+          "buffer_sync": {
+            "median_ms": 0.55641,
+            "p95_ms": 1.42322,
+            "p99_ms": 2.80284
+          },
+          "gui_blit": {
+            "median_ms": 0.51913,
+            "p95_ms": 1.24274,
+            "p99_ms": 1.41921
+          }
+        }
+      },
+      {
+        "case": "resize_reset",
+        "dpr": 1.25,
+        "frames": 50,
+        "adopted_frames": 50,
+        "held_frames": 0,
+        "complete_buffer_pixels_preserved": true,
+        "leased_pixels_immutable": true,
+        "gui_pixels_match_full_native_blit": true,
+        "no_paint_reply_republished": true,
+        "max_region_rects": 1,
+        "copied_bytes": 31187136,
+        "baseline_copy_bytes": 187323696,
+        "submitted_blit_pixels": 9102723,
+        "baseline_blit_pixels": 54831993,
+        "timings": {
+          "buffer_sync": {
+            "median_ms": 0.23665,
+            "p95_ms": 4.91753,
+            "p99_ms": 5.4186
+          },
+          "gui_blit": {
+            "median_ms": 0.06121,
+            "p95_ms": 0.91974,
+            "p99_ms": 1.21912
+          }
+        }
+      },
+      {
+        "case": "bbo_bands",
+        "dpr": 1.5,
+        "frames": 50,
+        "adopted_frames": 50,
+        "held_frames": 0,
+        "complete_buffer_pixels_preserved": true,
+        "leased_pixels_immutable": true,
+        "gui_pixels_match_full_native_blit": true,
+        "no_paint_reply_republished": true,
+        "max_region_rects": 2,
+        "copied_bytes": 475200,
+        "baseline_copy_bytes": 314880960,
+        "submitted_blit_pixels": 5211024,
+        "baseline_blit_pixels": 78720240,
+        "timings": {
+          "buffer_sync": {
+            "median_ms": 0.23095,
+            "p95_ms": 0.31582,
+            "p99_ms": 0.46412
+          },
+          "gui_blit": {
+            "median_ms": 0.10577,
+            "p95_ms": 0.39092,
+            "p99_ms": 0.77686
+          }
+        }
+      },
+      {
+        "case": "same_row",
+        "dpr": 1.5,
+        "frames": 50,
+        "adopted_frames": 50,
+        "held_frames": 0,
+        "complete_buffer_pixels_preserved": true,
+        "leased_pixels_immutable": true,
+        "gui_pixels_match_full_native_blit": true,
+        "no_paint_reply_republished": true,
+        "max_region_rects": 1,
+        "copied_bytes": 235008,
+        "baseline_copy_bytes": 314880960,
+        "submitted_blit_pixels": 1832448,
+        "baseline_blit_pixels": 78720240,
+        "timings": {
+          "buffer_sync": {
+            "median_ms": 0.23917,
+            "p95_ms": 0.57347,
+            "p99_ms": 1.09858
+          },
+          "gui_blit": {
+            "median_ms": 0.06989,
+            "p95_ms": 0.14995,
+            "p99_ms": 0.21421
+          }
+        }
+      },
+      {
+        "case": "moving_row",
+        "dpr": 1.5,
+        "frames": 50,
+        "adopted_frames": 50,
+        "held_frames": 0,
+        "complete_buffer_pixels_preserved": true,
+        "leased_pixels_immutable": true,
+        "gui_pixels_match_full_native_blit": true,
+        "no_paint_reply_republished": true,
+        "max_region_rects": 1,
+        "copied_bytes": 7329792,
+        "baseline_copy_bytes": 314880960,
+        "submitted_blit_pixels": 1832448,
+        "baseline_blit_pixels": 78720240,
+        "timings": {
+          "buffer_sync": {
+            "median_ms": 0.23697,
+            "p95_ms": 0.62804,
+            "p99_ms": 2.59764
+          },
+          "gui_blit": {
+            "median_ms": 0.08509,
+            "p95_ms": 0.28531,
+            "p99_ms": 0.43049
+          }
+        }
+      },
+      {
+        "case": "disjoint_rows",
+        "dpr": 1.5,
+        "frames": 50,
+        "adopted_frames": 50,
+        "held_frames": 0,
+        "complete_buffer_pixels_preserved": true,
+        "leased_pixels_immutable": true,
+        "gui_pixels_match_full_native_blit": true,
+        "no_paint_reply_republished": true,
+        "max_region_rects": 6,
+        "copied_bytes": 4192416,
+        "baseline_copy_bytes": 314880960,
+        "submitted_blit_pixels": 8933184,
+        "baseline_blit_pixels": 78720240,
+        "timings": {
+          "buffer_sync": {
+            "median_ms": 0.40827,
+            "p95_ms": 0.74493,
+            "p99_ms": 2.17231
+          },
+          "gui_blit": {
+            "median_ms": 0.30337,
+            "p95_ms": 2.00257,
+            "p99_ms": 8.32337
+          }
+        }
+      },
+      {
+        "case": "held_lease",
+        "dpr": 1.5,
+        "frames": 50,
+        "adopted_frames": 10,
+        "held_frames": 40,
+        "complete_buffer_pixels_preserved": true,
+        "leased_pixels_immutable": true,
+        "gui_pixels_match_full_native_blit": true,
+        "no_paint_reply_republished": true,
+        "max_region_rects": 6,
+        "copied_bytes": 7329792,
+        "baseline_copy_bytes": 52480160,
+        "submitted_blit_pixels": 1870624,
+        "baseline_blit_pixels": 14760045,
+        "timings": {
+          "buffer_sync": {
+            "median_ms": 0.06644,
+            "p95_ms": 0.42278,
+            "p99_ms": 0.61972
+          },
+          "gui_blit": {
+            "median_ms": 0.2823,
+            "p95_ms": 0.63337,
+            "p99_ms": 0.63337
+          }
+        }
+      },
+      {
+        "case": "unpublished_reply",
+        "dpr": 1.5,
+        "frames": 50,
+        "adopted_frames": 50,
+        "held_frames": 0,
+        "complete_buffer_pixels_preserved": true,
+        "leased_pixels_immutable": true,
+        "gui_pixels_match_full_native_blit": true,
+        "no_paint_reply_republished": true,
+        "max_region_rects": 1,
+        "copied_bytes": 7329792,
+        "baseline_copy_bytes": 314880960,
+        "submitted_blit_pixels": 1832448,
+        "baseline_blit_pixels": 78720240,
+        "timings": {
+          "buffer_sync": {
+            "median_ms": 0.21914,
+            "p95_ms": 0.53894,
+            "p99_ms": 0.78126
+          },
+          "gui_blit": {
+            "median_ms": 0.06916,
+            "p95_ms": 0.1289,
+            "p99_ms": 0.21803
+          }
+        }
+      },
+      {
+        "case": "full_churn",
+        "dpr": 1.5,
+        "frames": 50,
+        "adopted_frames": 50,
+        "held_frames": 0,
+        "complete_buffer_pixels_preserved": true,
+        "leased_pixels_immutable": true,
+        "gui_pixels_match_full_native_blit": true,
+        "no_paint_reply_republished": true,
+        "max_region_rects": 1,
+        "copied_bytes": 492480,
+        "baseline_copy_bytes": 314880960,
+        "submitted_blit_pixels": 78720240,
+        "baseline_blit_pixels": 78720240,
+        "timings": {
+          "buffer_sync": {
+            "median_ms": 0.70046,
+            "p95_ms": 2.28276,
+            "p99_ms": 5.69124
+          },
+          "gui_blit": {
+            "median_ms": 1.42906,
+            "p95_ms": 3.59634,
+            "p99_ms": 4.49905
+          }
+        }
+      },
+      {
+        "case": "fragmented",
+        "dpr": 1.5,
+        "frames": 50,
+        "adopted_frames": 50,
+        "held_frames": 0,
+        "complete_buffer_pixels_preserved": true,
+        "leased_pixels_immutable": true,
+        "gui_pixels_match_full_native_blit": true,
+        "no_paint_reply_republished": true,
+        "max_region_rects": 1,
+        "copied_bytes": 752256,
+        "baseline_copy_bytes": 314880960,
+        "submitted_blit_pixels": 46143552,
+        "baseline_blit_pixels": 78720240,
+        "timings": {
+          "buffer_sync": {
+            "median_ms": 0.76549,
+            "p95_ms": 2.14553,
+            "p99_ms": 4.416
+          },
+          "gui_blit": {
+            "median_ms": 1.12432,
+            "p95_ms": 2.22691,
+            "p99_ms": 3.56476
+          }
+        }
+      },
+      {
+        "case": "resize_reset",
+        "dpr": 1.5,
+        "frames": 50,
+        "adopted_frames": 50,
+        "held_frames": 0,
+        "complete_buffer_pixels_preserved": true,
+        "leased_pixels_immutable": true,
+        "gui_pixels_match_full_native_blit": true,
+        "no_paint_reply_republished": true,
+        "max_region_rects": 1,
+        "copied_bytes": 38130316,
+        "baseline_copy_bytes": 233567516,
+        "submitted_blit_pixels": 10872552,
+        "baseline_blit_pixels": 67901883,
+        "timings": {
+          "buffer_sync": {
+            "median_ms": 0.26694,
+            "p95_ms": 7.18932,
+            "p99_ms": 8.1478
+          },
+          "gui_blit": {
+            "median_ms": 0.09077,
+            "p95_ms": 1.77098,
+            "p99_ms": 3.40116
+          }
+        }
+      },
+      {
+        "case": "bbo_bands",
+        "dpr": 1.75,
+        "frames": 50,
+        "adopted_frames": 50,
+        "held_frames": 0,
+        "complete_buffer_pixels_preserved": true,
+        "leased_pixels_immutable": true,
+        "gui_pixels_match_full_native_blit": true,
+        "no_paint_reply_republished": true,
+        "max_region_rects": 2,
+        "copied_bytes": 821760,
+        "baseline_copy_bytes": 428683776,
+        "submitted_blit_pixels": 7149312,
+        "baseline_blit_pixels": 107170944,
+        "timings": {
+          "buffer_sync": {
+            "median_ms": 0.3327,
+            "p95_ms": 0.72399,
+            "p99_ms": 0.75808
+          },
+          "gui_blit": {
+            "median_ms": 0.18338,
+            "p95_ms": 0.46217,
+            "p99_ms": 2.62467
+          }
+        }
+      },
+      {
+        "case": "same_row",
+        "dpr": 1.75,
+        "frames": 50,
+        "adopted_frames": 50,
+        "held_frames": 0,
+        "complete_buffer_pixels_preserved": true,
+        "leased_pixels_immutable": true,
+        "gui_pixels_match_full_native_blit": true,
+        "no_paint_reply_republished": true,
+        "max_region_rects": 1,
+        "copied_bytes": 274176,
+        "baseline_copy_bytes": 428683776,
+        "submitted_blit_pixels": 2472192,
+        "baseline_blit_pixels": 107170944,
+        "timings": {
+          "buffer_sync": {
+            "median_ms": 0.29701,
+            "p95_ms": 1.98988,
+            "p99_ms": 2.73487
+          },
+          "gui_blit": {
+            "median_ms": 0.10287,
+            "p95_ms": 0.28301,
+            "p99_ms": 2.13915
+          }
+        }
+      },
+      {
+        "case": "moving_row",
+        "dpr": 1.75,
+        "frames": 50,
+        "adopted_frames": 50,
+        "held_frames": 0,
+        "complete_buffer_pixels_preserved": true,
+        "leased_pixels_immutable": true,
+        "gui_pixels_match_full_native_blit": true,
+        "no_paint_reply_republished": true,
+        "max_region_rects": 1,
+        "copied_bytes": 10016832,
+        "baseline_copy_bytes": 428683776,
+        "submitted_blit_pixels": 2505600,
+        "baseline_blit_pixels": 107170944,
+        "timings": {
+          "buffer_sync": {
+            "median_ms": 0.29469,
+            "p95_ms": 0.59052,
+            "p99_ms": 1.84523
+          },
+          "gui_blit": {
+            "median_ms": 0.10361,
+            "p95_ms": 0.36399,
+            "p99_ms": 0.64112
+          }
+        }
+      },
+      {
+        "case": "disjoint_rows",
+        "dpr": 1.75,
+        "frames": 50,
+        "adopted_frames": 50,
+        "held_frames": 0,
+        "complete_buffer_pixels_preserved": true,
+        "leased_pixels_immutable": true,
+        "gui_pixels_match_full_native_blit": true,
+        "no_paint_reply_republished": true,
+        "max_region_rects": 6,
+        "copied_bytes": 5955228,
+        "baseline_copy_bytes": 428683776,
+        "submitted_blit_pixels": 12227328,
+        "baseline_blit_pixels": 107170944,
+        "timings": {
+          "buffer_sync": {
+            "median_ms": 0.35422,
+            "p95_ms": 2.14082,
+            "p99_ms": 3.6993
+          },
+          "gui_blit": {
+            "median_ms": 0.29782,
+            "p95_ms": 1.50424,
+            "p99_ms": 4.95353
+          }
+        }
+      },
+      {
+        "case": "held_lease",
+        "dpr": 1.75,
+        "frames": 50,
+        "adopted_frames": 10,
+        "held_frames": 40,
+        "complete_buffer_pixels_preserved": true,
+        "leased_pixels_immutable": true,
+        "gui_pixels_match_full_native_blit": true,
+        "no_paint_reply_republished": true,
+        "max_region_rects": 6,
+        "copied_bytes": 10016832,
+        "baseline_copy_bytes": 71447296,
+        "submitted_blit_pixels": 2557104,
+        "baseline_blit_pixels": 20094552,
+        "timings": {
+          "buffer_sync": {
+            "median_ms": 0.0975,
+            "p95_ms": 1.30095,
+            "p99_ms": 3.11992
+          },
+          "gui_blit": {
+            "median_ms": 0.54224,
+            "p95_ms": 2.75609,
+            "p99_ms": 2.75609
+          }
+        }
+      },
+      {
+        "case": "unpublished_reply",
+        "dpr": 1.75,
+        "frames": 50,
+        "adopted_frames": 50,
+        "held_frames": 0,
+        "complete_buffer_pixels_preserved": true,
+        "leased_pixels_immutable": true,
+        "gui_pixels_match_full_native_blit": true,
+        "no_paint_reply_republished": true,
+        "max_region_rects": 1,
+        "copied_bytes": 10016832,
+        "baseline_copy_bytes": 428683776,
+        "submitted_blit_pixels": 2505600,
+        "baseline_blit_pixels": 107170944,
+        "timings": {
+          "buffer_sync": {
+            "median_ms": 0.24199,
+            "p95_ms": 0.58222,
+            "p99_ms": 1.24904
+          },
+          "gui_blit": {
+            "median_ms": 0.08783,
+            "p95_ms": 0.34658,
+            "p99_ms": 1.08
+          }
+        }
+      },
+      {
+        "case": "full_churn",
+        "dpr": 1.75,
+        "frames": 50,
+        "adopted_frames": 50,
+        "held_frames": 0,
+        "complete_buffer_pixels_preserved": true,
+        "leased_pixels_immutable": true,
+        "gui_pixels_match_full_native_blit": true,
+        "no_paint_reply_republished": true,
+        "max_region_rects": 1,
+        "copied_bytes": 574656,
+        "baseline_copy_bytes": 428683776,
+        "submitted_blit_pixels": 107170944,
+        "baseline_blit_pixels": 107170944,
+        "timings": {
+          "buffer_sync": {
+            "median_ms": 0.6949,
+            "p95_ms": 1.09399,
+            "p99_ms": 3.23976
+          },
+          "gui_blit": {
+            "median_ms": 1.86639,
+            "p95_ms": 2.52728,
+            "p99_ms": 3.12697
+          }
+        }
+      },
+      {
+        "case": "fragmented",
+        "dpr": 1.75,
+        "frames": 50,
+        "adopted_frames": 50,
+        "held_frames": 0,
+        "complete_buffer_pixels_preserved": true,
+        "leased_pixels_immutable": true,
+        "gui_pixels_match_full_native_blit": true,
+        "no_paint_reply_republished": true,
+        "max_region_rects": 1,
+        "copied_bytes": 877440,
+        "baseline_copy_bytes": 428683776,
+        "submitted_blit_pixels": 62760960,
+        "baseline_blit_pixels": 107170944,
+        "timings": {
+          "buffer_sync": {
+            "median_ms": 0.78723,
+            "p95_ms": 1.25417,
+            "p99_ms": 1.6728
+          },
+          "gui_blit": {
+            "median_ms": 1.3755,
+            "p95_ms": 1.85476,
+            "p99_ms": 1.93836
+          }
+        }
+      },
+      {
+        "case": "resize_reset",
+        "dpr": 1.75,
+        "frames": 50,
+        "adopted_frames": 50,
+        "held_frames": 0,
+        "complete_buffer_pixels_preserved": true,
+        "leased_pixels_immutable": true,
+        "gui_pixels_match_full_native_blit": true,
+        "no_paint_reply_republished": true,
+        "max_region_rects": 1,
+        "copied_bytes": 46396276,
+        "baseline_copy_bytes": 288250120,
+        "submitted_blit_pixels": 12981834,
+        "baseline_blit_pixels": 83357040,
+        "timings": {
+          "buffer_sync": {
+            "median_ms": 0.27483,
+            "p95_ms": 8.85904,
+            "p99_ms": 9.25391
+          },
+          "gui_blit": {
+            "median_ms": 0.09538,
+            "p95_ms": 1.96634,
+            "p99_ms": 2.91846
+          }
+        }
+      },
+      {
+        "case": "bbo_bands",
+        "dpr": 2,
+        "frames": 50,
+        "adopted_frames": 50,
+        "held_frames": 0,
+        "complete_buffer_pixels_preserved": true,
+        "leased_pixels_immutable": true,
+        "gui_pixels_match_full_native_blit": true,
+        "no_paint_reply_republished": true,
+        "max_region_rects": 2,
+        "copied_bytes": 0,
+        "baseline_copy_bytes": 559350528,
+        "submitted_blit_pixels": 9158400,
+        "baseline_blit_pixels": 139837632,
+        "timings": {
+          "buffer_sync": {
+            "median_ms": 0.18768,
+            "p95_ms": 0.48514,
+            "p99_ms": 0.7464
+          },
+          "gui_blit": {
+            "median_ms": 0.21711,
+            "p95_ms": 0.33133,
+            "p99_ms": 0.52482
+          }
+        }
+      },
+      {
+        "case": "same_row",
+        "dpr": 2,
+        "frames": 50,
+        "adopted_frames": 50,
+        "held_frames": 0,
+        "complete_buffer_pixels_preserved": true,
+        "leased_pixels_immutable": true,
+        "gui_pixels_match_full_native_blit": true,
+        "no_paint_reply_republished": true,
+        "max_region_rects": 1,
+        "copied_bytes": 0,
+        "baseline_copy_bytes": 559350528,
+        "submitted_blit_pixels": 3205440,
+        "baseline_blit_pixels": 139837632,
+        "timings": {
+          "buffer_sync": {
+            "median_ms": 0.16987,
+            "p95_ms": 0.37455,
+            "p99_ms": 0.41019
+          },
+          "gui_blit": {
+            "median_ms": 0.09675,
+            "p95_ms": 0.1321,
+            "p99_ms": 0.22539
+          }
+        }
+      },
+      {
+        "case": "moving_row",
+        "dpr": 2,
+        "frames": 50,
+        "adopted_frames": 50,
+        "held_frames": 0,
+        "complete_buffer_pixels_preserved": true,
+        "leased_pixels_immutable": true,
+        "gui_pixels_match_full_native_blit": true,
+        "no_paint_reply_republished": true,
+        "max_region_rects": 1,
+        "copied_bytes": 12821760,
+        "baseline_copy_bytes": 559350528,
+        "submitted_blit_pixels": 3205440,
+        "baseline_blit_pixels": 139837632,
+        "timings": {
+          "buffer_sync": {
+            "median_ms": 0.2838,
+            "p95_ms": 0.61777,
+            "p99_ms": 1.05743
+          },
+          "gui_blit": {
+            "median_ms": 0.0996,
+            "p95_ms": 0.21683,
+            "p99_ms": 0.39233
+          }
+        }
+      },
+      {
+        "case": "disjoint_rows",
+        "dpr": 2,
+        "frames": 50,
+        "adopted_frames": 50,
+        "held_frames": 0,
+        "complete_buffer_pixels_preserved": true,
+        "leased_pixels_immutable": true,
+        "gui_pixels_match_full_native_blit": true,
+        "no_paint_reply_republished": true,
+        "max_region_rects": 6,
+        "copied_bytes": 6181920,
+        "baseline_copy_bytes": 559350528,
+        "submitted_blit_pixels": 15569280,
+        "baseline_blit_pixels": 139837632,
+        "timings": {
+          "buffer_sync": {
+            "median_ms": 0.30731,
+            "p95_ms": 0.46522,
+            "p99_ms": 0.54101
+          },
+          "gui_blit": {
+            "median_ms": 0.41261,
+            "p95_ms": 0.71524,
+            "p99_ms": 0.98037
+          }
+        }
+      },
+      {
+        "case": "held_lease",
+        "dpr": 2,
+        "frames": 50,
+        "adopted_frames": 10,
+        "held_frames": 40,
+        "complete_buffer_pixels_preserved": true,
+        "leased_pixels_immutable": true,
+        "gui_pixels_match_full_native_blit": true,
+        "no_paint_reply_republished": true,
+        "max_region_rects": 6,
+        "copied_bytes": 12821760,
+        "baseline_copy_bytes": 93225088,
+        "submitted_blit_pixels": 3272220,
+        "baseline_blit_pixels": 26219556,
+        "timings": {
+          "buffer_sync": {
+            "median_ms": 0.1003,
+            "p95_ms": 0.66298,
+            "p99_ms": 0.74496
+          },
+          "gui_blit": {
+            "median_ms": 0.37944,
+            "p95_ms": 0.47026,
+            "p99_ms": 0.47026
+          }
+        }
+      },
+      {
+        "case": "unpublished_reply",
+        "dpr": 2,
+        "frames": 50,
+        "adopted_frames": 50,
+        "held_frames": 0,
+        "complete_buffer_pixels_preserved": true,
+        "leased_pixels_immutable": true,
+        "gui_pixels_match_full_native_blit": true,
+        "no_paint_reply_republished": true,
+        "max_region_rects": 1,
+        "copied_bytes": 12821760,
+        "baseline_copy_bytes": 559350528,
+        "submitted_blit_pixels": 3205440,
+        "baseline_blit_pixels": 139837632,
+        "timings": {
+          "buffer_sync": {
+            "median_ms": 0.36922,
+            "p95_ms": 0.46894,
+            "p99_ms": 0.64999
+          },
+          "gui_blit": {
+            "median_ms": 0.12001,
+            "p95_ms": 0.16715,
+            "p99_ms": 0.61254
+          }
+        }
+      },
+      {
+        "case": "full_churn",
+        "dpr": 2,
+        "frames": 50,
+        "adopted_frames": 50,
+        "held_frames": 0,
+        "complete_buffer_pixels_preserved": true,
+        "leased_pixels_immutable": true,
+        "gui_pixels_match_full_native_blit": true,
+        "no_paint_reply_republished": true,
+        "max_region_rects": 1,
+        "copied_bytes": 0,
+        "baseline_copy_bytes": 559350528,
+        "submitted_blit_pixels": 139837632,
+        "baseline_blit_pixels": 139837632,
+        "timings": {
+          "buffer_sync": {
+            "median_ms": 0.21757,
+            "p95_ms": 0.40386,
+            "p99_ms": 1.03064
+          },
+          "gui_blit": {
+            "median_ms": 2.65329,
+            "p95_ms": 3.72431,
+            "p99_ms": 4.53476
+          }
+        }
+      },
+      {
+        "case": "fragmented",
+        "dpr": 2,
+        "frames": 50,
+        "adopted_frames": 50,
+        "held_frames": 0,
+        "complete_buffer_pixels_preserved": true,
+        "leased_pixels_immutable": true,
+        "gui_pixels_match_full_native_blit": true,
+        "no_paint_reply_republished": true,
+        "max_region_rects": 1,
+        "copied_bytes": 0,
+        "baseline_copy_bytes": 559350528,
+        "submitted_blit_pixels": 81865728,
+        "baseline_blit_pixels": 139837632,
+        "timings": {
+          "buffer_sync": {
+            "median_ms": 0.21064,
+            "p95_ms": 0.45896,
+            "p99_ms": 0.87601
+          },
+          "gui_blit": {
+            "median_ms": 1.80146,
+            "p95_ms": 2.37653,
+            "p99_ms": 3.02913
+          }
+        }
+      },
+      {
+        "case": "resize_reset",
+        "dpr": 2,
+        "frames": 50,
+        "adopted_frames": 50,
+        "held_frames": 0,
+        "complete_buffer_pixels_preserved": true,
+        "leased_pixels_immutable": true,
+        "gui_pixels_match_full_native_blit": true,
+        "no_paint_reply_republished": true,
+        "max_region_rects": 1,
+        "copied_bytes": 55775284,
+        "baseline_copy_bytes": 351158104,
+        "submitted_blit_pixels": 15369730,
+        "baseline_blit_pixels": 101138072,
+        "timings": {
+          "buffer_sync": {
+            "median_ms": 0.38393,
+            "p95_ms": 11.92693,
+            "p99_ms": 13.59501
+          },
+          "gui_blit": {
+            "median_ms": 0.11172,
+            "p95_ms": 2.85833,
+            "p99_ms": 3.81211
+          }
+        }
+      }
+    ]
+  },
+  "recovery": {
+    "label": "recovery",
+    "python": "3.12.14",
+    "qt": "6.11.2",
+    "platform": "Linux-6.18.44-x86_64-with-glibc2.39",
+    "regional_raster": true,
+    "measurement": "synthetic damage; actual shared buffers and native blits; excludes ladder preparation, pipes and display FPS",
+    "cases": [
+      {
+        "case": "legacy_lease",
+        "dpr": 1.1,
+        "frames": 20,
+        "adopted_frames": 20,
+        "held_frames": 0,
+        "complete_buffer_pixels_preserved": true,
+        "leased_pixels_immutable": true,
+        "gui_pixels_match_full_native_blit": true,
+        "no_paint_reply_republished": true,
+        "max_region_rects": 1,
+        "copied_bytes": 1512000,
+        "baseline_copy_bytes": 63520704,
+        "submitted_blit_pixels": 2100464,
+        "baseline_blit_pixels": 15880176,
+        "timings": {
+          "buffer_sync": {
+            "median_ms": 0.1486,
+            "p95_ms": 0.18672,
+            "p99_ms": 0.29196
+          },
+          "gui_blit": {
+            "median_ms": 0.03874,
+            "p95_ms": 0.55716,
+            "p99_ms": 0.58486
+          }
+        }
+      },
+      {
+        "case": "stale_revision",
+        "dpr": 1.1,
+        "frames": 20,
+        "adopted_frames": 20,
+        "held_frames": 0,
+        "complete_buffer_pixels_preserved": true,
+        "leased_pixels_immutable": true,
+        "gui_pixels_match_full_native_blit": true,
+        "no_paint_reply_republished": true,
+        "max_region_rects": 1,
+        "copied_bytes": 1512000,
+        "baseline_copy_bytes": 63520704,
+        "submitted_blit_pixels": 2100464,
+        "baseline_blit_pixels": 15880176,
+        "timings": {
+          "buffer_sync": {
+            "median_ms": 0.14812,
+            "p95_ms": 0.35711,
+            "p99_ms": 0.4087
+          },
+          "gui_blit": {
+            "median_ms": 0.04324,
+            "p95_ms": 0.5052,
+            "p99_ms": 0.64659
+          }
+        }
+      },
+      {
+        "case": "legacy_lease",
+        "dpr": 2.0,
+        "frames": 20,
+        "adopted_frames": 20,
+        "held_frames": 0,
+        "complete_buffer_pixels_preserved": true,
+        "leased_pixels_immutable": true,
+        "gui_pixels_match_full_native_blit": true,
+        "no_paint_reply_republished": true,
+        "max_region_rects": 1,
+        "copied_bytes": 4808160,
+        "baseline_copy_bytes": 209756448,
+        "submitted_blit_pixels": 6895048,
+        "baseline_blit_pixels": 52439112,
+        "timings": {
+          "buffer_sync": {
+            "median_ms": 0.28328,
+            "p95_ms": 0.37235,
+            "p99_ms": 0.47256
+          },
+          "gui_blit": {
+            "median_ms": 0.10324,
+            "p95_ms": 2.32661,
+            "p99_ms": 3.06596
+          }
+        }
+      },
+      {
+        "case": "stale_revision",
+        "dpr": 2.0,
+        "frames": 20,
+        "adopted_frames": 20,
+        "held_frames": 0,
+        "complete_buffer_pixels_preserved": true,
+        "leased_pixels_immutable": true,
+        "gui_pixels_match_full_native_blit": true,
+        "no_paint_reply_republished": true,
+        "max_region_rects": 1,
+        "copied_bytes": 4808160,
+        "baseline_copy_bytes": 209756448,
+        "submitted_blit_pixels": 6895048,
+        "baseline_blit_pixels": 52439112,
+        "timings": {
+          "buffer_sync": {
+            "median_ms": 0.28589,
+            "p95_ms": 0.54075,
+            "p99_ms": 0.81141
+          },
+          "gui_blit": {
+            "median_ms": 0.10118,
+            "p95_ms": 2.51705,
+            "p99_ms": 2.88905
+          }
+        }
+      }
+    ]
+  },
+  "worker_session": {
+    "python": "3.12.14",
+    "qt": "6.11.2",
+    "platform": "Linux-6.18.44-x86_64-with-glibc2.39",
+    "dpr": 1.25,
+    "measurement": "actual spawned analysis/raster workers and offscreen QWidget; no desktop/display-FPS claim",
+    "input_ticks": 200,
+    "trade_events": 40,
+    "source_snapshots": 169,
+    "source_sessions": 2,
+    "latest_source_sequence": 169,
+    "latest_displayed_sequence": 169,
+    "raster_frames": 146,
+    "max_transported_rects": 6,
+    "retained_tape_rows": [
+      40,
+      40
+    ],
+    "changes": [
+      "resize",
+      "hide",
+      "show",
+      "same-symbol market reset",
+      "aggregation",
+      "units and interaction pacing",
+      "partially occluded paints",
+      "exposure after occlusion"
+    ],
+    "errors": [],
+    "renderer_error": "",
+    "awaiting_raster_ack": false,
+    "gui_ms_max": 3.8709,
+    "counters": {
+      "raster_sync_bytes": 64799716,
+      "raster_sync_avoided_bytes": 530874716,
+      "raster_sync_copies": 126,
+      "raster_sync_full_copies": 10,
+      "raster_sync_skipped": 2,
+      "raster_sync_last_bytes": 16740,
+      "raster_sync_last_ms": 0.3360270000030141,
+      "raster_sync_max_ms": 8.392996999873503,
+      "gui_blit_pixels": 42647712,
+      "gui_blit_last_pixels": 184338,
+      "gui_full_paints": 20,
+      "gui_partial_paints": 129,
+      "gui_blit_ms": 0.38844999994580576,
+      "gui_blit_max_ms": 7.568505999870467,
+      "gui_paint_fps": 36.55599793988365
+    }
+  }
+}
