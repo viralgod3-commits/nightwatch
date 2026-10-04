@@ -20,9 +20,13 @@ from nightwatch.trading.gateway import TradingGateway
 from nightwatch.trading.trading_ui import BatchOrderDialog, ModifyOrderDialog
 
 
+@pytest.fixture(scope='module', autouse=True)
+def trading_fonts(qapp):
+    load_app_fonts(qapp, str(Path(__file__).resolve().parents[1] / 'nightwatch'))
+
+
 @pytest.fixture
 def workspace(qapp, gateway, monkeypatch):
-    load_app_fonts(qapp, str(Path(__file__).resolve().parents[1] / 'nightwatch'))
     monkeypatch.setattr(gateway, 'refresh_account', lambda *a, **k: None)
     monkeypatch.setattr(gateway, 'ensure_cross', lambda *a, **k: None)
     monkeypatch.setattr(gateway, 'apply_cross_leverage', lambda *a, **k: None)
@@ -140,10 +144,13 @@ def test_filled_conditional_inputs_survive_reflow_and_only_tif_has_help(workspac
         workspace.resize(width, 440)
         settle(qapp)
         assert (ticket.price_edit.text(), ticket.trigger_edit.text(), ticket.quantity_edit.text()) == ('63000', '63500', '0.1')
-        for edit in (ticket.price_edit, ticket.trigger_edit):
-            assert edit._hint.isVisible()
-            assert edit.textMargins().left() > edit._hint.width()
-            assert edit.rect().contains(edit._hint.geometry())
+        for name, edit in (("price", ticket.price_edit), ("trigger", ticket.trigger_edit)):
+            caption = ticket._field_labels[name]
+            assert caption.isVisible() and caption.text() == name.title()
+            assert caption.mapTo(ticket, QtCore.QPoint()).x() < edit.mapTo(ticket, QtCore.QPoint()).x()
+            assert edit.unit_label.isVisible() and edit.unit_label.text() == "USDT"
+            assert edit.textMargins().right() > edit.unit_label.width()
+            assert edit.rect().contains(edit.unit_label.geometry())
     controller = tooltip_controller()
     controller.request(ticket.price_edit, 'Price', ticket.price_edit.mapToGlobal(QtCore.QPoint()))
     assert not controller._timer.isActive()
