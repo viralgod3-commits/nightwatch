@@ -201,7 +201,7 @@ def measure(app, case, levels, prints, samples):
             amount_width_cache_hits=getattr(canvas, '_amount_width_cache_hits', None),
             amount_width_cache_misses=getattr(canvas, '_amount_width_cache_misses', None),
             tape_print_cache_hits=[getattr(tape, '_print_cache_hits', None) for tape in tapes],
-            retained_tape_rows=[len(tape._history) for tape in tapes],
+            retained_tape_rows=[len(getattr(tape, '_history', tape.model.rows)) for tape in tapes],
         )
     finally:
         canvas._aggregation_job.close()

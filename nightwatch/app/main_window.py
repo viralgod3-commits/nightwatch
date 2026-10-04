@@ -1162,6 +1162,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.orderbook.depth_capacity_requested.connect(
             self._set_order_flow_depth_capacity
         )
+        self.orderbook.set_tape_source(self._order_flow_runtime.tape_source)
         self.order_flow_snapshot_ready.connect(self.orderbook.set_order_flow_snapshot)
         self._sync_execution_ticket_state()
         self.watchlist.symbol_selected.connect(self._open_watchlist_symbol)
@@ -1751,6 +1752,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.alerts_panel = AlertsPanel(self.alerts_dialog)
         alert_layout.addWidget(self.alerts_panel)
         self.large_trades = TradesTapeWidget(self.orderbook_theme)
+        self.large_trades.set_tape_source(self._order_flow_runtime.tape_source)
         self.large_trades.set_presentation_clock(self.presentation_clock)
         self.large_trades.set_market(
             self.current_symbol,
@@ -7745,8 +7747,6 @@ class MainWindow(QtWidgets.QMainWindow):
         timing["gui_delivery_mono"] = time.perf_counter()
         if self._market_depth_active and self.right_rail_controller.panel_active("depth"):
             self.order_flow_snapshot_ready.emit((frame, timing))
-        if self._order_flow_snapshot_active:
-            self.large_trades.set_order_flow_snapshot(snapshot)
 
     @QtCore.Slot(int, object)
     def _on_microstructure_runtime_snapshot(self, generation: int, payload: object) -> None:

@@ -11,6 +11,10 @@ from typing import Any
 from ..models import OrderFlowDisplayLevel, OrderFlowLevelMetrics, OrderFlowSnapshot, OrderFlowTradePrint
 from ..models import BOOK_BBO_FRESH_SECONDS, BOOK_DEPTH_FRESH_SECONDS, book_data_is_fresh
 from .revisions import OrderFlowRevisionTracker
+from .tape import (
+    TapePublisher, TapeSeedRequired, TapeStateDecoder, TapeStateEncoder,
+    TradeTapeHistory,
+)
 
 def _number(value: Any) -> float:
     try:
@@ -293,6 +297,7 @@ class OrderFlowAnalyzer:
         self._snapshot_base_indices_by_price: dict[int | float, tuple[int, ...]] = {}
         self._quote_volume_24h = 0.0
         self._print_sequence = 0
+        self.tape_history = TradeTapeHistory(symbol)
         self._recent_prints: deque[OrderFlowTradePrint] = deque(maxlen=self.PRINT_HISTORY_CAPACITY)
         self._price_prints: dict[int | float, deque[OrderFlowTradePrint]] = {}
         self._price_activity: dict[int | float, deque[_PriceExecutionBucket]] = {}
@@ -365,6 +370,7 @@ class OrderFlowAnalyzer:
 
     def reset(self, symbol: str, *, tick_size: Any | None=None) -> None:
         self._presentation_revisions.reset()
+        self.tape_history.reset(symbol)
         normalized_symbol = str(symbol).upper()
         symbol_changed = normalized_symbol != self.symbol
         self.symbol = normalized_symbol
@@ -1070,6 +1076,8 @@ class OrderFlowAnalyzer:
             with_aggressor = signed_move if trade.aggressor_side == 'buy' else -signed_move
             self._print_outcomes[trade.sequence] = 'FOLLOW_THROUGH' if with_aggressor >= threshold else 'REJECTED'
             self._print_outcome_directions[trade.sequence] = (signed_move > 0) - (signed_move < 0)
+            self.tape_history.resolve(trade.sequence, self._print_outcomes[trade.sequence],
+                                      self._print_outcome_directions[trade.sequence])
             price_key = self._price_key(trade.price)
             if self._print_outcomes[trade.sequence] == 'REJECTED':
                 stamp = self._window_bucket_time(trade.received_monotonic, self.LEVEL_ACTIVITY_BUCKET_SECONDS)
@@ -1210,6 +1218,7 @@ class OrderFlowAnalyzer:
         outcome_threshold = max(self.tick_size, reference_spread * 0.5, self._bbo_noise_ema * self.PRINT_OUTCOME_NOISE_MULTIPLIER, max(reference_midpoint, 1e-12) * 2e-05)
         trade_print = OrderFlowTradePrint(sequence=self._print_sequence, event_time_ms=event_time_ms, received_monotonic=current, price=price, quantity=total_quantity, notional=total_notional, aggressor_side=aggressor_side, normal_notional=normal_notional, rpi_notional=rpi_notional, relative_size=relative_size, salience_class=salience_class, reference_midpoint=reference_midpoint, outcome_threshold=outcome_threshold)
         self._recent_prints.append(trade_print)
+        self.tape_history.add(trade_print)
         if salience_class >= 1:
             self._queue_unresolved_print(trade_print)
         price_key = self._price_key(price)
@@ -3406,6 +3415,7 @@ class _OrderBookProcessLink(QtCore.QObject):
         self._pending_bytes = 0
         self._oldest_pending = 0.0
         self._snapshot_wire_state = {}
+        self._tape_checkpoint = None
         self.destroyed.connect(lambda *_: self.close())
 
     def enable(self, active):
@@ -3426,6 +3436,8 @@ class _OrderBookProcessLink(QtCore.QObject):
                     size += sum(len(levels) for levels in value[1:3]) * 64
                 elif name == 'add_trade_batch':
                     size += len(value[1]) * 512
+                elif name == 'restore_tape_history':
+                    size += (len(value[0].all_entries) + len(value[0].large_entries)) * 256
                 now = time.monotonic()
                 stale = bool(self._oldest_pending and now - self._oldest_pending > self.MAX_QUEUE_AGE_SECONDS)
                 if len(self._pending) >= self.MAX_PENDING_BATCHES or self._pending_bytes + size > self.MAX_PENDING_BYTES or stale:
@@ -3457,6 +3469,10 @@ class _OrderBookProcessLink(QtCore.QObject):
     def snapshot_transport_state(self):
         with self._condition:
             return {name: dict(counts) for name, counts in self._snapshot_wire_state.items()}
+
+    def tape_checkpoint(self):
+        with self._condition:
+            return self._tape_checkpoint
 
     def _exchange(self, connection, process, commands, lease):
         if self._closed:
@@ -3490,6 +3506,7 @@ class _OrderBookProcessLink(QtCore.QObject):
         try:
             sender = SnapshotEncoder() if getattr(self._factory, 'SNAPSHOT_INPUT', False) else None
             receiver = SnapshotDecoder() if getattr(self._factory, 'SNAPSHOT_OUTPUT', False) else None
+            tape_receiver = TapeStateDecoder() if getattr(self._factory, 'TAPE_OUTPUT', False) else None
             last_snapshot = None
             context = multiprocessing.get_context('spawn')
             connection, child = context.Pipe()
@@ -3544,18 +3561,37 @@ class _OrderBookProcessLink(QtCore.QObject):
                         if result.pop('_snapshot_seed_required', None) is not None:
                             raise SnapshotSeedRequired('Renderer rejected a complete snapshot seed')
 
+                recovery = []
                 if receiver is not None:
                     try:
                         self._decode_snapshot_events(result, receiver)
                     except SnapshotSeedRequired:
-                        retained = [event for event in result['events'] if event[0] != 'snapshot_ready']
-                        result = self._exchange(connection, process, [('_snapshot_seed', ())], lease)
-                        if result is None:
-                            return
+                        recovery.append(('_snapshot_seed', ()))
+                if tape_receiver is not None and result.get('tape_state') is not None:
+                    try:
+                        checkpoint = tape_receiver.decode(result['tape_state'])
+                    except TapeSeedRequired:
+                        recovery.append(('_tape_seed', ()))
+                    else:
+                        with self._condition:
+                            self._tape_checkpoint = checkpoint
+                if recovery:
+                    snapshot_recovery = any(name == '_snapshot_seed' for name, _ in recovery)
+                    retained = [event for event in result['events']
+                                if not snapshot_recovery or event[0] != 'snapshot_ready']
+                    result = self._exchange(connection, process, recovery, lease)
+                    if result is None:
+                        return
+                    if receiver is not None:
                         self._decode_snapshot_events(result, receiver)
-                        # Failures are ordered and lossless even when a derived
-                        # frame needs reseeding. Diagnostics may be superseded.
-                        result['events'] = retained + result['events']
+                    if tape_receiver is not None and result.get('tape_state') is not None:
+                        checkpoint = tape_receiver.decode(result['tape_state'])
+                        with self._condition:
+                            self._tape_checkpoint = checkpoint
+                    # Ordered failures and one in-flight tape frame per view
+                    # survive a bounded derived-state recovery; no raw replay.
+                    result['events'] = retained + result['events']
+                result.pop('tape_state', None)
 
                 mapper = result.pop('_map', None)
                 if mapper is not None:
@@ -3631,6 +3667,7 @@ def _orderbook_process_main(connection, factory, options):
 
 class _OrderFlowAnalysisProcess:
     SNAPSHOT_OUTPUT = True
+    TAPE_OUTPUT = True
 
     def __init__(self, options):
         self.application = QtCore.QCoreApplication.instance() or QtCore.QCoreApplication([])
@@ -3638,21 +3675,49 @@ class _OrderFlowAnalysisProcess:
         self.events = []
         self._snapshot_encoder = SnapshotEncoder()
         self._latest_snapshot = None
+        self._tape_encoder = TapeStateEncoder()
+        self._tape_publisher = TapePublisher()
         for name in ('snapshot_ready', 'microstructure_ready', 'diagnostic_ready', 'failed'):
             getattr(self.runtime, name).connect(
                 lambda generation, value, name=name: self.events.append((name, generation, value)))
 
     def step(self, commands, _lease):
         seed_requested = False
+        tape_seed_requested = False
         for name, args in commands:
             if name == '_snapshot_seed':
                 seed_requested = True
                 continue
+            if name == '_tape_seed':
+                tape_seed_requested = True
+                continue
+            if name == 'set_tape_view':
+                self._tape_publisher.set_view(*args)
+                continue
+            if name == 'ack_tape':
+                self._tape_publisher.ack(*args)
+                continue
+            if name == 'clear_tape':
+                if args[0] == self.runtime._analyzer.symbol:
+                    self.runtime._analyzer.tape_history.clear()
+                    self._tape_publisher.reset()
+                continue
+            if name == 'restore_tape_history':
+                self.runtime._analyzer.tape_history.restore(args[0])
+                self._tape_publisher.reset()
+                continue
             if name == 'reset_model':
                 self._latest_snapshot = None
+                self._tape_publisher.reset()
             getattr(self.runtime, name)(*args)
         self.application.processEvents()
         events, self.events = self.events, []
+        analyzer = self.runtime._analyzer
+        analyzer.tape_history.set_threshold(analyzer._large_trade_threshold)
+        tape_state = analyzer.tape_history.state()
+        now = time.monotonic()
+        events.extend(('tape_ready', self.runtime._generation, frame)
+                      for frame in self._tape_publisher.publish(tape_state, now))
         if (seed_requested and self._latest_snapshot is not None
                 and not any(name == 'snapshot_ready' for name, _, _ in events)):
             generation, payload = self._latest_snapshot
@@ -3663,11 +3728,17 @@ class _OrderFlowAnalysisProcess:
                 self._latest_snapshot = (generation, value)
                 value = self._snapshot_encoder.encode(value, generation, force_seed=seed_requested)
             elif name == 'diagnostic_ready' and isinstance(value, dict):
-                value = {**value, 'snapshot_transport_sent': self._snapshot_encoder.diagnostic_state()}
+                value = {**value, 'snapshot_transport_sent': self._snapshot_encoder.diagnostic_state(),
+                         **self._tape_publisher.diagnostic_state(),
+                         'tape_history_all': len(tape_state.all_entries),
+                         'tape_history_large': len(tape_state.large_entries)}
             encoded.append((name, generation, value))
         due = [max(1, timer.remainingTime()) for timer in
                (self.runtime._snapshot_timer, self.runtime._decay_timer) if timer.isActive()]
-        return {'events': encoded, 'next_at': time.monotonic() + min(due, default=float('inf')) / 1000.0}
+        return {'events': encoded,
+                'tape_state': self._tape_encoder.encode(tape_state, seed=tape_seed_requested),
+                'next_at': min(time.monotonic() + min(due, default=float('inf')) / 1000.0,
+                               self._tape_publisher.next_at(tape_state))}
 
     def close(self):
         self.runtime.shutdown()
@@ -3685,7 +3756,7 @@ class _OrderFlowPresentationMailbox(QtCore.QObject):
     wake = QtCore.Signal()
     MAX_FAILURES_PER_DRAIN = 32
     PRESENTATION_SIGNALS = frozenset(
-        {"snapshot_ready", "microstructure_ready", "diagnostic_ready"}
+        {"snapshot_ready", "microstructure_ready", "diagnostic_ready", "tape_ready"}
     )
 
     def __init__(self, runtime: "OrderFlowRuntime") -> None:
@@ -3694,7 +3765,7 @@ class _OrderFlowPresentationMailbox(QtCore.QObject):
         self._lock = threading.Lock()
         self._generation = 0
         self._sequence = 0
-        self._latest: dict[str, tuple[int, int, object]] = {}
+        self._latest: dict[str | tuple[str, str], tuple[int, int, object]] = {}
         self._failures: deque[tuple[int, int, str]] = deque()
         self._wake_pending = False
         self._closed = False
@@ -3737,9 +3808,10 @@ class _OrderFlowPresentationMailbox(QtCore.QObject):
             if name == "failed":
                 self._failures.append((event[0], event[1], str(value)))
             else:
-                if name in self._latest:
+                key = (name, value.consumer) if name == 'tape_ready' else name
+                if key in self._latest:
                     self.coalesced_counts[name] += 1
-                self._latest[name] = event
+                self._latest[key] = event
             if not self._wake_pending:
                 self._wake_pending = True
                 self.wakeups_posted += 1
@@ -3782,10 +3854,11 @@ class _OrderFlowPresentationMailbox(QtCore.QObject):
                 (sequence, "failed", generation, value)
                 for sequence, generation, value in failures
             ]
-            for name, (sequence, generation, value) in tuple(self._latest.items()):
+            for key, (sequence, generation, value) in tuple(self._latest.items()):
                 if sequence <= failure_boundary:
+                    name = key[0] if isinstance(key, tuple) else key
                     events.append((sequence, name, generation, value))
-                    del self._latest[name]
+                    del self._latest[key]
 
         runtime = self._runtime()
         if runtime is None:
@@ -3855,6 +3928,7 @@ class OrderFlowRuntime(QtCore.QObject):
     frames may be coalesced. Pickle, IPC and process lifecycle run off Qt.
     """
     snapshot_ready = QtCore.Signal(int, object)
+    tape_ready = QtCore.Signal(int, object)
     microstructure_ready = QtCore.Signal(int, object)
     diagnostic_ready = QtCore.Signal(int, object)
     failed = QtCore.Signal(int, str)
@@ -3878,6 +3952,7 @@ class OrderFlowRuntime(QtCore.QObject):
         self._active = False
         self._depth_capacity = 1000
         self._interaction_priority = False
+        self._tape_views = {}
         self._restart_timer = QtCore.QTimer(self)
         self._restart_timer.setSingleShot(True)
         self._restart_timer.timeout.connect(self._restart)
@@ -3889,6 +3964,21 @@ class OrderFlowRuntime(QtCore.QObject):
         self._link = _OrderBookProcessLink(_OrderFlowAnalysisProcess, options, self, ordered=True)
         self._link.ready.connect(self._deliver)
         self._link.failed.connect(self._failed)
+        from .tape_source import SharedTradeTapeSource
+        # Like the presentation mailbox, create this on the GUI thread before
+        # MainWindow moves the runtime QObject to its relay QThread.
+        self.tape_source = SharedTradeTapeSource(self, symbol=symbol)
+
+    @QtCore.Slot(str, object)
+    def tape_command(self, name, args):
+        if name not in ('set_tape_view', 'ack_tape', 'clear_tape'):
+            raise ValueError('Unknown trade-tape command')
+        if name == 'set_tape_view':
+            if args[-1]:
+                self._tape_views[args[0]] = args
+            else:
+                self._tape_views.pop(args[0], None)
+        self._post(name, *args)
 
     def _post(self, name, *args):
         if self._stopping or self._restart_pending:
@@ -3934,9 +4024,14 @@ class OrderFlowRuntime(QtCore.QObject):
         self._link.failed.connect(self._failed)
         self._restart_pending = False
         self._post('reset_model', *self._reset_args)
+        checkpoint = old.tape_checkpoint()
+        if checkpoint is not None:
+            self._post('restore_tape_history', checkpoint)
         self._post('set_depth_capacity', self._generation, self._depth_capacity)
         self._post('set_active', self._generation, self._active)
         self._post('set_interaction_priority', self._generation, self._interaction_priority)
+        for args in self._tape_views.values():
+            self._post('set_tape_view', *args)
         self.restarted.emit(self._generation)
 
     @QtCore.Slot(int, str, float, float)
@@ -3984,5 +4079,6 @@ class OrderFlowRuntime(QtCore.QObject):
 
     def stop_transport(self):
         self._stopping = True
+        self.tape_source.close()
         self._presentation_mailbox.close()
         self._link.close()

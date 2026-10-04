@@ -60,11 +60,12 @@ from ..models import (
 )
 from .revisions import (
     amount_inputs, amount_revision_key, levels_unchanged,
-    print_revision_key, prints_equal,
 )
 from .raster_regions import (
     bounded_region, copy_pixel_region, draw_native_region, pixel_region, region_area,
 )
+from .tape import TAPE_CAPACITY, TapeSeedRequired
+from .tape_source import SharedTradeTapeSource
 
 from ..presentation import display_frame_interval_ms
 from ..chart.analysis import LatestJob
@@ -505,6 +506,9 @@ class _TradesTapeModel(QtCore.QAbstractTableModel):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.rows: list[tuple[OrderFlowTradePrint, tuple[str, ...]]] = []
+        self.keys = []
+        self._indices = {}
+        self.formatted_rows = self.corrected_rows = self.resets = 0
         self.decimals: int | None = None
         self.value_mode = 'quote'
         self.amount_decimals = {'base': 0, 'quote': 2}
@@ -563,6 +567,7 @@ class _TradesTapeModel(QtCore.QAbstractTableModel):
         return None
 
     def _row(self, trade):
+        self.formatted_rows += 1
         stamp = datetime.fromtimestamp(trade.event_time_ms / 1000.0, timezone.utc).strftime('%H:%M:%S') if trade.event_time_ms > 0 else '—'
         amount = trade.quantity if self.value_mode == 'base' else trade.notional
         prefix = '' if self.value_mode == 'base' else '$'
@@ -575,61 +580,103 @@ class _TradesTapeModel(QtCore.QAbstractTableModel):
         # Local sequences restart when transport is paused or resynchronized.
         return trade.received_monotonic, trade.sequence
 
-    def set_trades(self, trades, *, reformat=False):
-        # Normal updates prepend a batch and trim the tail; don't reset scroll or
-        # allocate thousands of QTableWidgetItems on each depth frame.
-        previous = [self.identity(row[0]) for row in self.rows]
-        sequences = [self.identity(trade) for trade in trades]
-        prefix = sequences.index(previous[0]) if previous and previous[0] in sequences else len(sequences)
-        retained = len(sequences) - prefix
-        same_tail = sequences[prefix:] == previous[:retained]
-        # Keep one fixed precision per market/unit mode, including trailing
-        # zeros. Only new/changed amounts can increase retained precision;
-        # outcome-only updates must not reformat the entire 500-print history.
-        mode = self.value_mode
-        precision = self.amount_decimals[mode]
-        for row, trade in enumerate(trades):
+    def _precision(self, entries):
+        mode, precision = self.value_mode, self.amount_decimals[self.value_mode]
+        for key, trade in entries:
             amount = trade.quantity if mode == 'base' else trade.notional
             if mode == 'quote' and not 0 < abs(amount) < .01:
                 continue
-            if not reformat and same_tail and row >= prefix:
-                old = self.rows[row - prefix][0]
-                old_amount = old.quantity if mode == 'base' else old.notional
-                if amount == old_amount:
+            row = self._indices.get(key)
+            if row is not None:
+                old = self.rows[row][0]
+                if amount == (old.quantity if mode == 'base' else old.notional):
                     continue
-            fraction = format_book_price(amount).partition('.')[2]
-            precision = max(precision, len(fraction))
-        if precision != self.amount_decimals[mode]:
-            self.amount_decimals[mode] = precision
-            reformat = True
-        if reformat or (previous and not same_tail):
+            precision = max(precision, len(format_book_price(amount).partition('.')[2]))
+        changed = precision != self.amount_decimals[mode]
+        self.amount_decimals[mode] = precision
+        return changed
+
+    def clear(self):
+        self.beginResetModel()
+        self.rows, self.keys, self._indices = [], [], {}
+        self.endResetModel()
+
+    def set_frame(self, frame, *, reformat=False):
+        patch = frame.patch
+        updates = dict(patch.upserts)
+        seed = frame.base_revision is None
+        if patch.order is None and not seed:
+            if patch.removed or any(key not in self._indices for key in updates):
+                raise TapeSeedRequired('Tape membership changed without an ordering')
+            reformat |= self._precision(patch.upserts)
+            if reformat:
+                for key, trade in patch.upserts:
+                    row = self._indices[key]
+                    self.rows[row] = trade, self.rows[row][1]
+                self.reformat_rows()
+            else:
+                self._correct_rows(patch.upserts)
+            return
+        order = list(patch.order) if patch.order is not None else self.keys
+        ordered_keys = set(order)
+        wanted = set(updates) if seed else (set(self.keys) - set(patch.removed)) | set(updates)
+        if (len(order) > TAPE_CAPACITY or len(ordered_keys) != len(order) or ordered_keys != wanted
+                or (seed and patch.order is None)
+                or any(key not in updates and (seed or key not in self._indices) for key in order)
+                or any(key not in ordered_keys for key in updates)):
+            raise TapeSeedRequired('Incomplete trade-tape view')
+        reformat |= self._precision(patch.upserts)
+        previous = self.keys
+        prefix = order.index(previous[0]) if previous and previous[0] in order else len(order)
+        retained = len(order) - prefix
+        same_tail = order[prefix:] == previous[:retained]
+        if same_tail and any(key not in updates for key in order[:prefix]):
+            raise TapeSeedRequired('Tape prepend omitted a new print')
+        if seed or reformat or not same_tail:
+            trades = [updates[key] if key in updates else self.rows[self._indices[key]][0] for key in order]
             self.beginResetModel()
             self.rows = [self._row(trade) for trade in trades]
+            self.keys = list(order)
+            self._indices = {key: row for row, key in enumerate(self.keys)}
+            self.resets += 1
             self.endResetModel()
             return
         if len(previous) > retained:
             self.beginRemoveRows(QtCore.QModelIndex(), retained, len(previous) - 1)
             del self.rows[retained:]
+            del self.keys[retained:]
             self.endRemoveRows()
         if prefix:
             self.beginInsertRows(QtCore.QModelIndex(), 0, prefix - 1)
-            self.rows[:0] = [self._row(trade) for trade in trades[:prefix]]
+            self.rows[:0] = [self._row(updates[key]) for key in order[:prefix]]
+            self.keys[:0] = order[:prefix]
             self.endInsertRows()
-        for row in range(prefix, len(trades)):
-            if self.rows[row][0] != trades[row]:
-                old, cells = self.rows[row]
-                trade = trades[row]
-                numeric_change = any(getattr(old, name) != getattr(trade, name) for name in (
-                    'price', 'quantity', 'notional', 'event_time_ms', 'aggressor_side',
-                ))
-                if numeric_change:
-                    self.rows[row] = self._row(trade)
-                else:
-                    tag = self.OUTCOMES.get(trade.outcome, ('—', 'unknown'))[0]
-                    self.rows[row] = trade, (cells[0], cells[1], tag, cells[3])
-                first_column = 0 if numeric_change else 2
-                last_column = 3 if numeric_change else 2
-                self.dataChanged.emit(self.index(row, first_column), self.index(row, last_column))
+        if patch.order is not None:
+            self._indices = {key: row for row, key in enumerate(self.keys)}
+        self._correct_rows(patch.upserts, prefix=prefix)
+
+    def _correct_rows(self, entries, *, prefix=0):
+        for key, trade in entries:
+            row = self._indices[key]
+            if row < prefix:
+                continue
+            old, cells = self.rows[row]
+            numeric_change = any(getattr(old, name) != getattr(trade, name) for name in (
+                'price', 'quantity', 'notional', 'event_time_ms', 'aggressor_side'))
+            if numeric_change:
+                self.rows[row] = self._row(trade)
+            else:
+                tag = self.OUTCOMES.get(trade.outcome, ('—', 'unknown'))[0]
+                self.rows[row] = trade, (cells[0], cells[1], tag, cells[3])
+            self.corrected_rows += 1
+            self.dataChanged.emit(self.index(row, 0 if numeric_change else 2),
+                                  self.index(row, 3 if numeric_change else 2))
+
+    def reformat_rows(self):
+        self.beginResetModel()
+        self.rows = [self._row(trade) for trade, _cells in self.rows]
+        self.resets += 1
+        self.endResetModel()
 
 
 class _TradePriceDelegate(QtWidgets.QStyledItemDelegate):
@@ -753,15 +800,10 @@ class _TradePriceDelegate(QtWidgets.QStyledItemDelegate):
 
 
 class TradesTapeWidget(QtWidgets.QWidget):
-    """Independent Large Trades panel using the analyzer's classification.
-
-    History is bounded to 500 prints per mode for the current market/session.
-    Snapshot ingestion keeps history while hidden without any table mutations.
-    Visible presentation is coalesced to at most ten commits per second.
-    """
+    """Visible incremental view of one worker-owned, shared trade history."""
     mode_changed = Signal(str)
     value_mode_changed = Signal(str)
-    CAPACITY = 500
+    CAPACITY = TAPE_CAPACITY
 
     def __init__(self, theme: dict[str, str], parent: QtWidgets.QWidget | None = None):
         super().__init__(parent)
@@ -774,15 +816,13 @@ class TradesTapeWidget(QtWidgets.QWidget):
         self._presentation_clock = None
         self._interaction_priority_active = False
         self._frame_refresh_pending = False
-        self._last_snapshot_print_sequence = 0
-        self._snapshot_sequence = 0
-        self._epoch = 0
-        self._latest_snapshot_prints = ()
-        self._snapshot_print_key = None
+        self._tape_source = None
+        self._owned_tape_source = None
+        self._tape_consumer = None
+        self._tape_token = 0
+        self._tape_revision = None
+        self._pending_tape_frame = None
         self._print_cache_hits = self._print_cache_misses = 0
-        self._history: dict[tuple[int, int], OrderFlowTradePrint] = {}
-        self._large_history: dict[tuple[int, int], OrderFlowTradePrint] = {}
-        self._unresolved: set[int] = set()
         self._dirty = True
         self._reformat = False
         self._refresh_timer = QtCore.QTimer(self)
@@ -890,7 +930,9 @@ class TradesTapeWidget(QtWidgets.QWidget):
         symbol = str(symbol).upper()
         if symbol != self.symbol:
             self.symbol = symbol
-            self.reset()
+            # Market reset belongs to the producer. Clearing a newly selected
+            # market from a delayed view update would erase its accepted trades.
+            self.reset(clear_source=False)
         self.quote_volume_24h = max(0.0, quote_volume_24h)
         decimals = _decimal_places_from_step(tick_size) if tick_size > 0 else None
         if decimals != self.model.decimals:
@@ -901,41 +943,67 @@ class TradesTapeWidget(QtWidgets.QWidget):
     def set_quote_volume(self, quote_volume_24h):
         self.quote_volume_24h = max(0.0, quote_volume_24h)
 
-    def reset(self, *, preserve_history=False):
+    def reset(self, *, preserve_history=False, clear_source=True):
         self._refresh_timer.stop()
         self._frame_refresh_pending = False
-        self._epoch += 1
-        self._unresolved.clear()
-        self._latest_snapshot_prints = ()
-        self._snapshot_print_key = None
-        self._last_snapshot_print_sequence = self._snapshot_sequence = 0
+        self._pending_tape_frame = None
+        self._tape_revision = None
         self._dirty = True
         if not preserve_history:
-            self._history.clear()
-            self._large_history.clear()
+            if clear_source and self._tape_source is not None:
+                self._tape_source.command('clear_tape', (self.symbol,))
             self.current_threshold = 1000.0
             self.model.amount_decimals = {'base': 0, 'quote': 2}
-            self.model.set_trades([])
+            self.model.clear()
             self.status.setText('Waiting for trades')
             self.empty.setText('Waiting for large trades…' if self._mode == 'LARGE' else 'Waiting for trades…')
             self.empty.show()
+        self._request_tape_view()
+
+    def set_tape_source(self, source):
+        if source is self._tape_source:
+            return
+        if self._tape_source is not None:
+            self._tape_source.unregister(self._tape_consumer)
+        if self._owned_tape_source is not None:
+            self._owned_tape_source.close()
+            self._owned_tape_source.deleteLater()
+            self._owned_tape_source = None
+        self._tape_source = source
+        self._tape_consumer = source.register(self) if source is not None else None
+        self._tape_revision = None
+        self._pending_tape_frame = None
+        self._request_tape_view()
+
+    def _request_tape_view(self):
+        self._tape_token += 1
+        self._pending_tape_frame = None
+        self._frame_refresh_pending = False
+        if self._tape_source is not None:
+            self._tape_source.refresh(self)
 
     def set_panel_active(self, active):
-        self._active = bool(active)
+        active = bool(active)
+        if active == self._active:
+            return
+        self._active = active
         if not self._active:
             self._refresh_timer.stop()
             self._frame_refresh_pending = False
         else:
             self._schedule_refresh()
+        self._request_tape_view()
 
     def showEvent(self, event):
         super().showEvent(event)
+        self._request_tape_view()
         self._schedule_refresh()
 
     def hideEvent(self, event):
         self._refresh_timer.stop()
         self._frame_refresh_pending = False
         super().hideEvent(event)
+        self._request_tape_view()
 
     def set_presentation_clock(self, clock):
         if clock is self._presentation_clock:
@@ -970,6 +1038,7 @@ class TradesTapeWidget(QtWidgets.QWidget):
         self.mode_button.setText('All' if mode == 'ALL' else 'Large')
         self.empty.setText('Waiting for trades…' if mode == 'ALL' else 'Waiting for large trades…')
         self._reformat = self._dirty = True
+        self._request_tape_view()
         self._schedule_refresh()
         if emit:
             self.mode_changed.emit(mode)
@@ -999,67 +1068,25 @@ class TradesTapeWidget(QtWidgets.QWidget):
     def set_order_flow_snapshot(self, snapshot):
         if not isinstance(snapshot, OrderFlowSnapshot) or snapshot.symbol != self.symbol:
             return
-        prints = snapshot.recent_prints
-        print_key = print_revision_key(snapshot)
-        stream_changed = (print_key is not None and self._snapshot_print_key is not None
-                          and print_key[0] != self._snapshot_print_key[0])
-        if (stream_changed or snapshot.sequence < self._snapshot_sequence or
-                (prints and prints[-1].sequence < self._last_snapshot_print_sequence)):
-            self.reset(preserve_history=True)
-        self._snapshot_sequence = snapshot.sequence
-        threshold = max(1.0, float(snapshot.large_trade_threshold or 1.0))
-        self._dirty |= threshold != self.current_threshold
-        self.current_threshold = threshold
-        if print_key is not None and self._snapshot_print_key is not None:
-            unchanged = print_key == self._snapshot_print_key
-        else:
-            unchanged = prints_equal(prints, self._latest_snapshot_prints)
-        self._snapshot_print_key = print_key
-        if unchanged:
-            self._print_cache_hits += 1
-        else:
-            self._print_cache_misses += 1
-            self._latest_snapshot_prints = prints
-            fresh = []
-            for trade in reversed(prints):
-                if trade.sequence <= self._last_snapshot_print_sequence:
-                    break
-                fresh.append(trade)
-            for trade in reversed(fresh):
-                key = self._epoch, trade.sequence
-                self._history[key] = trade
-                if trade.salience_class >= 1:
-                    self._large_history[key] = trade
-                if trade.outcome == 'UNRESOLVED':
-                    self._unresolved.add(trade.sequence)
-            self._dirty |= bool(fresh)
-            if prints:
-                self._last_snapshot_print_sequence = prints[-1].sequence
-                first = prints[0].sequence
-                # Analyzer sequences are contiguous; resolve outcomes without a
-                # second pass over its whole 2048-print snapshot on every frame.
-                for sequence in tuple(self._unresolved):
-                    offset = sequence - first
-                    if offset < 0:
-                        self._unresolved.discard(sequence)
-                    elif offset < len(prints):
-                        trade = prints[offset]
-                        if trade.sequence == sequence and trade.outcome != 'UNRESOLVED':
-                            for history in (self._history, self._large_history):
-                                key = self._epoch, sequence
-                                if key in history:
-                                    history[key] = trade
-                            self._unresolved.discard(sequence)
-                            self._dirty = True
-            for history in (self._history, self._large_history):
-                excess = len(history) - self.CAPACITY
-                if excess > 0:
-                    for sequence in list(history)[:excess]:
-                        del history[sequence]
-            self._unresolved = {sequence for sequence in self._unresolved
-                                if (self._epoch, sequence) in self._history
-                                or (self._epoch, sequence) in self._large_history}
-        self._schedule_refresh()
+        if self._tape_source is None:
+            source = SharedTradeTapeSource(symbol=self.symbol, parent=self)
+            self.set_tape_source(source)
+            self._owned_tape_source = source
+        self._tape_source.ingest_snapshot(snapshot)
+
+    def _receive_tape_frame(self, frame):
+        if (frame.consumer != self._tape_consumer or frame.token != self._tape_token
+                or frame.symbol != self.symbol or frame.mode != self._mode
+                or not self._active or not self.isVisible()):
+            return False
+        if frame.base_revision is not None and frame.base_revision != self._tape_revision:
+            self._request_tape_view()  # Re-subscription requests a complete seed.
+            return False
+        self._pending_tape_frame = frame
+        self.current_threshold = frame.threshold
+        self._dirty = True
+        self._refresh_table()
+        return True
 
     def _schedule_refresh(self):
         if (self._dirty and self._active and self.isVisible()
@@ -1079,24 +1106,34 @@ class TradesTapeWidget(QtWidgets.QWidget):
         if not self._active or not self.isVisible() or not self._dirty:
             return
         self._refresh_timer.stop()
-        history = self._large_history if self._mode == 'LARGE' else self._history
-        trades = list(reversed(history.values()))
+        frame = self._pending_tape_frame
         bar = self.table.verticalScrollBar()
         follow = bar.value() == 0
         top = self.table.rowAt(0)
-        anchor = self.model.identity(self.model.rows[top][0]) if top >= 0 and top < len(self.model.rows) else None
+        anchor = self.model.keys[top] if 0 <= top < len(self.model.keys) else None
         offset = self.table.rowViewportPosition(top) if top >= 0 else 0
-        self.model.set_trades(trades, reformat=self._reformat)
+        if frame is not None:
+            try:
+                self.model.set_frame(frame, reformat=self._reformat)
+            except TapeSeedRequired:
+                self._request_tape_view()
+                return
+            self._tape_revision = frame.revision
+            self._pending_tape_frame = None
+            self._print_cache_misses += 1
+            self._tape_source.command('ack_tape', (self._tape_consumer, self._tape_token, frame.revision))
+        elif self._reformat:
+            self.model.reformat_rows()
         self._dirty = self._reformat = False
         if follow:
             self.table.scrollToTop()
         elif anchor is not None:
-            row = next((i for i, trade in enumerate(trades) if self.model.identity(trade) == anchor), None)
+            row = self.model._indices.get(anchor)
             if row is not None:
                 self.table.scrollTo(self.model.index(row, 0), QtWidgets.QAbstractItemView.ScrollHint.PositionAtTop)
                 bar.setValue(bar.value() - offset)
-        self.empty.setVisible(not trades)
-        self.status.setText(f'≥ {human_number(self.current_threshold, money=True)}' if self._mode == 'LARGE' else f'{len(trades)} trades')
+        self.empty.setVisible(not self.model.rows)
+        self.status.setText(f'≥ {human_number(self.current_threshold, money=True)}' if self._mode == 'LARGE' else f'{len(self.model.rows)} trades')
 
     def apply_theme(self, theme):
         self.theme = {}
@@ -6571,6 +6608,8 @@ class OrderBookWidget(QtWidgets.QWidget):
         self.price_tick_size = 0.0
         self._tape: TradesTapeWidget | None = None
         self._automatic_tape: TradesTapeWidget | None = None
+        self._tape_source = None
+        self._owned_tape_source = None
         self._tape_enabled = True
         self._tape_mode = 'LARGE'
         self._latest_snapshot: OrderFlowSnapshot | None = None
@@ -6622,6 +6661,26 @@ class OrderBookWidget(QtWidgets.QWidget):
         if self._tape is None:
             self._automatic_tape = TradesTapeWidget({}, self)
             self.set_trades_tape(self._automatic_tape)
+
+    def set_tape_source(self, source):
+        if source is self._tape_source:
+            return
+        if self._owned_tape_source is not None:
+            self._owned_tape_source.close()
+            self._owned_tape_source.deleteLater()
+            self._owned_tape_source = None
+        self._tape_source = source
+        if self._tape is not None:
+            self._tape.set_tape_source(source)
+
+    def _ensure_tape_source(self):
+        if self._tape_source is None:
+            source = SharedTradeTapeSource(symbol=self.symbol, parent=self)
+            self.set_tape_source(source)
+            self._owned_tape_source = source
+            if self._latest_snapshot is not None:
+                source.ingest_snapshot(self._latest_snapshot)
+        return self._tape_source
 
     def _emit_presentation_changed(self) -> None:
         self.presentation_changed.emit(self.presentation_state())
@@ -6729,6 +6788,7 @@ class OrderBookWidget(QtWidgets.QWidget):
         self._tape = tape
         if tape is None:
             return
+        tape.set_tape_source(self._ensure_tape_source())
         tape.set_presentation_clock(self.canvas._presentation_clock)
         tape.set_interaction_priority(self.canvas._interaction_priority_active)
         tape.setParent(self.splitter)
@@ -6741,8 +6801,6 @@ class OrderBookWidget(QtWidgets.QWidget):
         self.splitter.addWidget(tape)
         self.splitter.setStretchFactor(0, 1)
         self.splitter.setStretchFactor(1, 0)
-        if self._latest_snapshot is not None:
-            tape.set_order_flow_snapshot(self._latest_snapshot)
         self._sync_tape_visibility(force_sizes=True)
 
     def _tape_mode_changed(self, mode: str) -> None:
@@ -6840,10 +6898,8 @@ class OrderBookWidget(QtWidgets.QWidget):
         else:
             source = snapshot.snapshot if isinstance(snapshot, OrderFlowPresentationFrame) else snapshot
         if isinstance(source, OrderFlowSnapshot):
+            self._ensure_tape_source().ingest_snapshot(source)
             self._latest_snapshot = source
-            tape = self._tape
-            if tape is not None:
-                tape.set_order_flow_snapshot(source)
         self.canvas.set_snapshot(payload)
 
     def set_microstructure_snapshot(self, snapshot: object) -> None:
@@ -6976,7 +7032,7 @@ class OrderBookWidget(QtWidgets.QWidget):
         self._latest_snapshot = None
         self.canvas.reset()
         if self._tape is not None:
-            self._tape.reset()
+            self._tape.reset(preserve_history=True)
 
     def apply_theme(self, theme: dict[str, str]) -> None:
         # Order-book chrome remains fixed; only DEPTH bars consume directional
@@ -6994,11 +7050,12 @@ class OrderBookWidget(QtWidgets.QWidget):
         state = self.canvas.performance_state()
         state['tape_visible'] = int(bool(self._tape is not None and self._tape.isVisible()))
         if self._tape is not None:
-            state['tape_print_cache_hits'] = self._tape._print_cache_hits
-            state['tape_print_cache_misses'] = self._tape._print_cache_misses
+            state['tape_view_frames'] = self._tape._print_cache_misses
+            state['tape_view_formatted_rows'] = self._tape.model.formatted_rows
+            state['tape_view_corrected_rows'] = self._tape.model.corrected_rows
+            state['tape_view_model_resets'] = self._tape.model.resets
         state['presentation_preset'] = str(self.canvas.presentation_state().get('preset', 'execution'))
         state['row_density'] = self.canvas.row_density()
         state['value_mode'] = self.canvas.value_mode()
         state['book_depth'] = int(bool(self.canvas.presentation_state().get('book_depth', False)))
         return state
-

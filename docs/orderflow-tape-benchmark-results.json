@@ -1,0 +1,429 @@
+{
+  "baseline_commit": "0ed9d9f28d299609fda4475dea8d77a4f721e2f2",
+  "benchmark_before": {
+    "label": "before",
+    "python": "3.12.14",
+    "qt": "6.11.2",
+    "platform": "Linux-6.18.44-x86_64-with-glibc2.39",
+    "measurement": "two tape ingestion/model paths, 60 source snapshots/sec and at most 10 table updates/sec; excludes paint, kernel pipes and desktop FPS",
+    "results": [
+      {
+        "case": "bbo_only",
+        "source_snapshot_frames": 300,
+        "visible_views": 2,
+        "gui": {
+          "total_ms": 1.9511,
+          "median_ms": 0.004,
+          "p95_ms": 0.0069,
+          "max_ms": 0.274
+        },
+        "worker_history_publish_and_encode": {
+          "total_ms": 0,
+          "median_ms": 0.0,
+          "p95_ms": 0,
+          "max_ms": 0
+        },
+        "seed_gui_ms": 11.3181,
+        "seeded_formatted_rows": [
+          500,
+          500
+        ],
+        "subsequently_formatted_rows": [
+          0,
+          0
+        ],
+        "visible_records_preserved": true,
+        "retained_model_rows": [
+          500,
+          500
+        ],
+        "gui_frames_delivered": null,
+        "worker_checkpoint_and_view_bytes": null,
+        "independent_gui_history_rows": [
+          500,
+          500
+        ]
+      },
+      {
+        "case": "append",
+        "source_snapshot_frames": 300,
+        "visible_views": 2,
+        "gui": {
+          "total_ms": 113.7053,
+          "median_ms": 0.0042,
+          "p95_ms": 1.6364,
+          "max_ms": 31.7596
+        },
+        "worker_history_publish_and_encode": {
+          "total_ms": 0,
+          "median_ms": 0.0,
+          "p95_ms": 0,
+          "max_ms": 0
+        },
+        "seed_gui_ms": 16.6714,
+        "seeded_formatted_rows": [
+          500,
+          500
+        ],
+        "subsequently_formatted_rows": [
+          500,
+          500
+        ],
+        "visible_records_preserved": true,
+        "retained_model_rows": [
+          500,
+          500
+        ],
+        "gui_frames_delivered": null,
+        "worker_checkpoint_and_view_bytes": null,
+        "independent_gui_history_rows": [
+          500,
+          500
+        ]
+      },
+      {
+        "case": "outcome_corrections",
+        "source_snapshot_frames": 300,
+        "visible_views": 2,
+        "gui": {
+          "total_ms": 82.0091,
+          "median_ms": 0.0042,
+          "p95_ms": 1.6344,
+          "max_ms": 3.4844
+        },
+        "worker_history_publish_and_encode": {
+          "total_ms": 0,
+          "median_ms": 0.0,
+          "p95_ms": 0,
+          "max_ms": 0
+        },
+        "seed_gui_ms": 9.1717,
+        "seeded_formatted_rows": [
+          500,
+          500
+        ],
+        "subsequently_formatted_rows": [
+          0,
+          0
+        ],
+        "visible_records_preserved": true,
+        "retained_model_rows": [
+          500,
+          500
+        ],
+        "gui_frames_delivered": null,
+        "worker_checkpoint_and_view_bytes": null,
+        "independent_gui_history_rows": [
+          500,
+          500
+        ]
+      },
+      {
+        "case": "hidden_burst",
+        "source_snapshot_frames": 300,
+        "visible_views": 0,
+        "gui": {
+          "total_ms": 78.3001,
+          "median_ms": 0.2019,
+          "p95_ms": 0.582,
+          "max_ms": 2.1704
+        },
+        "worker_history_publish_and_encode": {
+          "total_ms": 0,
+          "median_ms": 0.0,
+          "p95_ms": 0,
+          "max_ms": 0
+        },
+        "seed_gui_ms": 2.4746,
+        "seeded_formatted_rows": [
+          0,
+          0
+        ],
+        "subsequently_formatted_rows": [
+          0,
+          0
+        ],
+        "visible_records_preserved": null,
+        "retained_model_rows": [
+          0,
+          0
+        ],
+        "gui_frames_delivered": null,
+        "worker_checkpoint_and_view_bytes": null,
+        "independent_gui_history_rows": [
+          500,
+          500
+        ]
+      }
+    ]
+  },
+  "benchmark_after": {
+    "label": "shared",
+    "python": "3.12.14",
+    "qt": "6.11.2",
+    "platform": "Linux-6.18.44-x86_64-with-glibc2.39",
+    "measurement": "two tape ingestion/model paths, 60 source snapshots/sec and at most 10 table updates/sec; excludes paint, kernel pipes and desktop FPS",
+    "results": [
+      {
+        "case": "bbo_only",
+        "source_snapshot_frames": 300,
+        "visible_views": 2,
+        "gui": {
+          "total_ms": 0.0,
+          "median_ms": 0.0,
+          "p95_ms": 0.0,
+          "max_ms": 0.0
+        },
+        "worker_history_publish_and_encode": {
+          "total_ms": 1.5402,
+          "median_ms": 0.0042,
+          "p95_ms": 0.0067,
+          "max_ms": 0.1257
+        },
+        "seed_gui_ms": 10.0439,
+        "seeded_formatted_rows": [
+          500,
+          500
+        ],
+        "subsequently_formatted_rows": [
+          0,
+          0
+        ],
+        "visible_records_preserved": true,
+        "retained_model_rows": [
+          500,
+          500
+        ],
+        "gui_frames_delivered": 2,
+        "worker_checkpoint_and_view_bytes": 5100,
+        "canonical_history_rows": [
+          500,
+          500
+        ]
+      },
+      {
+        "case": "append",
+        "source_snapshot_frames": 300,
+        "visible_views": 2,
+        "gui": {
+          "total_ms": 37.044,
+          "median_ms": 0.0,
+          "p95_ms": 0.7968,
+          "max_ms": 1.1121
+        },
+        "worker_history_publish_and_encode": {
+          "total_ms": 70.7183,
+          "median_ms": 0.0063,
+          "p95_ms": 1.3878,
+          "max_ms": 1.9307
+        },
+        "seed_gui_ms": 7.3031,
+        "seeded_formatted_rows": [
+          500,
+          500
+        ],
+        "subsequently_formatted_rows": [
+          500,
+          500
+        ],
+        "visible_records_preserved": true,
+        "retained_model_rows": [
+          500,
+          500
+        ],
+        "gui_frames_delivered": 102,
+        "worker_checkpoint_and_view_bytes": 528800,
+        "canonical_history_rows": [
+          500,
+          500
+        ]
+      },
+      {
+        "case": "outcome_corrections",
+        "source_snapshot_frames": 300,
+        "visible_views": 2,
+        "gui": {
+          "total_ms": 15.9733,
+          "median_ms": 0.0,
+          "p95_ms": 0.313,
+          "max_ms": 0.8902
+        },
+        "worker_history_publish_and_encode": {
+          "total_ms": 67.2667,
+          "median_ms": 0.0048,
+          "p95_ms": 1.313,
+          "max_ms": 1.7057
+        },
+        "seed_gui_ms": 8.482,
+        "seeded_formatted_rows": [
+          500,
+          500
+        ],
+        "subsequently_formatted_rows": [
+          0,
+          0
+        ],
+        "visible_records_preserved": true,
+        "retained_model_rows": [
+          500,
+          500
+        ],
+        "gui_frames_delivered": 102,
+        "worker_checkpoint_and_view_bytes": 71850,
+        "canonical_history_rows": [
+          500,
+          500
+        ]
+      },
+      {
+        "case": "hidden_burst",
+        "source_snapshot_frames": 300,
+        "visible_views": 0,
+        "gui": {
+          "total_ms": 0.0,
+          "median_ms": 0.0,
+          "p95_ms": 0.0,
+          "max_ms": 0.0
+        },
+        "worker_history_publish_and_encode": {
+          "total_ms": 235.488,
+          "median_ms": 0.7192,
+          "p95_ms": 1.1274,
+          "max_ms": 3.0117
+        },
+        "seed_gui_ms": 0.0,
+        "seeded_formatted_rows": [
+          0,
+          0
+        ],
+        "subsequently_formatted_rows": [
+          0,
+          0
+        ],
+        "visible_records_preserved": null,
+        "retained_model_rows": [
+          0,
+          0
+        ],
+        "gui_frames_delivered": 0,
+        "worker_checkpoint_and_view_bytes": 1968000,
+        "canonical_history_rows": [
+          500,
+          500
+        ]
+      }
+    ]
+  },
+  "tape_worker_session": {
+    "python": "3.12.14",
+    "qt": "6.11.2",
+    "platform": "Linux-6.18.44-x86_64-with-glibc2.39",
+    "measurement": "offline accepted-trade capture and actual spawned analysis process, QThread relay and offscreen Qt tables; no desktop-FPS claim",
+    "capture": {
+      "accepted_burst": 2201,
+      "capture_ms": 32.062,
+      "recent_snapshot_rows": 2048,
+      "recent_rows_after_expiry": 0,
+      "retained_history_rows": [
+        500,
+        1
+      ],
+      "early_large_outside_recent_window": true,
+      "evicted_print_outcome_corrected": true,
+      "duplicate_and_invalid_inputs_ignored": true,
+      "stalled_views_emit_no_additional_frames": true,
+      "cumulative_frames_preserve_all_records": true,
+      "missing_checkpoint_base_detected": true,
+      "checkpoint_seed_preserves_all_records": true,
+      "threshold_changes_update_only_large_view": true,
+      "same_symbol_reset_keys_unique": true,
+      "hidden_view_frames": 0,
+      "changed_symbol_history_empty": true
+    },
+    "session": {
+      "burst_views_match_canonical_records": true,
+      "early_large_present": true,
+      "hidden_models_receive_zero_updates": true,
+      "show_and_independent_modes_match_canonical_records": true,
+      "scroll_anchor_preserved": true,
+      "base_quantity_precision_preserved": true,
+      "held_gui_does_not_block_worker_history": true,
+      "held_gui_cumulative_delta_preserves_records": true,
+      "missing_view_base_reseeded": true,
+      "same_symbol_reset_preserves_history": true,
+      "same_symbol_reset_has_unique_keys": true,
+      "relay_restart_restores_received_history": true,
+      "restart_sequences_do_not_collide": true,
+      "delayed_market_view_does_not_clear_accepted_trades": true,
+      "changed_symbol_has_no_previous_market_records": true,
+      "final_history_rows": [
+        10,
+        0
+      ],
+      "completed_phases": 14,
+      "duration_seconds": 2.383,
+      "gui_models_and_source_affinity": true,
+      "source_delivered_frames": 18,
+      "source_upsert_records": 3526,
+      "model_formatted_rows": [
+        3017,
+        507
+      ],
+      "expected_relay_interruptions": [
+        "offline relay recovery profile"
+      ],
+      "errors": [],
+      "relay_thread_stopped": true
+    }
+  },
+  "analysis_and_raster_session": {
+    "python": "3.12.14",
+    "qt": "6.11.2",
+    "platform": "Linux-6.18.44-x86_64-with-glibc2.39",
+    "dpr": 1.25,
+    "measurement": "actual spawned analysis/raster workers and offscreen QWidget; no desktop/display-FPS claim",
+    "input_ticks": 200,
+    "trade_events": 40,
+    "source_snapshots": 181,
+    "source_sessions": 2,
+    "latest_source_sequence": 181,
+    "latest_displayed_sequence": 181,
+    "raster_frames": 169,
+    "max_transported_rects": 5,
+    "retained_tape_rows": [
+      40,
+      40
+    ],
+    "changes": [
+      "resize",
+      "hide",
+      "show",
+      "same-symbol market reset",
+      "aggregation",
+      "units and interaction pacing",
+      "partially occluded paints",
+      "exposure after occlusion"
+    ],
+    "errors": [],
+    "renderer_error": "",
+    "awaiting_raster_ack": false,
+    "gui_ms_max": 5.5915,
+    "counters": {
+      "raster_sync_bytes": 61033860,
+      "raster_sync_avoided_bytes": 607719276,
+      "raster_sync_copies": 142,
+      "raster_sync_full_copies": 10,
+      "raster_sync_skipped": 2,
+      "raster_sync_last_bytes": 16740,
+      "raster_sync_last_ms": 0.2067519999400247,
+      "raster_sync_max_ms": 3.7889240002186853,
+      "gui_blit_pixels": 46295536,
+      "gui_blit_last_pixels": 184338,
+      "gui_full_paints": 20,
+      "gui_partial_paints": 153,
+      "gui_blit_ms": 0.262094000390789,
+      "gui_blit_max_ms": 5.591546999312413,
+      "gui_paint_fps": 37.10215730253013
+    }
+  }
+}

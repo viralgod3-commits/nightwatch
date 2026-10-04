@@ -49,6 +49,11 @@ def main():
     tapes = [TradesTapeWidget({}), TradesTapeWidget({})]
     runtime = OrderFlowRuntime('BTCUSDT', tick_size=.1, quote_volume=1e8,
                                min_snapshot_interval_ms=7, interaction_snapshot_interval_ms=16)
+    if hasattr(runtime, 'tape_source'):
+        for tape in tapes:
+            tape.set_tape_source(runtime.tape_source)
+            tape.set_panel_active(True)
+            tape.show()
     errors = []
     runtime.failed.connect(lambda generation, message: errors.append(message))
     canvas._process_link.failed.connect(errors.append)
@@ -69,8 +74,9 @@ def main():
         if snapshot.component_revisions:
             sessions.add(snapshot.component_revisions.stream)
         canvas.set_snapshot(payload)
-        for tape in tapes:
-            tape.set_order_flow_snapshot(snapshot)
+        if not hasattr(runtime, 'tape_source'):
+            for tape in tapes:
+                tape.set_order_flow_snapshot(snapshot)
 
     def raster_received(result):
         if result.get('frame') is not None:
@@ -157,7 +163,7 @@ def main():
                       source_sessions=len(sessions), latest_source_sequence=latest_source_sequence,
                       latest_displayed_sequence=frame['sequence'] if frame else None,
                       raster_frames=len(rendered), max_transported_rects=max((r[2] for r in rendered), default=0),
-                      retained_tape_rows=[len(tape._history) for tape in tapes],
+                      retained_tape_rows=[len(getattr(tape, '_history', tape.model.rows)) for tape in tapes],
                       changes=changes, errors=errors, renderer_error=canvas._remote_error,
                       awaiting_raster_ack=canvas._raster_ack_pending,
                       gui_ms_max=round(max(timings, default=0), 4),

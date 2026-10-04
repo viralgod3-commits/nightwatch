@@ -13,6 +13,7 @@ from ..models import (
     OrderFlowSnapshot,
     OrderFlowTradePrint,
 )
+from .tape import TapeFrame, TapePatch, TapeState, TapeStateDelta
 
 
 class SnapshotSeedRequired(RuntimeError):
@@ -400,6 +401,10 @@ def install_snapshot_reducers() -> None:
     reused mutable command containers must never acquire stale cached state.
     """
     for model in (
+        TapeFrame,
+        TapePatch,
+        TapeState,
+        TapeStateDelta,
         OrderFlowComponentRevisions,
         OrderFlowTradePrint,
         OrderFlowDisplayLevel,
