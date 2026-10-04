@@ -1,16 +1,35 @@
 from dataclasses import replace
 import math
+import time
 
 import pytest
 from PySide6 import QtCore, QtGui, QtWidgets
 from PySide6.QtCore import Qt
 
 from nightwatch.models import OrderFlowSnapshot, OrderFlowTradePrint
+from nightwatch.orderbook.tape import TapeFrame, make_patch
 from nightwatch.orderbook.orderbook_ui import (
     TradesTapeWidget, _TradePriceDelegate, _TradesTapeModel,
     _decimal_places_from_step, format_book_price,
 )
 from nightwatch.utilities import TextRole, TypographyController, typography_font
+
+
+def set_trades(model, trades):
+    """Exercise the same seed/delta protocol that the worker delivers."""
+    entries = tuple((model.identity(record), record) for record in trades)
+    base = tuple(zip(model.keys, (row[0] for row in model.rows))) if model.rows else None
+    model.set_frame(TapeFrame('test', 1, 'ETHUSDT', 'ALL', 'test-stream',
+                              2 if base else 1, 1 if base else None, 100,
+                              make_patch(entries, base)))
+
+
+def wait_for(qapp, predicate):
+    deadline = time.monotonic() + 3
+    while not predicate() and time.monotonic() < deadline:
+        qapp.processEvents()
+        time.sleep(.002)
+    assert predicate(), 'Asynchronous tape did not reach the expected display'
 
 
 def trade(sequence, price, *, side='BUY', outcome='UNRESOLVED', salience=1, quantity=1, direction=0):
@@ -79,7 +98,7 @@ def test_price_precision_follows_tick_without_exponent_or_lost_zeros(tick, price
 def test_results_are_compact_with_explanations_in_tooltips(qapp, outcome, symbol, explanation):
     model = _TradesTapeModel()
     model.decimals = 2
-    model.set_trades([trade(1, 2248.7, outcome=outcome)])
+    set_trades(model, [trade(1, 2248.7, outcome=outcome)])
     index = model.index(0, 2)
     assert index.data() == symbol
     assert explanation in index.data(Qt.ItemDataRole.ToolTipRole)
@@ -95,7 +114,7 @@ def test_results_are_compact_with_explanations_in_tooltips(qapp, outcome, symbol
 def test_price_painter_uses_one_side_color_and_clips_to_the_cell(qapp, width, price, previous, side):
     model = _TradesTapeModel()
     model.decimals = 8 if price < 1 else 2
-    model.set_trades([trade(2, price, side=side), trade(1, previous)])
+    set_trades(model, [trade(2, price, side=side), trade(1, previous)])
     delegate = _TradePriceDelegate()
     image = QtGui.QImage(width + 20, 36, QtGui.QImage.Format.Format_ARGB32)
     image.fill(Qt.GlobalColor.black)
@@ -155,18 +174,18 @@ def test_prepend_and_outcome_updates_keep_model_rows_and_neighbor_comparison(qap
     model = _TradesTapeModel()
     model.decimals = 2
     rows = [trade(3, 2248.73), trade(2, 2247.74), trade(1, 2247.74)]
-    model.set_trades(rows)
+    set_trades(model, rows)
     resets, updates = [], []
     model.modelReset.connect(lambda: resets.append(True))
     model.dataChanged.connect(lambda first, last, roles: updates.append((first.row(), first.column(), last.column())))
     rows = [trade(4, 2248.86), *rows[:2]]
-    model.set_trades(rows)
+    set_trades(model, rows)
     assert [row[0].sequence for row in model.rows] == [4, 3, 2]
     assert not resets
     assert _TradePriceDelegate.emphasis_mask(model.index(1, 0).data(), model.index(2, 0).data()) == (
         False, False, False, True, True, True, True,
     )
-    model.set_trades([replace(rows[0], outcome='FOLLOW_THROUGH'), *rows[1:]])
+    set_trades(model, [replace(rows[0], outcome='FOLLOW_THROUGH'), *rows[1:]])
     assert model.index(0, 2).data() == '✓'
     assert updates == [(0, 2, 2)] and not resets
 
@@ -181,20 +200,24 @@ def test_all_and_large_modes_compare_preceding_displayed_trade_and_update_result
     widget.show()
     widget.set_panel_active(True)
     widget._refresh_table()
-    qapp.processEvents()
+    wait_for(qapp, lambda: [row[0].sequence for row in widget.model.rows] == [3, 1])
     assert [row[0].sequence for row in widget.model.rows] == [3, 1]
     mask = _TradePriceDelegate.emphasis_mask(widget.model.index(0, 0).data(), widget.model.index(1, 0).data())
     assert {i for i, changed in enumerate(mask) if changed} == {4, 5}
     widget.set_mode('ALL', emit=False)
     widget._refresh_table()
+    wait_for(qapp, lambda: [row[0].sequence for row in widget.model.rows] == [3, 2, 1])
     assert [row[0].sequence for row in widget.model.rows] == [3, 2, 1]
     mask = _TradePriceDelegate.emphasis_mask(widget.model.index(0, 0).data(), widget.model.index(1, 0).data())
     assert {i for i, changed in enumerate(mask) if changed} == {5}
     widget.set_order_flow_snapshot(snapshot([*rows[:-1], replace(rows[-1], outcome='FOLLOW_THROUGH')], sequence=2))
     widget._refresh_table()
+    wait_for(qapp, lambda: widget.model.index(0, 2).data() == '✓' and not widget._pending_tape_frame)
     assert widget.model.index(0, 2).data() == '✓'
     widget.set_mode('LARGE', emit=False)
     widget._refresh_table()
+    wait_for(qapp, lambda: [row[0].sequence for row in widget.model.rows] == [3, 1]
+             and widget.model.index(0, 2).data() == '✓' and not widget._pending_tape_frame)
     assert widget.model.index(0, 2).data() == '✓'
     widget.close()
     widget.deleteLater()
@@ -212,7 +235,7 @@ def test_changed_digit_is_visibly_brighter_in_rendered_pixels(qapp, monkeypatch,
     def digit_ink(previous):
         model = _TradesTapeModel()
         model.decimals = 1
-        model.set_trades([trade(2, 83459.9, side=side), trade(1, previous)])
+        set_trades(model, [trade(2, 83459.9, side=side), trade(1, previous)])
         delegate = _TradePriceDelegate()
         image = QtGui.QImage(128 * ratio, 28 * ratio, QtGui.QImage.Format.Format_ARGB32)
         image.setDevicePixelRatio(ratio)
@@ -276,7 +299,7 @@ def test_size_hierarchy_matches_reference_whole_units_and_quieter_fractions(text
 ])
 def test_result_color_uses_observed_direction(qapp, direction, side, outcome, expected):
     model = _TradesTapeModel()
-    model.set_trades([trade(1, 100, direction=direction, side=side, outcome=outcome)])
+    set_trades(model, [trade(1, 100, direction=direction, side=side, outcome=outcome)])
     assert model.index(0, 2).data(Qt.ItemDataRole.ForegroundRole) == getattr(model, expected)
 
 
@@ -290,7 +313,7 @@ def test_tape_keeps_four_columns_result_and_independent_quantity_switch(qapp, wi
     widget.set_panel_active(True)
     widget.set_order_flow_snapshot(snapshot([trade(1, 100, quantity=0.00000001, outcome='FOLLOW_THROUGH', direction=1)]))
     widget._refresh_table()
-    qapp.processEvents()
+    wait_for(qapp, lambda: widget.model.rowCount() == 1)
     assert widget.model.columnCount() == 4
     assert [widget.model.headerData(i, Qt.Orientation.Horizontal) for i in range(4)] == ['PRICE', 'SIZE', 'TAG', 'TIME']
     assert not hasattr(widget, 'title')
@@ -320,7 +343,7 @@ def test_tape_keeps_four_columns_result_and_independent_quantity_switch(qapp, wi
 def test_size_painter_keeps_whole_units_bright_and_fractions_dim(qapp):
     model = _TradesTapeModel()
     model.value_mode = 'base'
-    model.set_trades([trade(1, 100, quantity=0.2865753)])
+    set_trades(model, [trade(1, 100, quantity=0.2865753)])
     delegate = _TradePriceDelegate(amount=True)
     image = QtGui.QImage(128, 28, QtGui.QImage.Format.Format_ARGB32)
     image.fill(Qt.GlobalColor.black)

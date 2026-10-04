@@ -9,6 +9,7 @@ from PySide6 import QtCore, QtGui, QtWidgets
 from nightwatch.orderbook import backend, orderbook_ui as ui
 from nightwatch.models import OrderFlowSnapshot, OrderFlowTradePrint
 from nightwatch.presentation import PresentationClock
+from test_trade_tape import set_trades, wait_for
 
 
 class Clock(QtCore.QObject):
@@ -88,6 +89,7 @@ def raster(widget, *, market_epoch=None):
         worker_pid=123, epoch=widget._display_epoch,
         market_epoch=widget._market_epoch if market_epoch is None else market_epoch,
         frame=('test-image', 0, image.width(), image.height(), 1.0),
+        frame_revision=5,
         pixels=SimpleNamespace(images=[image]), geometry=dict(widget._geometry),
         prices=((), ()), sequence=1, layout=widget.layout_state(),
     )
@@ -108,7 +110,7 @@ def test_dom_adopts_at_chart_frame_and_acknowledges_only_after_paint(canvas, qap
     clock.interaction_frame.emit(1.0)
     assert canvas._display_frame is result and canvas._process_link.acks == []
     settle(qapp)
-    assert canvas._process_link.acks == [('test-image', 0)]
+    assert canvas._process_link.acks == [('test-image', 0, 5)]
 
 
 @pytest.mark.parametrize('finish', ['end_interaction', 'detach_clock'])
@@ -123,7 +125,7 @@ def test_dom_flushes_held_frame_without_another_clock_tick(canvas, qapp, finish)
         canvas.set_presentation_clock(None)
     settle(qapp)
     assert canvas._display_frame is result
-    assert canvas._process_link.acks == [('test-image', 0)]
+    assert canvas._process_link.acks == [('test-image', 0, 5)]
 
 
 @pytest.mark.parametrize('boundary', ['hide', 'reset', 'stale_epoch'])
@@ -163,6 +165,9 @@ def tape(qapp):
     settle(qapp)
     yield widget
     widget.close()
+    if widget._owned_tape_source:
+        widget._owned_tape_source.close()
+        widget._owned_tape_source._worker.thread.join(timeout=2)
     widget.deleteLater()
     QtCore.QCoreApplication.sendPostedEvents(None, QtCore.QEvent.Type.DeferredDelete)
 
@@ -173,21 +178,27 @@ def test_tape_ingestion_stays_live_and_coalesces_display_to_chart_frame(tape, qa
     tape.set_interaction_priority(True)
     tape.set_order_flow_snapshot(snapshot(1))
     tape._refresh_table()
+    wait_for(qapp, lambda: tape._pending_tape_frame is not None)
     assert tape.model.rowCount() == 0
     tape.set_order_flow_snapshot(snapshot(2))
-    assert len(tape._history) == 2  # No prints lost while presentation waits.
     clock.interaction_frame.emit(1.0)
+    assert [row[0].sequence for row in tape.model.rows] == [1]
+    # The second print accumulates in the worker while the first frame waits
+    # for acknowledgement; it reaches the next chart frame without being lost.
+    wait_for(qapp, lambda: tape._pending_tape_frame is not None)
+    clock.interaction_frame.emit(2.0)
     assert [row[0].sequence for row in tape.model.rows] == [2, 1]
     assert not tape._frame_refresh_pending
-    assert clock.requests == 1
+    assert clock.requests >= 2
 
 
 @pytest.mark.parametrize('finish', ['end_interaction', 'detach_clock'])
-def test_tape_final_refresh_does_not_require_another_chart_frame(tape, finish):
+def test_tape_final_refresh_does_not_require_another_chart_frame(tape, qapp, finish):
     tape.set_presentation_clock(Clock())
     tape.set_interaction_priority(True)
     tape.set_order_flow_snapshot(snapshot(1))
     tape._refresh_table()
+    wait_for(qapp, lambda: tape._frame_refresh_pending and tape._pending_tape_frame is not None)
     if finish == 'end_interaction':
         tape.set_interaction_priority(False)
     else:
@@ -195,26 +206,34 @@ def test_tape_final_refresh_does_not_require_another_chart_frame(tape, finish):
     assert tape.model.rowCount() == 1
 
 
-def test_hidden_tape_cannot_commit_deferred_visible_model_work(tape):
+def test_hidden_tape_cannot_commit_deferred_visible_model_work(tape, qapp):
     clock = Clock()
     tape.set_presentation_clock(clock)
     tape.set_interaction_priority(True)
     tape.set_order_flow_snapshot(snapshot(1))
     tape._refresh_table()
+    wait_for(qapp, lambda: tape._frame_refresh_pending and tape._pending_tape_frame is not None)
     tape.hide()
     clock.interaction_frame.emit(1.0)
     assert tape.model.rowCount() == 0
     assert not tape._frame_refresh_pending
 
 
-def test_unbound_standalone_tape_preserves_immediate_refresh(tape):
+def test_unbound_standalone_tape_refreshes_without_a_chart_clock(tape, qapp):
     tape.set_interaction_priority(True)
     tape.set_order_flow_snapshot(snapshot(1))
     tape._refresh_table()
+    wait_for(qapp, lambda: tape.model.rowCount() == 1)
     assert tape.model.rowCount() == 1
 
 
 def test_actual_shared_clock_commits_both_panels_before_frame_observers(canvas, tape, qapp):
+    # Wait for the standalone ingestion worker with a controllable clock, then
+    # attach both prepared views to the real shared presentation clock.
+    tape.set_presentation_clock(Clock())
+    tape.set_interaction_priority(True)
+    tape.set_order_flow_snapshot(snapshot(1))
+    wait_for(qapp, lambda: tape._frame_refresh_pending and tape._pending_tape_frame is not None)
     clock = PresentationClock(canvas)
     canvas.set_presentation_clock(clock)
     tape.set_presentation_clock(clock)
@@ -222,14 +241,12 @@ def test_actual_shared_clock_commits_both_panels_before_frame_observers(canvas, 
     tape.set_interaction_priority(True)
     result = raster(canvas)
     canvas._adopt_raster(result)
-    tape.set_order_flow_snapshot(snapshot(1))
-    tape._refresh_table()
     observed = []
     clock.frame.connect(lambda _: observed.append(
         (canvas._display_frame is result, tape.model.rowCount())))
     settle(qapp)
     assert observed == [(True, 1)]
-    assert canvas._process_link.acks == [('test-image', 0)]
+    assert canvas._process_link.acks == [('test-image', 0, 5)]
     clock.cancel()
 
 
@@ -239,7 +256,7 @@ def test_retained_amounts_and_outcomes_do_not_repeat_numeric_formatting(qapp, mo
     model.value_mode = mode
     prints = [replace(print_(sequence), quantity=.0125, notional=.00125)
               for sequence in range(500, 0, -1)]
-    model.set_trades(prints)
+    set_trades(model, prints)
     cells = [row[1] for row in model.rows]
     notifications = []
     model.dataChanged.connect(lambda first, last, *_: notifications.append(
@@ -248,10 +265,10 @@ def test_retained_amounts_and_outcomes_do_not_repeat_numeric_formatting(qapp, mo
     original = ui.format_book_price
     monkeypatch.setattr(ui, 'format_book_price', lambda *args, **kwargs:
                         calls.append(args) or original(*args, **kwargs))
-    model.set_trades(prints)
+    set_trades(model, prints)
     assert calls == [] and notifications == []
     prints[4] = replace(prints[4], outcome='FOLLOW_THROUGH', outcome_direction=1)
-    model.set_trades(prints)
+    set_trades(model, prints)
     assert calls == []
     assert notifications == [(4, 2, 2)]
     assert model.rows[4][1] == (cells[4][0], cells[4][1], '✓', cells[4][3])
@@ -269,10 +286,10 @@ def test_new_precision_reformats_retained_rows_and_survives_tail_removal(
     field = 'quantity' if mode == 'base' else 'notional'
     older = replace(print_(1), **{field: initial_amount})
     newer = replace(print_(2), **{field: new_amount})
-    model.set_trades([older])
-    model.set_trades([newer, older])
+    set_trades(model, [older])
+    set_trades(model, [newer, older])
     assert tuple(row[1][1] for row in model.rows) == expected
-    model.set_trades([older])
+    set_trades(model, [older])
     assert model.rows[0][1][1] == expected[1]
 
 
@@ -281,10 +298,10 @@ def test_retained_amount_correction_updates_precision_and_all_numeric_cells(qapp
     model = ui._TradesTapeModel()
     model.value_mode = mode
     original = print_(1)
-    model.set_trades([original])
+    set_trades(model, [original])
     field = 'quantity' if mode == 'base' else 'notional'
     corrected = replace(original, **{field: .000125})
-    model.set_trades([corrected])
+    set_trades(model, [corrected])
     prefix = '' if mode == 'base' else '$'
     assert model.rows[0][1][1] == prefix + '0.000125'
     assert model.rows[0][0] == corrected
@@ -294,7 +311,7 @@ def test_retained_amount_correction_updates_precision_and_all_numeric_cells(qapp
     old_time = model.rows[0][1][3]
     model.dataChanged.connect(lambda first, last, *_: changes.append(
         (first.column(), last.column())))
-    model.set_trades([corrected])
+    set_trades(model, [corrected])
     assert model.rows[0][1][3] != old_time
     assert changes == [(0, 3)]
     assert model.index(0, 0).data(QtCore.Qt.ItemDataRole.ForegroundRole) == model.sell

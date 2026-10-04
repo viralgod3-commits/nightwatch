@@ -580,14 +580,14 @@ class _TradesTapeModel(QtCore.QAbstractTableModel):
         # Local sequences restart when transport is paused or resynchronized.
         return trade.received_monotonic, trade.sequence
 
-    def _precision(self, entries):
+    def _precision(self, entries, *, force=False):
         mode, precision = self.value_mode, self.amount_decimals[self.value_mode]
         for key, trade in entries:
             amount = trade.quantity if mode == 'base' else trade.notional
             if mode == 'quote' and not 0 < abs(amount) < .01:
                 continue
             row = self._indices.get(key)
-            if row is not None:
+            if row is not None and not force:
                 old = self.rows[row][0]
                 if amount == (old.quantity if mode == 'base' else old.notional):
                     continue
@@ -631,7 +631,9 @@ class _TradesTapeModel(QtCore.QAbstractTableModel):
         retained = len(order) - prefix
         same_tail = order[prefix:] == previous[:retained]
         if same_tail and any(key not in updates for key in order[:prefix]):
-            raise TapeSeedRequired('Tape prepend omitted a new print')
+            # A valid reorder or head removal can move an unchanged resident
+            # row into this prefix. Rebuild from retained rows in that case.
+            same_tail = False
         if seed or reformat or not same_tail:
             trades = [updates[key] if key in updates else self.rows[self._indices[key]][0] for key in order]
             self.beginResetModel()
@@ -1059,6 +1061,10 @@ class TradesTapeWidget(QtWidgets.QWidget):
             self.units_button.setChecked(mode == 'base')
         if mode != self._value_mode:
             self._value_mode = self.model.value_mode = mode
+            # A unit switch can expose amounts that were never measured in
+            # that mode. Inspect retained rows once, even without a new frame.
+            self.model._precision(zip(self.model.keys, (row[0] for row in self.model.rows)),
+                                  force=True)
             self.model.headerDataChanged.emit(Qt.Orientation.Horizontal, 1, 1)
             self._reformat = self._dirty = True
             self._schedule_refresh()

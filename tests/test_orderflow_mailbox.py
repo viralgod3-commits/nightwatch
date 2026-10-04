@@ -84,6 +84,7 @@ def test_paused_gui_coalesces_a_thousand_relay_bursts_to_latest_values(qapp, mon
         "snapshot_ready": burst_count - 1,
         "microstructure_ready": burst_count - 1,
         "diagnostic_ready": burst_count - 1,
+        "tape_ready": 0,
     }
 
     _pump(qapp)
@@ -96,6 +97,7 @@ def test_paused_gui_coalesces_a_thousand_relay_bursts_to_latest_values(qapp, mon
         "snapshot_ready": 1,
         "microstructure_ready": 1,
         "diagnostic_ready": 1,
+        "tape_ready": 0,
         "failed": 0,
     }
     runtime.stop_transport()
