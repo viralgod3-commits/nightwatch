@@ -4,6 +4,7 @@ from __future__ import annotations
 from dataclasses import dataclass, fields
 from multiprocessing.reduction import ForkingPickler
 from operator import attrgetter
+from types import MemberDescriptorType
 from typing import Any
 
 from ..models import (
@@ -64,6 +65,46 @@ _RECORD_NAMES = {
     for model in (OrderFlowDisplayLevel, OrderFlowTradePrint)
 }
 _RECORD_VALUES = {model: attrgetter(*names) for model, names in _RECORD_NAMES.items()}
+
+
+def _wire_constructor(model):
+    """Restore the two hot frozen-slot records without repeated name lookup.
+
+    The schema comes exclusively from our declared dataclasses, never a packet.
+    Bound slot writers bypass the frozen setter exactly as the generated init
+    does. Normal construction remains unchanged. A custom init/post-init or a
+    changed slot layout falls back to the public constructor.
+    """
+    schema = fields(model)
+    init = getattr(model.__init__, '__code__', None)
+    if (type(model) is not type or model.__new__ is not object.__new__
+            or not model.__dataclass_params__.frozen
+            or init is None or init.co_filename != '<string>'
+            or init.co_argcount != len(schema) + 1 or hasattr(model, '__post_init__')
+            or any(not field.init or field.kw_only for field in schema)):
+        return model
+    names = tuple(field.name for field in schema)
+    slots = tuple(vars(model).get(name) for name in names)
+    if not all(isinstance(slot, MemberDescriptorType) for slot in slots):
+        return model
+    name = '_restore_' + model.__name__
+    namespace = {'__name__': __name__, '_model': model, '_new': object.__new__,
+                 '_writers': tuple(slot.__set__ for slot in slots)}
+    arguments = ', '.join(f'_v{index}' for index in range(len(names)))
+    source = (f'def {name}({arguments}):\n'
+              '    record = _new(_model)\n'
+              '    write = _writers\n'
+              + ''.join(f'    write[{index}](record, _v{index})\n' for index in range(len(names)))
+              + '    return record\n')
+    exec(compile(source, '<nightwatch wire constructor>', 'exec'), namespace)
+    constructor = namespace[name]
+    # Multiprocessing pickle resolves module-level functions by this stable
+    # name in both independently imported processes. Arguments stay flat.
+    globals()[name] = constructor
+    return constructor
+
+
+_WIRE_CONSTRUCTORS = {model: _wire_constructor(model) for model in _RECORD_NAMES}
 _SCALAR_VALUES = attrgetter(*_SCALAR_NAMES)
 _FRAME_VALUES = attrgetter(*_FRAME_NAMES)
 _SYMBOL_INDEX = _SCALAR_NAMES.index("symbol")
@@ -114,7 +155,9 @@ class _CollectionSender:
             return False, None
         remaining_values = attrgetter(*(name for index, name in enumerate(names)
                                         if index not in indices))
-        return False, (tuple((index, names[index]) for index in sorted(indices)), remaining_values)
+        candidate_values = attrgetter(*(names[index] for index in sorted(indices)))
+        return False, (sum(1 << index for index in indices), candidate_values,
+                       remaining_values, len(indices) == 1)
 
     def encode(self, records, *, seed):
         if not seed and records is self.source:
@@ -139,18 +182,19 @@ class _CollectionSender:
                     updates.append(record)
                     continue
                 if shape is not None:
-                    candidates, remaining_values = shape
+                    mask, candidate_values, remaining_values, single = shape
                     # The sample is only a hint. Compare every other field in
                     # C before applying it; outliers use the complete scan.
                     if remaining_values(record) == remaining_values(previous):
-                        mask, changed = 0, []
-                        for index, name in candidates:
-                            value = getattr(record, name)
-                            if value != getattr(previous, name):
-                                mask |= 1 << index
-                                changed.append(value)
-                        if mask:
-                            corrections.setdefault(mask, []).append((key, *changed))
+                        current = candidate_values(record)
+                        if current != candidate_values(previous):
+                            # One fixed mask avoids a temporary changed-values
+                            # list and per-field Python lookups for every row.
+                            # An unchanged hinted field can travel with the
+                            # changed ones; its exact value is still preserved.
+                            correction = ((key, current) if single
+                                          else (key, *current))
+                            corrections.setdefault(mask, []).append(correction)
                         continue
                 # Dataclass equality ignores age_seconds and analysis_revision.
                 # Compare the complete fixed schema so every public field survives.
@@ -209,6 +253,7 @@ class _CollectionReceiver:
             del rows[key]
         names = _RECORD_NAMES[self.model]
         values_for = _RECORD_VALUES[self.model]
+        construct = _WIRE_CONSTRUCTORS[self.model]
         updated_keys = set()
         update_count = 0
         for update in patch.updates:
@@ -230,7 +275,7 @@ class _CollectionReceiver:
                     values = list(values_for(rows[key]))
                     for index, value in zip(indices, correction[1:]):
                         values[index] = value
-                    record = self.model(*values)
+                    record = construct(*values)
                     if getattr(record, self.key_name) != key:
                         raise SnapshotSeedRequired("Snapshot correction changed a record identity")
                     updated_keys.add(key)
@@ -382,12 +427,13 @@ def _constructor_reducer(model):
     if any(not field.init or field.kw_only for field in schema):
         raise TypeError(f'{model.__name__} requires a positional IPC constructor')
     values = attrgetter(*(field.name for field in schema))
+    construct = _WIRE_CONSTRUCTORS.get(model, model)
 
     def reduce(record):
         # The C-level getter reads the fixed schema once per record. Restore
-        # through the generated constructor, bypassing dataclasses' repeated
-        # fields() scans and generic frozen-slot __setstate__ loop.
-        return model, values(record)
+        # through a fixed-schema constructor. The hot records use bound slot
+        # writers; all other immutable models retain their generated init.
+        return construct, values(record)
 
     return reduce
 
