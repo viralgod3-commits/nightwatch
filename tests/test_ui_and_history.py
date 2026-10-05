@@ -1,3 +1,4 @@
+from copy import deepcopy
 from types import SimpleNamespace
 
 import pytest
@@ -10,6 +11,7 @@ from nightwatch.leadership import (
     _sector_overview_classify, _sector_overview_closed_window_ready,
     _sector_overview_tail_limit, _sector_overview_map_candles, _prepare_leaders,
     _SectorAnalysis, _SectorOverviewVolumeBars, DETAIL_ROLE, LEADER_COLORS,
+    _prepare_rotation, RotationBubbleChart,
 )
 from nightwatch.trading.trading_ui import TradingWorkspace, AccountDataTable
 
@@ -195,6 +197,175 @@ def test_rotation_does_not_apply_leader_price_columns(qapp):
     widget._refresh_live_prices()  # Separate RS/RVol table schema.
     widget.shutdown()
     widget.deleteLater()
+
+
+def test_rotation_keeps_quiet_and_neutral_coins_from_completed_history(qapp):
+    end = 30 * HOUR
+    symbols = [f'QUIET{i}USDT' for i in range(8)]
+    series = {'BTCUSDT': dict(zip(range(HOUR, end + HOUR, HOUR), candles(30)))}
+    for index, symbol in enumerate(symbols):
+        rows = candles(30)
+        for n, row in enumerate(rows):
+            close = 100 * (1 + index * n * n / 1_000_000)
+            opened = 100 * (1 + index * (n - 1) ** 2 / 1_000_000)
+            rows[n] = Candle(row.time, opened, max(opened, close) + 1,
+                             min(opened, close) - 1, close, 10, 1_000_000)
+        series[symbol] = dict(zip(range(HOUR, end + HOUR, HOUR), rows))
+    prepared = _prepare_rotation(dict(cursor=end, hours=4, symbols=symbols,
+                                     series=series, spot_series={}))
+    assert len(prepared['points']) == len(symbols)
+    assert all(abs(point['x']) < .5 and abs(point['y']) < .2 for point in prepared['points'])
+    original = deepcopy(prepared)
+    widget = RotationScannerWidget({})
+    try:
+        widget.end, widget.symbols = end, symbols
+        widget.candidate_mode.setCurrentIndex(widget.candidate_mode.findData('all'))
+        widget._prepared_analysis = prepared
+        widget._render(prepared)
+        widget.resize(1440, 900)
+        widget.show()
+        qapp.processEvents()
+        widget.bubbles.grab()
+        heads = {point['symbol'] for point, _at, _radius in widget.bubbles._hits
+                 if point['_sample_index'] == 3}
+        assert heads == set(symbols)
+        assert widget.table.rowCount() == len(symbols)
+        neutral = next(group for group in widget.bubbles._geometry
+                       if group['point']['symbol'] == symbols[0])
+        assert neutral['positions'][-1] == widget.bubbles.map_point(0, 0)
+        chosen = QtTest.QSignalSpy(widget.bubbles.chosen)
+        QtTest.QTest.mouseClick(widget.bubbles, Qt.MouseButton.LeftButton,
+                               pos=neutral['positions'][-1].toPoint())
+        assert chosen.count() == 1 and chosen.at(0) == [symbols[0]]
+        assert widget.selected == symbols[0]
+        # Existing page filters still constrain both the table and the map.
+        widget.search.setText(symbols[-1])
+        widget._render_view(prepared)
+        assert [point['symbol'] for point in widget.bubbles.points] == [symbols[-1]]
+        assert widget.table.rowCount() == 1
+        assert prepared == original
+    finally:
+        widget.shutdown()
+        widget.close()
+        widget.deleteLater()
+
+
+def test_rotation_dense_universe_keeps_every_bubble_on_canvas(qapp):
+    points = [dict(symbol=f'COIN{i:03}USDT', x=.02 + i / 10_000, y=.01 + i / 100_000,
+                   trail=[(.01, .01), (.015, .009), (.018, .0095), (.02 + i / 10_000, .01 + i / 100_000)],
+                   volume=100 + i, quadrant='Leading') for i in range(160)]
+    chart = RotationBubbleChart()
+    try:
+        chart.resize(750, 366)
+        chart.set_points(points, selected=points[0]['symbol'])
+        chart.grab()
+        heads = [(point, at) for point, at, _radius in chart._hits if point['_sample_index'] == 3]
+        assert {point['symbol'] for point, _at in heads} == {point['symbol'] for point in points}
+        assert all(chart.plot_rect().contains(at) for _point, at in heads)
+        assert chart.points == points
+        chosen = QtTest.QSignalSpy(chart.chosen)
+        QtTest.QTest.keyClick(chart, Qt.Key.Key_Right)
+        assert chosen.at(0) == [points[1]['symbol']]
+    finally:
+        chart.deleteLater()
+
+
+def test_leader_trading_views_reuse_snapshot_and_preserve_selection(qapp, monkeypatch):
+    widget = LeadershipTimelineWidget({})
+    try:
+        widget.symbols = ['TESTUSDT']
+        prepared = leader_result()
+        prepared['metrics']['TESTUSDT'].update(rs1=1.25, rs4=-2.5, rs24=3.75, delta=.5,
+            rvol=1.8, volume_share=12.5, share_delta=-.25, spot_share=35, spot_delta=.75)
+        original = deepcopy(prepared)
+        widget._render(prepared)
+        items = [widget.table.item(0, column) for column in range(widget.table.columnCount())]
+        monkeypatch.setattr(widget, 'render', lambda: pytest.fail('A view preset must reuse the snapshot'))
+        monkeypatch.setattr(widget, '_request_details', lambda: pytest.fail('A view preset must not request details'))
+        widget.view_selector.setCurrentIndex(widget.view_selector.findData('strength'))
+        assert [widget.table.item(0, column).text() for column in (11, 12, 13, 14)] == [
+            '+1.25%', '-2.50%', '+3.75%', '+0.50 pp']
+        assert all(not widget.table.isColumnHidden(column) for column in (11, 12, 13, 14))
+        assert all(widget.table.isColumnHidden(column) for column in (15, 16, 17, 18, 19))
+        header = widget.table.horizontalHeader()
+        assert [header.logicalIndex(position) for position in range(8)] == [0, 1, 2, 3, 11, 12, 13, 14]
+        widget.view_selector.setCurrentIndex(widget.view_selector.findData('participation'))
+        assert [widget.table.item(0, column).text() for column in (15, 16, 17, 18, 19)] == [
+            '1.80×', '12.50%', '-0.25 pp', '35.00%', '+0.75 pp']
+        assert all(not widget.table.isColumnHidden(column) for column in (15, 16, 17, 18, 19))
+        assert widget.table.isColumnHidden(11)
+        assert widget.table.item(0, 12).data(DETAIL_ROLE)['foreground'] == widget.theme['red']
+        assert widget.selected == 'TESTUSDT'
+        assert all(widget.table.item(0, column) is item for column, item in enumerate(items))
+        assert prepared == original
+    finally:
+        widget.shutdown()
+        widget.deleteLater()
+
+
+def test_leader_context_uses_selected_cache_and_expires_live_spread(qapp, monkeypatch):
+    widget = LeadershipTimelineWidget({})
+    clock = [1000.0]
+    monkeypatch.setattr('nightwatch.leadership.time.monotonic', lambda: clock[0])
+    try:
+        end = 24 * HOUR
+        widget.end, widget.symbols = end, ['TESTUSDT']
+        widget._render(leader_result())
+        widget.details[('TESTUSDT', end, True)] = dict(at=1000, book_at=1000,
+            oi=[{'timestamp': end - HOUR, 'sumOpenInterest': '100'},
+                {'timestamp': end, 'sumOpenInterest': '110'}],
+            funding=[{'fundingTime': end - 4 * HOUR, 'fundingRate': '.00005'},
+                     {'fundingTime': end, 'fundingRate': '.00005'}],
+            book={'bids': [['99.99', '100']], 'asks': [['100.01', '100']]})
+        monkeypatch.setattr(widget, '_request_details', lambda: pytest.fail('Opening context must reuse the cache'))
+        widget.resize(1440, 900)
+        widget.show()
+        qapp.processEvents()
+        before = widget.main_content.geometry()
+        widget.context_button.click()
+        qapp.processEvents()
+        assert widget.main_content.geometry() == before
+        assert widget.trade_values['funding'].text() == '+0.010%'
+        assert widget.trade_values['oi'].text() == '+10.00%'
+        assert widget.trade_values['spread'].text() == '0.020%'
+        assert widget.trade_values['rs1'].text() == '—'
+        assert widget.context_expiry_timer.isActive()
+        clock[0] += 91
+        widget.context_expiry_timer.timeout.emit()
+        assert widget.trade_values['spread'].text() == '—'
+        assert not widget.context_expiry_timer.isActive()
+        widget.metrics['OTHERUSDT'] = dict(price=20)
+        widget.select_symbol('OTHERUSDT')
+        assert widget.context_symbol.text() == 'OTHER'
+        assert all(widget.trade_values[key].text() == '—' for key in ('funding', 'oi', 'spread'))
+    finally:
+        widget.shutdown()
+        widget.close()
+        widget.deleteLater()
+
+
+@pytest.mark.parametrize('view,custom', [('strength', False), ('participation', False), ('participation', True)])
+def test_leader_trading_view_and_custom_columns_survive_restart(qapp, tmp_path, view, custom):
+    settings = QtCore.QSettings(str(tmp_path / 'leaders.ini'), QtCore.QSettings.Format.IniFormat)
+    widget, restored = LeadershipTimelineWidget({}), LeadershipTimelineWidget({})
+    try:
+        widget.view_selector.setCurrentIndex(widget.view_selector.findData(view))
+        if custom:
+            widget.column_actions[11].setChecked(True)
+        widget.context_button.setChecked(True)
+        widget.save_ui_state(settings)
+        restored.restore_ui_state(settings)
+        assert restored.view_selector.currentData() == ('custom' if custom else view)
+        assert restored.context_button.isChecked()
+        assert [restored.table.isColumnHidden(column) for column in range(20)] == [
+            widget.table.isColumnHidden(column) for column in range(20)]
+        assert [restored.table.horizontalHeader().logicalIndex(position) for position in range(20)] == [
+            widget.table.horizontalHeader().logicalIndex(position) for position in range(20)]
+    finally:
+        widget.shutdown()
+        restored.shutdown()
+        widget.deleteLater()
+        restored.deleteLater()
 
 
 @pytest.mark.parametrize('workspace', [LeadershipTimelineWidget, SectorOverviewWidget, RotationScannerWidget])

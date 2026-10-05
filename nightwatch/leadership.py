@@ -43,19 +43,19 @@ log = logging.getLogger(__name__)
 
 LEADERS_PALETTE: dict[str, str] = {
     "bg": "#000000",
-    "panel": "#080B10",
-    "panel2": "#0D1118",
-    "grid": "#1C222C",
-    "border": "#232A35",
-    "separator": "#1A202A",
-    "control": "#10151D",
-    "control_hover": "#19212D",
-    "control_border": "#303A49",
-    "header": "#0D1118",
-    "active": "#281B2E",
+    "panel": "#000000",
+    "panel2": "#000000",
+    "grid": "#1C1C20",
+    "border": "#262629",
+    "separator": "#1F1F22",
+    "control": "#000000",
+    "control_hover": "#000000",
+    "control_border": "#3A3A3F",
+    "header": "#000000",
+    "active": "#000000",
     "active_line": "#E070D8",
-    "text": "#E8EDF5",
-    "muted": "#97A3B5",
+    "text": "#EDEDED",
+    "muted": "#8E8E96",
     "green": "#22D27A",
     "red": "#FF4757",
     "cyan": "#E070D8",
@@ -490,7 +490,7 @@ class LeadershipTimelineWidget(QtWidgets.QWidget):
         pixmap.fill(Qt.GlobalColor.transparent)
         painter = QtGui.QPainter(pixmap)
         painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing)
-        painter.setPen(QtGui.QPen(QtGui.QColor("#9AA4B4"), 1.8))
+        painter.setPen(QtGui.QPen(QtGui.QColor("#8E8E96"), 1.8))
         painter.drawLine(3, 26, 27, 26)
         for x, top in ((5, 16), (13, 5), (21, 11)):
             painter.drawRect(x, top, 4, 26 - top)
@@ -534,17 +534,17 @@ class LeadershipTimelineWidget(QtWidgets.QWidget):
             clip = QtGui.QPainterPath()
             clip.addEllipse(rect)
             painter.setClipPath(clip, Qt.ClipOperation.IntersectClip)
-            painter.fillRect(rect, QtGui.QColor(self.theme.get("panel2", self.theme.get("panel", "#12151B"))))
+            painter.fillRect(rect, QtGui.QColor(self.theme.get("panel2", self.theme.get("panel", "#000000"))))
             painter.drawPixmap(rect, pixmap, QtCore.QRectF(pixmap.rect()))
         else:
             painter.setPen(QtGui.QPen(QtGui.QColor(self.theme.get("control_border", self.theme.get("border", "#303030"))), 1))
-            painter.setBrush(QtGui.QColor(self.theme.get("panel2", self.theme.get("panel", "#181C24"))))
+            painter.setBrush(QtGui.QColor(self.theme.get("panel2", self.theme.get("panel", "#000000"))))
             painter.drawEllipse(rect.adjusted(1, 1, -1, -1))
             apply_text_render_hints(painter)
             font = typography_font(TextRole.INSTRUMENT_SYMBOL, emphasized=True)
             font.setPixelSize(max(10, int(rect.width() / 3)))
             painter.setFont(font)
-            painter.setPen(QtGui.QColor(self.theme.get("text", "#DFE5EE")))
+            painter.setPen(QtGui.QColor(self.theme.get("text", "#EDEDED")))
             painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, base[:2] or "·")
         painter.restore()
 
@@ -670,6 +670,10 @@ class LeadershipTimelineWidget(QtWidgets.QWidget):
                 text = _price(value)
                 if price_item.text() != text:
                     price_item.setText(text)
+        if hasattr(self, "context_price"):
+            price = safe_float(self.tickers.get(self.selected, {}).get("c"))
+            if price > 0 and self.context_price.text() != _price(price):
+                self.context_price.setText(_price(price))
 
     def update_tickers(self, updates: list[dict[str, Any]]) -> None:
         for ticker in updates:
@@ -738,6 +742,8 @@ class LeadershipTimelineWidget(QtWidgets.QWidget):
         self.play_timer.stop()
         self.cancel.set()
         self.detail_cancel.set()
+        if hasattr(self, "context_expiry_timer"):
+            self.context_expiry_timer.stop()
         self._save_cached_state()
 
     def _filters_changed(self) -> None:
@@ -981,7 +987,7 @@ class LeadershipTimelineWidget(QtWidgets.QWidget):
                                + (_stamp(end, True) if self.end else "Waiting for history") + "\nClick to return to the latest completed hour.")
         self.replay.setToolTip(_stamp(end, True) if self.end else "Waiting for history")
 
-        headers = ["#", "Symbol", "Name", "Price", "1H %", "4H %", "24H %", "RS Score", "State", "Sector", "24H Trend"]
+        headers = _LEADER_HEADERS
         blocker = QtCore.QSignalBlocker(self.table)
         scroll = self.table.verticalScrollBar().value()
         self.table.setUpdatesEnabled(False)
@@ -994,9 +1000,9 @@ class LeadershipTimelineWidget(QtWidgets.QWidget):
                 header.setMinimumSectionSize(42)
                 fixed_widths = {0: 34, 1: 108, 3: 92, 4: 70, 5: 70, 6: 74, 7: 76, 8: 100}
                 for column in range(len(headers)):
-                    if column in fixed_widths:
+                    if column in fixed_widths or column >= 11:
                         header.setSectionResizeMode(column, QtWidgets.QHeaderView.ResizeMode.Fixed)
-                        self.table.setColumnWidth(column, fixed_widths[column])
+                        self.table.setColumnWidth(column, fixed_widths.get(column, 116 if column in (14, 15) else 98))
                     else:
                         header.setSectionResizeMode(column, QtWidgets.QHeaderView.ResizeMode.Stretch)
                 self._leader_headers_configured = True
@@ -1065,6 +1071,8 @@ class LeadershipTimelineWidget(QtWidgets.QWidget):
                     category,
                     "",
                 ]
+                values.extend(_leader_context_text(metrics.get(key), unit)
+                              for _caption, key, unit, _tooltip in _LEADER_CONTEXT_COLUMNS.values())
                 for column, value in enumerate(values):
                     item = self.table.item(row_index, column)
                     if item is None:
@@ -1090,7 +1098,7 @@ class LeadershipTimelineWidget(QtWidgets.QWidget):
                         if score is not None:
                             strength = max(0.0, min(1.0, score / 100.0))
                             detail["background"] = _blend_hex(
-                                self.theme.get("panel2", self.theme.get("panel", "#181C24")),
+                                self.theme.get("panel2", self.theme.get("panel", "#000000")),
                                 state_color,
                                 0.10 + 0.24 * strength,
                             )
@@ -1101,14 +1109,24 @@ class LeadershipTimelineWidget(QtWidgets.QWidget):
                     elif column == 10:
                         valid_spark = [value for value in spark if value is not None and math.isfinite(value)]
                         rising = len(valid_spark) >= 2 and valid_spark[-1] >= valid_spark[0]
-                        detail.update(role="spark", spark=spark, foreground=self.theme.get("green", "#4DDFA4") if rising else self.theme.get("red", "#FF7A85"))
+                        detail.update(role="spark", spark=spark, foreground=self.theme.get("green", "#22D27A") if rising else self.theme.get("red", "#FF7A85"))
                         item.setToolTip("Last 24 completed hourly closes. Gaps remain gaps.")
+                    elif column in _LEADER_CONTEXT_COLUMNS:
+                        _caption, key, unit, tooltip = _LEADER_CONTEXT_COLUMNS[column]
+                        amount = metrics.get(key)
+                        detail.update(numeric=True, align="right")
+                        if unit in ("percent", "pp"):
+                            background, foreground = _heat_color(amount, self.theme)
+                            detail.update(background=background, foreground=foreground)
+                        elif unit == "ratio" and amount is not None and amount >= 1.3:
+                            detail["foreground"] = self.theme["green"]
+                        item.setToolTip(tooltip)
                     else:
                         detail["numeric"] = column in (0, 3)
-                    if column not in (7, 10):
+                    if column not in (7, 10) and column not in _LEADER_CONTEXT_COLUMNS:
                         item.setToolTip(f"{symbol} · {name} · {category}\nDouble-click to open chart\n4H vs BTC: {_pct(metrics.get('rs4'))} · 24H vs BTC: {_pct(metrics.get('rs24'))}")
                     item.setData(DETAIL_ROLE, detail)
-                    item.setForeground(QtGui.QColor(detail.get("foreground", self.theme.get("text", "#DFE5EE"))))
+                    item.setForeground(QtGui.QColor(detail.get("foreground", self.theme.get("text", "#EDEDED"))))
 
             if list(positions) != ordered:
                 self.table.sortItems(0, Qt.SortOrder.AscendingOrder)
@@ -1246,9 +1264,9 @@ class LeadershipTimelineWidget(QtWidgets.QWidget):
         if name in self.fact_marks:
             mark = self.fact_marks[name]
             mark.setText("✓" if passed else "")
-            mark.setStyleSheet("QLabel { border: 1.5px solid " + ("#4DDFA4" if passed else "#9AA4B4")
-                              + "; border-radius: 8px; background: " + ("#4DDFA4" if passed else "transparent")
-                              + "; color: #0B0D11; }")
+            mark.setStyleSheet("QLabel { border: 1.5px solid " + ("#22D27A" if passed else "#8E8E96")
+                              + "; border-radius: 8px; background: " + ("#22D27A" if passed else "transparent")
+                              + "; color: #000000; }")
             mark.setToolTip(tooltip or text)
             mark.setAccessibleName(text)
 
@@ -1339,6 +1357,7 @@ class LeadershipTimelineWidget(QtWidgets.QWidget):
         self.confirmation.setToolTip(self.confirmation.toolTip() + "\n" + self.facts["oi"].text())
         self.confirmation.spark.setToolTip("\n\n".join(self.facts[key].text() + "\n" + self.facts[key].toolTip()
                                                        for key in ("volume", "oi", "range", "spot", "funding", "liquidity")))
+        _render_leader_context(self)
 
     def apply_theme(self, _theme: dict[str, str]) -> None:
         self._apply_fixed_palette()
@@ -1378,8 +1397,20 @@ class LeadershipTimelineWidget(QtWidgets.QWidget):
         if self.category_filter.findText(category) < 0:
             self.category_filter.addItem(category)
         self.category_filter.setCurrentText(category)
+        blocker = QtCore.QSignalBlocker(self.view_selector)
+        view = settings.value("markets/leadership/view", "overview", str)
+        self.view_selector.setCurrentIndex(max(0, self.view_selector.findData(view)))
+        del blocker
+        _apply_leader_view(self)
         for column, action in self.column_actions.items():
-            action.setChecked(settings.value(f"markets/leadership/column_{column}", True, bool))
+            action.setChecked(settings.value(f"markets/leadership/column_{column}", action.isChecked(), bool))
+        saved_order = settings.value("markets/leadership/column_order", "", str)
+        order = [int(value) for value in saved_order.split(",") if value.isdecimal()]
+        if self.view_selector.currentData() == "custom" and sorted(order) == list(range(self.table.columnCount())):
+            header = self.table.horizontalHeader()
+            for position, column in enumerate(order):
+                header.moveSection(header.visualIndex(column), position)
+        _workspace_restore_chrome(self, settings, "leadership")
 
     def save_ui_state(self, settings: QtCore.QSettings) -> None:
         settings.setValue("markets/leadership/sort_descending", self.sort_descending)
@@ -1387,11 +1418,15 @@ class LeadershipTimelineWidget(QtWidgets.QWidget):
             settings.setValue(f"markets/leadership/{name}", widget.currentData())
         for name, value in (("selected", self.selected), ("search", self.search.text()),
                             ("state", self.state_filter),
-                            ("category", self.category_filter_value)):
+                            ("category", self.category_filter_value), ("view", self.view_selector.currentData())):
             settings.setValue(f"markets/leadership/{name}", value)
         for column, action in self.column_actions.items():
             settings.setValue(f"markets/leadership/column_{column}", action.isChecked())
+        header = self.table.horizontalHeader()
+        settings.setValue("markets/leadership/column_order", ",".join(str(header.logicalIndex(position))
+                          for position in range(header.count())))
         settings.remove("markets/leadership/replay")
+        _workspace_save_chrome(self, settings, "leadership")
 
 def _pct(value: float | None, digits: int = 2) -> str:
     return "-" if value is None or not math.isfinite(value) else f"{value:+.{digits}f}%"
@@ -1401,7 +1436,7 @@ class LeadershipSparkline(QtWidgets.QWidget):
     def __init__(self, parent: QtWidgets.QWidget | None = None):
         super().__init__(parent)
         self.values: list[float | None] = []
-        self.color = QtGui.QColor("#8AA9FF")
+        self.color = QtGui.QColor("#E070D8")
         self.setMinimumSize(70, 24)
         self.setSizePolicy(QtWidgets.QSizePolicy.Policy.Maximum, QtWidgets.QSizePolicy.Policy.Fixed)
         self.setFixedHeight(36)
@@ -1458,11 +1493,11 @@ class LeadershipSparkline(QtWidgets.QWidget):
 
 LEADER_COLORS = {
     "Leading": "#22D27A",
-    "Improving": "#54CFFF",
+    "Improving": "#E070D8",
     "Cooling": "#E8A64A",
     "Lagging": "#FF4757",
     "Flat": "#8E8E96",
-    "Waiting": "#697587",
+    "Waiting": "#8E8E96",
 }
 
 
@@ -1472,9 +1507,9 @@ def _blend_hex(background: str, foreground: str, amount: float) -> str:
     base = QtGui.QColor(background)
     accent = QtGui.QColor(foreground)
     if not base.isValid():
-        base = QtGui.QColor("#12151B")
+        base = QtGui.QColor("#000000")
     if not accent.isValid():
-        accent = QtGui.QColor("#9AA4B4")
+        accent = QtGui.QColor("#8E8E96")
     return QtGui.QColor(
         round(base.red() + (accent.red() - base.red()) * amount),
         round(base.green() + (accent.green() - base.green()) * amount),
@@ -1485,12 +1520,12 @@ def _blend_hex(background: str, foreground: str, amount: float) -> str:
 def _leader_color(state: str, theme: dict[str, str]) -> str:
     return {
         "Leading": theme.get("green", LEADER_COLORS["Leading"]),
-        "Improving": LEADER_COLORS["Improving"],
+        "Improving": theme.get("cyan", LEADER_COLORS["Improving"]),
         "Cooling": theme.get("amber", LEADER_COLORS["Cooling"]),
         "Lagging": theme.get("red", LEADER_COLORS["Lagging"]),
         "Flat": theme.get("muted", LEADER_COLORS["Flat"]),
         "Waiting": LEADER_COLORS["Waiting"],
-    }.get(str(state), theme.get("muted", "#9AA4B4"))
+    }.get(str(state), theme.get("muted", "#8E8E96"))
 
 
 DETAIL_ROLE = int(Qt.ItemDataRole.UserRole) + 1
@@ -1513,8 +1548,8 @@ def _heat_color(value: float | None, theme: dict[str, str]) -> tuple[str, str]:
     strength carries magnitude: green = positive, red = negative, neutral =
     effectively unchanged at the table's one-decimal display precision.
     """
-    base = theme.get("panel2", theme.get("panel", "#12151B"))
-    muted = theme.get("muted", "#9AA4B4")
+    base = theme.get("panel2", theme.get("panel", "#000000"))
+    muted = theme.get("muted", "#8E8E96")
     if value is None:
         return base, muted
     value = float(value)
@@ -1523,9 +1558,9 @@ def _heat_color(value: float | None, theme: dict[str, str]) -> tuple[str, str]:
 
 
     if abs(value) < 0.05:
-        return _blend_hex(base, theme.get("text", "#DFE5EE"), 0.04), muted
+        return _blend_hex(base, theme.get("text", "#EDEDED"), 0.04), muted
     accent = (
-        theme.get("green", "#4DDFA4")
+        theme.get("green", "#22D27A")
         if value > 0.0
         else theme.get("red", "#FF7A85")
     )
@@ -1547,28 +1582,28 @@ class LeadershipCellDelegate(QtWidgets.QStyledItemDelegate):
         apply_text_render_hints(painter)
         rect = option.rect
         data = index.data(DETAIL_ROLE) or {}
-        background = data.get("background", self.owner.theme.get("panel", "#12151B"))
+        background = data.get("background", self.owner.theme.get("panel", "#000000"))
         if option.state & QtWidgets.QStyle.StateFlag.State_Selected:
-            background = self.owner.theme.get("active", "#1E2B3E")
+            background = self.owner.theme.get("active", "#000000")
         painter.fillRect(rect, QtGui.QColor(background))
-        painter.setPen(QtGui.QColor(self.owner.theme.get("separator", self.owner.theme.get("border", "#232833"))))
+        painter.setPen(QtGui.QColor(self.owner.theme.get("separator", self.owner.theme.get("border", "#262629"))))
         painter.drawLine(rect.bottomLeft(), rect.bottomRight())
 
         role = data.get("role", "text")
         symbol = str(index.data(Qt.ItemDataRole.UserRole) or "")
         if role == "symbol":
-            painter.fillRect(rect.left(), rect.top() + 6, 3, rect.height() - 12, QtGui.QColor(data.get("state_color", "#697587")))
+            painter.fillRect(rect.left(), rect.top() + 6, 3, rect.height() - 12, QtGui.QColor(data.get("state_color", "#8E8E96")))
             icon_size = min(24, max(18, rect.height() - 12))
             icon_rect = QtCore.QRectF(rect.left() + 8, rect.center().y() - icon_size / 2, icon_size, icon_size)
             self.owner.paint_coin(painter, icon_rect, symbol)
             font = typography_font(TextRole.INSTRUMENT_SYMBOL, emphasized=True)
             painter.setFont(font)
-            painter.setPen(QtGui.QColor(self.owner.theme.get("text", "#DFE5EE")))
+            painter.setPen(QtGui.QColor(self.owner.theme.get("text", "#EDEDED")))
             painter.drawText(rect.adjusted(icon_size + 17, 0, -6, 0), Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
                              symbol.removesuffix("USDT"))
         elif role == "state":
             state = str(index.data() or "Waiting")
-            color = QtGui.QColor(data.get("foreground", LEADER_COLORS.get(state, "#9AA4B4")))
+            color = QtGui.QColor(data.get("foreground", LEADER_COLORS.get(state, "#8E8E96")))
             fill = QtGui.QColor(color)
             fill.setAlpha(30)
             state_font = typography_font(TextRole.UI_LABEL)
@@ -1588,7 +1623,7 @@ class LeadershipCellDelegate(QtWidgets.QStyledItemDelegate):
                 low, high = min(valid), max(valid)
                 span = high - low or max(abs(high), 1.0) * 0.02 or 1.0
                 chart = rect.adjusted(8, 10, -8, -10)
-                color = QtGui.QColor(data.get("foreground", "#4DDFA4"))
+                color = QtGui.QColor(data.get("foreground", "#22D27A"))
                 path = QtGui.QPainterPath()
                 connected = False
                 for i, value in enumerate(values):
@@ -1609,14 +1644,14 @@ class LeadershipCellDelegate(QtWidgets.QStyledItemDelegate):
             numeric = bool(data.get("numeric"))
             font = typography_font(TextRole.TABLE_VALUE if numeric else TextRole.UI_BODY)
             painter.setFont(font)
-            painter.setPen(QtGui.QColor(data.get("foreground", self.owner.theme.get("text", "#DFE5EE"))))
+            painter.setPen(QtGui.QColor(data.get("foreground", self.owner.theme.get("text", "#EDEDED"))))
             alignment = Qt.AlignmentFlag.AlignVCenter | (Qt.AlignmentFlag.AlignLeft if data.get("align") == "left" else Qt.AlignmentFlag.AlignRight if data.get("align") == "right" else Qt.AlignmentFlag.AlignHCenter)
             text = str(index.data() or "")
             text = QtGui.QFontMetrics(font).elidedText(text, Qt.TextElideMode.ElideRight, max(0, rect.width() - 12))
             painter.drawText(rect.adjusted(6, 0, -6, 0), alignment, text)
 
         if option.state & QtWidgets.QStyle.StateFlag.State_Selected:
-            painter.setPen(QtGui.QPen(QtGui.QColor(self.owner.theme.get("active_line", "#8AA9FF")), 1))
+            painter.setPen(QtGui.QPen(QtGui.QColor(self.owner.theme.get("active_line", "#E070D8")), 1))
             painter.drawLine(rect.topLeft(), rect.topRight())
             painter.drawLine(rect.bottomLeft(), rect.bottomRight())
         painter.restore()
@@ -1649,7 +1684,7 @@ class LeadershipTransport(QtWidgets.QPushButton):
         super().paintEvent(event)
         painter = QtGui.QPainter(self)
         painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing)
-        ink = QtGui.QColor(self.theme.get("muted", self.theme.get("text", "#9AA4B4")))
+        ink = QtGui.QColor(self.theme.get("muted", self.theme.get("text", "#8E8E96")))
         if self.isChecked():
             ink = QtGui.QColor(self.theme.get("text", ink.name()))
         painter.setPen(QtGui.QPen(ink, 1.2))
@@ -1758,17 +1793,17 @@ class LeadersPairCard(QtWidgets.QFrame):
         change_text = _pct(change, 1)
         if self.change.text() != change_text:
             self.change.setText(change_text)
-        change_style = "color: " + ("#FF7A85" if change is not None and change < 0 else "#4DDFA4") + ";"
+        change_style = "color: " + ("#FF7A85" if change is not None and change < 0 else "#22D27A") + ";"
         if self.change.styleSheet() != change_style:
             self.change.setStyleSheet(change_style)
         if self.confirmation:
             state = metrics.get("state", "Waiting")
             if self.state.text() != state:
                 self.state.setText(state)
-            state_style = f"color: {LEADER_COLORS.get(state, '#9AA4B4')};"
+            state_style = f"color: {LEADER_COLORS.get(state, '#8E8E96')};"
             if self.state.styleSheet() != state_style:
                 self.state.setStyleSheet(state_style)
-            self.spark.set_values(self.owner.price_path(symbol), "#4DDFA4" if (metrics.get("usd24") or 0) >= 0 else "#FF7A85")
+            self.spark.set_values(self.owner.price_path(symbol), "#22D27A" if (metrics.get("usd24") or 0) >= 0 else "#FF7A85")
             for key, label in self.metric_labels.items():
                 value = metrics.get(key)
                 label.setText("-" if value is None else _pct(value) if key == "rs4" else f"{value:.1f}%" if key == "volume_share" else f"{value:.2f}x")
@@ -1807,7 +1842,7 @@ class DistributionBar(QtWidgets.QWidget):
         painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing)
         rect = QtCore.QRectF(self.rect()).adjusted(0.5, 3.5, -0.5, -3.5)
         painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(QtGui.QColor(self.theme.get("panel2", self.theme.get("control", "#181C24"))))
+        painter.setBrush(QtGui.QColor(self.theme.get("panel2", self.theme.get("control", "#000000"))))
         painter.drawRoundedRect(rect, 5, 5)
         total = sum(max(0, int(v)) for v in self.counts.values())
         if total <= 0:
@@ -1848,7 +1883,7 @@ class SectorBars(QtWidgets.QWidget):
         painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing)
         apply_text_render_hints(painter)
         if not self.values:
-            painter.setPen(QtGui.QColor(self.theme.get("muted", "#9AA4B4")))
+            painter.setPen(QtGui.QColor(self.theme.get("muted", "#8E8E96")))
             painter.setFont(typography_font(TextRole.UI_BODY))
             painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, "Waiting for sector data")
             return
@@ -1862,7 +1897,7 @@ class SectorBars(QtWidgets.QWidget):
             x = rect.left() + i * (width + gap)
             bar_h = max(3.0, top_area * min(1.0, abs(value) / max_abs))
             y = rect.top() + top_area - bar_h
-            color = QtGui.QColor(self.theme.get("green", "#4DDFA4") if value >= 0 else self.theme.get("red", "#FF7A85"))
+            color = QtGui.QColor(self.theme.get("green", "#22D27A") if value >= 0 else self.theme.get("red", "#FF7A85"))
             gradient = QtGui.QLinearGradient(x, y, x, y + bar_h)
             top = QtGui.QColor(color); top.setAlpha(230)
             bottom = QtGui.QColor(color); bottom.setAlpha(75)
@@ -1878,7 +1913,7 @@ class SectorBars(QtWidgets.QWidget):
                 self,
                 QtCore.QRectF(x - 3, rect.top() + top_area + 15, width + 6, 12),
             )
-            painter.setPen(QtGui.QColor(self.theme.get("muted", "#9AA4B4")))
+            painter.setPen(QtGui.QColor(self.theme.get("muted", "#8E8E96")))
             painter.setFont(typography_font(TextRole.UI_LABEL))
             painter.drawText(name_rect, Qt.AlignmentFlag.AlignCenter, name[:8])
             painter.setPen(color)
@@ -2257,7 +2292,63 @@ def _refresh_leaders_view(owner):
         owner._rendering = False
 
 
-_HEADER_SORT = {1: "pair", 2: "name", 3: "price", 4: "usd1", 5: "usd4", 6: "usd24", 7: "score", 8: "state", 9: "sector"}
+_LEADER_BASE_HEADERS = ("#", "Symbol", "Name", "Price", "1H %", "4H %", "24H %",
+                        "RS Score", "State", "Sector", "24H Trend")
+_LEADER_CONTEXT_COLUMNS = {
+    11: ("1H vs BTC", "rs1", "percent", "Completed 1H return relative to BTC."),
+    12: ("4H vs BTC", "rs4", "percent", "Completed 4H return relative to BTC."),
+    13: ("24H vs BTC", "rs24", "percent", "Completed 24H return relative to BTC."),
+    14: ("RS Δ 2H", "delta", "pp", "BTC-relative return over the latest 2H minus the preceding 2H, in percentage points."),
+    15: ("Relative volume", "rvol", "ratio", "Completed 1H turnover / median of the preceding 24 completed hours."),
+    16: ("4H vol. share", "volume_share", "share", "Share of the same covered perpetual cohort's completed 4H turnover."),
+    17: ("Share Δ", "share_delta", "pp", "4H perpetual volume share change against the preceding 4H, in percentage points."),
+    18: ("Spot share", "spot_share", "share", "Spot / (spot + perpetual) turnover over 4H."),
+    19: ("Spot Δ", "spot_delta", "pp", "Spot participation change against the preceding 4H, in percentage points."),
+}
+_LEADER_HEADERS = (*_LEADER_BASE_HEADERS, *(item[0] for item in _LEADER_CONTEXT_COLUMNS.values()))
+_LEADER_VIEWS = {
+    "overview": tuple(range(11)),
+    "strength": (0, 1, 2, 3, 11, 12, 13, 14, 7, 8, 10),
+    "participation": (0, 1, 2, 3, 5, 15, 16, 17, 18, 19, 8, 9),
+}
+_HEADER_SORT = {1: "pair", 2: "name", 3: "price", 4: "usd1", 5: "usd4", 6: "usd24", 7: "score", 8: "state", 9: "sector",
+                **{column: item[1] for column, item in _LEADER_CONTEXT_COLUMNS.items()}}
+
+
+def _leader_context_text(value, unit, digits=2):
+    if not isinstance(value, (int, float)) or not math.isfinite(value):
+        return "—"
+    if unit == "percent":
+        return _pct(value, digits)
+    if unit == "pp":
+        return f"{value:+.{digits}f} pp"
+    if unit == "ratio":
+        return f"{value:.2f}×"
+    return f"{value:.{digits}f}%"
+
+
+def _leader_column_changed(owner, column, checked):
+    owner.table.setColumnHidden(column, not checked)
+    blocker = QtCore.QSignalBlocker(owner.view_selector)
+    owner.view_selector.setCurrentIndex(owner.view_selector.findData("custom"))
+    del blocker
+
+
+def _apply_leader_view(owner):
+    columns = _LEADER_VIEWS.get(owner.view_selector.currentData())
+    if columns is None:
+        return
+    for column, action in owner.column_actions.items():
+        visible = column in columns
+        blocker = QtCore.QSignalBlocker(action)
+        action.setChecked(visible)
+        owner.table.setColumnHidden(column, not visible)
+        del blocker
+    # Keep price, strength and participation fields together in each preset.
+    header = owner.table.horizontalHeader()
+    order = (*columns, *(column for column in range(header.count()) if column not in columns))
+    for position, column in enumerate(order):
+        header.moveSection(header.visualIndex(column), position)
 
 def _sort_changed(owner):
     owner.sort_descending = owner.sort.currentData() not in ("pair", "name", "sector")
@@ -2298,14 +2389,110 @@ def _table_selection(owner):
 def _build_columns_menu(owner) -> None:
     menu = QtWidgets.QMenu(owner.columns_button)
     owner.column_actions = {}
-    for column, label in ((4, "1H %"), (5, "4H %"), (6, "24H %"), (7, "RS Score"), (9, "Sector"), (10, "24H Trend")):
+    for column, label in enumerate(_LEADER_HEADERS[2:], 2):
+        if column == 11:
+            menu.addSeparator()
         action = menu.addAction(label)
         action.setCheckable(True)
-        action.setChecked(True)
-        action.toggled.connect(lambda checked, col=column: owner.table.setColumnHidden(col, not checked))
+        action.setChecked(column < 11)
+        owner.table.setColumnHidden(column, column >= 11)
+        action.toggled.connect(lambda checked, col=column: _leader_column_changed(owner, col, checked))
         owner.column_actions[column] = action
     owner.columns_button.setMenu(menu)
     owner.columns_button.setPopupMode(QtWidgets.QToolButton.ToolButtonPopupMode.InstantPopup)
+
+
+def _build_leader_context(owner):
+    panel = QtWidgets.QFrame()
+    panel.setProperty("workspacePanel", True)
+    layout = QtWidgets.QVBoxLayout(panel)
+    layout.setContentsMargins(14, 14, 14, 14)
+    layout.setSpacing(12)
+    instrument = QtWidgets.QHBoxLayout()
+    owner.context_symbol = QtWidgets.QLabel("Select a coin")
+    set_text_role(owner.context_symbol, TextRole.INSTRUMENT_SYMBOL)
+    owner.context_state = QtWidgets.QLabel()
+    set_text_role(owner.context_state, TextRole.UI_LABEL)
+    instrument.addWidget(owner.context_symbol, 1)
+    instrument.addWidget(owner.context_state)
+    layout.addLayout(instrument)
+    owner.context_price = QtWidgets.QLabel("—")
+    set_text_role(owner.context_price, TextRole.MARKET_VALUE_LARGE)
+    layout.addWidget(owner.context_price)
+    owner.trade_values = {}
+    for caption, key, tooltip in (
+        ("1H vs BTC", "rs1", "Completed 1H return relative to BTC."),
+        ("4H vs BTC", "rs4", "Completed 4H return relative to BTC."),
+        ("24H vs BTC", "rs24", "Completed 24H return relative to BTC."),
+        ("RS acceleration", "delta", "Latest 2H BTC-relative return minus the preceding 2H, in percentage points."),
+        ("Relative volume", "rvol", "Completed 1H turnover / median of the preceding 24 completed hours."),
+        ("4H volume share", "volume_share", "Share of the same covered perpetual cohort's completed 4H turnover."),
+        ("Volume share Δ", "share_delta", "Change against the preceding 4H, in percentage points."),
+        ("Spot share", "spot_share", "Spot / (spot + perpetual) 4H turnover."),
+        ("Spot share Δ", "spot_delta", "Change against the preceding 4H, in percentage points."),
+        ("Funding / 8H", "funding", "Latest settled funding normalized to 8H. Uses existing detail history."),
+        ("OI / 1H", "oi", "Change in open-interest quantity over consecutive hourly observations."),
+        ("Live spread", "spread", "Observed best bid/ask spread. Expires after 90 seconds; never substituted for historical data."),
+        ("To 4H high", "high_distance", "Distance below the preceding four-hour high. Negative values indicate a breakout."),
+    ):
+        row = QtWidgets.QHBoxLayout()
+        label = QtWidgets.QLabel(caption)
+        label.setProperty("workspaceMuted", True)
+        set_text_role(label, TextRole.UI_LABEL)
+        value = QtWidgets.QLabel("—")
+        value.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        set_text_role(value, TextRole.TABLE_VALUE)
+        value.setToolTip(tooltip)
+        row.addWidget(label, 1)
+        row.addWidget(value)
+        layout.addLayout(row)
+        owner.trade_values[key] = value
+    layout.addStretch(1)
+    _workspace_drawer(owner, panel)
+    owner.context_expiry_timer = QtCore.QTimer(owner)
+    owner.context_expiry_timer.setSingleShot(True)
+    owner.context_expiry_timer.timeout.connect(lambda: _render_leader_context(owner))
+    owner.context_button.toggled.connect(lambda _checked: _render_leader_context(owner))
+
+
+def _render_leader_context(owner):
+    """Present the existing snapshot/detail cache; never schedule network work."""
+    if owner.closing:
+        return
+    symbol = owner.selected
+    metrics = owner.metrics.get(symbol, {})
+    result = owner.details.get((symbol, owner.cursor_end(), True), {})
+    numbers = _rotation_detail_numbers(result, owner.cursor_end(), True)
+    name = symbol.removesuffix("USDT") if symbol else "Select a coin"
+    state = metrics.get("state", "")
+    price = safe_float(owner.tickers.get(symbol, {}).get("c")) or metrics.get("price")
+    for label, text in ((owner.context_symbol, name), (owner.context_state, state),
+                        (owner.context_price, _price(price))):
+        if label.text() != text:
+            label.setText(text)
+    style = f"color: {_leader_color(state, owner.theme)};"
+    if owner.context_state.styleSheet() != style:
+        owner.context_state.setStyleSheet(style)
+    units = {"rs1": "percent", "rs4": "percent", "rs24": "percent", "delta": "pp",
+             "rvol": "ratio", "volume_share": "share", "share_delta": "pp", "spot_share": "share",
+             "spot_delta": "pp", "funding": "percent", "oi": "percent", "spread": "share", "high_distance": "percent"}
+    directional = {"rs1", "rs4", "rs24", "delta", "share_delta", "spot_delta", "oi"}
+    for key, label in owner.trade_values.items():
+        value = numbers.get(key) if key in numbers else metrics.get(key)
+        text = _leader_context_text(value, units[key], 3 if key in ("funding", "spread") else 2)
+        color = (owner.theme["muted"] if text == "—" else
+                 owner.theme["green"] if key in directional and value > 0 else
+                 owner.theme["red"] if key in directional and value < 0 else owner.theme["text"])
+        if label.text() != text:
+            label.setText(text)
+        style = f"color: {color};"
+        if label.styleSheet() != style:
+            label.setStyleSheet(style)
+    owner.context_expiry_timer.stop()
+    remaining = 90 - (time.monotonic() - result.get("book_at", result.get("at", 0)))
+    if owner.detail_drawer.isVisible() and result.get("book") and remaining > 0:
+        owner.context_expiry_timer.start(max(1, math.ceil(remaining * 1000)))
+
 
 def build_leaders(owner) -> None:
     owner.sort_descending = True
@@ -2332,10 +2519,16 @@ def build_leaders(owner) -> None:
     for caption, control in (("Universe", owner.limit), ("Min. 24H volume", owner.liquidity),
                              ("Sector", owner.category_filter)):
         _workspace_filter(sidebar, caption, control)
+    owner.view_selector = _workspace_combo([("Overview", "overview"), ("Relative strength", "strength"),
+                                           ("Participation", "participation"), ("Custom columns", "custom")])
+    _workspace_filter(sidebar, "View", owner.view_selector)
     owner.sort = _workspace_combo([(caption, key) for caption, key in (
         ("Leadership state", "state"), ("RS score", "score"), ("4H vs BTC", "rs4"),
         ("Symbol", "pair"), ("Name", "name"), ("Price", "price"), ("1H return", "usd1"),
-        ("4H return", "usd4"), ("24H return", "usd24"), ("Sector", "sector"))])
+        ("4H return", "usd4"), ("24H return", "usd24"), ("Sector", "sector"),
+        ("1H vs BTC", "rs1"), ("24H vs BTC", "rs24"), ("RS acceleration", "delta"),
+        ("Relative volume", "rvol"), ("4H volume share", "volume_share"), ("Share change", "share_delta"),
+        ("Spot share", "spot_share"), ("Spot change", "spot_delta"))])
     owner.sort.currentIndexChanged.connect(lambda _index: _sort_changed(owner))
     _workspace_filter(sidebar, "Sort by", owner.sort)
     owner.direction_button = QtWidgets.QPushButton("↓ Leaders first")
@@ -2368,13 +2561,16 @@ def build_leaders(owner) -> None:
         owner.actions_layout.addWidget(button)
     owner.chart_button.clicked.connect(lambda: owner.symbol_selected.emit(owner.selected) if owner.selected else None)
     owner.watch_button.clicked.connect(lambda: owner.toggle_watch(owner.selected))
+    owner.context_button = QtWidgets.QPushButton("Coin detail")
+    owner.context_button.setCheckable(True)
+    owner.actions_layout.addWidget(owner.context_button)
     owner.refresh_button = QtWidgets.QPushButton("Refresh")
     owner.refresh_button.clicked.connect(lambda _checked=False: owner.refresh(force=True))
     owner.actions_layout.addWidget(owner.refresh_button)
     owner.table = LeadershipHistoryTable()
     owner.table.setObjectName("leadershipTable")
-    owner.table.setColumnCount(11)
-    owner.table.setHorizontalHeaderLabels(("#", "Symbol", "Name", "Price", "1H %", "4H %", "24H %", "RS Score", "State", "Sector", "24H Trend"))
+    owner.table.setColumnCount(len(_LEADER_HEADERS))
+    owner.table.setHorizontalHeaderLabels(_LEADER_HEADERS)
     owner.table.setShowGrid(False)
     owner.table.setWordWrap(False)
     owner.table.verticalHeader().hide()
@@ -2394,6 +2590,8 @@ def build_leaders(owner) -> None:
     owner.table.cellDoubleClicked.connect(owner._open_row)
     content.addWidget(owner.table, 1)
     _build_columns_menu(owner)
+    owner.view_selector.currentIndexChanged.connect(lambda _index: _apply_leader_view(owner))
+    _build_leader_context(owner)
 
 
     support = QtWidgets.QWidget(owner)
@@ -2532,20 +2730,20 @@ def leaders_stylesheet(theme: dict[str, str] | None = None) -> str:
     """Leaders cells and chrome using the shared market workspace palette."""
 
     theme = theme or {}
-    bg = theme.get("bg", "#0B0D11")
-    panel = theme.get("panel", "#12151B")
-    panel2 = theme.get("panel2", "#181C24")
+    bg = theme.get("bg", "#000000")
+    panel = theme.get("panel", "#000000")
+    panel2 = theme.get("panel2", "#000000")
     header = theme.get("header", panel2)
-    border = theme.get("border", "#2A313D")
+    border = theme.get("border", "#262629")
     separator = theme.get("separator", border)
-    control = theme.get("control", "#181C24")
+    control = theme.get("control", "#000000")
     control_border = theme.get("control_border", border)
-    hover = theme.get("control_hover", "#1E2B3E")
-    text = theme.get("text", "#DFE5EE")
-    muted = theme.get("muted", "#9AA4B4")
-    active = theme.get("active", "#1E2B3E")
-    active_line = theme.get("active_line", "#8AA9FF")
-    green = theme.get("green", "#4DDFA4")
+    hover = theme.get("control_hover", "#000000")
+    text = theme.get("text", "#EDEDED")
+    muted = theme.get("muted", "#8E8E96")
+    active = theme.get("active", "#000000")
+    active_line = theme.get("active_line", "#E070D8")
+    green = theme.get("green", "#22D27A")
     red = theme.get("red", "#FF7A85")
 
     return f"""
@@ -2653,7 +2851,7 @@ def leaders_stylesheet(theme: dict[str, str] | None = None) -> str:
             background: {control}; color: {text}; border: 1px solid {border}; border-radius: 4px; min-height: 24px; padding: 3px 7px;
         }}
         QWidget#leadershipTimeline QScrollBar:vertical {{ background: {panel}; width: 7px; margin: 0; }}
-        QWidget#leadershipTimeline QScrollBar::handle:vertical {{ background: {theme.get('control_border', '#3A4250')}; min-height: 24px; border-radius: 3px; }}
+        QWidget#leadershipTimeline QScrollBar::handle:vertical {{ background: {theme.get('control_border', '#3A3A3F')}; min-height: 24px; border-radius: 3px; }}
         QWidget#leadershipTimeline QScrollBar::add-line:vertical, QWidget#leadershipTimeline QScrollBar::sub-line:vertical {{ height: 0; }}
     """
 
@@ -2678,19 +2876,19 @@ _SECTOR_OVERVIEW_TIMEFRAMES: OrderedDict[str, tuple[str, int, int]] = OrderedDic
 
 _SECTOR_OVERVIEW_SECTOR_ORDER = ("AI", "DeFi", "L1", "Gaming", "Memes", "Infrastructure")
 _SECTOR_OVERVIEW_SECTOR_COLORS = {
-    "AI": "#E070D8",
-    "DeFi": "#E8A64A",
-    "L1": "#B08CFF",
-    "Gaming": "#4CC9C0",
-    "Memes": "#FF7AA0",
-    "Infrastructure": "#909099",
+    "AI": LEADERS_PALETTE["cyan"],
+    "DeFi": LEADERS_PALETTE["amber"],
+    "L1": LEADERS_PALETTE["text"],
+    "Gaming": LEADERS_PALETTE["green"],
+    "Memes": LEADERS_PALETTE["red"],
+    "Infrastructure": LEADERS_PALETTE["muted"],
 }
 
 
 def _sector_overview_sector_color(sector: str, theme: dict[str, str], *, for_text: bool = False) -> str:
     """Return categorical sector ink that remains readable on dark or light themes."""
-    raw = QtGui.QColor(_SECTOR_OVERVIEW_SECTOR_COLORS.get(sector, theme.get("cyan", "#8AA9FF")))
-    surface = QtGui.QColor(theme.get("panel", theme.get("bg", "#0B0D11")))
+    raw = QtGui.QColor(_SECTOR_OVERVIEW_SECTOR_COLORS.get(sector, theme.get("cyan", "#E070D8")))
+    surface = QtGui.QColor(theme.get("panel", theme.get("bg", "#000000")))
 
 
     if surface.lightnessF() > 0.62:
@@ -3053,7 +3251,7 @@ def _sector_overview_load_sector_batch(
 
 
 class _SectorOverviewSparkline(QtWidgets.QWidget):
-    def __init__(self, color: str = "#8AA9FF", parent: QtWidgets.QWidget | None = None):
+    def __init__(self, color: str = "#E070D8", parent: QtWidgets.QWidget | None = None):
         super().__init__(parent)
         self.values: list[float | None] = []
         self.color = QtGui.QColor(color)
@@ -3102,7 +3300,7 @@ class _SectorOverviewShareBar(QtWidgets.QWidget):
         super().__init__(parent)
         self.ratio = 0.0
         self.color = QtGui.QColor(color)
-        self.track = QtGui.QColor("#1D222B")
+        self.track = QtGui.QColor("#1C1C20")
         self.setFixedHeight(8)
 
     def set_color(self, color: str) -> None:
@@ -3137,7 +3335,7 @@ class _SectorOverviewVolumeBars(QtWidgets.QWidget):
     def __init__(self, parent: QtWidgets.QWidget | None = None):
         super().__init__(parent)
         self.values: list[float | None] = []
-        self.color = QtGui.QColor("#3A4250")
+        self.color = QtGui.QColor("#3A3A3F")
         self.setMinimumHeight(42)
 
     def set_values(self, values: list[float | None], color: str | None = None) -> None:
@@ -3197,7 +3395,7 @@ class _SectorOverviewStatCard(QtWidgets.QFrame):
         row.addWidget(self.sub, 1)
         layout.addWidget(self.title)
         layout.addLayout(row)
-        self.bar = _SectorOverviewShareBar(theme.get("cyan", "#8AA9FF")) if with_bar else None
+        self.bar = _SectorOverviewShareBar(theme.get("cyan", "#E070D8")) if with_bar else None
         if self.bar is not None:
             layout.addWidget(self.bar)
 
@@ -3222,7 +3420,7 @@ class _SectorOverviewStatCard(QtWidgets.QFrame):
     def apply_theme(self, theme: dict[str, str]) -> None:
         self.theme = dict(theme)
         if self.bar is not None:
-            self.bar.set_color(theme.get("cyan", "#8AA9FF"))
+            self.bar.set_color(theme.get("cyan", "#E070D8"))
 
 
 class _SectorOverviewSectorTile(QtWidgets.QFrame):
@@ -3282,7 +3480,7 @@ class _SectorOverviewSectorTile(QtWidgets.QFrame):
 
     def update_data(self, metrics: dict[str, Any], timeframe_label: str) -> None:
         performance = metrics.get("performance")
-        color = self.theme.get("green", "#4DDFA4") if not _sector_overview_finite(performance) or performance >= 0 else self.theme.get("red", "#FF7A85")
+        color = self.theme.get("green", "#22D27A") if not _sector_overview_finite(performance) or performance >= 0 else self.theme.get("red", "#FF7A85")
         performance_text = _sector_overview_pct(performance, 1)
         if self.performance.text() != performance_text:
             self.performance.setText(performance_text)
@@ -3470,7 +3668,7 @@ class _SectorOverviewSectorDetail(QtWidgets.QFrame):
             else "—"
         )
         performance = metrics.get("performance")
-        performance_color = self.theme.get("green", "#4DDFA4") if not _sector_overview_finite(performance) or performance >= 0 else self.theme.get("red", "#FF7A85")
+        performance_color = self.theme.get("green", "#22D27A") if not _sector_overview_finite(performance) or performance >= 0 else self.theme.get("red", "#FF7A85")
         self.metric_cards["performance"].set_value(_sector_overview_pct(performance, 1), performance_color)
         self.metric_cards["participation"].set_value(f"{metrics.get('outperformers', 0)} / {metrics.get('covered', 0)}")
         self.metric_cards["spot"].set_value(_sector_overview_share(metrics.get("spot_participation")))
@@ -3882,8 +4080,8 @@ class SectorOverviewWidget(QtWidgets.QWidget):
         above = sum(price > mean for price, mean in current)
         value = above / covered * 100 if covered else None
         self.stat_ma.set_metric(_sector_overview_share(value, 0), f"/ {covered} covered",
-                                self.theme.get("green", "#4DDFA4"), (value or 0) / 100,
-                                self.theme.get("grid", "#1D222B"))
+                                self.theme.get("green", "#22D27A"), (value or 0) / 100,
+                                self.theme.get("grid", "#1C1C20"))
 
     def set_active(self, active: bool) -> None:
         was_active = self.active
@@ -4167,16 +4365,16 @@ class SectorOverviewWidget(QtWidgets.QWidget):
         self.detail.update_data(self.selected_sector, selected, timeframe_label)
 
         btc_trend = prepared["btc_trend"]
-        btc_color = self.theme.get("green", "#4DDFA4") if not _sector_overview_finite(btc_trend) or btc_trend >= 0 else self.theme.get("red", "#FF7A85")
+        btc_color = self.theme.get("green", "#22D27A") if not _sector_overview_finite(btc_trend) or btc_trend >= 0 else self.theme.get("red", "#FF7A85")
         self.stat_btc.set_metric(_sector_overview_pct(btc_trend, 1), f"/ {timeframe_label}", btc_color)
 
         alt_pct = prepared["alt_pct"]
         self.stat_alts.set_metric(
             _sector_overview_share(alt_pct, 0),
             f"/ {timeframe_label}",
-            self.theme.get("green", "#4DDFA4"),
+            self.theme.get("green", "#22D27A"),
             (alt_pct or 0.0) / 100.0,
-            self.theme.get("grid", "#1D222B"),
+            self.theme.get("grid", "#1C1C20"),
         )
 
         above, daily_covered = prepared["above"]
@@ -4184,9 +4382,9 @@ class SectorOverviewWidget(QtWidgets.QWidget):
         self.stat_ma.set_metric(
             _sector_overview_share(above_pct, 0),
             f"/ {daily_covered} covered",
-            self.theme.get("green", "#4DDFA4"),
+            self.theme.get("green", "#22D27A"),
             (above_pct or 0.0) / 100.0,
-            self.theme.get("grid", "#1D222B"),
+            self.theme.get("grid", "#1C1C20"),
         )
 
         spot = selected.get("spot_participation")
@@ -4195,7 +4393,7 @@ class SectorOverviewWidget(QtWidgets.QWidget):
             f"/ {self.selected_sector}",
             self.theme.get("amber", "#E3B45E"),
             (spot or 0.0) / 100.0,
-            self.theme.get("grid", "#1D222B"),
+            self.theme.get("grid", "#1C1C20"),
         )
 
         self._render_table(metrics, performances)
@@ -4235,7 +4433,7 @@ class SectorOverviewWidget(QtWidgets.QWidget):
                 self.table.setItem(row, column, item)
             if item.text() != text:
                 item.setText(text)
-            ink = QtGui.QColor(color or self.theme.get("text", "#DFE5EE"))
+            ink = QtGui.QColor(color or self.theme.get("text", "#EDEDED"))
             if item.foreground().color() != ink:
                 item.setForeground(ink)
 
@@ -4244,7 +4442,7 @@ class SectorOverviewWidget(QtWidgets.QWidget):
             cell(row, 0, sector, _sector_overview_sector_color(sector, self.theme, for_text=True))
             for column, timeframe in enumerate(("15m", "1h", "4h", "1d"), 1):
                 value = performances[timeframe].get(sector)
-                color = (self.theme.get("green", "#4DDFA4") if value >= 0 else self.theme.get("red", "#FF7A85")) if _sector_overview_finite(value) else None
+                color = (self.theme.get("green", "#22D27A") if value >= 0 else self.theme.get("red", "#FF7A85")) if _sector_overview_finite(value) else None
                 cell(row, column, _sector_overview_pct(value, 1), color)
             current = sector_metrics.get("volume_share")
             previous = sector_metrics.get("previous_volume_share")
@@ -4327,12 +4525,12 @@ class SectorOverviewWidget(QtWidgets.QWidget):
                 card.apply_theme(palette)
         if hasattr(self, "detail"):
             self.detail.theme = palette
-        green = palette.get("green", "#4DDFA4")
+        green = palette.get("green", "#22D27A")
         red = palette.get("red", "#FF7A85")
         self.setStyleSheet(f"""
             QWidget#sectorOverview, QScrollArea#sectorScroll, QWidget#sectorBody {{ background: {palette['bg']}; color: {palette['text']}; border: 0; }}
             QFrame#sectorPanel, QFrame#sectorStatCard, QFrame#sectorTile {{ background: {palette['panel']}; border: 1px solid {palette['control_border']}; border-radius: 6px; }}
-            QFrame#sectorTile[selected="true"] {{ border: 2px solid {palette.get("cyan", "#8AA9FF")}; }}
+            QFrame#sectorTile[selected="true"] {{ border: 2px solid {palette.get("cyan", "#E070D8")}; }}
             QLabel {{ background: transparent; border: 0; color: {palette['text']}; }}
             QLabel#sectorTitle {{ }}
             QLabel#sectorPanelTitle {{ }}
@@ -4360,7 +4558,7 @@ class SectorOverviewWidget(QtWidgets.QWidget):
                 background: {palette['control_hover']}; color: {palette['text']};
             }}
             QPushButton#sectorTimeframe:checked, QPushButton#sectorSegmentButton:checked {{
-                background: {palette['active']}; border: 1px solid {palette.get('active_line', palette.get('cyan', '#8AA9FF'))}; color: {palette['text']};
+                background: {palette['active']}; border: 1px solid {palette.get('active_line', palette.get('cyan', '#E070D8'))}; color: {palette['text']};
             }}
             QLabel#sectorBenchmarkChip {{ color: {palette['text']}; }}
             QFrame#sectorDivider {{ color: {palette['border']}; background: {palette['border']}; max-height: 1px; }}
@@ -4465,17 +4663,15 @@ def load_leadership_state(db, name):
 
 # Rotation consumes the existing Leaders dataset; it owns no backend loader.
 ROTATION_PALETTE = dict(LEADERS_PALETTE)
-QUADRANT_COLORS = {"Improving": "#35C4B2", "Leading": "#00C56A",
-                   "Lagging": "#F0143E", "Weakening": "#C89A47", "Neutral": "#8E8E96"}
-# Stable coin colors make crossing a quadrant easy to follow. Position determines
-# the state; color identifies the instrument, as in the scanner reference.
-_BUBBLE_COLORS = ("#42C9E8", "#53DD7B", "#AA82DD", "#7DB6F3", "#F57579", "#E7B955")
-_REFERENCE_COIN_COLORS = dict(TAO="#42C9E8", RENDER="#53DD7B", RNDR="#53DD7B",
-                             FET="#AA82DD", SOL="#7DB6F3", ARB="#F57579", WIF="#E7B955")
+QUADRANT_COLORS = {"Improving": LEADERS_PALETTE["cyan"], "Leading": LEADERS_PALETTE["green"],
+                   "Lagging": LEADERS_PALETTE["red"], "Weakening": LEADERS_PALETTE["amber"],
+                   "Neutral": LEADERS_PALETTE["muted"]}
+# Stable instrument colors use the terminal's existing palette.
+_BUBBLE_COLORS = tuple(LEADERS_PALETTE[key] for key in ("cyan", "green", "amber", "red", "muted", "text"))
 
 def _bubble_color(point):
     base = point["symbol"].removesuffix("USDT")
-    return point.get("color") or _REFERENCE_COIN_COLORS.get(base) or _BUBBLE_COLORS[zlib.crc32(base.encode("utf-8")) % len(_BUBBLE_COLORS)]
+    return _BUBBLE_COLORS[zlib.crc32(base.encode("utf-8")) % len(_BUBBLE_COLORS)]
 
 _ROTATION_SORT_ROLE = int(Qt.ItemDataRole.UserRole) + 11
 _ROTATION_SYMBOL_ROLE = int(Qt.ItemDataRole.UserRole)
@@ -4583,7 +4779,6 @@ class RotationBubbleChart(QtWidgets.QWidget):
     """Symmetric linear axes keep zero at the center and all four planes intact."""
     chosen = Signal(str)
     opened = Signal(str)
-    MAX_PER_QUADRANT = 3
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -4604,39 +4799,11 @@ class RotationBubbleChart(QtWidgets.QWidget):
     def sizeHint(self):
         return QtCore.QSize(850, 360)
 
-    @classmethod
-    def _major_points(cls, points):
-        """Shortlist the strongest moves without changing the candidate dataset."""
-        candidates = [
-            point for point in points
-            if _rotation_finite(point.get("x")) and _rotation_finite(point.get("y"))
-            and _rotation_quadrant(point["x"], point["y"]) != "Neutral"
-            # Match Leaders' meaningful RS / momentum thresholds; omit flat noise.
-            and (abs(point["x"]) >= .5 or abs(point["y"]) >= .2)
-        ]
-        if not candidates:
-            return []
-        # Normalize axes independently so RS and acceleration both affect rank.
-        x_scale = max(.5, statistics.median(abs(p["x"]) for p in candidates))
-        y_scale = max(.2, statistics.median(abs(p["y"]) for p in candidates))
-
-        def rank(point):
-            volume = point.get("volume", 0)
-            return (-math.hypot(point["x"] / x_scale, point["y"] / y_scale),
-                    -volume if _rotation_finite(volume) and volume > 0 else 0,
-                    point["symbol"])
-
-        counts, shortlist, symbols = Counter(), [], set()
-        for point in sorted(candidates, key=rank):
-            quadrant = _rotation_quadrant(point["x"], point["y"])
-            if counts[quadrant] < cls.MAX_PER_QUADRANT and point["symbol"] not in symbols:
-                shortlist.append(point)
-                symbols.add(point["symbol"])
-                counts[quadrant] += 1
-        return shortlist
-
     def set_points(self, points, selected="", hours=4):
-        self.points = self._major_points(points)
+        # Page filters define the universe. The map must not discard quiet,
+        # neutral, or lower-ranked coins that have valid computed coordinates.
+        self.points = [point for point in points
+                       if _rotation_finite(point.get("x")) and _rotation_finite(point.get("y"))]
         self.selected, self.hours = selected, hours
         coordinates = [(p["x"], p["y"]) for p in self.points]
         # Historical outliers cannot stretch the axes and hide current leaders.
@@ -4699,6 +4866,10 @@ class RotationBubbleChart(QtWidgets.QWidget):
 
         # Each circle has exactly half the diameter of its successor.
         radii = [radius / 8, radius / 4, radius / 2, radius]
+        if point["x"] == 0 or point["y"] == 0:
+            # Neutral coins stay on the axis; spacing must not imply a quadrant.
+            return dict(point=point, samples=samples, positions=raw,
+                        radii=radii, normalized=False, visible_gap=0)
         visible_gap = 8.0
         distances = [0.0] * 4
         for i in range(2, -1, -1):
@@ -4752,6 +4923,8 @@ class RotationBubbleChart(QtWidgets.QWidget):
         """Pack overlapping vertical bands sideways without changing any heading."""
         bounds = []
         for group in groups:
+            if group["point"]["x"] == 0 or group["point"]["y"] == 0:
+                continue
             circles = [(at, radius) for at, radius in zip(group["positions"], group["radii"])
                        if at is not None]
             left = min(at.x() - radius for at, radius in circles)
@@ -4771,6 +4944,9 @@ class RotationBubbleChart(QtWidgets.QWidget):
             band.sort(key=lambda entry: (entry[1].left(), entry[0]["point"]["symbol"]))
             widths = [box.width() for _, box in band]
             required = sum(widths) + 6 * (len(band) - 1)
+            if required > plot.width():
+                # Dense bands may overlap; packing must never push coins off-canvas.
+                continue
             low, high = plot.left(), plot.right()
             sides = {group["point"]["x"] > 0 for group, _ in band}
             if len(sides) == 1 and required <= plot.width() / 2 - 18:
@@ -4832,7 +5008,7 @@ class RotationBubbleChart(QtWidgets.QWidget):
         p.setFont(quadrant_font)
         headings = []
         for label, where in (("Improving", "tl"), ("Leading", "tr"), ("Lagging", "bl"), ("Weakening", "br")):
-            p.setPen(QtGui.QColor({"Improving": "#42C9E8", "Leading": QUADRANT_COLORS["Leading"], "Lagging": QUADRANT_COLORS["Lagging"], "Weakening": "#E7B955"}[label]))
+            p.setPen(QtGui.QColor(QUADRANT_COLORS[label]))
             box = QtCore.QRectF(r.left() + 14, r.top() + 10 if where[0] == "t" else r.bottom() - 30, r.width() - 28, 20)
             alignment = Qt.AlignmentFlag.AlignLeft if where[1] == "l" else Qt.AlignmentFlag.AlignRight
             p.drawText(box, alignment | Qt.AlignmentFlag.AlignVCenter, label.upper())
@@ -4903,8 +5079,9 @@ class RotationBubbleChart(QtWidgets.QWidget):
         p.setFont(self._font(TextRole.INSTRUMENT_SYMBOL, 13 if r.width() >= 600 else 11))
         occupied = list(headings)
         # Text has no background and must clear every group's circles and lines.
-        for group in sorted(self._geometry, key=lambda g: (g["point"]["symbol"] != self.selected,
-                                                           -g["point"]["volume"], g["point"]["symbol"])):
+        label_groups = sorted(self._geometry, key=lambda g: (g["point"]["symbol"] != self.selected,
+                                                            -g["point"]["volume"], g["point"]["symbol"]))
+        for group in label_groups[:32]:
             point, at, radius = group["point"], group["positions"][-1], group["radii"][-1]
             text = point["symbol"].removesuffix("USDT")
             width = p.fontMetrics().horizontalAdvance(text) + 4
@@ -4916,7 +5093,7 @@ class RotationBubbleChart(QtWidgets.QWidget):
             def label_offsets():
                 yield from offsets
                 alternatives = [(dx, dy) for dx in range(-160, 161, 16) for dy in range(-96, 97, 16)]
-                yield from sorted(alternatives, key=lambda v: (v[0] * v[0] + v[1] * v[1], -v[0], v[1]))
+                yield from sorted(alternatives, key=lambda v: (v[0] * v[0] + v[1] * v[1], -v[0], v[1]))[:24]
 
             for dx, dy in label_offsets():
                 box = QtCore.QRectF(at.x() + dx, at.y() + dy, width, height)
@@ -4952,6 +5129,10 @@ class RotationBubbleChart(QtWidgets.QWidget):
     def mouseMoveEvent(self, event):
         point = self._hit(event.position())
         self.setCursor(Qt.CursorShape.PointingHandCursor if point else Qt.CursorShape.ArrowCursor)
+        tooltip = (f"{point['symbol']} · {self.hours}H vs BTC: {_pct(point['x'])}"
+                   f"\nRS change / 1H: {point['y']:+.2f} pp" if point else "")
+        if tooltip != self.toolTip():
+            self.setToolTip(tooltip)
         super().mouseMoveEvent(event)
 
     def keyPressEvent(self, event):
@@ -4967,7 +5148,7 @@ class RotationBubbleChart(QtWidgets.QWidget):
 
 
 class _rotation_MiniChart(QtWidgets.QWidget):
-    def __init__(self, *, bars=False, compact=False, color="#35C4B2", parent=None):
+    def __init__(self, *, bars=False, compact=False, color=ROTATION_PALETTE["active_line"], parent=None):
         super().__init__(parent)
         self.values = []
         self.bars, self.compact, self.color = bars, compact, color
@@ -5222,7 +5403,7 @@ class RotationScannerWidget(LeadershipTimelineWidget):
         self.relative_chart = _rotation_MiniChart()
         info.addWidget(self.relative_chart)
         info.addWidget(_rotation_label("Volume (USDT) · 24H", name="rotationMuted"))
-        self.volume_chart = _rotation_MiniChart(bars=True, color="#7C838C")
+        self.volume_chart = _rotation_MiniChart(bars=True, color="#8E8E96")
         info.addWidget(self.volume_chart)
         info.addWidget(_rotation_label("Key facts", TextRole.PANEL_TITLE))
         self.fact_values = {}
