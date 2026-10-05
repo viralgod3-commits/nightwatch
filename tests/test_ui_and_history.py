@@ -228,7 +228,8 @@ def test_rotation_keeps_quiet_and_neutral_coins_from_completed_history(qapp):
         widget.bubbles.grab()
         heads = {point['symbol'] for point, _at, _radius in widget.bubbles._hits
                  if point['_sample_index'] == 3}
-        assert heads == set(symbols)
+        assert len(heads) == 4  # Three Leading representatives plus one neutral coin.
+        assert symbols[0] in heads
         assert widget.table.rowCount() == len(symbols)
         neutral = next(group for group in widget.bubbles._geometry
                        if group['point']['symbol'] == symbols[0])
@@ -250,7 +251,7 @@ def test_rotation_keeps_quiet_and_neutral_coins_from_completed_history(qapp):
         widget.deleteLater()
 
 
-def test_rotation_dense_universe_keeps_every_bubble_on_canvas(qapp):
+def test_rotation_dense_universe_caps_quadrants_without_changing_candidates(qapp):
     points = [dict(symbol=f'COIN{i:03}USDT', x=.02 + i / 10_000, y=.01 + i / 100_000,
                    trail=[(.01, .01), (.015, .009), (.018, .0095), (.02 + i / 10_000, .01 + i / 100_000)],
                    volume=100 + i, quadrant='Leading') for i in range(160)]
@@ -260,12 +261,12 @@ def test_rotation_dense_universe_keeps_every_bubble_on_canvas(qapp):
         chart.set_points(points, selected=points[0]['symbol'])
         chart.grab()
         heads = [(point, at) for point, at, _radius in chart._hits if point['_sample_index'] == 3]
-        assert {point['symbol'] for point, _at in heads} == {point['symbol'] for point in points}
+        assert {point['symbol'] for point, _at in heads} == {point['symbol'] for point in points[-3:]}
         assert all(chart.plot_rect().contains(at) for _point, at in heads)
-        assert chart.points == points
+        assert chart.points == list(reversed(points[-3:]))
         chosen = QtTest.QSignalSpy(chart.chosen)
         QtTest.QTest.keyClick(chart, Qt.Key.Key_Right)
-        assert chosen.at(0) == [points[1]['symbol']]
+        assert chosen.at(0) == [points[-3]['symbol']]
     finally:
         chart.deleteLater()
 
@@ -396,7 +397,11 @@ def test_market_views_fill_viewport_with_controls_on_left(qapp, workspace, width
             if label.isVisible() and label.buddy() is not None:
                 assert label.fontMetrics().horizontalAdvance(label.text()) <= label.width()
         assert not widget.grab().isNull()
-        if isinstance(widget, (SectorOverviewWidget, RotationScannerWidget)):
+        if isinstance(widget, SectorOverviewWidget):
+            assert widget.detail_drawer.isVisible()
+            assert widget.context_button.isHidden()
+            assert not widget.detail_drawer.geometry().intersects(widget.overview_scroll.geometry())
+        elif isinstance(widget, RotationScannerWidget):
             assert widget.detail_drawer.isHidden()
             before = widget.main_content.geometry()
             widget.context_button.click()
