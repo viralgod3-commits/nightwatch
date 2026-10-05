@@ -1,7 +1,7 @@
 from types import SimpleNamespace
 
 import pytest
-from PySide6 import QtCore, QtGui, QtWidgets
+from PySide6 import QtCore, QtGui, QtWidgets, QtTest
 from PySide6.QtCore import Qt
 
 from nightwatch.models import Candle
@@ -9,7 +9,7 @@ from nightwatch.leadership import (
     HOUR, HISTORY_HOURS, LeadershipTimelineWidget, RotationScannerWidget, SectorOverviewWidget,
     _sector_overview_classify, _sector_overview_closed_window_ready,
     _sector_overview_tail_limit, _sector_overview_map_candles, _prepare_leaders,
-    _SectorAnalysis, _SectorOverviewVolumeBars,
+    _SectorAnalysis, _SectorOverviewVolumeBars, DETAIL_ROLE, LEADER_COLORS,
 )
 from nightwatch.trading.trading_ui import TradingWorkspace, AccountDataTable
 
@@ -147,9 +147,47 @@ def test_live_leader_price_updates_without_history_analysis(qapp, monkeypatch):
     widget.replay.blockSignals(True)
     widget.replay.setValue(20)
     widget.update_tickers([{'s': 'TESTUSDT', 'c': '120'}])
-    assert '120' not in widget.table.item(0, 3).text()
+    assert widget.replay.value() == widget.replay.minimum() == widget.replay.maximum() == 24
+    assert '120' in widget.table.item(0, 3).text()
     widget.shutdown()
     widget.deleteLater()
+
+
+def test_leaders_ignore_legacy_replay_and_keep_live_cursor(qapp, tmp_path):
+    settings = QtCore.QSettings(str(tmp_path / 'legacy.ini'), QtCore.QSettings.Format.IniFormat)
+    settings.setValue('markets/leadership/replay', 8)
+    settings.setValue('markets/leadership/span', 168)
+    widget = LeadershipTimelineWidget({})
+    try:
+        widget.end = 30 * HOUR
+        widget.restore_ui_state(settings)
+        assert widget.cursor_end() == widget.end
+        assert widget.span.currentData() == 24
+        widget.save_ui_state(settings)
+        assert not settings.contains('markets/leadership/replay')
+    finally:
+        widget.shutdown()
+        widget.deleteLater()
+
+
+@pytest.mark.parametrize('state', ['Leading', 'Improving', 'Cooling', 'Lagging'])
+def test_leader_state_color_matches_row_marker_badge_and_score(qapp, state):
+    widget = LeadershipTimelineWidget({})
+    try:
+        widget.symbols = ['TESTUSDT']
+        prepared = leader_result()
+        prepared['metrics']['TESTUSDT'].update(state=state, score=35, usd1=-1)
+        widget._render(prepared)
+        row = widget.table.item(0, 1).data(DETAIL_ROLE)
+        badge = widget.table.item(0, 8).data(DETAIL_ROLE)
+        score = widget.table.item(0, 7).data(DETAIL_ROLE)
+        returns = widget.table.item(0, 4).data(DETAIL_ROLE)
+        assert row['state_color'] == badge['foreground'] == score['foreground'] == LEADER_COLORS[state]
+        assert returns['foreground'] == widget.theme['red']
+        assert score['background'] != returns['background']
+    finally:
+        widget.shutdown()
+        widget.deleteLater()
 
 
 def test_rotation_does_not_apply_leader_price_columns(qapp):
@@ -157,6 +195,145 @@ def test_rotation_does_not_apply_leader_price_columns(qapp):
     widget._refresh_live_prices()  # Separate RS/RVol table schema.
     widget.shutdown()
     widget.deleteLater()
+
+
+@pytest.mark.parametrize('workspace', [LeadershipTimelineWidget, SectorOverviewWidget, RotationScannerWidget])
+@pytest.mark.parametrize('width,height', [(800, 900), (1080, 900), (1920, 900), (2560, 900), (960, 540), (1280, 720)])
+def test_market_views_fill_viewport_with_controls_on_left(qapp, workspace, width, height):
+    widget = workspace({})
+    try:
+        widget.resize(width, height)
+        widget.show()
+        for _ in range(5):
+            qapp.processEvents()
+        assert widget.size() == QtCore.QSize(width, height)
+        assert widget.refresh_button.isVisible()
+        assert widget.controls_scroll.horizontalScrollBar().maximum() == 0
+        assert widget.controls_scroll.geometry().right() < widget.main_content.geometry().left()
+        assert widget.main_content.width() > width * .7
+        assert widget.main_content.height() > widget.height() * .95
+        assert widget.table.isVisible()
+        redundant_titles = {
+            'Leaders', 'Sectors', 'Rotation', 'Sector participation',
+            'Sector leadership', 'Improving candidates', 'Rotation candidates',
+        }
+        for label in widget.findChildren(QtWidgets.QLabel):
+            if label.isVisible() and label.text():
+                assert label.text() not in redundant_titles
+                assert not label.text().casefold().startswith(('find relative', 'find broad', 'find developing'))
+                assert label.palette().color(QtGui.QPalette.ColorRole.WindowText).lightnessF() > .2, label.text()
+            if label.isVisible() and label.buddy() is not None:
+                assert label.fontMetrics().horizontalAdvance(label.text()) <= label.width()
+        assert not widget.grab().isNull()
+        if isinstance(widget, (SectorOverviewWidget, RotationScannerWidget)):
+            assert widget.detail_drawer.isHidden()
+            before = widget.main_content.geometry()
+            widget.context_button.click()
+            qapp.processEvents()
+            assert widget.detail_drawer.isVisible()
+            assert widget.main_content.geometry() == before
+            assert widget.width() == width
+            assert widget.detail_drawer.geometry().right() < widget.main_content.width()
+            widget.context_button.click()
+            assert widget.detail_drawer.isHidden()
+        else:
+            assert widget.table.height() > widget.height() * .95
+            assert not any(slider.isVisible() for slider in widget.findChildren(QtWidgets.QSlider))
+        widget.resize(960, 540)
+        for _ in range(5):
+            qapp.processEvents()
+        assert widget.size() == QtCore.QSize(960, 540)
+        refresh_bottom = widget.refresh_button.mapTo(widget, widget.refresh_button.rect().bottomLeft()).y()
+        assert refresh_bottom < widget.height()
+    finally:
+        widget.shutdown()
+        widget.close()
+        widget.deleteLater()
+
+
+def test_market_filter_and_disclosure_settings_remain_independent(qapp, tmp_path):
+    settings = QtCore.QSettings(str(tmp_path / 'markets.ini'), QtCore.QSettings.Format.IniFormat)
+    pages = [LeadershipTimelineWidget({}), SectorOverviewWidget({}), RotationScannerWidget({})]
+    restored = []
+    try:
+        leaders, sectors, rotation = pages
+        leaders.span.setCurrentIndex(leaders.span.findData(24))
+        leaders.liquidity.setCurrentIndex(leaders.liquidity.findData(100_000_000))
+        sectors.context_button.setChecked(True)
+        sectors.timeframe_buttons['1d'].click()
+        sectors.liquidity.setCurrentIndex(sectors.liquidity.findData(50_000_000))
+        rotation.span.setCurrentIndex(rotation.span.findData(12))
+        rotation.liquidity.setCurrentIndex(rotation.liquidity.findData(5_000_000))
+        rotation.compare_toggle.setChecked(True)
+        for page in pages:
+            page.save_ui_state(settings)
+        settings.sync()
+        restored = [LeadershipTimelineWidget({}), SectorOverviewWidget({}), RotationScannerWidget({})]
+        for page in restored:
+            page.restore_ui_state(settings)
+        leaders, sectors, rotation = restored
+        assert (leaders.span.currentData(), sectors.timeframe, rotation.span.currentData()) == (24, '1d', 12)
+        assert tuple(page.liquidity.currentData() for page in restored) == (100_000_000, 50_000_000, 5_000_000)
+        assert sectors.context_button.isChecked()
+        assert not rotation.context_button.isChecked()
+        assert rotation.compare_toggle.isChecked() and not rotation.comparison_panel.isHidden()
+        rotation.reset_button.click()
+        assert (rotation.span.currentData(), rotation.liquidity.currentData(), rotation.limit.currentData()) == (4, 20_000_000, 0)
+        assert leaders.liquidity.currentData() == 100_000_000
+        assert sectors.liquidity.currentData() == 50_000_000
+    finally:
+        for page in pages + restored:
+            page.shutdown()
+            page.deleteLater()
+
+
+def test_sector_table_activation_selects_matching_detail(qapp):
+    widget = SectorOverviewWidget({})
+    try:
+        widget.table.setRowCount(1)
+        widget.table.setItem(0, 0, QtWidgets.QTableWidgetItem('DeFi'))
+        widget.table.cellActivated.emit(0, 0)
+        assert widget.selected_sector == 'DeFi'
+    finally:
+        widget.shutdown()
+        widget.deleteLater()
+
+
+def test_sector_table_selection_follows_sector_when_rank_changes(qapp):
+    widget = SectorOverviewWidget({})
+    try:
+        metrics = {sector: {'members': 0} for sector in widget.tiles}
+        metrics['AI'] = {'members': 2, 'performance': 1.0}
+        metrics['DeFi'] = {'members': 2, 'performance': 2.0}
+        performances = {frame: {'AI': 1.0, 'DeFi': 2.0} for frame in ('15m', '1h', '4h', '1d')}
+        widget._render_table(metrics, performances)
+        assert widget.table.currentRow() == 1
+        assert widget.table.item(1, 0).text() == widget.selected_sector == 'AI'
+        metrics['AI']['performance'] = 3.0
+        widget._render_table(metrics, performances)
+        assert widget.table.currentRow() == 0
+        assert widget.table.item(0, 0).text() == widget.selected_sector == 'AI'
+    finally:
+        widget.shutdown()
+        widget.deleteLater()
+
+
+@pytest.mark.parametrize('workspace', [LeadershipTimelineWidget, SectorOverviewWidget, RotationScannerWidget])
+def test_market_refresh_shortcut_uses_page_action(qapp, workspace):
+    widget = workspace({})
+    try:
+        widget.resize(1080, 900)
+        widget.show()
+        widget.activateWindow()
+        widget.refresh_button.setFocus()
+        qapp.processEvents()
+        clicks = QtTest.QSignalSpy(widget.refresh_button.clicked)
+        QtTest.QTest.keyClick(widget.refresh_button, Qt.Key.Key_F5)
+        assert clicks.count() == 1
+    finally:
+        widget.shutdown()
+        widget.close()
+        widget.deleteLater()
 
 
 def test_sector_partial_failure_is_retried(qapp, monkeypatch):
