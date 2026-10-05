@@ -1387,11 +1387,11 @@ class InstrumentBar(QtWidgets.QFrame):
         if host is None:
             return
         margins = host_layout.contentsMargins()
-        # The bar covers the chart *and* price-axis width. Its row owns the
-        # equal left/right content gutter, so reserving the price-axis width
-        # here would make the right edge visibly wider than the left.
-        if margins.right() != 0:
-            host_layout.setContentsMargins(margins.left(), margins.top(), 0, margins.bottom())
+        # Preserve a visible outer gutter on both sides of the instrument bar,
+        # including when the adjacent right rail is hidden.
+        inset = self._normal_horizontal_margins[0]
+        if margins.left() != inset or margins.right() != inset:
+            host_layout.setContentsMargins(inset, margins.top(), inset, margins.bottom())
 
     def set_chart_context_visible(self, visible: bool) -> None:
         self._chart_context_visible = bool(visible)
@@ -1407,6 +1407,7 @@ class InstrumentBar(QtWidgets.QFrame):
         self._normal_horizontal_margins = (max(0, int(left)), max(0, int(right)))
         self._responsive_state = None
         self._apply_responsive_layout()
+        self._queue_plot_alignment()
 
 
 class ChartSurfaceHost(QtWidgets.QFrame):
