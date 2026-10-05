@@ -5662,7 +5662,7 @@ class _DomRasterCanvas(QtWidgets.QWidget):
         else:
             message = self._syncing_message() if self._book_validity_known and not self._book_valid else 'Waiting for market data'
             self._draw_text(painter, QtCore.QRectF(4.0, height * 0.4, max(0.0, width - 8), 40.0),
-                            message, self._profile_price, font=self._label_font)
+                            message, self._profile_price, Qt.AlignmentFlag.AlignHCenter, font=self._label_font)
         pair = self.symbol.removesuffix('USDT') + ' / USDT' if self.symbol.endswith('USDT') else self.symbol
         text = f'Binance {pair}'
         if self._market_status == 'STALE':
