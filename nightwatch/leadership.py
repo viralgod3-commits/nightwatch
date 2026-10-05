@@ -5437,6 +5437,7 @@ class RotationScannerWidget(LeadershipTimelineWidget):
         self._rotation_view_dirty = False
         self._rotation_pending_key = None
         self._rotation_snapshot_end = None
+        self._rotation_snapshot_complete = False
         self._rotation_universe = ()
         self._rotation_turnover = {}
         self._filtered_points = []
@@ -6030,6 +6031,7 @@ class RotationScannerWidget(LeadershipTimelineWidget):
         self._load_pending = False
         self.generation += 1
         self._rotation_snapshot_end = None
+        self._rotation_snapshot_complete = False
         self._rotation_pending_key = None
         self.leadership = leadership
         if leadership is not None:
@@ -6065,23 +6067,29 @@ class RotationScannerWidget(LeadershipTimelineWidget):
         self._adopt_shared_bindings()
         snapshot = self.leadership.sector_hourly_snapshot()
         end = snapshot["end"]
+        published = (self._rotation_snapshot_complete
+                     and self._prepared_analysis.get("end") == end
+                     and bool(self._prepared_analysis.get("points")))
         if end <= 0 or (self._rotation_snapshot_end is not None and
-                        (end < self._rotation_snapshot_end or end == self._rotation_snapshot_end and not force)):
+                        (end < self._rotation_snapshot_end or end == self._rotation_snapshot_end and published and not force)):
             return
         if not snapshot["symbols"] or not _window(snapshot["series"].get(BENCHMARK, {}), end, 1):
             self.asof.setText("Waiting for completed hourly data")
             return
         source = self.leadership
-        if getattr(source, "_load_pending", False) or getattr(source, "task", None) is not None:
-            fetched, retries = getattr(source, "fetched_for", {}), getattr(source, "retry_after", {})
-            now = time.monotonic()
-            if any(fetched.get(symbol) != end and retries.get(symbol, 0) <= now
-                   for symbol in (BENCHMARK, *snapshot["symbols"])):
-                # Publish one coherent snapshot after success/failure of the batch.
-                if self._rotation_snapshot_end is None:
-                    self.asof.setText("Loading completed hourly data")
-                return
+        fetched, retries = getattr(source, "fetched_for", {}), getattr(source, "retry_after", {})
+        now = time.monotonic()
+        pending = any(fetched.get(symbol) != end and retries.get(symbol, 0) <= now
+                      for symbol in (BENCHMARK, *snapshot["symbols"]))
+        if pending and (getattr(source, "_load_pending", False) or getattr(source, "task", None) is not None):
+            # Publish one coherent snapshot after success/failure of the batch.
+            if self._rotation_snapshot_end is None:
+                self.asof.setText("Loading completed hourly data")
+            return
+        # Cached subsets and empty analyses remain eligible for same-hour
+        # completion. Only a finished batch with plotted data freezes the hour.
         self._rotation_snapshot_end = end
+        self._rotation_snapshot_complete = not pending
         self._set_end(end)
         self.clock_offset = snapshot["clock_offset"]
         # Inner maps must also be owned by this snapshot. Repairs to the
