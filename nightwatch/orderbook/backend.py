@@ -3974,7 +3974,7 @@ class OrderFlowRuntime(QtCore.QObject):
         if name not in ('set_tape_view', 'ack_tape', 'clear_tape'):
             raise ValueError('Unknown trade-tape command')
         if name == 'set_tape_view':
-            if args[-1]:
+            if args[4]:
                 self._tape_views[args[0]] = args
             else:
                 self._tape_views.pop(args[0], None)

@@ -267,12 +267,13 @@ class TapeStateDecoder:
 
 
 class _TapeView:
-    def __init__(self, consumer, token, symbol, mode, active):
+    def __init__(self, consumer, token, symbol, mode, active, interval):
         self.consumer, self.token, self.symbol = consumer, token, symbol
         self.mode, self.active = mode, active
         self.base = self.pending = self.key = None
         self.revision = None
         self.last_sent = -math.inf
+        self.interval = interval
 
 
 class TapePublisher:
@@ -282,16 +283,22 @@ class TapePublisher:
         self.views = {}
         self.frames = self.seeds = self.upserts = self.acks = 0
 
-    def set_view(self, consumer, token, symbol, mode, active):
+    def set_view(self, consumer, token, symbol, mode, active, interval=TAPE_INTERVAL_SECONDS):
         if not active:
             self.views.pop(consumer, None)
             return
         if consumer not in self.views and len(self.views) >= MAX_TAPE_VIEWS:
             raise ValueError('Too many visible trade-tape consumers')
+        interval = float(interval)
+        if not math.isfinite(interval) or interval <= 0:
+            interval = TAPE_INTERVAL_SECONDS
+        interval = max(.001, interval)
         previous = self.views.get(consumer)
         if previous is not None and (previous.token, previous.symbol, previous.mode) == (token, symbol, mode):
+            # A refresh-rate change keeps the acknowledged delta base and lease.
+            previous.interval = interval
             return
-        self.views[consumer] = _TapeView(consumer, token, symbol, mode, True)
+        self.views[consumer] = _TapeView(consumer, token, symbol, mode, True, interval)
 
     def reset(self):
         for view in self.views.values():
@@ -317,7 +324,7 @@ class TapePublisher:
         for view in self.views.values():
             key = self._key(state, view)
             if (view.symbol != state.symbol or view.pending is not None or key == view.key
-                    or now < view.last_sent + TAPE_INTERVAL_SECONDS):
+                    or now < view.last_sent + view.interval):
                 continue
             entries = state.all_entries if view.mode == 'ALL' else state.large_entries
             patch = make_patch(entries, view.base)
@@ -332,7 +339,7 @@ class TapePublisher:
         return frames
 
     def next_at(self, state: TapeState):
-        return min((view.last_sent + TAPE_INTERVAL_SECONDS for view in self.views.values()
+        return min((view.last_sent + view.interval for view in self.views.values()
                     if view.symbol == state.symbol and view.pending is None and self._key(state, view) != view.key),
                    default=math.inf)
 

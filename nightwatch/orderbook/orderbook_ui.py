@@ -67,7 +67,7 @@ from .raster_regions import (
 from .tape import TAPE_CAPACITY, TapeSeedRequired
 from .tape_source import SharedTradeTapeSource
 
-from ..presentation import display_frame_interval_ms
+from ..presentation import DisplayRefreshObserver, display_frame_interval_ms
 from ..chart.analysis import LatestJob
 
 
@@ -832,7 +832,8 @@ class TradesTapeWidget(QtWidgets.QWidget):
         self._reformat = False
         self._refresh_timer = QtCore.QTimer(self)
         self._refresh_timer.setSingleShot(True)
-        self._refresh_timer.setInterval(100)
+        self._refresh_timer.setTimerType(Qt.TimerType.PreciseTimer)
+        self._refresh_timer.setInterval(display_frame_interval_ms(self))
         self._refresh_timer.timeout.connect(self._refresh_table)
         layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -892,6 +893,13 @@ class TradesTapeWidget(QtWidgets.QWidget):
         layout.addWidget(self.table, 1)
         self.apply_theme(theme)
         self._size_columns()
+        self._display_refresh_observer = DisplayRefreshObserver(self, self._display_refresh_changed)
+
+    def _display_refresh_changed(self):
+        self._refresh_timer.setInterval(display_frame_interval_ms(self))
+        if self._tape_source is not None:
+            # Preserve the token and pending frame when only pacing changes.
+            self._tape_source.refresh(self)
 
     def eventFilter(self, watched, event):
         if watched is self.table.viewport() and event.type() == QtCore.QEvent.Type.Resize:
@@ -1452,9 +1460,18 @@ class OrderBookControlBar(QtWidgets.QFrame):
         view_width = self._view_container.sizeHint().width()
         top_width = view_width + self.value_mode_button.sizeHint().width() + self.settings_button.sizeHint().width() + 24
         expanded_view = width >= max(220, top_width)
-        step_width = min(150, self.aggregation_button.minimumSizeHint().width())
+        short_view = width < 150
+        self.view_button.setText('View ▾' if short_view else 'Heatmap ▾' if self._book_depth else 'Ladder ▾')
+        show_units = expanded_view or width >= (self.view_button.sizeHint().width()
+            + self.value_mode_button.sizeHint().width() + self.settings_button.sizeHint().width() + 24)
+        auto_width = self.auto_button.sizeHint().width() + 4 if self._book_depth else 0
+        step_width = max(44, min(150, self.aggregation_button.minimumSizeHint().width(),
+                                max(44, width - 12 - auto_width)))
         self.aggregation_button.setMinimumWidth(step_width)
         required = step_width + 12
+        show_auto = self._book_depth and width >= required + auto_width
+        if show_auto:
+            required += auto_width
         show_rows = width >= required + self.density_button.sizeHint().width() + 4
         if show_rows:
             required += self.density_button.sizeHint().width() + 4
@@ -1462,16 +1479,15 @@ class OrderBookControlBar(QtWidgets.QFrame):
         show_step_buttons = width >= required + step_buttons_width
         if show_step_buttons:
             required += step_buttons_width
-        show_auto = self._book_depth and width >= required + self.auto_button.sizeHint().width() + 4
-        if show_auto:
-            required += self.auto_button.sizeHint().width() + 4
         show_step_label = width >= required + self.step_label.sizeHint().width() + 4
-        state = (expanded_view, show_auto, show_step_label, show_step_buttons, show_rows, step_width, self._book_depth)
+        state = (expanded_view, show_units, short_view, show_auto, show_step_label,
+                 show_step_buttons, show_rows, step_width, self._book_depth)
         if state == self._responsive_layout_state:
             return
         self._responsive_layout_state = state
         self._view_container.setVisible(expanded_view)
         self.view_button.setVisible(not expanded_view)
+        self.value_mode_button.setVisible(show_units)
         self.auto_button.setVisible(show_auto)
         self.step_label.setVisible(show_step_label)
         self.step_down_button.setVisible(show_step_buttons)
@@ -1974,6 +1990,8 @@ class _DomRasterCanvas(QtWidgets.QWidget):
         self._profile_totals = (0.0, 0.0)
         self._profile_scale_text = ''
         self._profile_footer_text: tuple[str, str] = ('', '')
+        self._profile_header_key = None
+        self._profile_header = ('', 0.0)
         self._profile_amount_width = 72.0
         self._profile_size_targets: dict[tuple[str, float], float] = {}
         self._profile_size_current: dict[tuple[str, float], float] = {}
@@ -2963,6 +2981,8 @@ class _DomRasterCanvas(QtWidgets.QWidget):
         self._book_validity_known = True
         self._book_valid = valid
         self._book_valid_reason = normalized_reason
+        if not valid:
+            self._cancel_pointer_interaction()
         if not changed:
             return
         self._prepared_sequence = -1
@@ -4626,12 +4646,7 @@ class _DomRasterCanvas(QtWidgets.QWidget):
 
 
     def _profile_animation_interval_ms(self) -> int:
-        screen = self.screen()
-        refresh = float(screen.refreshRate()) if screen is not None else 60.0
-        if not math.isfinite(refresh) or refresh < 30.0:
-            refresh = 60.0
-        # Reference cadence: 144 Hz -> ~7 ms, 240 Hz -> ~4 ms.
-        return max(4, min(16, int(round(1000.0 / refresh))))
+        return display_frame_interval_ms(self)
 
     def _sample_profile_animation(self, now: float) -> bool:
         elapsed = now - self._profile_animation_last_frame
@@ -5791,11 +5806,7 @@ class _DomRasterCanvas(QtWidgets.QWidget):
                             message, self._profile_price, Qt.AlignmentFlag.AlignHCenter, font=self._label_font)
         painter.restore()
         painter.fillRect(QtCore.QRectF(0.0, 0.0, width, float(g['table_top'])), self._profile_bg)
-        pair = self.symbol.removesuffix('USDT') + ' / USDT' if self.symbol.endswith('USDT') else self.symbol
-        text = f'Binance · {pair}'
-        if self._market_status == 'STALE':
-            text += ' · Stale'
-        pill_width = min(max(0.0, width - 16.0), math.ceil(self._label_metrics.horizontalAdvance(text)) + 18.0)
+        text, pill_width = self._profile_market_header(width)
         pill = QtCore.QRectF(4.0, 2.0, pill_width, max(0.0, float(g['profile_market_height']) - 4.0))
         painter.save()
         painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing, True)
@@ -5808,6 +5819,23 @@ class _DomRasterCanvas(QtWidgets.QWidget):
         if ready and g['profile_totals_height']:
             self._draw_profile_totals(painter, ruler_top, ruler_bottom)
         return rows_rendered
+
+    def _profile_market_header(self, width: float) -> tuple[str, float]:
+        spread = self._header_text.get('spread', ('--', None))[0] if width >= 380 else ''
+        resync = self._book_validity_known and not self._book_valid
+        key = (self.symbol, self._market_status, resync, spread, width, self._label_font)
+        if key != self._profile_header_key:
+            pair = self.symbol.removesuffix('USDT') + ' / USDT' if self.symbol.endswith('USDT') else self.symbol
+            status = 'Resync' if resync else {'LIVE': 'Live', 'DEGRADED': 'Delayed',
+                'STALE': 'Stale', 'CONNECTING': 'Connecting', 'SYNCING': 'Syncing'}.get(
+                    self._market_status, self._market_status.title())
+            text = f'Binance · {pair} · {status}'
+            if spread and spread != '--':
+                text += f' · Spread {spread}'
+            self._profile_header = (text, min(max(0.0, width - 16.0),
+                math.ceil(self._label_metrics.horizontalAdvance(text)) + 18.0))
+            self._profile_header_key = key
+        return self._profile_header
 
     def _draw_profile_totals(self, painter: QtGui.QPainter, ruler_top: float, ruler_bottom: float) -> None:
         """Keep ruler totals clear of individual quantities and midpoint digits."""
@@ -6310,7 +6338,7 @@ class _DomRasterCanvas(QtWidgets.QWidget):
 
     def _hover_level(self, position: QtCore.QPointF) -> tuple[int | None, float, OrderFlowDisplayLevel | None]:
         for index, (rect, price, level) in enumerate(self._hit_rows):
-            if rect.contains(position):
+            if rect.left() <= position.x() < rect.right() and rect.top() <= position.y() < rect.bottom():
                 return (index, price, level)
         return (None, 0.0, None)
 
@@ -6401,7 +6429,23 @@ class _DomRasterCanvas(QtWidgets.QWidget):
         self.presentation_changed.emit(self.presentation_state())
 
     def _profile_ruler_at(self, position: QtCore.QPointF) -> bool:
-        return self._book_depth and any(abs(position.y() - y) <= 5.0 for y in self._profile_rulers())
+        price = self._geometry.get('columns', {}).get('price', (0.0, 0.0))
+        return (self._book_depth and not price[0] <= position.x() < price[1]
+                and bool(self._geometry.get('profile_range_adjustable', False))
+                and any(abs(position.y() - y) <= 5.0 for y in self._profile_rulers()))
+
+    def _cancel_pointer_interaction(self) -> None:
+        active = self._profile_ruler_drag or self._profile_group_drag_origin is not None or self._column_resize_active
+        self._profile_ruler_drag = False
+        self._profile_group_drag_origin = None
+        self._profile_group_drag_moved = False
+        self._column_resize_active = False
+        self._column_resize_boundary = None
+        if QtWidgets.QWidget.mouseGrabber() is self:
+            self.releaseMouse()
+        self.setCursor(Qt.CursorShape.ArrowCursor)
+        if active:
+            self.presentation_changed.emit(self.presentation_state())
 
     def _move_profile_control(self, position: QtCore.QPointF) -> bool:
         if self._profile_ruler_drag:
@@ -6413,9 +6457,12 @@ class _DomRasterCanvas(QtWidgets.QWidget):
             y, _price = self._profile_group_drag_origin
             distance = y - position.y()
             self._profile_group_drag_moved |= abs(distance) >= 8.0
+            if not self._profile_group_drag_moved:
+                return True
             start = ORDER_FLOW_AGGREGATION_MULTIPLIERS.index(self._profile_group_drag_multiplier)
             index = max(0, min(len(ORDER_FLOW_AGGREGATION_MULTIPLIERS) - 1, start + int(distance / 24.0)))
-            self.set_aggregation_multiplier(ORDER_FLOW_AGGREGATION_MULTIPLIERS[index])
+            if ORDER_FLOW_AGGREGATION_MULTIPLIERS[index] != self.aggregation_multiplier:
+                self.set_aggregation_multiplier(ORDER_FLOW_AGGREGATION_MULTIPLIERS[index])
             return True
         return False
 
@@ -6538,6 +6585,10 @@ class _DomRasterCanvas(QtWidgets.QWidget):
         super().mouseReleaseEvent(event)
 
     def keyPressEvent(self, event: QtGui.QKeyEvent) -> None:
+        if event.key() == Qt.Key.Key_Escape:
+            self._cancel_pointer_interaction()
+            event.accept()
+            return
         if self._book_depth and event.key() in (Qt.Key.Key_PageUp, Qt.Key.Key_PageDown):
             self.set_depth_range(self._profile_ruler_fraction + (0.08 if event.key() == Qt.Key.Key_PageUp else -0.08))
             event.accept()
@@ -6650,6 +6701,8 @@ class _DomRasterProcess:
             if old.get(key) != config[key]:
                 setter(config[key])
         canvas._frame_interval = config['interval']
+        if canvas._profile_animation_timer.interval() != canvas._frame_interval:
+            canvas._profile_animation_timer.setInterval(canvas._frame_interval)
         canvas.set_interaction_priority(config.get('interaction_priority', False))
         canvas._raster_dpr = config['dpr']
         if old.get('size') != config['size'] or old.get('dpr') != config['dpr']:
@@ -6753,7 +6806,8 @@ class _DomRasterProcess:
         result['dirty_rects'] = tuple((r.x(), r.y(), r.width(), r.height()) for r in damage)
         canvas = self.canvas
         result['geometry'] = canvas._geometry
-        ready = canvas.snapshot is not None and canvas.snapshot.ready
+        ready = (canvas.snapshot is not None and canvas.snapshot.ready
+                 and canvas._market_status not in {'STALE', 'LAST KNOWN', 'SYNCING', 'CONNECTING'})
         result['prices'] = (tuple(row.level.price for row in canvas._ask_rows) if ready else (),
                             tuple(row.level.price for row in canvas._bid_rows) if ready else ())
         result['sequence'] = canvas._latest_applied_sequence
@@ -6916,6 +6970,7 @@ class OrderFlowDomCanvas(_DomRasterCanvas):
         self._process_link.ready.connect(self._adopt_raster)
         self._process_link.failed.connect(self._raster_failed)
         QtWidgets.QApplication.instance().aboutToQuit.connect(self._process_link.close)
+        self._display_refresh_observer = DisplayRefreshObserver(self, self._queue_configuration)
         self._queue_configuration()
 
     def _queue_configuration(self):
@@ -6988,6 +7043,10 @@ class OrderFlowDomCanvas(_DomRasterCanvas):
         self._send('set_microstructure_snapshot', (snapshot,))
 
     def set_book_validity(self, valid, reason=''):
+        self._book_validity_known = True
+        self._book_valid = bool(valid)
+        if not valid:
+            self._cancel_pointer_interaction()
         self._send('set_book_validity', (valid, reason))
 
     def set_trade_stream_status(self, active, reason=''):
@@ -7014,6 +7073,7 @@ class OrderFlowDomCanvas(_DomRasterCanvas):
             self._commit_pending_raster()
 
     def reset(self):
+        self._cancel_pointer_interaction()
         self._market_epoch += 1
         self._pending_raster = None
         self._display_frame = None
@@ -7040,6 +7100,7 @@ class OrderFlowDomCanvas(_DomRasterCanvas):
         QtWidgets.QWidget.showEvent(self, event)
 
     def hideEvent(self, event):
+        self._cancel_pointer_interaction()
         if self._process_link is not None:
             self._process_link.enable(False)
             self._pending_raster = None
@@ -7173,21 +7234,25 @@ class OrderFlowDomCanvas(_DomRasterCanvas):
 
     def _hover_level(self, position):
         frame = self._display_frame
-        if frame is None or frame['epoch'] != self._display_epoch:
+        if (frame is None or frame['epoch'] != self._display_epoch
+                or (self._book_validity_known and not self._book_valid)
+                or not self._native_frame(frame)):
             return None, 0.0, None
         g = frame['geometry']
         if g.get('bbo_only') or not g['margin'] <= position.x() <= g['margin']+g['inner_width']:
             return None, 0.0, None
+        # Layout arithmetic can land a few ULPs below an exact row boundary.
+        # Stabilize the index before choosing the price drawn in that row.
         if g.get('book_depth'):
             if not float(g.get('table_top', 0.0)) <= position.y() < g['height']:
                 return None, 0.0, None
             if position.y() < float(g['center_top']):
                 side = 0
-                slot = max(0, math.ceil((g['center_top'] - position.y()) / g['row_height']) - 1)
+                slot = max(0, math.ceil((g['center_top'] - position.y()) / g['row_height'] - 1e-9) - 1)
                 target = float(g.get('profile_ask_anchor', 0.0)) + slot * float(g.get('profile_step', 1.0))
             elif position.y() >= float(g['center_bottom']):
                 side = 1
-                slot = math.floor((position.y() - g['center_bottom']) / g['row_height'])
+                slot = math.floor((position.y() - g['center_bottom']) / g['row_height'] + 1e-9)
                 target = float(g.get('profile_anchor', 0.0)) - slot * float(g.get('profile_step', 1.0))
             else:
                 return None, 0.0, None
@@ -7195,10 +7260,12 @@ class OrderFlowDomCanvas(_DomRasterCanvas):
                 if math.isclose(price, target, rel_tol=0.0, abs_tol=max(1e-16, g.get('profile_step', 1.0) * 1e-5)):
                     return index, price, None
             return None, 0.0, None
-        if position.y() <= g['center_top']:
-            side, index = 0, max(0, math.ceil((g['center_top']-position.y())/g['row_height'])-1)
+        if not float(g['table_top']) <= position.y() < float(g['footer_top']):
+            return None, 0.0, None
+        if position.y() < g['center_top']:
+            side, index = 0, max(0, math.ceil((g['center_top']-position.y())/g['row_height'] - 1e-9)-1)
         elif position.y() >= g['center_bottom']:
-            side, index = 1, max(0, math.ceil((position.y()-g['center_bottom'])/g['row_height'])-1)
+            side, index = 1, max(0, math.floor((position.y()-g['center_bottom'])/g['row_height'] + 1e-9))
         else:
             return None, 0.0, None
         prices = frame['prices'][side]
@@ -7574,10 +7641,15 @@ class OrderBookWidget(QtWidgets.QWidget):
     def _show_context_menu(self, pos: QtCore.QPoint) -> None:
         """The floating market label opens the heatmap's compact controls."""
         menu = QtWidgets.QMenu(self)
-        view = menu.addAction('Heatmap view')
-        view.setCheckable(True)
-        view.setChecked(self.canvas._book_depth)
-        view.triggered.connect(lambda enabled: self.set_book_depth_enabled(enabled))
+        views = QtGui.QActionGroup(menu)
+        views.setExclusive(True)
+        for enabled, name in ((True, 'Heatmap'), (False, 'Price ladder')):
+            view = menu.addAction(name)
+            view.setCheckable(True)
+            view.setChecked(self.canvas._book_depth == enabled)
+            views.addAction(view)
+            view.triggered.connect(lambda checked=False, value=enabled:
+                self.set_book_depth_enabled(value) if checked else None)
         menu.addMenu(self.controls._aggregation_menu).setText('Grouping')
         menu.addMenu(self.controls._display_menu).setText('Display')
         menu.addSeparator()
@@ -7605,6 +7677,9 @@ class OrderBookWidget(QtWidgets.QWidget):
         else:
             source = snapshot.snapshot if isinstance(snapshot, OrderFlowPresentationFrame) else snapshot
         if isinstance(source, OrderFlowSnapshot):
+            if source.symbol != self.symbol or (self._latest_snapshot is not None
+                    and source.sequence <= self._latest_snapshot.sequence):
+                return
             self._ensure_tape_source().ingest_snapshot(source)
             self._latest_snapshot = source
         self.canvas.set_snapshot(payload)
@@ -7721,6 +7796,8 @@ class OrderBookWidget(QtWidgets.QWidget):
         normalized = str(symbol).upper().strip().removesuffix('.P') or 'BTCUSDT'
         changed = normalized != self.symbol
         self.symbol = normalized
+        if changed:
+            self._latest_snapshot = None
         self.canvas.set_symbol(normalized)
         if changed and self._tape is not None:
             self._tape.set_market(normalized, 0.0)

@@ -147,12 +147,47 @@ def display_refresh_rate(widget: QtWidgets.QWidget | None = None) -> float:
 
 
 def display_frame_interval_ms(widget: QtWidgets.QWidget | None = None) -> int:
-    """Best QTimer approximation of one active-display period.
+    """A QTimer period that never rounds below the display's target cadence.
 
     QTimer is millisecond-granularity, so 1 ms is the only implementation floor;
-    there is no product FPS ceiling such as 60/240/360 Hz.
+    round down to avoid 60 Hz becoming 58.8 Hz or 144 Hz becoming 142.9 Hz.
+    Actual chart presentation remains driven by composition completion.
     """
-    return max(1, int(round(1000.0 / display_refresh_rate(widget))))
+    return max(1, int(1000.0 / display_refresh_rate(widget)))
+
+
+class DisplayRefreshObserver(QtCore.QObject):
+    """Update worker pacing when a widget moves screens or the mode changes."""
+
+    def __init__(self, widget: QtWidgets.QWidget, changed: Callable[[], None]):
+        super().__init__(widget)
+        self._widget = widget
+        self._changed = changed
+        self._screen = None
+        widget.installEventFilter(self)
+        self._bind_screen()
+
+    def _bind_screen(self) -> None:
+        screen = self._widget.screen()
+        if screen is self._screen:
+            return
+        if self._screen is not None:
+            try:
+                self._screen.refreshRateChanged.disconnect(self._refresh_changed)
+            except (RuntimeError, TypeError):
+                pass
+        self._screen = screen
+        if screen is not None:
+            screen.refreshRateChanged.connect(self._refresh_changed)
+
+    def _refresh_changed(self, _rate: float) -> None:
+        self._changed()
+
+    def eventFilter(self, watched, event) -> bool:
+        if event.type() in (QtCore.QEvent.Type.ScreenChangeInternal, QtCore.QEvent.Type.Show):
+            self._bind_screen()
+            self._changed()
+        return False
 
 
 class PresentationClock(QtCore.QObject):
