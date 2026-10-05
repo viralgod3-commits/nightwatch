@@ -1387,13 +1387,9 @@ class InstrumentBar(QtWidgets.QFrame):
         if host is None:
             return
         margins = host_layout.contentsMargins()
-        # Preserve a visible outer gutter on both sides of the instrument bar,
-        # including when the adjacent right rail is hidden.
-        inset = self._normal_horizontal_margins[0]
-        rail = getattr(self.window(), "right_rail_host", None)
-        right_inset = inset + (host.mapTo(self.window(), QtCore.QPoint()).x() if rail is not None and rail.isVisible() else 0)
-        if margins.left() != inset or margins.right() != right_inset:
-            host_layout.setContentsMargins(inset, margins.top(), right_inset, margins.bottom())
+        left, right = self._normal_horizontal_margins
+        if margins.left() != left or margins.right() != right:
+            host_layout.setContentsMargins(left, margins.top(), right, margins.bottom())
 
     def set_chart_context_visible(self, visible: bool) -> None:
         self._chart_context_visible = bool(visible)
