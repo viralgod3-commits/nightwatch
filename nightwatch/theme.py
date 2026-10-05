@@ -199,7 +199,7 @@ def build_shell_stylesheet(theme_name: str, theme: dict[str, str], surfaces: dic
         QFrame#instrumentBar {{
             background: {t['header']}; border: 1px solid {t['border']};
             border-radius: {int(surface_style['block_radius'])}px;
-            margin: 0 0 0 6px;
+            margin: 0 6px;
         }}
         QFrame#instrumentContextSlot {{
             background: {t['panel2']}; border: 0;
