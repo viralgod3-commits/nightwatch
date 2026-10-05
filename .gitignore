@@ -6,3 +6,9 @@ __pycache__/
 *.sqlite3-wal
 *.sqlite3-shm
 *.recorder-spool.json
+
+# Test suites and test-only helpers stay local. The repository ships runtime code only.
+test/
+tests/
+*_test.py
+test_*.py

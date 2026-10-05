@@ -1,0 +1,24 @@
+name: Repository hygiene
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  reject-test-artifacts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 2
+      - name: Reject test artifacts
+        shell: bash
+        run: |
+          forbidden="$(git ls-files | grep -E '(^|/)(tests?|test_[^/]*|[^/]*_test)($|/|\\.py$)' || true)"
+          if [ -n "$forbidden" ]; then
+            printf '%s\n' 'Test files are intentionally excluded from this repository:' "$forbidden"
+            exit 1
+          fi

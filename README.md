@@ -5,8 +5,8 @@ Leaders, Sectors, and a Rotation scanner.
 
 ## Run
 
-Use standard CPython and an isolated environment. CI covers Python 3.12 and 3.14
-on Windows and Linux. The primary entry point supports Windows process spawning.
+Use standard CPython and an isolated environment. The primary entry point
+supports Windows process spawning.
 
 ```powershell
 py -m venv .venv
@@ -60,20 +60,3 @@ accepted protection intent cannot be reconstructed automatically.
 Collateral-percentage shortcuts require fresh, asset-specific available balance
 in confirmed Single-Asset Mode. Multi-Assets Mode requires manual quantity
 sizing; account-wide USD-equivalent collateral is not a specific asset balance.
-
-## Checks
-
-```powershell
-python -m pip install -r requirements-dev.txt
-python -m compileall -q nightwatch nightwatch_futures.py
-python -m pytest -q
-```
-
-Tests use an offline Qt platform, mocked exchange responses, real widgets and
-temporary SQLite journals. They do not submit exchange orders. The isolated
-shell test navigates all four workspaces and checks cooperative shutdown with
-network startup disabled.
-
-See [review patch status](docs/review-patch-status.md) for the complete finding
-mapping, behavior changes, validation, and remaining work. The architecture
-boundary checker is intentionally excluded from this patch and CI.
