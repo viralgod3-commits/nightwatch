@@ -1415,6 +1415,15 @@ class MainWindow(QtWidgets.QMainWindow):
             return
         actual, target, active = self.presentation_clock.frame_rate(1.0)
         bar.set_fps(actual, target, active=active)
+        canvas = self.orderbook.canvas
+        available = self._market_data_live and self._book_valid
+        state = canvas.performance_state() if available and canvas.isVisible() else {}
+        render_ms = (
+            state.get("last_snapshot_to_paint_ms")
+            if state.get("pipeline_dom_to_paint_samples", 0) > 0 and not state.get("worker_error")
+            else None
+        )
+        bar.set_orderbook_latency(render_ms, available=available)
         self._sync_execution_ticket_state()
 
     def _build_ui(self) -> None:

@@ -1476,6 +1476,13 @@ class TerminalStatusBar(QtWidgets.QStatusBar):
         self.venue.setObjectName("statusVenue")
         self.latency = QtWidgets.QLabel("Feed — · App —")
         self.latency.setObjectName("terminalLatency")
+        self.orderbook_latency = QtWidgets.QLabel("OB Net — · Render —")
+        self.orderbook_latency.setObjectName("statusOrderbookLatency")
+        self.orderbook_latency.setProperty("stale", True)
+        self.orderbook_latency.setToolTip(
+            "OB Net: Binance depth event → local WebSocket arrival, using the synchronized Binance clock.\n"
+            "Render: orderbook snapshot arrival → painted rows in the isolated renderer, including its queue and preparation."
+        )
         self.fps = QtWidgets.QLabel("FPS idle")
         self.fps.setObjectName("statusFrameRate")
         self.fps.setToolTip(
@@ -1492,7 +1499,7 @@ class TerminalStatusBar(QtWidgets.QStatusBar):
         self.market = QtWidgets.QLabel("Market: —")
         self.market.setObjectName("statusMarket")
         self._separators: list[QtWidgets.QFrame] = []
-        for widget in (self.connection, self.venue, self.latency, self.fps):
+        for widget in (self.connection, self.venue, self.latency, self.orderbook_latency, self.fps):
             row.addWidget(widget)
             divider = QtWidgets.QFrame()
             divider.setObjectName("statusSeparator")
@@ -1504,6 +1511,7 @@ class TerminalStatusBar(QtWidgets.QStatusBar):
         self.addPermanentWidget(surface, 1)
         self.messageChanged.connect(self.message_label.setText)
         self._last_latency_update = 0.0
+        self._orderbook_network_ms: float | None = None
         self._latency_stale = True
         self.latency.setProperty("stale", True)
         set_text_role(self.connection, TextRole.STATUS_TEXT)
@@ -1511,6 +1519,7 @@ class TerminalStatusBar(QtWidgets.QStatusBar):
         set_text_role(self.market, TextRole.STATUS_TEXT)
         set_text_role(self.message_label, TextRole.STATUS_MESSAGE)
         set_text_role(self.latency, TextRole.STATUS_LATENCY)
+        set_text_role(self.orderbook_latency, TextRole.STATUS_LATENCY)
         set_text_role(self.fps, TextRole.STATUS_LATENCY)
 
     def apply_tuning(self, values: dict[str, object]) -> None:
@@ -1529,7 +1538,28 @@ class TerminalStatusBar(QtWidgets.QStatusBar):
             set_text_role(widget, text_role)
         set_text_role(self.message_label, str(values["message_font_role"]))
         set_text_role(self.latency, str(values["latency_font_role"]))
+        set_text_role(self.orderbook_latency, str(values["latency_font_role"]))
         set_text_role(self.fps, str(values["latency_font_role"]))
+
+    def set_orderbook_latency(self, render_ms: float | None, *, available: bool) -> None:
+        """Present existing depth delivery and renderer measurements at status cadence."""
+        network_ms = self._orderbook_network_ms
+        age_ms = time.perf_counter() * 1000.0 - self._last_latency_update
+        if (not available or self._latency_stale or not 0.0 <= age_ms < 3000.0
+                or network_ms is not None and not math.isfinite(network_ms)):
+            network_ms = None
+        if not available or render_ms is None or not math.isfinite(render_ms) or render_ms < 0.0:
+            render_ms = None
+        network_text = f"{network_ms:,.0f} ms" if network_ms is not None else "—"
+        render_text = f"{render_ms:,.1f} ms" if render_ms is not None else "—"
+        text = f"OB Net {network_text} · Render {render_text}"
+        if self.orderbook_latency.text() != text:
+            self.orderbook_latency.setText(text)
+        stale = network_ms is None or render_ms is None
+        if bool(self.orderbook_latency.property("stale")) != stale:
+            self.orderbook_latency.setProperty("stale", stale)
+            self.orderbook_latency.style().unpolish(self.orderbook_latency)
+            self.orderbook_latency.style().polish(self.orderbook_latency)
 
     def set_fps(self, actual: float, target: float, *, active: bool) -> None:
         target_text = f"{target:.0f}" if target > 0 else "—"
@@ -1566,6 +1596,8 @@ class TerminalStatusBar(QtWidgets.QStatusBar):
         if self.market.text() != market_text:
             self.market.setText(market_text)
         if not live:
+            self._orderbook_network_ms = None
+            self.set_orderbook_latency(None, available=False)
             self._set_latency_stale(True)
             if self.latency.text() != "Feed — · App —":
                 self.latency.setText("Feed — · App —")
@@ -1614,6 +1646,7 @@ class TerminalStatusBar(QtWidgets.QStatusBar):
         if socket_mono_ms > 0.0 and gui_mono_ms >= socket_mono_ms:
             app_delay = gui_mono_ms - socket_mono_ms
 
+        self._orderbook_network_ms = feed_delay
         feed_text = f"{feed_delay:,.0f} ms" if feed_delay is not None else "—"
         app_text = (
             f"{app_delay:,.0f} ms"
