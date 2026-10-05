@@ -1348,7 +1348,7 @@ class InstrumentBar(QtWidgets.QFrame):
         self._queue_plot_alignment()
 
     def set_plot_alignment(self, container: QtWidgets.QWidget, host_layout: QtWidgets.QHBoxLayout) -> None:
-        """End the market bar at the rightmost visible chart's price axis."""
+        """Keep the market bar synchronized with the chart host geometry."""
         self._plot_alignment = container, host_layout
         container.installEventFilter(self)
         self._observe_alignment_chart(container.primary_chart)
@@ -1386,23 +1386,12 @@ class InstrumentBar(QtWidgets.QFrame):
         host = host_layout.parentWidget()
         if host is None:
             return
-        axis_x = 0
-        for chart in self._alignment_charts:
-            if not chart.isVisible():
-                continue
-            axis = chart.price_axis
-            if not axis.geometry().isEmpty():
-                # AxisItem's paint bounds include ticks extending into the plot;
-                # its local origin is the actual layout boundary.
-                position = chart.graphics.mapFromScene(axis.mapToScene(QtCore.QPointF(0, 0)))
-                edge = host.mapFromGlobal(chart.graphics.viewport().mapToGlobal(position)).x()
-                axis_x = max(axis_x, edge)
-        if not 0 < axis_x <= host.width():
-            return  # Qt has not yet committed matching chart/host geometry.
-        inset = host.width() - axis_x
         margins = host_layout.contentsMargins()
-        if margins.right() != inset:
-            host_layout.setContentsMargins(margins.left(), margins.top(), inset, margins.bottom())
+        # The bar covers the chart *and* price-axis width. Its row owns the
+        # equal left/right content gutter, so reserving the price-axis width
+        # here would make the right edge visibly wider than the left.
+        if margins.right() != 0:
+            host_layout.setContentsMargins(margins.left(), margins.top(), 0, margins.bottom())
 
     def set_chart_context_visible(self, visible: bool) -> None:
         self._chart_context_visible = bool(visible)
