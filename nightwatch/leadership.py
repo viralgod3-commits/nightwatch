@@ -5052,7 +5052,7 @@ class RotationBubbleChart(QtWidgets.QWidget):
         )
 
     def _separate_trails(self, groups):
-        """Pack overlapping vertical bands sideways without changing any heading."""
+        """Use spare horizontal space without changing a trail's shape or heading."""
         bounds = []
         for group in groups:
             circles = [(at, radius) for at, radius in zip(group["positions"], group["radii"])
@@ -5068,35 +5068,47 @@ class RotationBubbleChart(QtWidgets.QWidget):
                 bands.append([])
             bands[-1].append(entry)
         plot = self.plot_rect().adjusted(18, 0, -18, 0)
-        for band in bands:
+
+        def pack(band, low, high, spread=False):
             if len(band) < 2:
-                continue
-            band.sort(key=lambda entry: (entry[1].left(), entry[0]["point"]["symbol"]))
+                return True
+            band = sorted(band, key=lambda entry: (entry[1].left(), entry[0]["point"]["symbol"]))
             widths = [box.width() for _, box in band]
-            required = sum(widths) + 6 * (len(band) - 1)
-            if required > plot.width():
-                # Dense bands may overlap; packing must never push coins off-canvas.
-                continue
-            low, high = plot.left(), plot.right()
-            sides = {None if group["point"]["x"] == 0 or group["point"]["y"] == 0
-                     else group["point"]["x"] > 0 for group, _ in band}
-            if len(sides) == 1 and None not in sides and required <= plot.width() / 2 - 18:
-                if True in sides:
-                    low = plot.center().x() + 18
-                else:
-                    high = plot.center().x() - 18
+            free = high - low - sum(widths)
+            if free < 6 * (len(band) - 1):
+                return False
+            # Leave generous room between neighboring trails on a large canvas,
+            # but reduce it automatically when the available width is limited.
+            gap = max(6, free / (len(band) + 1)) if spread else 6
             lefts = []
             for i, (_, box) in enumerate(band):
-                previous = lefts[-1] + widths[i - 1] + 6 if i else low
+                previous = lefts[-1] + widths[i - 1] + gap if i else low
                 lefts.append(max(low, box.left(), previous))
             # Backward pass keeps the complete band inside the plot.
             for i in range(len(band) - 1, -1, -1):
-                limit = lefts[i + 1] - 6 if i + 1 < len(band) else high
+                limit = lefts[i + 1] - gap if i + 1 < len(band) else high
                 lefts[i] = min(lefts[i], limit - widths[i])
             for (group, box), left in zip(band, lefts):
                 offset = QtCore.QPointF(left - box.left(), 0)
                 group["positions"] = [at + offset if at is not None else None
                                       for at in group["positions"]]
+                box.translate(offset)
+            return True
+
+        for band in bands:
+            sides = {-1: [], 0: [], 1: []}
+            for group, box in band:
+                point = group["point"]
+                side = 0 if point["x"] == 0 or point["y"] == 0 else 1 if point["x"] > 0 else -1
+                sides[side].append((group, box))
+            left_fits = pack(sides[-1], plot.left(), plot.center().x() - 18, spread=True)
+            right_fits = pack(sides[1], plot.center().x() + 18, plot.right(), spread=True)
+            if len(sides[0]) == len(band):
+                pack(band, plot.left(), plot.right(), spread=True)
+            else:
+                # Resolve any remaining overlap with axis/neutral trails or a
+                # band that cannot fit in one half. Whole trails only move in x.
+                pack(band, plot.left(), plot.right(), spread=not (left_fits and right_fits))
 
     @staticmethod
     def _label_clear(box, occupied, circles, segments):
@@ -5241,6 +5253,12 @@ class RotationBubbleChart(QtWidgets.QWidget):
             offsets = [(radius + 7, -height / 2 - 4), (-radius - width - 7, -height / 2 - 4),
                        (radius + 7, 7), (-radius - width - 7, 7),
                        (-width / 2, -radius - height - 7), (-width / 2, radius + 7)]
+            trail_top = min(pos.y() - bead for pos, bead in zip(group["positions"], group["radii"])
+                            if pos is not None)
+            trail_bottom = max(pos.y() + bead for pos, bead in zip(group["positions"], group["radii"])
+                               if pos is not None)
+            offsets.extend([(-width / 2, trail_top - at.y() - height - 7),
+                            (-width / 2, trail_bottom - at.y() + 7)])
             # Search clear space around each trail without moving its beads.
             def label_offsets():
                 yield from offsets
@@ -5523,7 +5541,12 @@ class RotationScannerWidget(LeadershipTimelineWidget):
         self.empty_candidates.setContentsMargins(10, 0, 10, 6)
         table_layout.addWidget(self.empty_candidates)
         center_layout.addWidget(table_panel, 1)
-        outer.addWidget(center, 1)
+        self.rotation_splitter = QtWidgets.QSplitter(Qt.Orientation.Horizontal)
+        self.rotation_splitter.setChildrenCollapsible(False)
+        self.rotation_splitter.setHandleWidth(8)
+        self.rotation_splitter.addWidget(center)
+        self.rotation_splitter.setStretchFactor(0, 1)
+        outer.addWidget(self.rotation_splitter, 1)
 
         self.inspector = QtWidgets.QFrame()
         self.inspector.setObjectName("rotationInspector")
@@ -5597,7 +5620,19 @@ class RotationScannerWidget(LeadershipTimelineWidget):
         self.open_selected = _rotation_button("Open chart", "rotationPrimary")
         self.open_selected.clicked.connect(lambda: self.symbol_selected.emit(self.selected) if self.selected else None)
         self.actions_layout.addWidget(self.open_selected)
-        _workspace_drawer(self, self.inspector)
+        # Reserve inspector space instead of covering the right-hand quadrants.
+        self.detail_drawer = QtWidgets.QScrollArea()
+        self.detail_drawer.setObjectName("workspaceDrawer")
+        self.detail_drawer.setWidgetResizable(True)
+        self.detail_drawer.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
+        self.detail_drawer.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.detail_drawer.setMinimumSize(0, 150)
+        self.detail_drawer.setWidget(self.inspector)
+        self.rotation_splitter.addWidget(self.detail_drawer)
+        self.rotation_splitter.setStretchFactor(1, 0)
+        self._rotation_layout_horizontal = None
+        self.detail_drawer.hide()
+        self.context_button.toggled.connect(self._show_coin_detail)
         self.actions_layout.addWidget(self.context_button)
         self.actions_layout.addWidget(self.refresh_button)
 
@@ -5626,6 +5661,24 @@ class RotationScannerWidget(LeadershipTimelineWidget):
         self.search_shortcut.activated.connect(self.search.setFocus)
         self._sync_watch()
         _workspace_finish(self)
+
+    def _show_coin_detail(self, visible):
+        self.detail_drawer.setVisible(visible)
+        self._arrange_rotation_detail(reset_sizes=visible)
+
+    def _arrange_rotation_detail(self, reset_sizes=False):
+        horizontal = self.width() >= 1180
+        if horizontal != self._rotation_layout_horizontal or reset_sizes:
+            self._rotation_layout_horizontal = horizontal
+            self.rotation_splitter.setOrientation(Qt.Orientation.Horizontal if horizontal else Qt.Orientation.Vertical)
+            self.rotation_splitter.setSizes(
+                [max(480, self.main_content.width() - 328), 320] if horizontal else
+                [max(340, self.main_content.height() - 188), 180])
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if hasattr(self, "rotation_splitter"):
+            self._arrange_rotation_detail()
 
     def _apply_fixed_palette(self):
         self.theme = dict(ROTATION_PALETTE)
