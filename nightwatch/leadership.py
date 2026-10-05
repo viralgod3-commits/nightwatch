@@ -3681,11 +3681,11 @@ class _SectorOverviewSectorDetail(QtWidgets.QFrame):
         header = QtWidgets.QHBoxLayout()
         self.title = ElidedLabel("Select a sector")
         set_text_role(self.title, TextRole.UI_HEADING)
-        self.window = QtWidgets.QLabel("4H")
-        self.window.setObjectName("sectorMuted")
-        set_text_role(self.window, TextRole.UI_LABEL)
+        self.timeframe_label = QtWidgets.QLabel("4H")
+        self.timeframe_label.setObjectName("sectorMuted")
+        set_text_role(self.timeframe_label, TextRole.UI_LABEL)
         header.addWidget(self.title, 1)
-        header.addWidget(self.window)
+        header.addWidget(self.timeframe_label)
         layout.addLayout(header)
         self.performance = QtWidgets.QLabel("—")
         set_text_role(self.performance, TextRole.MARKET_VALUE_HERO)
@@ -3743,7 +3743,7 @@ class _SectorOverviewSectorDetail(QtWidgets.QFrame):
 
     def update_data(self, sector: str, metrics: dict[str, Any], timeframe_label: str) -> None:
         self.title.setText(sector or "No matching sectors")
-        self.window.setText(timeframe_label)
+        self.timeframe_label.setText(timeframe_label)
         performance = metrics.get("performance")
         color = (self.theme["muted"] if not _sector_overview_finite(performance) else
                  self.theme["green"] if performance >= 0 else self.theme["red"])
