@@ -1203,6 +1203,7 @@ class _OrderBookSurfaceButton(QtWidgets.QPushButton):
             f"QPushButton:focus {{ border-color: {p['mid']}; }}"
             f"QPushButton:disabled {{ color: #454B53; background: transparent; border-color: {p['grid']}; }}"
             f"QPushButton#orderBookViewChoice {{ border-color: transparent; }}"
+            f"QPushButton#orderBookViewChoice:checked {{ background: {p['grid']}; }}"
             f"QPushButton#orderBookViewChoice:focus {{ border-color: {p['control_hover_line']}; }}"
         )
 
@@ -1446,7 +1447,7 @@ class OrderBookControlBar(QtWidgets.QFrame):
             menu.setStyleSheet(
                 f"QMenu {{ background: {p['bg']}; color: {p['text']}; border: 1px solid {p['grid_strong']}; padding: 5px; }}"
                 f"QMenu::item {{ padding: 7px 24px 7px 12px; border-radius: 4px; }}"
-                f"QMenu::item:selected {{ background: {p['control_hover']}; }}"
+                f"QMenu::item:selected {{ background: {p['grid']}; color: {p['text']}; }}"
                 f"QMenu::separator {{ height: 1px; background: {p['grid']}; margin: 5px 6px; }}"
             )
 
@@ -1469,16 +1470,17 @@ class OrderBookControlBar(QtWidgets.QFrame):
                                 max(44, width - 12 - auto_width)))
         self.aggregation_button.setMinimumWidth(step_width)
         required = step_width + 12
+        # Keep grouping controls ahead of row spacing on narrow docks.
         show_auto = self._book_depth and width >= required + auto_width
         if show_auto:
             required += auto_width
-        show_rows = width >= required + self.density_button.sizeHint().width() + 4
-        if show_rows:
-            required += self.density_button.sizeHint().width() + 4
         step_buttons_width = self.step_down_button.sizeHint().width() + self.step_up_button.sizeHint().width() + 8
         show_step_buttons = width >= required + step_buttons_width
         if show_step_buttons:
             required += step_buttons_width
+        show_rows = width >= required + self.density_button.sizeHint().width() + 4
+        if show_rows:
+            required += self.density_button.sizeHint().width() + 4
         show_step_label = width >= required + self.step_label.sizeHint().width() + 4
         state = (expanded_view, show_units, short_view, show_auto, show_step_label,
                  show_step_buttons, show_rows, step_width, self._book_depth)
@@ -1990,8 +1992,6 @@ class _DomRasterCanvas(QtWidgets.QWidget):
         self._profile_totals = (0.0, 0.0)
         self._profile_scale_text = ''
         self._profile_footer_text: tuple[str, str] = ('', '')
-        self._profile_header_key = None
-        self._profile_header = ('', 0.0)
         self._profile_amount_width = 72.0
         self._profile_size_targets: dict[tuple[str, float], float] = {}
         self._profile_size_current: dict[tuple[str, float], float] = {}
@@ -2045,6 +2045,8 @@ class _DomRasterCanvas(QtWidgets.QWidget):
         self._metric_items: list[tuple[str, str, QtGui.QColor]] = []
         self._footer_items: list[tuple[str, str, QtGui.QColor]] = []
         self._prepared_header_layout: dict[str, object] = {}
+        self._profile_header_key = None
+        self._profile_header_items = ()
         self._footer_depth_summary = (0.5, '—', '—', False)
         self._prepared_column_labels: dict[str, str] = {}
         self._prepared_metric_draw_items: tuple[tuple[str, str, QtGui.QColor], ...] = ()
@@ -2474,7 +2476,7 @@ class _DomRasterCanvas(QtWidgets.QWidget):
         return display_tick * self.price_tick_size
 
     def _initialize_profile_grouping(self, snapshot: OrderFlowSnapshot) -> None:
-        if (not self._book_depth or not self._profile_auto_grouping or not snapshot.ready
+        if (snapshot.symbol != self.symbol or not self._book_depth or not self._profile_auto_grouping or not snapshot.ready
                 or self.price_tick_size <= 0.0 or self._profile_grouped_symbol == snapshot.symbol):
             return
         mid = snapshot.midpoint or snapshot.best_bid
@@ -2770,6 +2772,7 @@ class _DomRasterCanvas(QtWidgets.QWidget):
             self._visual_scales[key] = 0.0
 
     def reset(self) -> None:
+        self._cancel_pointer_interaction()
         self._snapshot_prepare_timer.stop()
         self._freshness_timer.stop()
         self._market_signal_expiry_timer.stop()
@@ -3294,7 +3297,7 @@ class _DomRasterCanvas(QtWidgets.QWidget):
         """
         if self._book_depth:
             return (
-                (self.symbol, self._market_status,
+                (self.symbol, self._market_status, self._profile_header_key,
                  self._profile_ruler_totals if self._geometry.get('profile_totals_height') else ()), (),
                 (self._last_trade_price, self.snapshot.midpoint if self.snapshot is not None else 0.0,
                  self._profile_ruler_totals),
@@ -4307,6 +4310,31 @@ class _DomRasterCanvas(QtWidgets.QWidget):
             'show_source': False,
             'spread_text': f"SPREAD {self._header_text.get('spread', ('--', self._muted))[0]}",
         }
+        if self._book_depth:
+            height = float(self._geometry['profile_market_height'])
+            spread = self._header_text.get('spread', ('', self._muted))[0]
+            resync = self._book_validity_known and not self._book_valid
+            color = self._header_text.get('status', ('', self._muted))[1]
+            key = (width, height, self.symbol, self._market_status, resync, spread,
+                   self._label_font_key, self._text.rgba(), self._muted.rgba(), color.rgba())
+            if key != self._profile_header_key:
+                self._profile_header_key = key
+                status = 'Resync' if resync else {'LIVE': 'Live', 'DEGRADED': 'Delayed', 'STALE': 'Stale',
+                          'LAST KNOWN': 'Resync', 'SYNCING': 'Syncing', 'CONNECTING': 'Connecting'}.get(self._market_status, '')
+                status_width = min(max(0.0, width - 8.0), self._label_metrics.horizontalAdvance(status) + 4.0)
+                status_left = width - 4.0 - status_width
+                pair = self.symbol.removesuffix('USDT') + ' / USDT' if self.symbol.endswith('USDT') else self.symbol
+                pair = self._label_metrics.elidedText(pair, Qt.TextElideMode.ElideRight, max(0, int(status_left - 16.0)))
+                pair_width = min(max(0.0, status_left - 12.0), self._label_metrics.horizontalAdvance(pair) + 4.0)
+                items = [(QtCore.QRectF(4.0, 0.0, pair_width, height), pair, self._text),
+                         (QtCore.QRectF(status_left, 0.0, status_width, height), status, color)]
+                spread_text = f'Spread {spread}'
+                spread_left = pair_width + 16.0
+                spread_width = status_left - spread_left - 8.0
+                if (self._market_status == 'LIVE' and not resync and spread and spread != '--'
+                        and self._label_metrics.horizontalAdvance(spread_text) <= spread_width):
+                    items.append((QtCore.QRectF(spread_left, 0.0, spread_width, height), spread_text, self._muted))
+                self._profile_header_items = tuple(items)
 
     def _prepare_column_header_content(self):
         unit = 'USDT' if self._value_mode == 'quote' else 'Qty'
@@ -5806,36 +5834,12 @@ class _DomRasterCanvas(QtWidgets.QWidget):
                             message, self._profile_price, Qt.AlignmentFlag.AlignHCenter, font=self._label_font)
         painter.restore()
         painter.fillRect(QtCore.QRectF(0.0, 0.0, width, float(g['table_top'])), self._profile_bg)
-        text, pill_width = self._profile_market_header(width)
-        pill = QtCore.QRectF(4.0, 2.0, pill_width, max(0.0, float(g['profile_market_height']) - 4.0))
-        painter.save()
-        painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing, True)
-        painter.setPen(QtGui.QPen(self._grid, self._physical_pixel_width()))
-        painter.setBrush(self._profile_bg)
-        painter.drawRoundedRect(pill, 4.0, 4.0)
-        painter.restore()
-        self._draw_text(painter, pill, text, self._text, Qt.AlignmentFlag.AlignLeft,
-                        font=self._label_font, pad=8.0)
+        for rect, text, color in self._profile_header_items:
+            self._draw_text(painter, rect, text, color, Qt.AlignmentFlag.AlignLeft,
+                            font=self._label_font, pad=0.0)
         if ready and g['profile_totals_height']:
             self._draw_profile_totals(painter, ruler_top, ruler_bottom)
         return rows_rendered
-
-    def _profile_market_header(self, width: float) -> tuple[str, float]:
-        spread = self._header_text.get('spread', ('--', None))[0] if width >= 380 else ''
-        resync = self._book_validity_known and not self._book_valid
-        key = (self.symbol, self._market_status, resync, spread, width, self._label_font)
-        if key != self._profile_header_key:
-            pair = self.symbol.removesuffix('USDT') + ' / USDT' if self.symbol.endswith('USDT') else self.symbol
-            status = 'Resync' if resync else {'LIVE': 'Live', 'DEGRADED': 'Delayed',
-                'STALE': 'Stale', 'CONNECTING': 'Connecting', 'SYNCING': 'Syncing'}.get(
-                    self._market_status, self._market_status.title())
-            text = f'Binance · {pair} · {status}'
-            if spread and spread != '--':
-                text += f' · Spread {spread}'
-            self._profile_header = (text, min(max(0.0, width - 16.0),
-                math.ceil(self._label_metrics.horizontalAdvance(text)) + 18.0))
-            self._profile_header_key = key
-        return self._profile_header
 
     def _draw_profile_totals(self, painter: QtGui.QPainter, ruler_top: float, ruler_bottom: float) -> None:
         """Keep ruler totals clear of individual quantities and midpoint digits."""
@@ -6337,8 +6341,13 @@ class _DomRasterCanvas(QtWidgets.QWidget):
         }
 
     def _hover_level(self, position: QtCore.QPointF) -> tuple[int | None, float, OrderFlowDisplayLevel | None]:
+        if not self._geometry['table_top'] <= position.y() < self._geometry['footer_top']:
+            return (None, 0.0, None)
         for index, (rect, price, level) in enumerate(self._hit_rows):
-            if rect.left() <= position.x() < rect.right() and rect.top() <= position.y() < rect.bottom():
+            # Adjacent rows share an edge; use the same half-open intervals as
+            # the GUI endpoint so hover and click identify the same price.
+            if (rect.left() <= position.x() < rect.right()
+                    and rect.top() <= position.y() < rect.bottom()):
                 return (index, price, level)
         return (None, 0.0, None)
 
@@ -6429,9 +6438,9 @@ class _DomRasterCanvas(QtWidgets.QWidget):
         self.presentation_changed.emit(self.presentation_state())
 
     def _profile_ruler_at(self, position: QtCore.QPointF) -> bool:
-        price = self._geometry.get('columns', {}).get('price', (0.0, 0.0))
-        return (self._book_depth and not price[0] <= position.x() < price[1]
-                and bool(self._geometry.get('profile_range_adjustable', False))
+        return (self._book_depth and bool(self._geometry.get('profile_range_adjustable'))
+                and float(self._geometry.get('heat_left', self.width())) <= position.x() < self.width()
+                and float(self._geometry.get('table_top', 0.0)) <= position.y() < self.height()
                 and any(abs(position.y() - y) <= 5.0 for y in self._profile_rulers()))
 
     def _cancel_pointer_interaction(self) -> None:
@@ -6461,8 +6470,11 @@ class _DomRasterCanvas(QtWidgets.QWidget):
                 return True
             start = ORDER_FLOW_AGGREGATION_MULTIPLIERS.index(self._profile_group_drag_multiplier)
             index = max(0, min(len(ORDER_FLOW_AGGREGATION_MULTIPLIERS) - 1, start + int(distance / 24.0)))
-            if ORDER_FLOW_AGGREGATION_MULTIPLIERS[index] != self.aggregation_multiplier:
-                self.set_aggregation_multiplier(ORDER_FLOW_AGGREGATION_MULTIPLIERS[index])
+            selected = ORDER_FLOW_AGGREGATION_MULTIPLIERS[index]
+            # A click's normal pointer jitter must not turn off Auto or queue
+            # configuration changes. Only an actual grouping step does that.
+            if selected != self.aggregation_multiplier:
+                self.set_aggregation_multiplier(selected)
             return True
         return False
 
@@ -6574,7 +6586,9 @@ class _DomRasterCanvas(QtWidgets.QWidget):
         if event.button() == Qt.MouseButton.LeftButton and self._profile_group_drag_origin is not None:
             _, price = self._profile_group_drag_origin
             self._profile_group_drag_origin = None
-            if not self._profile_group_drag_moved and self.aggregation_multiplier == 1:
+            _, released_price, _ = self._hover_level(event.position())
+            if (not self._profile_group_drag_moved and self.aggregation_multiplier == 1
+                    and released_price == price):
                 self.price_selected.emit(price)
             event.accept()
             return
@@ -7043,6 +7057,7 @@ class OrderFlowDomCanvas(_DomRasterCanvas):
         self._send('set_microstructure_snapshot', (snapshot,))
 
     def set_book_validity(self, valid, reason=''):
+        # Keep input in sync immediately, before the worker paints the status.
         self._book_validity_known = True
         self._book_valid = bool(valid)
         if not valid:
@@ -7279,8 +7294,10 @@ class OrderFlowDomCanvas(_DomRasterCanvas):
             return
         if self._profile_ruler_at(event.position()):
             self.setCursor(Qt.CursorShape.SizeVerCursor)
+            self._send('pointer', (-1.0, -1.0))
         elif self._book_depth and 0.0 <= event.position().y() < float(self._geometry.get('table_top', 0.0)):
             self.setCursor(Qt.CursorShape.PointingHandCursor)
+            self._send('pointer', (-1.0, -1.0))
         elif self._column_resize_active:
             self._update_column_resize(event.position().x())
         else:
@@ -7676,12 +7693,11 @@ class OrderBookWidget(QtWidgets.QWidget):
             source = snapshot[0].snapshot
         else:
             source = snapshot.snapshot if isinstance(snapshot, OrderFlowPresentationFrame) else snapshot
-        if isinstance(source, OrderFlowSnapshot):
-            if source.symbol != self.symbol or (self._latest_snapshot is not None
-                    and source.sequence <= self._latest_snapshot.sequence):
-                return
-            self._ensure_tape_source().ingest_snapshot(source)
-            self._latest_snapshot = source
+        if (not isinstance(source, OrderFlowSnapshot) or source.symbol != self.symbol
+                or source.sequence <= self.canvas._latest_received_sequence):
+            return
+        self._ensure_tape_source().ingest_snapshot(source)
+        self._latest_snapshot = source
         self.canvas.set_snapshot(payload)
 
     def set_microstructure_snapshot(self, snapshot: object) -> None:
