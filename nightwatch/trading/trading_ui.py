@@ -47,8 +47,8 @@ def _trading_stylesheet(theme: dict[str, str]) -> str:
         QScrollArea#deskTicketScroll {{ background: {t['panel']}; }}
         QWidget#tradingWorkspace {{ background: {t['panel']}; }}
         QFrame#tradingWorkspaceHeader {{ background: transparent; border: 0; border-bottom: 1px solid {t['border']}; }}
-        QTabBar#tradingViewSwitch::tab {{ background: {t['control']}; color: {t['muted']}; border: 1px solid {t['border']}; padding: 4px 10px; }}
-        QTabBar#tradingViewSwitch::tab:selected {{ background: {t['control_hover']}; color: {t['text']}; border-color: {t['control_border']}; border-bottom: 2px solid {t['cyan']}; }}
+        QTabBar#tradingViewSwitch::tab {{ background: {t['control']}; color: {t['muted']}; border: 0; border-bottom: 2px solid transparent; padding: 5px 10px; }}
+        QTabBar#tradingViewSwitch::tab:selected {{ background: {t['control_hover']}; color: {t['text']}; border-bottom-color: {t['cyan']}; }}
         QTabBar#tradingViewSwitch::tab:hover {{ color: {t['text']}; }}
         QScrollBar:vertical {{ background: {t['panel']}; width: 3px; margin: 0; border: 0; }}
         QScrollBar:horizontal {{ background: {t['panel']}; height: 3px; margin: 0; border: 0; }}
@@ -132,7 +132,10 @@ def _trading_stylesheet(theme: dict[str, str]) -> str:
         }}
         QFrame#positionDeskRow[selected="true"] {{ background: {t['control']}; border-left: 3px solid {t['cyan']}; }}
         QFrame#positionDeskDetails, QFrame#deskRiskMetrics {{ background: transparent; border: 0; border-top: 1px solid {t['border']}; }}
-        QTabBar#ticketIntentTabs::tab {{ border: 1px solid {t['control_border']}; border-bottom-width: 2px; padding: 3px; }}
+        QTabBar#ticketIntentTabs::tab {{ border: 0; border-bottom: 2px solid {t['border']}; padding: 6px 10px; }}
+        QTabBar#ticketOrderTypes::tab {{ padding: 6px 10px; }}
+        QPushButton#protectionButton {{ background: transparent; border-color: transparent; padding: 3px 8px; }}
+        QPushButton#protectionButton:hover {{ background: {t['control_hover']}; }}
         QTabBar#ticketIntentTabs[intent="reduce"]::tab:selected {{ color: {t['red']}; border-color: {t['red']}; }}
         QTabBar#ticketIntentTabs::tab:selected {{ border-bottom-color: {t['cyan']}; }}
         QLineEdit#deskReduceAmount {{ padding: 3px 8px; }}
@@ -144,7 +147,7 @@ def _trading_stylesheet(theme: dict[str, str]) -> str:
         QSlider#ticketAllocation:focus::handle:horizontal {{ border-color: {t['cyan']}; }}
         QPushButton#sizePresetButton {{ background: transparent; color: {t['muted']}; border: 0; padding: 0; min-height: 0; }}
         QPushButton#sizePresetButton:hover, QPushButton#sizePresetButton:checked {{ color: {t['cyan']}; }}
-        QFrame#ticketEstimateRow {{ border: 0; border-bottom: 1px solid {t['border']}; background: transparent; }}
+        QFrame#ticketEstimateRow {{ border: 0; background: transparent; }}
         QFrame#accountEmptyState {{ background: transparent; color: {t['muted']}; border: 0; }}
         QPushButton#dangerButton {{ color: {t['red']}; }}
         QPushButton#dangerButton:hover {{ border-color: {t['red']}; }}
@@ -1289,7 +1292,8 @@ class OrderPanel(QtWidgets.QWidget):
 
         self.order_type_tabs = QtWidgets.QTabBar()
         self.order_type_tabs.setObjectName("ticketOrderTypes")
-        self.order_type_tabs.setExpanding(True)
+        self.order_type_tabs.setExpanding(False)
+        self.order_type_tabs.setSizePolicy(QtWidgets.QSizePolicy.Policy.Ignored, QtWidgets.QSizePolicy.Policy.Fixed)
         self.order_type_tabs.setDrawBase(False)
         self.order_type_tabs.setUsesScrollButtons(True)
         self.order_type_tabs.setElideMode(Qt.TextElideMode.ElideNone)
@@ -1340,7 +1344,7 @@ class OrderPanel(QtWidgets.QWidget):
         self._order_card_layout = order_card_layout
         form = QtWidgets.QGridLayout()
         form.setHorizontalSpacing(10)
-        form.setVerticalSpacing(9)
+        form.setVerticalSpacing(12)
         form.setAlignment(Qt.AlignmentFlag.AlignTop)
         self.type_combo = CompactTradeComboBox()
         self.type_combo.setObjectName("tradeTicketPrimaryCombo")
@@ -1530,7 +1534,7 @@ class OrderPanel(QtWidgets.QWidget):
         options_layout.setContentsMargins(0, 0, 0, 0)
         options_layout.setSpacing(6)
         execution_row = QtWidgets.QHBoxLayout()
-        execution_row.setSpacing(8)
+        execution_row.setSpacing(16)
         self.time_in_force_field = QtWidgets.QWidget()
         for container, control in (
             (self.time_in_force_field, self.time_in_force),
@@ -1542,12 +1546,13 @@ class OrderPanel(QtWidgets.QWidget):
             field_layout.addWidget(control)
             control.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding,
                                   QtWidgets.QSizePolicy.Policy.Fixed)
-            execution_row.addWidget(container, 1)
+            execution_row.addWidget(container)
         self.protection_field = QtWidgets.QWidget()
         protection_layout = QtWidgets.QHBoxLayout(self.protection_field)
         protection_layout.setContentsMargins(0, 0, 0, 0)
         protection_layout.addWidget(self.protection_button)
-        execution_row.addWidget(self.protection_field, 1)
+        execution_row.addWidget(self.protection_field)
+        execution_row.addStretch(1)
         options_layout.addLayout(execution_row)
 
         controls_cluster = QtWidgets.QVBoxLayout()
@@ -1706,8 +1711,8 @@ class OrderPanel(QtWidgets.QWidget):
                     detach(child)
                     child.deleteLater()
         detach(layout)
-        layout.setContentsMargins(10, 8, 10, 10)
-        layout.setSpacing(8)
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(12)
         self.ticket_scroll = TicketScrollArea()
         self.ticket_scroll.setObjectName("deskTicketScroll")
         self.ticket_scroll.setWidgetResizable(True)
@@ -1720,12 +1725,12 @@ class OrderPanel(QtWidgets.QWidget):
         body = QtWidgets.QWidget()
         body.setObjectName("responsiveOrderTicket")
         content = QtWidgets.QVBoxLayout(body)
-        content.setContentsMargins(0, 0, 2, 0)
-        content.setSpacing(8)
+        content.setContentsMargins(0, 0, 0, 0)
+        content.setSpacing(16)
         self._desk_layout = content
         self.intent_tabs = QtWidgets.QTabBar()
         self.intent_tabs.setObjectName("ticketIntentTabs")
-        self.intent_tabs.setExpanding(True)
+        self.intent_tabs.setExpanding(False)
         self.intent_tabs.setDrawBase(False)
         set_text_role(self.intent_tabs, TextRole.UI_CONTROL)
         self.intent_tabs.addTab("Open")
@@ -1734,8 +1739,9 @@ class OrderPanel(QtWidgets.QWidget):
         intent_row = QtWidgets.QHBoxLayout()
         intent_row.setSpacing(8)
         self._intent_row = intent_row
-        intent_row.addWidget(self.intent_tabs, 2)
-        intent_row.addWidget(self.leverage_field, 1)
+        intent_row.addWidget(self.intent_tabs)
+        intent_row.addStretch(1)
+        intent_row.addWidget(self.leverage_field)
         content.addLayout(intent_row)
         self.reduce_context = QtWidgets.QWidget()
         context = QtWidgets.QVBoxLayout(self.reduce_context)
@@ -1773,7 +1779,7 @@ class OrderPanel(QtWidgets.QWidget):
         self.reduce_amount_edit.setPlaceholderText("Close quantity")
         self.reduce_amount_edit.setAccessibleName("Close quantity in base asset")
         set_text_role(self.reduce_amount_edit, TextRole.TABLE_VALUE)
-        self.reduce_unit = QtWidgets.QLabel("")
+        self.reduce_unit = ElidedLabel("")
         set_text_role(self.reduce_unit, TextRole.UI_LABEL)
         self.reduce_amount_caption = QtWidgets.QLabel("Amount")
         self.reduce_amount_caption.setObjectName("ticketFieldCaption")
@@ -1800,7 +1806,7 @@ class OrderPanel(QtWidgets.QWidget):
         set_text_role(self.mark_value, TextRole.TABLE_VALUE)
         mark.addWidget(caption)
         mark.addWidget(self.mark_value, 1)
-        content.addWidget(self.mark_row)
+        content.insertWidget(content.indexOf(self._order_card), self.mark_row)
         self.reduce_only.hide()
         content.addWidget(self.options_bar)
         self.reduce_policy_label = ElidedLabel("")
@@ -1834,13 +1840,16 @@ class OrderPanel(QtWidgets.QWidget):
         self.reduce_submit.setAutoDefault(False)
         set_text_role(self.reduce_submit, TextRole.UI_CONTROL)
         self.reduce_submit.clicked.connect(self._submit_desk_reduce)
-        layout.addWidget(self.reduce_submit)
+        layout.addWidget(self.reduce_submit, 0, Qt.AlignmentFlag.AlignLeft)
         self.open_submit_bar = QtWidgets.QWidget()
         side = QtWidgets.QHBoxLayout(self.open_submit_bar)
         side.setContentsMargins(0, 0, 0, 0)
         side.setSpacing(8)
         side.addWidget(self.buy_button, 1)
         side.addWidget(self.sell_button, 1)
+        self.buy_button.setMaximumWidth(220)
+        self.sell_button.setMaximumWidth(220)
+        self.open_submit_bar.setMaximumWidth(448)
         layout.addWidget(self.open_submit_bar)
         layout.addStretch(1)
         # Reparenting and responsive reflow must preserve the visual tab order.
@@ -2092,11 +2101,15 @@ class OrderPanel(QtWidgets.QWidget):
                     self.working_type, self.callback_rate, self.time_in_force,
                     self.leverage, self.protection_button, self.price_mark_button,
                     self.trigger_mark_button, self.activation_mark_button)
-        height = max(28, max(widget.fontMetrics().height() for widget in controls) + 12)
+        height = max(32, max(widget.fontMetrics().height() for widget in controls) + 12)
         for widget in controls:
             widget.setFixedHeight(height)
         for button in (self.price_mark_button, self.trigger_mark_button, self.activation_mark_button):
             button.setFixedWidth(button.fontMetrics().horizontalAdvance("MARK") + 16)
+        self.time_in_force.setFixedWidth(
+            max(self.time_in_force.fontMetrics().horizontalAdvance(self.time_in_force.itemText(i))
+                for i in range(self.time_in_force.count())) + 38)
+        self.protection_button.setFixedWidth(self.protection_button.sizeHint().width())
         self.margin_bar.sync_geometry()
         for button in (self.buy_button, self.sell_button, self.reduce_submit):
             button.setFixedHeight(height + 4)
@@ -2116,12 +2129,12 @@ class OrderPanel(QtWidgets.QWidget):
         if hasattr(self, "reduce_amount_caption"):
             width = max(width, self.reduce_amount_caption.fontMetrics().horizontalAdvance("Amount"))
             self.reduce_amount_caption.setFixedWidth(width)
+            self.reduce_unit.setMaximumWidth(max(40, min(120, self.ticket_scroll.viewport().width() // 3)))
         available = self.ticket_scroll.viewport().width() if hasattr(self, "ticket_scroll") else self.width() - 20
         if hasattr(self, "_intent_row"):
             leverage_width = self.leverage.fontMetrics().horizontalAdvance("Cross 125×") + 40
-            intent_width = sum(self.intent_tabs.fontMetrics().horizontalAdvance(text) + 16
-                               for text in ("Open", "Reduce"))
-            self.leverage_field.setMinimumWidth(min(available, leverage_width))
+            intent_width = self.intent_tabs.minimumSizeHint().width()
+            self.leverage_field.setFixedWidth(min(available, leverage_width))
             self._intent_row.setDirection(
                 QtWidgets.QBoxLayout.Direction.TopToBottom
                 if intent_width + leverage_width + 8 > available
@@ -2422,7 +2435,8 @@ class OrderPanel(QtWidgets.QWidget):
         """Keep the two bottom execution actions aligned with OPEN/REDUCE intent."""
         reducing = self.reduce_only.isChecked()
         margins = self.layout().contentsMargins()
-        width = max(0, (self.width() - margins.left() - margins.right() - 8) // 2)
+        width = max(0, min(self.buy_button.maximumWidth(),
+                           (self.width() - margins.left() - margins.right() - 8) // 2))
         for button, full, short in (
             (self.buy_button, "CLOSE SHORT" if reducing else "BUY / LONG", "LONG"),
             (self.sell_button, "CLOSE LONG" if reducing else "SELL / SHORT", "SHORT"),
@@ -4783,7 +4797,7 @@ class TradingWorkspace(QtWidgets.QWidget):
         header = QtWidgets.QFrame()
         header.setObjectName("tradingWorkspaceHeader")
         header_layout = QtWidgets.QHBoxLayout(header)
-        header_layout.setContentsMargins(10, 7, 10, 7)
+        header_layout.setContentsMargins(16, 8, 16, 8)
         header_layout.setSpacing(8)
         self.symbol_label = ElidedLabel(self.symbol)
         set_text_role(self.symbol_label, TextRole.INSTRUMENT_SYMBOL)
@@ -4792,11 +4806,12 @@ class TradingWorkspace(QtWidgets.QWidget):
         self.view_tabs.setObjectName("tradingViewSwitch")
         self.view_tabs.setDrawBase(False)
         self.view_tabs.setExpanding(False)
+        self.view_tabs.setSizePolicy(QtWidgets.QSizePolicy.Policy.Fixed, QtWidgets.QSizePolicy.Policy.Fixed)
         self.view_tabs.setAccessibleName("Trading panel view")
         set_text_role(self.view_tabs, TextRole.UI_CONTROL)
         self.view_tabs.addTab("Trade")
         self.view_tabs.addTab("Account")
-        header_layout.addWidget(self.view_tabs)
+        header_layout.addWidget(self.view_tabs, 0, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         layout.addWidget(header)
         self.pages = QtWidgets.QStackedWidget()
         layout.addWidget(self.pages, 1)
@@ -4872,7 +4887,14 @@ class TradingWorkspace(QtWidgets.QWidget):
             lambda _request, _result: self.account_refresh_timer.start()
         )
         self._sync_account_actions(self.tabs.currentIndex())
+        typography_controller().changed.connect(self._sync_view_tabs_geometry)
         self.apply_theme(theme)
+
+    def _sync_view_tabs_geometry(self) -> None:
+        # The native scroll-button minimum can exceed the two tab widths,
+        # leaving a blank tail that shifts Account away from the right inset.
+        self.view_tabs.ensurePolished()
+        self.view_tabs.setFixedSize(self.view_tabs.sizeHint())
 
     def _sync_rail_minimum_height(self, height: int) -> None:
         # Short panels scroll their fields; the header and actions stay visible.
@@ -5286,8 +5308,6 @@ class TradingWorkspace(QtWidgets.QWidget):
 
         self._refresh_total_pnl()
         self._sync_account_actions(self.tabs.currentIndex())
-        count = self._position_count + self._order_count
-        self.view_tabs.setTabText(1, f"Account {count}" if count else "Account")
         self._account_status_base = (
             f"ACCOUNT · {self._position_count} POSITION"
             f"{'S' if self._position_count != 1 else ''} · "
@@ -5556,3 +5576,4 @@ class TradingWorkspace(QtWidgets.QWidget):
         self.theme = theme
         self.setStyleSheet(_trading_stylesheet(theme))
         self.ticket.apply_theme(theme)
+        QTimer.singleShot(0, self._sync_view_tabs_geometry)
