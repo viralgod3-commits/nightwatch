@@ -34,8 +34,8 @@ ORDERBOOK_REFERENCE = {
     'mid': '#C8CDD2',
     'purple': '#9A87C8',
     'control': '#000000',
-    'control_hover': '#000000',
-    'control_pressed': '#000000',
+    'control_hover': '#111316',
+    'control_pressed': '#191C20',
     'control_border': '#292D33',
     'control_hover_line': '#59616B',
 }
@@ -1168,9 +1168,9 @@ from ..utilities import TextRole, typography_controller, typography_font, typogr
 
 class _OrderBookSurfaceButton(QtWidgets.QPushButton):
     """Keyboard-accessible control with a clear selected state."""
-    BUTTON_HEIGHT = 30
-    HORIZONTAL_PADDING = 8
-    MIN_CONTENT_WIDTH = 28
+    BUTTON_HEIGHT = 28
+    HORIZONTAL_PADDING = 6
+    MIN_CONTENT_WIDTH = 26
 
     def __init__(self, text, theme, parent=None, *, compact_width=None):
         super().__init__(text, parent)
@@ -1187,13 +1187,15 @@ class _OrderBookSurfaceButton(QtWidgets.QPushButton):
         p = ORDERBOOK_REFERENCE
         self.setStyleSheet(
             f"QPushButton {{ background: transparent; color: {p['muted']}; "
-            f"border: 1px solid transparent; border-radius: 6px; padding: 0 {self.HORIZONTAL_PADDING}px; }}"
-            f"QPushButton:hover {{ color: {p['text']}; background: {p['control_hover']}; }}"
+            f"border: 1px solid {p['control_border']}; border-radius: 5px; padding: 0 {self.HORIZONTAL_PADDING}px; }}"
+            f"QPushButton:hover {{ color: {p['text']}; background: {p['control_hover']}; border-color: {p['control_hover_line']}; }}"
             f"QPushButton:pressed {{ background: {p['control_pressed']}; }}"
             f"QPushButton:checked {{ color: {p['text']}; background: {p['control_hover']}; "
-            f"border-color: {p['grid_strong']}; }}"
+            f"border-color: {p['control_hover_line']}; }}"
             f"QPushButton:focus {{ border-color: {p['mid']}; }}"
-            f"QPushButton:disabled {{ color: {p['muted']}; background: transparent; }}"
+            f"QPushButton:disabled {{ color: #454B53; background: transparent; border-color: {p['grid']}; }}"
+            f"QPushButton#orderBookViewChoice {{ border-color: transparent; }}"
+            f"QPushButton#orderBookViewChoice:focus {{ border-color: {p['control_hover_line']}; }}"
         )
 
     def minimumSizeHint(self):
@@ -1207,79 +1209,109 @@ class _OrderBookSurfaceButton(QtWidgets.QPushButton):
 
 
 class OrderBookControlBar(QtWidgets.QFrame):
-    """One responsive strip for view, price step, units, and display options."""
+    """Visible controls that keep price grouping and heatmap range within reach."""
     aggregation_selected = Signal(int)
     density_selected = Signal(str)
     value_mode_selected = Signal(str)
     book_depth_toggled = Signal(bool)
+    depth_range_selected = Signal(float)
+    auto_grouping_toggled = Signal(bool)
+    reset_requested = Signal()
     display_option_toggled = Signal(str, bool)
-    CONTROL_BAR_HEIGHT = 48
+    CONTROL_BAR_HEIGHT = 94
     _DENSITIES = ('compact', 'normal', 'relaxed')
-    _DENSITY_NAMES = {'compact': 'Compact', 'normal': 'Comfortable', 'relaxed': 'Spacious'}
+    _DENSITY_NAMES = {'compact': 'Compact', 'normal': 'Balanced', 'relaxed': 'Spacious'}
 
     def __init__(self, theme, parent=None):
         super().__init__(parent)
         self.theme = {}
         self._tick_size, self._aggregation = 0.0, 1
-        self._book_depth, self._density, self._value_mode = False, 'normal', 'quote'
-        self._tape_enabled, self._tape_mode = True, 'LARGE'
+        self._book_depth, self._density, self._value_mode = True, 'normal', 'base'
+        self._auto_grouping, self._depth_range = True, 0.72
+        self._tape_enabled, self._tape_mode = False, 'LARGE'
         self._responsive_layout_state = None
         self.setObjectName('orderBookControlBar')
-        self.setFixedHeight(self.CONTROL_BAR_HEIGHT)
         self.setSizePolicy(QtWidgets.QSizePolicy.Policy.Ignored, QtWidgets.QSizePolicy.Policy.Fixed)
-        root = QtWidgets.QHBoxLayout(self)
+        root = QtWidgets.QVBoxLayout(self)
         root.setSizeConstraint(QtWidgets.QLayout.SizeConstraint.SetNoConstraint)
-        root.setContentsMargins(8, 8, 8, 8)
-        root.setSpacing(6)
+        root.setContentsMargins(6, 4, 6, 4)
+        root.setSpacing(4)
         self._layout = root
+        self._top_layout = QtWidgets.QHBoxLayout()
+        self._top_layout.setSpacing(4)
+        root.addLayout(self._top_layout)
 
         self._view_container, view_layout = self._make_group()
         self._view_container.setObjectName('orderBookViewSegment')
         self._view_group = QtWidgets.QButtonGroup(self)
-        self.ladder_button = self._toggle_button('Ladder', 'Price ladder with resting liquidity and optional analytics')
-        self.depth_button = self._toggle_button('Depth', 'Price-aligned size bars and cumulative depth')
+        self.depth_button = self._toggle_button('Heatmap', 'Heatmap and cumulative depth')
+        self.ladder_button = self._toggle_button('Ladder', 'Price ladder and liquidity analytics')
+        self.depth_button.setAccessibleName('Show liquidity heatmap')
         self.ladder_button.setAccessibleName('Show price ladder')
-        self.depth_button.setAccessibleName('Show liquidity depth')
-        for button in (self.ladder_button, self.depth_button):
+        for button in (self.depth_button, self.ladder_button):
+            button.setObjectName('orderBookViewChoice')
             self._view_group.addButton(button)
             view_layout.addWidget(button)
         self.depth_button.toggled.connect(self.book_depth_toggled.emit)
-        root.addWidget(self._view_container)
+        self._top_layout.addWidget(self._view_container)
+        self._view_menu = QtWidgets.QMenu(self)
+        self._view_action_group = QtGui.QActionGroup(self)
+        self._view_actions = {}
+        for enabled, name in ((True, 'Heatmap'), (False, 'Price ladder')):
+            action = self._view_menu.addAction(name)
+            action.setCheckable(True)
+            self._view_action_group.addAction(action)
+            action.triggered.connect(lambda checked=False, value=enabled: self.book_depth_toggled.emit(value) if checked else None)
+            self._view_actions[enabled] = action
+        self.view_button = self._plain_button('Heatmap ▾', 'Choose orderbook view')
+        self.view_button.clicked.connect(lambda: self._popup(self._view_menu, self.view_button))
+        self._top_layout.addWidget(self.view_button)
+        self._top_layout.addStretch(1)
+        self.value_mode_button = self._plain_button('Qty', 'Switch between base quantity and USDT value')
+        self.value_mode_button.clicked.connect(self._toggle_value_mode)
+        self._top_layout.addWidget(self.value_mode_button)
+        self.settings_button = self._plain_button('···', 'Orderbook display options')
+        self.settings_button.setAccessibleName('Orderbook display options')
+        self._top_layout.addWidget(self.settings_button)
 
+        self._step_layout = QtWidgets.QHBoxLayout()
+        self._step_layout.setSpacing(4)
+        root.addLayout(self._step_layout)
         self.step_label = QtWidgets.QLabel('Step', self)
         set_text_role(self.step_label, TextRole.ORDERBOOK_LABEL)
-        root.addWidget(self.step_label)
-        self._aggregation_container, aggregation_layout = self._make_group()
-        self._aggregation_buttons = {}
-        self._aggregation_group = QtWidgets.QButtonGroup(self)
-        self._aggregation_menu = QtWidgets.QMenu(self)
+        self.step_label.setSizePolicy(QtWidgets.QSizePolicy.Policy.Fixed, QtWidgets.QSizePolicy.Policy.Fixed)
+        self._step_layout.addWidget(self.step_label)
+        self.step_down_button = self._plain_button('−', 'Use a smaller price step', compact_width=26)
+        self.step_down_button.setAccessibleName('Decrease price grouping')
+        self.step_down_button.clicked.connect(lambda: self._change_aggregation(-1))
+        self._step_layout.addWidget(self.step_down_button)
+        self._aggregation_menu = QtWidgets.QMenu('Price grouping', self)
         self._aggregation_actions = {}
         self._aggregation_action_group = QtGui.QActionGroup(self)
         self._aggregation_action_group.setExclusive(True)
         for multiplier in ORDER_FLOW_AGGREGATION_MULTIPLIERS:
             value = int(multiplier)
-            button = self._toggle_button(f'{value}×', f'{value}× exchange tick', compact_width=32)
-            button.setAccessibleName(f'Price step {value} times the exchange tick')
-            self._aggregation_buttons[value] = button
-            self._aggregation_group.addButton(button)
-            aggregation_layout.addWidget(button)
-            button.clicked.connect(lambda checked=False, selected=value: self.aggregation_selected.emit(selected) if checked else None)
             action = self._aggregation_menu.addAction(f'{value}× exchange tick')
             action.setCheckable(True)
             self._aggregation_action_group.addAction(action)
             action.triggered.connect(lambda checked=False, selected=value: self.aggregation_selected.emit(selected) if checked else None)
             self._aggregation_actions[value] = action
-        root.addWidget(self._aggregation_container)
         self.aggregation_button = self._plain_button('1× ▾', 'Choose the price step')
-        self.aggregation_button.setAccessibleName('Choose price aggregation')
+        self.aggregation_button.setAccessibleName('Choose price grouping')
+        self.aggregation_button.setSizePolicy(QtWidgets.QSizePolicy.Policy.Ignored, QtWidgets.QSizePolicy.Policy.Fixed)
+        self.aggregation_button.setMinimumWidth(44)
+        self.aggregation_button.setMaximumWidth(150)
         self.aggregation_button.clicked.connect(lambda: self._popup(self._aggregation_menu, self.aggregation_button))
-        root.addWidget(self.aggregation_button)
-        root.addStretch(1)
-
-        self.value_mode_button = self._plain_button('USDT', 'Switch between quote value and base quantity')
-        self.value_mode_button.setAccessibleName('Switch order book value units')
-        self.value_mode_button.clicked.connect(self._toggle_value_mode)
-        root.addWidget(self.value_mode_button)
+        self._step_layout.addWidget(self.aggregation_button, 1)
+        self.step_up_button = self._plain_button('+', 'Use a larger price step', compact_width=26)
+        self.step_up_button.setAccessibleName('Increase price grouping')
+        self.step_up_button.clicked.connect(lambda: self._change_aggregation(1))
+        self._step_layout.addWidget(self.step_up_button)
+        self.auto_button = self._toggle_button('Auto', 'Choose the price step automatically for this market')
+        self.auto_button.setAccessibleName('Automatic price grouping')
+        self.auto_button.toggled.connect(self.auto_grouping_toggled.emit)
+        self._step_layout.addWidget(self.auto_button)
+        self._step_layout.addStretch(1)
         self._density_menu = QtWidgets.QMenu('Row spacing', self)
         self._density_actions = {}
         self._density_action_group = QtGui.QActionGroup(self)
@@ -1292,46 +1324,73 @@ class OrderBookControlBar(QtWidgets.QFrame):
             self._density_actions[density] = action
         self.density_button = self._plain_button('Rows ▾', 'Choose row spacing')
         self.density_button.setAccessibleName('Choose row spacing')
-        self.density_button.clicked.connect(self._show_density_menu)
-        root.addWidget(self.density_button)
+        self.density_button.clicked.connect(lambda: self._popup(self._density_menu, self.density_button))
+        self._step_layout.addWidget(self.density_button)
+
+        self._range_container = QtWidgets.QWidget(self)
+        range_layout = QtWidgets.QHBoxLayout(self._range_container)
+        range_layout.setContentsMargins(0, 0, 0, 0)
+        range_layout.setSpacing(6)
+        self.range_label = QtWidgets.QLabel('Range', self)
+        set_text_role(self.range_label, TextRole.ORDERBOOK_LABEL)
+        range_layout.addWidget(self.range_label)
+        self.range_slider = QtWidgets.QSlider(Qt.Orientation.Horizontal, self)
+        self.range_slider.setRange(5, 95)
+        self.range_slider.setSingleStep(1)
+        self.range_slider.setPageStep(8)
+        self.range_slider.setFixedHeight(22)
+        self.range_slider.setMinimumWidth(32)
+        self.range_slider.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.range_slider.setAccessibleName('Heatmap depth range')
+        self.range_slider.setAccessibleDescription('Adjust the two rulers and the range used to scale liquidity.')
+        self.range_slider.valueChanged.connect(lambda value: self.depth_range_selected.emit(value / 100.0))
+        range_layout.addWidget(self.range_slider, 1)
+        self.range_value = QtWidgets.QLabel('72%', self)
+        self.range_value.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        self.range_value.setFixedWidth(32)
+        set_text_role(self.range_value, TextRole.ORDERBOOK_FOOTER_VALUE)
+        range_layout.addWidget(self.range_value)
+        root.addWidget(self._range_container)
 
         self._display_menu = QtWidgets.QMenu(self)
         self._display_menu.addSection('Display')
+        self._display_menu.addMenu(self._view_menu).setText('View')
         self._display_menu.addMenu(self._density_menu)
         self.units_action = self._display_menu.addAction('Show base-asset quantities')
         self.units_action.setCheckable(True)
         self.units_action.triggered.connect(lambda checked: self.value_mode_selected.emit('base' if checked else 'quote'))
-        self._display_menu.addSeparator()
-        self._display_menu.addSection('Price-level analytics')
+        self.auto_action = self._display_menu.addAction('Automatic price grouping')
+        self.auto_action.setCheckable(True)
+        self.auto_action.triggered.connect(self.auto_grouping_toggled.emit)
+        self._analytics_menu = self._display_menu.addMenu('Price-level analytics')
         self._lane_actions = {}
         for key, label in (('flow', 'Aggressor flow · 5s'), ('delta', 'Liquidity change · 5s'), ('state', 'Liquidity signals'), ('memory', 'Liquidity history · 30s')):
-            action = self._display_menu.addAction(label)
+            action = self._analytics_menu.addAction(label)
             action.setCheckable(True)
             action.toggled.connect(lambda enabled, lane=key: self.display_option_toggled.emit(lane, enabled))
             self._lane_actions[key] = action
-        self._display_menu.addSeparator()
         self.tape_action = self._display_menu.addAction('Show trade tape when space allows')
         self.tape_action.setCheckable(True)
         self.tape_action.toggled.connect(lambda enabled: self.display_option_toggled.emit('tape', enabled))
-        self.settings_button = self._plain_button('Display ▾', 'Analytics, units, row spacing, and trade tape')
-        self.settings_button.setAccessibleName('Order book display options')
+        self._display_menu.addSeparator()
+        reset_action = self._display_menu.addAction('Reset orderbook display')
+        reset_action.triggered.connect(lambda _checked=False: self.reset_requested.emit())
         self.settings_button.clicked.connect(lambda: self._popup(self._display_menu, self.settings_button))
-        root.addWidget(self.settings_button)
         self.apply_theme(theme)
         self._refresh_typography()
         typography_controller().changed.connect(self._refresh_typography)
         self._refresh_text()
-        self._refresh_responsive_layout(self.width())
 
     def _make_group(self):
         container = QtWidgets.QWidget(self)
         layout = QtWidgets.QHBoxLayout(container)
-        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setContentsMargins(2, 0, 2, 0)
         layout.setSpacing(2)
         return container, layout
 
     def _plain_button(self, text, tooltip='', *, compact_width=None):
         button = _OrderBookSurfaceButton(text, self.theme, self, compact_width=compact_width)
+        button.setToolTip(tooltip)
         return button
 
     def _toggle_button(self, text, tooltip='', *, compact_width=None):
@@ -1343,57 +1402,71 @@ class OrderBookControlBar(QtWidgets.QFrame):
     def _popup(menu, button):
         menu.popup(button.mapToGlobal(QtCore.QPoint(0, button.height() + 4)))
 
-    def _show_density_menu(self):
-        self._popup(self._density_menu, self.density_button)
-
     def _toggle_value_mode(self):
         self.value_mode_selected.emit('base' if self._value_mode == 'quote' else 'quote')
 
+    def _change_aggregation(self, direction):
+        values = tuple(ORDER_FLOW_AGGREGATION_MULTIPLIERS)
+        index = values.index(self._aggregation) if self._aggregation in values else 0
+        selected = values[max(0, min(len(values) - 1, index + int(direction)))]
+        self.aggregation_selected.emit(int(selected))
 
     def _refresh_typography(self):
         for button in self.findChildren(_OrderBookSurfaceButton):
             button.setFont(typography_font(TextRole.ORDERBOOK_CONTROL))
             button.updateGeometry()
+        for menu in self.findChildren(QtWidgets.QMenu):
+            menu.setFont(typography_font(TextRole.ORDERBOOK_CONTROL))
         self._responsive_layout_state = None
         self._refresh_responsive_layout(self.width())
 
     def apply_theme(self, theme):
         p = ORDERBOOK_REFERENCE
         self.setStyleSheet(
-            f"QFrame#orderBookControlBar {{ background: {p['control']}; border: 0; border-bottom: 1px solid {p['grid']}; }}"
-            f"QWidget#orderBookViewSegment {{ background: {p['bg']}; border-radius: 7px; }}"
+            f"QFrame#orderBookControlBar {{ background: {p['bg']}; border: 0; border-bottom: 1px solid {p['grid']}; }}"
+            f"QWidget#orderBookViewSegment {{ background: {p['bg']}; border: 1px solid {p['grid_strong']}; border-radius: 6px; }}"
             f"QLabel {{ color: {p['muted']}; background: transparent; border: 0; }}"
+            f"QSlider {{ background: transparent; border: 0; }}"
+            f"QSlider::groove:horizontal {{ background: {p['grid_strong']}; height: 3px; border-radius: 1px; }}"
+            f"QSlider::sub-page:horizontal {{ background: {p['control_hover_line']}; border-radius: 1px; }}"
+            f"QSlider::handle:horizontal {{ background: {p['text']}; border: 2px solid {p['bg']}; width: 12px; margin: -6px 0; border-radius: 7px; }}"
+            f"QSlider::handle:horizontal:hover, QSlider::handle:horizontal:focus {{ background: #FFFFFF; border-color: {p['control_hover_line']}; }}"
         )
         for button in self.findChildren(_OrderBookSurfaceButton):
             button.set_theme({})
         for menu in self.findChildren(QtWidgets.QMenu):
             menu.setStyleSheet(
-                f"QMenu {{ background: {p['surface_raised']}; color: {p['text']}; border: 1px solid {p['grid_strong']}; padding: 6px; }}"
-                f"QMenu::item {{ padding: 7px 24px 7px 16px; border-radius: 4px; }}"
+                f"QMenu {{ background: {p['bg']}; color: {p['text']}; border: 1px solid {p['grid_strong']}; padding: 5px; }}"
+                f"QMenu::item {{ padding: 7px 24px 7px 12px; border-radius: 4px; }}"
                 f"QMenu::item:selected {{ background: {p['control_hover']}; }}"
-                f"QMenu::separator {{ height: 1px; background: {p['grid']}; margin: 6px 8px; }}"
+                f"QMenu::separator {{ height: 1px; background: {p['grid']}; margin: 5px 6px; }}"
             )
-
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
         self._refresh_responsive_layout(event.size().width())
 
     def _refresh_responsive_layout(self, width):
-        full_width = self._aggregation_container.sizeHint().width()
-        full_steps = width >= max(620, full_width + 420)
-        state = (full_steps, width >= 480, width >= 350, width >= 550)
+        # Narrow docks keep all controls reachable; the view menu and display
+        # menu take over only when the corresponding buttons cannot fit.
+        view_width = self._view_container.sizeHint().width()
+        top_width = view_width + self.value_mode_button.sizeHint().width() + self.settings_button.sizeHint().width() + 24
+        expanded_view = width >= max(220, top_width)
+        show_auto = width >= 250 and self._book_depth
+        show_step_label = width >= 280
+        show_step_buttons = width >= 190
+        state = (expanded_view, show_auto, show_step_label, show_step_buttons, self._book_depth)
         if state == self._responsive_layout_state:
             return
         self._responsive_layout_state = state
-        self._aggregation_container.setVisible(full_steps)
-        self.aggregation_button.setVisible(not full_steps)
-        self.step_label.setVisible(width >= 350)
-        self.density_button.setVisible(width >= 480)
-        self.value_mode_button.setVisible(width >= 350)
-        self.settings_button.setText('Display ▾' if width >= 550 else '···')
-        self._layout.setSpacing(6 if width >= 350 else 3)
-        self._layout.setContentsMargins(8 if width >= 300 else 4, 8, 8 if width >= 300 else 4, 8)
+        self._view_container.setVisible(expanded_view)
+        self.view_button.setVisible(not expanded_view)
+        self.auto_button.setVisible(show_auto)
+        self.step_label.setVisible(show_step_label)
+        self.step_down_button.setVisible(show_step_buttons)
+        self.step_up_button.setVisible(show_step_buttons)
+        self._range_container.setVisible(self._book_depth)
+        self.setFixedHeight(self.CONTROL_BAR_HEIGHT if self._book_depth else 68)
 
     @staticmethod
     def _set_checked_without_signal(button, checked):
@@ -1401,41 +1474,50 @@ class OrderBookControlBar(QtWidgets.QFrame):
         button.setChecked(bool(checked))
         del blocker
 
-    def set_state(self, *, aggregation, tick_size, preset, density, value_mode, tape_enabled, tape_mode, book_depth=False, overlays=None):
+    def set_state(self, *, aggregation, tick_size, preset, density, value_mode, tape_enabled, tape_mode,
+                  book_depth=False, overlays=None, depth_range=0.72, auto_grouping=True):
         self._aggregation = max(1, int(aggregation))
         self._tick_size = max(0.0, float(tick_size))
         self._density, self._value_mode = str(density or 'normal'), 'base' if value_mode == 'base' else 'quote'
         self._tape_enabled, self._tape_mode, self._book_depth = bool(tape_enabled), str(tape_mode), bool(book_depth)
+        self._depth_range = max(0.05, min(0.95, float(depth_range)))
+        self._auto_grouping = bool(auto_grouping)
         for key, action in self._lane_actions.items():
             self._set_checked_without_signal(action, bool((overlays or {}).get(key, True)))
             action.setEnabled(not self._book_depth)
+        self._analytics_menu.menuAction().setVisible(not self._book_depth)
+        self.auto_action.setEnabled(self._book_depth)
         self._refresh_text()
+        self._refresh_responsive_layout(self.width())
 
     def _refresh_text(self):
-        # Block both sides of an exclusive group: selecting one can uncheck the
-        # other, and state restoration must never emit a user action.
         blockers = [QtCore.QSignalBlocker(button) for button in (self.ladder_button, self.depth_button)]
         self.ladder_button.setChecked(not self._book_depth)
         self.depth_button.setChecked(self._book_depth)
         del blockers
-        blockers = [QtCore.QSignalBlocker(button) for button in self._aggregation_buttons.values()]
-        for multiplier, button in self._aggregation_buttons.items():
-            button.setChecked(multiplier == self._aggregation)
+        for enabled, action in self._view_actions.items():
+            self._set_checked_without_signal(action, enabled == self._book_depth)
+        self.view_button.setText('Heatmap ▾' if self._book_depth else 'Ladder ▾')
+        for multiplier, action in self._aggregation_actions.items():
             effective = format_book_price(self._tick_size * multiplier) if self._tick_size else 'exchange tick'
-            tip = f'Price step: {effective} ({multiplier}× exchange tick)'
-            if multiplier > 1:
-                tip += '\nGrouped prices are for analysis; use 1× for exact price selection.'
-            action = self._aggregation_actions[multiplier]
             self._set_checked_without_signal(action, multiplier == self._aggregation)
-            action.setText(f'{multiplier}× · {effective}')
-        del blockers
-        self.aggregation_button.setText(f'{self._aggregation}× ▾')
+            action.setText(f'{effective} · {multiplier}×')
+        effective = format_book_price(self._tick_size * self._aggregation) if self._tick_size else f'{self._aggregation}×'
+        self.aggregation_button.setText(f'{effective} ▾')
+        self.aggregation_button.setAccessibleDescription(f'Current price step: {effective}')
+        self.step_down_button.setEnabled(self._aggregation > ORDER_FLOW_AGGREGATION_MULTIPLIERS[0])
+        self.step_up_button.setEnabled(self._aggregation < ORDER_FLOW_AGGREGATION_MULTIPLIERS[-1])
         self.value_mode_button.setText('Qty' if self._value_mode == 'base' else 'USDT')
+        self.value_mode_button.setAccessibleName('Switch to USDT value' if self._value_mode == 'base' else 'Switch to base quantity')
         self._set_checked_without_signal(self.units_action, self._value_mode == 'base')
         self._set_checked_without_signal(self.tape_action, self._tape_enabled)
+        self._set_checked_without_signal(self.auto_button, self._auto_grouping)
+        self._set_checked_without_signal(self.auto_action, self._auto_grouping)
+        with QtCore.QSignalBlocker(self.range_slider):
+            self.range_slider.setValue(round(self._depth_range * 100))
+        self.range_value.setText(f'{round(self._depth_range * 100)}%')
         for key, action in self._density_actions.items():
             self._set_checked_without_signal(action, key == self._density)
-
 import math
 import time
 from collections import Counter, OrderedDict, deque
@@ -1549,11 +1631,11 @@ def _compute_order_flow_dom_geometry(width: float, height: float, font_height: f
     if book_depth:
         # A continuous price grid: the floating market label overlays the book,
         # quantities and depth share the same plot, and no chrome splits rows.
-        row_height = max({'compact': 20.0, 'normal': 32.0, 'relaxed': 40.0}[density],
+        row_height = max({'compact': 20.0, 'normal': 24.0, 'relaxed': 30.0}[density],
                          float(math.ceil(max(font_height, price_font_height or font_height) + 4.0)))
-        price_width = min(width, max(94.0, float(price_min_width)))
-        heat_width = min(16.0, max(0.0, width - price_width))
-        plot_left = min(width, price_width + heat_width + 10.0)
+        price_width = min(width, max(72.0, float(price_min_width)))
+        heat_width = min(10.0, max(0.0, width - price_width))
+        plot_left = min(width, price_width + heat_width + 6.0)
         center_top = max(0.0, math.floor(height * 0.455) - row_height * 0.5 + 1.0)
         rows = max(1, int(math.ceil(max(center_top, height - center_top) / row_height)) + 1)
         columns = {'price': (0.0, price_width)}
@@ -1810,7 +1892,6 @@ class _DomRasterCanvas(QtWidgets.QWidget):
     BBO_DEGRADED_SECONDS = 1.20
     LATENCY_DISPLAY_INTERVAL_SECONDS = 1.0
     LATENCY_MAX_DISPLAY_WINDOW_SECONDS = 10.0
-    PROFILE_FONT_FAMILY: ClassVar[str | None] = None
     _STATE_LABELS: ClassVar[dict[str, str]] = dict(ORDERBOOK_STATE_LABELS)
     _STATE_ACRONYMS: ClassVar[dict[str, str]] = dict(ORDERBOOK_STATE_ACRONYMS)
     _STATE_DESCRIPTIONS: ClassVar[dict[str, str]] = {'ABSORBING': 'Absorbing: executions are being met by replenishing liquidity', 'PULLING': 'Pulling: inferred cancellations exceed new passive adds, excluding reposted size', 'STACKING': 'Stacking: new passive liquidity exceeds cancellations, excluding reloads and reposts', 'DEPLETING': 'Depleting: executions are consuming the level', 'PERSISTENT': 'Wall: liquidity has remained present near this price', 'NORMAL': 'Normal: no strong temporal liquidity signal'}
@@ -2050,8 +2131,7 @@ class _DomRasterCanvas(QtWidgets.QWidget):
         typography_controller().changed.connect(self._refresh_typography)
 
     def _refresh_typography(self) -> None:
-        # The ladder follows application typography; the heatmap uses the
-        # reference's regular, wider monospaced numerals and compact market pill.
+        # Both views use the app's configured fonts and numeric size roles.
         self._row_font = typography_font(TextRole.ORDERBOOK_VALUE)
         self._price_font = typography_font(TextRole.ORDERBOOK_PRICE)
         self._metric_font = typography_font(TextRole.ORDERBOOK_METRIC)
@@ -2059,24 +2139,7 @@ class _DomRasterCanvas(QtWidgets.QWidget):
         self._label_font = typography_font(TextRole.ORDERBOOK_LABEL)
         self._footer_font = typography_font(TextRole.ORDERBOOK_FOOTER_VALUE)
         self._center_price_font = typography_font(TextRole.ORDERBOOK_CENTER_PRICE)
-        if self._book_depth:
-            if _DomRasterCanvas.PROFILE_FONT_FAMILY is None:
-                import os
-                font_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
-                                         'fonts', 'JetBrainsMono-Regular.ttf')
-                identifier = QtGui.QFontDatabase.addApplicationFont(font_path)
-                families = QtGui.QFontDatabase.applicationFontFamilies(identifier) if identifier >= 0 else []
-                _DomRasterCanvas.PROFILE_FONT_FAMILY = families[0] if families else self._row_font.family()
-            self._row_font = QtGui.QFont(_DomRasterCanvas.PROFILE_FONT_FAMILY)
-            self._row_font.setPixelSize(16)
-            self._row_font.setWeight(QtGui.QFont.Weight.Normal)
-            self._row_font.setFixedPitch(True)
-            self._price_font = QtGui.QFont(self._row_font)
-            self._symbol_font.setPixelSize(13)
-            self._symbol_font.setWeight(QtGui.QFont.Weight.Medium)
-            self._label_font.setPixelSize(13)
-        self._profile_annotation_font = QtGui.QFont(self._row_font)
-        self._profile_annotation_font.setPixelSize(13)
+        self._profile_annotation_font = typography_font(TextRole.ORDERBOOK_FOOTER_VALUE)
         self._center_price_metrics = QtGui.QFontMetricsF(self._center_price_font)
         self._row_metrics = QtGui.QFontMetricsF(self._row_font)
         self._price_metrics = QtGui.QFontMetricsF(self._price_font)
@@ -2113,17 +2176,18 @@ class _DomRasterCanvas(QtWidgets.QWidget):
 
     def _refresh_profile_bar_palette(self, theme: dict[str, object] | None) -> None:
         del theme
-        self._profile_bg = QtGui.QColor('#0D0D0F')
-        self._profile_price = QtGui.QColor('#959490')
-        self._profile_dim_price = QtGui.QColor('#5F5E5B')
-        self._profile_last = QtGui.QColor('#00FFFF')
+        p = ORDERBOOK_REFERENCE
+        self._profile_bg = QtGui.QColor(p['bg'])
+        self._profile_price = QtGui.QColor(p['text'])
+        self._profile_dim_price = QtGui.QColor('#515862')
+        self._profile_last = QtGui.QColor(p['mid'])
         self._profile_colors = {
-            'bid': QtGui.QColor('#00DF9A'),
-            'ask': QtGui.QColor('#EAC000'),
+            'bid': QtGui.QColor(p['bid']),
+            'ask': QtGui.QColor(p['ask']),
         }
         self._profile_bar_colors = {
-            'bid': QtGui.QColor('#008764'),
-            'ask': QtGui.QColor('#9B5700'),
+            'bid': QtGui.QColor(p['bid_fill_strong']),
+            'ask': QtGui.QColor(p['ask_fill_strong']),
         }
         # Keep DEPTH caps/outline crisp while pushing the large bar bodies one
         # visual step behind price and the cumulative-depth staircase.
@@ -2161,7 +2225,7 @@ class _DomRasterCanvas(QtWidgets.QWidget):
             in_bar_pen.setWidthF(0.9)
             self._profile_caps[side] = cap
             self._profile_hovers[side] = hover
-            self._profile_bar_text[side] = QtGui.QColor('#CBF9EF' if side == 'bid' else '#FFDAD0')
+            self._profile_bar_text[side] = QtGui.QColor('#C4EAD5' if side == 'bid' else '#EDC1CD')
             self._profile_fills[side] = area
             self._profile_pens[side] = pen
             self._profile_in_bar_pens[side] = in_bar_pen
@@ -2173,6 +2237,7 @@ class _DomRasterCanvas(QtWidgets.QWidget):
         self._muted = QtGui.QColor(p['muted'])
         self._badge_text = QtGui.QColor(p['text'])
         self._grid = QtGui.QColor(p['grid'])
+        self._grid_strong = QtGui.QColor(p['grid_strong'])
         self._bid = QtGui.QColor(p['bid'])
         self._ask = QtGui.QColor(p['ask'])
         self._mid = QtGui.QColor(p['mid'])
@@ -2329,9 +2394,12 @@ class _DomRasterCanvas(QtWidgets.QWidget):
             resolved = 1
         if resolved not in ORDER_FLOW_AGGREGATION_MULTIPLIERS:
             resolved = 1
+        auto_grouping_changed = bool(emit and self._profile_auto_grouping)
         if emit:
             self._profile_auto_grouping = False
         if resolved == self.aggregation_multiplier:
+            if auto_grouping_changed:
+                self.presentation_changed.emit(self.presentation_state())
             return
         # A new grouping creates different analytical identities, including
         # when returning to native rows: require fresh confirmation snapshots.
@@ -2349,6 +2417,7 @@ class _DomRasterCanvas(QtWidgets.QWidget):
             self.update()
         if emit:
             self.aggregation_changed.emit(resolved)
+            self.presentation_changed.emit(self.presentation_state())
 
     def _bucket_price_for_multiplier(self, price: float, side: str, multiplier: int) -> float:
         if multiplier <= 1 or self.price_tick_size <= 0.0:
@@ -5497,8 +5566,8 @@ class _DomRasterCanvas(QtWidgets.QWidget):
                 bar_top += height * 0.5
         profile_key = (side, float(level.price))
         size = max(0.0, min(1.0, self._profile_size_current.get(profile_key, row.profile_size)))
-        low = (8, 30, 27) if side == 'bid' else (30, 16, 17)
-        high = (0, 255, 148) if side == 'bid' else (240, 136, 0)
+        low = QtGui.QColor(ORDERBOOK_REFERENCE[f'{side}_fill']).getRgb()[:3]
+        high = self._profile_colors[side].getRgb()[:3]
         heat = QtGui.QColor(*(round(a + (b - a) * size) for a, b in zip(low, high)))
         if not row.profile_in_range:
             heat.setAlpha(110)
@@ -5510,11 +5579,11 @@ class _DomRasterCanvas(QtWidgets.QWidget):
             plot_width = max(0.0, lane.width() - 3.0)
             if size > 0.0 and plot_width > 0.0:
                 gradient = QtGui.QLinearGradient(lane.left(), 0.0, lane.right(), 0.0)
-                alpha = min(255, round(32 + size * 255))
+                alpha = min(235, round(40 + size * 195))
                 if not row.profile_in_range:
                     alpha = round(alpha * 0.45)
-                start = QtGui.QColor('#00AE87' if side == 'bid' else '#C82718')
-                end = QtGui.QColor('#00AE67' if side == 'bid' else '#C87100')
+                start = self._profile_colors[side].darker(155)
+                end = self._profile_colors[side].darker(115)
                 start.setAlpha(alpha)
                 end.setAlpha(alpha)
                 gradient.setColorAt(0.0, start)
@@ -5560,11 +5629,15 @@ class _DomRasterCanvas(QtWidgets.QWidget):
             left, right = float(lane[0]), float(lane[1]) - 3.0
             for side, (area, outline) in self._profile_paths.items():
                 fill = QtGui.QLinearGradient(left, 0.0, right, 0.0)
-                fill.setColorAt(0.0, QtGui.QColor('#093531' if side == 'bid' else '#341715'))
-                fill.setColorAt(1.0, QtGui.QColor('#0B352E' if side == 'bid' else '#353200'))
+                start = QtGui.QColor(ORDERBOOK_REFERENCE[f'{side}_fill'])
+                end = QtGui.QColor(start)
+                start.setAlpha(130)
+                end.setAlpha(75)
+                fill.setColorAt(0.0, start)
+                fill.setColorAt(1.0, end)
                 painter.fillPath(area, QtGui.QBrush(fill))
                 line = QtGui.QLinearGradient(left, 0.0, right, 0.0)
-                line.setColorAt(0.0, QtGui.QColor('#00D5AB' if side == 'bid' else '#D55708'))
+                line.setColorAt(0.0, self._profile_colors[side].darker(140))
                 line.setColorAt(1.0, self._profile_colors[side])
                 pen = QtGui.QPen(QtGui.QBrush(line), self._physical_pixel_width())
                 dim_line = QtGui.QLinearGradient(line)
@@ -5614,13 +5687,13 @@ class _DomRasterCanvas(QtWidgets.QWidget):
                     painter.setBrush(Qt.BrushStyle.NoBrush)
                     painter.drawPath(outline)
                     painter.restore()
-            painter.setPen(QtGui.QPen(QtGui.QColor('#636361'), self._physical_pixel_width()))
+            painter.setPen(QtGui.QPen(self._grid_strong, self._physical_pixel_width()))
             for y in (ruler_top, ruler_bottom):
                 self._draw_snapped_line(painter, 0.0, y, width - 3.0, y)
             bid, ask = self._profile_ruler_totals
             for value, y, color in (
-                (ask, ruler_top + 5.0, QtGui.QColor('#FFF0A4')),
-                (bid, ruler_bottom - 27.0, QtGui.QColor('#C8FFE0')),
+                (ask, ruler_top + 5.0, self._profile_bar_text['ask']),
+                (bid, ruler_bottom - 27.0, self._profile_bar_text['bid']),
             ):
                 self._draw_numeric_text(painter, QtCore.QRectF(max(0.0, width - 96.0), y, min(93.0, width), 20.0),
                                         self._profile_quantity_text(value) or '0', color,
@@ -5645,7 +5718,7 @@ class _DomRasterCanvas(QtWidgets.QWidget):
                                         width - 3.0, float(g['center_top']) + row_height * 0.5)
             delta = bid - ask
             delta_text = ('+' if delta > 0.0 else '-' if delta < 0.0 else '') + (self._profile_quantity_text(abs(delta)) or '0')
-            delta_color = QtGui.QColor('#C8FFE0' if delta >= 0.0 else '#FFF0A4')
+            delta_color = self._profile_colors['bid' if delta >= 0.0 else 'ask']
             metrics = QtGui.QFontMetricsF(self._profile_annotation_font)
             text_width = metrics.horizontalAdvance(delta_text)
             delta_top = float(g['center_top']) + row_height - 9.0
@@ -5664,19 +5737,19 @@ class _DomRasterCanvas(QtWidgets.QWidget):
             self._draw_text(painter, QtCore.QRectF(4.0, height * 0.4, max(0.0, width - 8), 40.0),
                             message, self._profile_price, Qt.AlignmentFlag.AlignHCenter, font=self._label_font)
         pair = self.symbol.removesuffix('USDT') + ' / USDT' if self.symbol.endswith('USDT') else self.symbol
-        text = f'Binance {pair}'
+        text = f'Binance · {pair}'
         if self._market_status == 'STALE':
             text += ' · Stale'
-        pill_width = min(max(0.0, width - 20.0), self._symbol_metrics.horizontalAdvance(text) + 20.0)
-        pill = QtCore.QRectF(10.0, 10.0, pill_width, 28.0)
+        pill_width = min(max(0.0, width - 16.0), math.ceil(self._label_metrics.horizontalAdvance(text)) + 18.0)
+        pill = QtCore.QRectF(8.0, 8.0, pill_width, 22.0)
         painter.save()
         painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing, True)
-        painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(QtGui.QColor('#111112'))
-        painter.drawRoundedRect(pill, 7.0, 7.0)
+        painter.setPen(QtGui.QPen(self._grid, self._physical_pixel_width()))
+        painter.setBrush(self._profile_bg)
+        painter.drawRoundedRect(pill, 4.0, 4.0)
         painter.restore()
-        self._draw_text(painter, pill, text, QtGui.QColor('#E5E4DF'), Qt.AlignmentFlag.AlignLeft,
-                        font=self._symbol_font, pad=10.0)
+        self._draw_text(painter, pill, text, self._text, Qt.AlignmentFlag.AlignLeft,
+                        font=self._label_font, pad=8.0)
         return rows_rendered
 
     def _draw_center_price_clipped(
@@ -7083,6 +7156,9 @@ class OrderBookWidget(QtWidgets.QWidget):
         self.controls.density_selected.connect(lambda value: self.set_row_density(value, emit=True))
         self.controls.value_mode_selected.connect(lambda value: self.set_value_mode(value, emit=True))
         self.controls.book_depth_toggled.connect(self.set_book_depth_enabled)
+        self.controls.depth_range_selected.connect(self.canvas.set_depth_range)
+        self.controls.auto_grouping_toggled.connect(self.set_auto_grouping)
+        self.controls.reset_requested.connect(self._reset_display_options)
         self.controls.display_option_toggled.connect(self._on_display_option_toggled)
         # The chronological tape is a peer surface; it never consumes ladder
         # space on a narrow dock.
@@ -7153,8 +7229,28 @@ class OrderBookWidget(QtWidgets.QWidget):
 
     def _sync_controls(self) -> None:
         state = self.canvas.presentation_state()
-        self.controls.setVisible(not bool(state.get('book_depth', True)))
-        self.controls.set_state(aggregation=int(self.canvas.aggregation_multiplier), tick_size=float(self.price_tick_size), preset=str(state.get('preset', 'execution')), density=str(state.get('density', 'normal')), value_mode=str(state.get('values', 'quote')), tape_enabled=self._tape_enabled, tape_mode=self._tape_mode, book_depth=bool(state.get('book_depth', False)), overlays=self.canvas.column_preferences())
+        self.controls.setVisible(True)
+        self.controls.set_state(
+            aggregation=int(self.canvas.aggregation_multiplier),
+            tick_size=float(self.price_tick_size),
+            preset=str(state.get('preset', 'execution')),
+            density=str(state.get('density', 'normal')),
+            value_mode=str(state.get('values', 'base')),
+            tape_enabled=self._tape_enabled, tape_mode=self._tape_mode,
+            book_depth=bool(state.get('book_depth', True)),
+            overlays=self.canvas.column_preferences(),
+            depth_range=float(state.get('depth_range', 0.72)),
+            auto_grouping=bool(state.get('auto_grouping', True)),
+        )
+
+    def set_auto_grouping(self, enabled: bool) -> None:
+        self.canvas._profile_auto_grouping = bool(enabled)
+        self.canvas._profile_grouped_symbol = None
+        if enabled and self._latest_snapshot is not None:
+            self.canvas._initialize_profile_grouping(self._latest_snapshot)
+        self._sync_controls()
+        self._publish_depth_capacity()
+        self._emit_presentation_changed()
 
     def _reset_display_options(self) -> None:
         self.canvas.set_book_depth_enabled(True, emit=False)
