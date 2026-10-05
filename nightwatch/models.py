@@ -273,7 +273,7 @@ class DiagnosticsPort(Protocol):
     def error(self, category: str, message: str) -> None: ...
 
 
-ORDER_FLOW_AGGREGATION_MULTIPLIERS: tuple[int, ...] = (1, 2, 5, 10, 25, 50)
+ORDER_FLOW_AGGREGATION_MULTIPLIERS: tuple[int, ...] = (1, 2, 5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000, 10000)
 BOOK_DEPTH_FRESH_SECONDS = 1.5
 BOOK_BBO_FRESH_SECONDS = 2.0
 
