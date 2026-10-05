@@ -3917,5 +3917,5 @@ class MarketFilterDialog(QtWidgets.QDialog):
     def options(self) -> tuple[str, float]:
         return (
             str(self.timeframe.currentData()),
-            0.0 if self.clear_requested else parse_compact_amount(self.minimum.text()),
+            parse_compact_amount(self.minimum.text()),
         )

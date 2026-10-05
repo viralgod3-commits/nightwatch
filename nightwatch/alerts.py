@@ -232,6 +232,8 @@ class AlertCenter(QtCore.QObject):
         self.interval = DEFAULT_INTERVAL
         self.last_price: float | None = None
         self.manual: list[PriceAlert] = []
+        self._manual_prices: dict[str, float] = {}
+        self._manual_symbols: tuple[str, ...] = ()
         self.zones: list[Zone] = []
         self.profile_levels: list[float] = []
         self.zone_states: dict[str, tuple[bool, bool]] = {}
@@ -253,21 +255,33 @@ class AlertCenter(QtCore.QObject):
     def reset_crossing_state(self) -> None:
         """The first price after a feed gap establishes a new crossing baseline."""
         self.last_price = None
+        self._manual_prices.pop(self.symbol, None)
         self.zone_states.clear()
 
     def add_price_alert(self, level: float, direction: str) -> None:
         self.manual.append(PriceAlert(self.symbol, level, direction))
-        self.manual_alerts_changed.emit(self.active_manual_count())
+        if self.last_price is not None and self.last_price > 0:
+            self._manual_prices[self.symbol] = self.last_price
+        self._publish_manual_state()
         self.in_app.emit("PRICE ALERT ARMED", f"{self.symbol} · {format_price(level)} · {direction}")
 
     def active_manual_count(self) -> int:
         return sum(1 for rule in self.manual if rule.active)
 
+    def monitored_symbols(self) -> tuple[str, ...]:
+        return self._manual_symbols
+
+    def _publish_manual_state(self) -> None:
+        self._manual_symbols = tuple(dict.fromkeys(rule.symbol for rule in self.manual if rule.active))
+        self._manual_prices = {symbol: price for symbol, price in self._manual_prices.items()
+                               if symbol in self._manual_symbols}
+        self.manual_alerts_changed.emit(self.active_manual_count())
+
     def clear_manual_alerts(self) -> None:
         count = self.active_manual_count()
         for rule in self.manual:
             rule.active = False
-        self.manual_alerts_changed.emit(0)
+        self._publish_manual_state()
         if count:
             self.in_app.emit("PRICE ALERTS CANCELLED", f"{count} active custom alert{'s' if count != 1 else ''} cancelled")
 
@@ -278,12 +292,26 @@ class AlertCenter(QtCore.QObject):
         self.zone_states = {key: value for key, value in self.zone_states.items() if key in keys}
 
     def check_price(self, price: float) -> None:
+        if price <= 0:
+            return
+        self.check_manual_price(self.symbol, price)
         previous = self.last_price
         self.last_price = price
-        if previous is None or price <= 0:
+        if previous is None:
             return
+        self._check_zones(previous, price)
+        self._check_profiles(previous, price)
+
+    def check_manual_price(self, symbol: str, price: float) -> None:
+        if price <= 0 or symbol not in self._manual_symbols:
+            return
+        previous = self._manual_prices.get(symbol)
+        self._manual_prices[symbol] = price
+        if previous is None:
+            return
+        fired = False
         for rule in self.manual:
-            if not rule.active or rule.symbol != self.symbol:
+            if not rule.active or rule.symbol != symbol:
                 continue
             crossed_up = previous < rule.level <= price
             crossed_down = previous > rule.level >= price
@@ -294,10 +322,11 @@ class AlertCenter(QtCore.QObject):
             )
             if matches:
                 rule.active = False
-                self.manual_alerts_changed.emit(self.active_manual_count())
-                self.dispatch("PRICE LEVEL CROSSED", price, f"Level {format_price(rule.level)}")
-        self._check_zones(previous, price)
-        self._check_profiles(previous, price)
+                fired = True
+                self.dispatch_market(symbol, self.interval, "PRICE LEVEL CROSSED", price,
+                                     f"Level {format_price(rule.level)}")
+        if fired:
+            self._publish_manual_state()
 
     def _check_zones(self, previous: float, price: float) -> None:
         for zone in self.zones:

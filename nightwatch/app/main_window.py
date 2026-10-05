@@ -715,7 +715,8 @@ class MainWindow(QtWidgets.QMainWindow):
             if shortcut in set("0123456789"):
                 shortcut = constants.DEFAULT_INDICATOR_SHORTCUTS[name]
             allowed = {"Ctrl+" + k for k in "123QWEASD4567890"}
-            if shortcut in allowed and shortcut not in used_shortcuts:
+            if (shortcut in allowed and shortcut not in used_shortcuts
+                    and shortcut not in constants.SHELL_RESERVED_SHORTCUTS):
                 self.indicator_shortcuts[name] = shortcut
                 used_shortcuts.add(shortcut)
             else:
@@ -922,6 +923,7 @@ class MainWindow(QtWidgets.QMainWindow):
                             DEFAULT_TRADING_HOTKEYS[action]
                             if is_shift_letter_shortcut(shortcut)
                             or is_smart_exit_shortcut(shortcut)
+                            or shortcut in constants.SHELL_RESERVED_SHORTCUTS
                             else shortcut
                         )
         self.quick_trading_preset = dict(constants.DEFAULT_QUICK_TRADING_PRESET)
@@ -1099,6 +1101,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.alert_center.manual_alerts_changed.connect(
             self.alerts_panel.set_active_count
         )
+        self.alert_center.manual_alerts_changed.connect(self._sync_ticker_streams)
         self.alerts_panel.cancel_all_requested.connect(
             self.alert_center.clear_manual_alerts
         )
@@ -7103,6 +7106,7 @@ class MainWindow(QtWidgets.QMainWindow):
             return
         tracked = [
             self.current_symbol,
+            *self.alert_center.monitored_symbols(),
             *self.trading_gateway.open_position_symbols(),
             *self.watchlist.symbols,
             *(self.market_board.tracked_symbols if self.market_board is not None else ()),
@@ -7436,6 +7440,12 @@ class MainWindow(QtWidgets.QMainWindow):
             return
         tickers, changed, broad = prepared
         self.tickers = tickers
+        # Custom alerts remain armed when their market is not on the chart.
+        # Check only changed, monitored symbols; automatic chart alerts retain
+        # their independent current-market kline path.
+        for symbol in self.alert_center.monitored_symbols():
+            if symbol in changed:
+                self.alert_center.check_manual_price(symbol, safe_float(tickers.get(symbol, {}).get("c")))
         # Hidden consumers follow this immutable publication without re-running
         # analytics; visible consumers are updated by the presentation clock.
         if self.market_board is not None:
@@ -8083,7 +8093,10 @@ class MainWindow(QtWidgets.QMainWindow):
         )
 
     def edit_indicator_shortcuts(self) -> None:
-        dialog = IndicatorShortcutsDialog(self.indicator_shortcuts, self)
+        dialog = IndicatorShortcutsDialog(
+            self.indicator_shortcuts, self,
+            reserved_shortcuts={value for value in self.trading_hotkeys.values() if value},
+        )
         if dialog.exec() != QtWidgets.QDialog.DialogCode.Accepted:
             return
         self.indicator_shortcuts = dialog.shortcuts()
@@ -8183,12 +8196,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 ticket.set_protection_lifecycle(text)
 
     def _reserved_trading_shortcuts(self) -> set[str]:
-        reserved = {
-            "Ctrl+P", "Ctrl+PageUp", "Ctrl+PageDown", "Ctrl+O", "Ctrl+Shift+O",
-            "Ctrl+Shift+A",
-            "Alt+F", "Alt+Shift+F", "Ctrl+Z", "Ctrl+Enter", "F11",
-            "Alt+1", "Alt+2", "Alt+3", "Alt+4",
-        }
+        reserved = set(constants.SHELL_RESERVED_SHORTCUTS)
         reserved.update(
             str(value) for value in self.indicator_shortcuts.values() if str(value)
         )

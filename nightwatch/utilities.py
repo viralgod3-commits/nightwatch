@@ -776,13 +776,13 @@ class _TypographyRoleFilter(QtCore.QObject):
                 event.type() == QtCore.QEvent.Type.StyleChange
                 and not watched.testAttribute(QtCore.Qt.WidgetAttribute.WA_WState_Polished)
             ):
-                return super().eventFilter(watched, event)
+                return False
             QtCore.QTimer.singleShot(
                 0,
                 watched,
                 lambda widget=watched: _apply_typography_if_alive(widget),
             )
-        return super().eventFilter(watched, event)
+        return False
 
 
 def tooltips_allowed(widget: QtCore.QObject) -> bool:
@@ -935,7 +935,9 @@ class _TooltipController(QtCore.QObject):
             owner = self._owner() if self._owner is not None else None
             if watched is owner:
                 self.hide()
-        return super().eventFilter(watched, event)
+        # QObject's default filter is a no-op. Return directly so application
+        # layout/teardown events need no second conversion through PySide.
+        return False
 
 
 def tooltip_controller() -> _TooltipController:

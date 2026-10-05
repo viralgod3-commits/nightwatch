@@ -1875,11 +1875,16 @@ class OrderPanel(QtWidgets.QWidget):
         self.gateway.credentials_changed.connect(self._clear_position_desk_account)
 
     def _clear_position_desk_account(self, _key):
+        self._leverage_apply_timer.stop()
         self._position_cache = []
         self._desk_selected_key = None
         self.hedge_mode = None
+        self._available_margin = 0.0
+        self._last_confirmed_leverage = 0
         self.quantity_edit.clear()
+        self._refresh_account_summary()
         self._refresh_reduce_positions()
+        self._update_order_summary()
 
     def _edit_reduce_amount(self, text):
         # A typed base amount is a normal CONTRACTS order. Presets still use
@@ -2182,9 +2187,13 @@ class OrderPanel(QtWidgets.QWidget):
         for editor in (self.price_edit, self.trigger_edit, self.activation_edit):
             editor.set_quote_asset(rules.quote_asset)
         if changed:
+            # A delayed edit belongs to the old market. Never let its timer
+            # apply that leverage to a different symbol after navigation.
+            self._leverage_apply_timer.stop()
             self.mark_price = 0.0
             self._last_mark_mono = 0.0
             self._position_cache = []
+            self._desk_selected_key = None
             self.quantity_edit.clear()
             self.price_edit.clear()
             self.trigger_edit.clear()
@@ -2192,6 +2201,25 @@ class OrderPanel(QtWidgets.QWidget):
             self.protection_plans = {"tp": [], "sl": []}
             self._protection_lifecycle = ""
             self._update_protection_label()
+            confirmed = self.gateway.current_leverage(symbol)
+            self._last_confirmed_leverage = confirmed
+            blocker = QtCore.QSignalBlocker(self.leverage)
+            self.leverage.setValue(confirmed or 5)
+            del blocker
+            # The gateway already owns the reconciled account for all markets.
+            # Restore the new ticket's positions immediately; opening Reduce
+            # must not depend on first visiting Account to request another read.
+            try:
+                available = self.gateway.available_balance(rules.margin_asset)
+            except ValueError:
+                available = 0.0
+            mode = self.gateway.hedge_mode
+            self.apply_account_snapshot({
+                "positionMode": {"dualSidePosition": mode} if isinstance(mode, bool) else {},
+                "account": {"availableBalance": available,
+                            "positions": list(self.gateway.position_cache.values())},
+            })
+            self._sync_mark_controls()
         self._prepare_manual_trading()
         self._refresh_reduce_positions()
         self._size_mode_changed(str(self.size_mode.currentData()))
@@ -2512,6 +2540,7 @@ class OrderPanel(QtWidgets.QWidget):
             if abs(safe_float(row.get("positionAmt"))) > 0:
                 self._position_cache.append(dict(row))
             active_leverage = max(active_leverage, int(safe_float(row.get("leverage"))))
+        active_leverage = self.gateway.current_leverage(self.symbol) or active_leverage
         if active_leverage:
             self._last_confirmed_leverage = active_leverage
             blocker = QtCore.QSignalBlocker(self.leverage)
@@ -2827,6 +2856,10 @@ class OrderPanel(QtWidgets.QWidget):
         except (ValueError, TypeError):
             text = format_price(price).replace(",", "")
         target.setText(text)
+        if order_type == "MARKET":
+            # A selected book price is a limit draft. Expose that price instead
+            # of silently filling the hidden Market ticket's price field.
+            self.type_combo.setCurrentIndex(self.type_combo.findData("LIMIT"))
         if target.hasFocus():
             target.selectAll()
         self._set_validation_message("")

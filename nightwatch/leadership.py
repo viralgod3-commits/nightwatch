@@ -4661,6 +4661,9 @@ class SectorOverviewWidget(QtWidgets.QWidget):
         right_layout.addLayout(bottom, 1)
         self.tile_layout.addWidget(right, 2)
 
+    def apply_theme(self, _theme: dict[str, str]) -> None:
+        self._apply_fixed_palette()
+
     def _apply_fixed_palette(self) -> None:
         palette = dict(SECTORS_PALETTE)
         self.theme = palette

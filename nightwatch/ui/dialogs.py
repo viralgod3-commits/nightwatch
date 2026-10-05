@@ -14,6 +14,7 @@ from ..utilities import TextRole, apply_text_render_hints, set_text_role
 from ..utilities import device_pixel_value
 from ..constants import (
     MARKET_BAR_TIMEFRAME_LIMIT, MARKET_BAR_TIMEFRAME_PRESETS, TIMEFRAMES,
+    SHELL_RESERVED_SHORTCUTS,
 )
 
 
@@ -544,9 +545,10 @@ class IndicatorSettingsDialog(QtWidgets.QDialog):
         for key, editor in self.choice_editors[indicator].items():
             index = editor.findData(INDICATOR_SETTING_DEFAULTS[indicator][key])
             editor.setCurrentIndex(max(0, index))
-        defaults = {round(float(value), 6) for value in INDICATOR_SETTING_DEFAULTS[indicator].get("levels", [])}
-        for ratio, editor in self.level_editors[indicator].items():
-            editor.setChecked(round(ratio, 6) in defaults)
+        if self.level_editors[indicator]:
+            defaults = {round(float(value), 6) for value in INDICATOR_SETTING_DEFAULTS[indicator].get("levels", [])}
+            for ratio, editor in self.level_editors[indicator].items():
+                editor.setChecked(round(ratio, 6) in defaults)
 
     def _accept_validated(self) -> None:
         auto_options = self.option_editors["Auto Fibonacci"]
@@ -614,8 +616,10 @@ class IndicatorShortcutsDialog(QtWidgets.QDialog):
         self,
         shortcuts: dict[str, str],
         parent: QtWidgets.QWidget | None = None,
+        *, reserved_shortcuts: set[str] | None = None,
     ):
         super().__init__(parent)
+        self.reserved_shortcuts = set(SHELL_RESERVED_SHORTCUTS) | set(reserved_shortcuts or ())
         self.setWindowTitle("Indicator shortcuts")
         self.setMinimumWidth(470)
         layout = QtWidgets.QVBoxLayout(self)
@@ -685,6 +689,13 @@ class IndicatorShortcutsDialog(QtWidgets.QDialog):
                 self,
                 "Duplicate indicator shortcut",
                 "Each number key can toggle only one indicator.",
+            )
+            return
+        conflicts = sorted(set(active) & self.reserved_shortcuts)
+        if conflicts:
+            QtWidgets.QMessageBox.warning(
+                self, "Shortcut already in use",
+                "These shortcuts are reserved by Nightwatch: " + ", ".join(conflicts),
             )
             return
         self.accept()
@@ -1004,6 +1015,12 @@ class NightwatchSettingsDialog(QtWidgets.QDialog):
             placeholder_layout.addStretch(1)
             self.pages.addWidget(placeholder)
 
+        self._no_results_page = QtWidgets.QLabel("No matching settings. Clear the search to see all options.")
+        self._no_results_page.setObjectName("settingsNoResults")
+        self._no_results_page.setWordWrap(True)
+        self._no_results_page.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.pages.addWidget(self._no_results_page)
+
         footer = QtWidgets.QFrame()
         footer.setObjectName("settingsFooter")
         footer_layout = QtWidgets.QHBoxLayout(footer)
@@ -1202,7 +1219,7 @@ class NightwatchSettingsDialog(QtWidgets.QDialog):
         first_match = -1
         current = self.categories.currentRow()
         current_visible = False
-        for index in range(self.pages.count()):
+        for index in range(len(self._page_builders)):
             page = self.pages.widget(index)
             category = self.CATEGORIES[index].casefold() if index < len(self.CATEGORIES) else ""
             category_match = bool(query and query in category)
@@ -1223,6 +1240,11 @@ class NightwatchSettingsDialog(QtWidgets.QDialog):
 
         if query and not current_visible and first_match >= 0:
             self.categories.setCurrentRow(first_match)
+            self.pages.setCurrentIndex(first_match)
+        elif query and first_match < 0:
+            self.pages.setCurrentWidget(self._no_results_page)
+        elif current >= 0:
+            self.pages.setCurrentIndex(current)
         elif not query and current < 0 and self.categories.count():
             self.categories.setCurrentRow(0)
 
@@ -1949,22 +1971,41 @@ class NightwatchSettingsDialog(QtWidgets.QDialog):
 
     def _open_orderbook_guide(self) -> None:
         guide_path = Path(__file__).resolve().parent.parent / "orderbook_guide.html"
-        if not guide_path.is_file():
-            QtWidgets.QMessageBox.warning(
-                self,
-                "Order book guide not found",
-                "Place orderbook_guide.html in the Nightwatch package folder.",
-            )
-            return
-        opened = QtGui.QDesktopServices.openUrl(
+        if guide_path.is_file() and QtGui.QDesktopServices.openUrl(
             QtCore.QUrl.fromLocalFile(str(guide_path))
-        )
-        if not opened:
-            QtWidgets.QMessageBox.warning(
-                self,
-                "Unable to open order book guide",
-                f"Nightwatch could not open:\n{guide_path}",
-            )
+        ):
+            return
+        dialog = self.findChild(QtWidgets.QDialog, "orderbookGuideDialog")
+        if dialog is None:
+            dialog = QtWidgets.QDialog(self)
+            dialog.setObjectName("orderbookGuideDialog")
+            dialog.setWindowTitle("Order book guide")
+            dialog.resize(620, 480)
+            layout = QtWidgets.QVBoxLayout(dialog)
+            guide = QtWidgets.QTextBrowser()
+            guide.setHtml("""
+                <h2>Order book controls</h2>
+                <p><b>Heatmap / Ladder</b> changes the depth view. <b>Qty / Value</b>
+                switches between base quantity and quote value.</p>
+                <p><b>Step − / +</b> changes price grouping. The step menu selects a
+                multiplier; <b>Auto</b> adapts grouping to the visible range.
+                <b>Rows</b> controls row density and <b>Range</b> controls the depth range.</p>
+                <p>The <b>…</b> menu controls visible lanes and the embedded trade tape.
+                Use <b>Reset</b> to restore the display defaults.</p>
+                <h3>Prices and gestures</h3>
+                <p>Click a price to prefill the current ticket. An existing unfocused
+                price is preserved; focus that field to replace it. Drag the
+                heatmap's range ruler to measure a price range. Escape cancels the gesture.</p>
+                <p>Prices are selectable only from a current, synchronized book.
+                A market switch or reconnect cancels an active gesture.</p>
+            """)
+            layout.addWidget(guide)
+            buttons = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.StandardButton.Close)
+            buttons.rejected.connect(dialog.close)
+            layout.addWidget(buttons)
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
 
     def _panel_preset_selected(self, index: int) -> None:
         if self._syncing or index < 0:

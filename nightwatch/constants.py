@@ -70,6 +70,14 @@ CONDITIONAL_ORDER_TYPES = {
 # quick-order system is explicitly armed. Keep this policy shared by dispatch.
 LOW_PRIORITY_TRADING_HOTKEYS = frozenset({"B", "S"})
 
+# These keys are handled before configurable indicator/trading shortcuts.
+SHELL_RESERVED_SHORTCUTS = frozenset({
+    "Ctrl+A", "Ctrl+P", "Ctrl+PageUp", "Ctrl+PageDown", "Ctrl+O", "Ctrl+Shift+O",
+    "Ctrl+Shift+A", "Ctrl+Shift+X", "Ctrl+Tab", "Ctrl+Shift+Tab",
+    "Alt+F", "Alt+Shift+F", "Ctrl+Z", "Ctrl+Enter", "Ctrl+Return", "Ctrl+F", "F3", "F5", "F11", "Esc",
+    "Delete", "Backspace", "Shift+Delete", "Alt+1", "Alt+2", "Alt+3", "Alt+4",
+})
+
 
 DEFAULT_TRADING_HOTKEYS = {
     "place_buy": "Ctrl+Shift+B",
