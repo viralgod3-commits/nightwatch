@@ -1452,10 +1452,21 @@ class OrderBookControlBar(QtWidgets.QFrame):
         view_width = self._view_container.sizeHint().width()
         top_width = view_width + self.value_mode_button.sizeHint().width() + self.settings_button.sizeHint().width() + 24
         expanded_view = width >= max(220, top_width)
-        show_auto = width >= 250 and self._book_depth
-        show_step_label = width >= 280
-        show_step_buttons = width >= 190
-        state = (expanded_view, show_auto, show_step_label, show_step_buttons, self._book_depth)
+        step_width = min(150, self.aggregation_button.minimumSizeHint().width())
+        self.aggregation_button.setMinimumWidth(step_width)
+        required = step_width + 12
+        show_rows = width >= required + self.density_button.sizeHint().width() + 4
+        if show_rows:
+            required += self.density_button.sizeHint().width() + 4
+        step_buttons_width = self.step_down_button.sizeHint().width() + self.step_up_button.sizeHint().width() + 8
+        show_step_buttons = width >= required + step_buttons_width
+        if show_step_buttons:
+            required += step_buttons_width
+        show_auto = self._book_depth and width >= required + self.auto_button.sizeHint().width() + 4
+        if show_auto:
+            required += self.auto_button.sizeHint().width() + 4
+        show_step_label = width >= required + self.step_label.sizeHint().width() + 4
+        state = (expanded_view, show_auto, show_step_label, show_step_buttons, show_rows, step_width, self._book_depth)
         if state == self._responsive_layout_state:
             return
         self._responsive_layout_state = state
@@ -1465,6 +1476,7 @@ class OrderBookControlBar(QtWidgets.QFrame):
         self.step_label.setVisible(show_step_label)
         self.step_down_button.setVisible(show_step_buttons)
         self.step_up_button.setVisible(show_step_buttons)
+        self.density_button.setVisible(show_rows)
         self._range_container.setVisible(self._book_depth)
         self.setFixedHeight(self.CONTROL_BAR_HEIGHT if self._book_depth else 68)
 
@@ -1475,7 +1487,7 @@ class OrderBookControlBar(QtWidgets.QFrame):
         del blocker
 
     def set_state(self, *, aggregation, tick_size, preset, density, value_mode, tape_enabled, tape_mode,
-                  book_depth=False, overlays=None, depth_range=0.72, auto_grouping=True):
+                  book_depth=False, overlays=None, depth_range=0.72, auto_grouping=True, range_available=True):
         self._aggregation = max(1, int(aggregation))
         self._tick_size = max(0.0, float(tick_size))
         self._density, self._value_mode = str(density or 'normal'), 'base' if value_mode == 'base' else 'quote'
@@ -1488,6 +1500,11 @@ class OrderBookControlBar(QtWidgets.QFrame):
         self._analytics_menu.menuAction().setVisible(not self._book_depth)
         self.auto_action.setEnabled(self._book_depth)
         self._refresh_text()
+        self.range_slider.setEnabled(bool(range_available))
+        self.range_slider.setToolTip('Adjust the range used to scale liquidity.' if range_available
+                                     else 'Range becomes available when more price levels are shown.')
+        if not range_available:
+            self.range_value.setText('—')
         self._refresh_responsive_layout(self.width())
 
     def _refresh_text(self):
@@ -1629,15 +1646,23 @@ def _compute_order_flow_dom_geometry(width: float, height: float, font_height: f
         density = 'normal'
 
     if book_depth:
-        # A continuous price grid: the floating market label overlays the book,
-        # quantities and depth share the same plot, and no chrome splits rows.
+        # Keep market context and the midpoint out of the price/quantity rows.
         row_height = max({'compact': 20.0, 'normal': 24.0, 'relaxed': 30.0}[density],
                          float(math.ceil(max(font_height, price_font_height or font_height) + 4.0)))
-        price_width = min(width, max(72.0, float(price_min_width)))
-        heat_width = min(10.0, max(0.0, width - price_width))
-        plot_left = min(width, price_width + heat_width + 6.0)
-        center_top = max(0.0, math.floor(height * 0.455) - row_height * 0.5 + 1.0)
-        rows = max(1, int(math.ceil(max(center_top, height - center_top) / row_height)) + 1)
+        price_width = min(width, max(42.0, float(price_min_width)))
+        heat_width = min(8.0, max(0.0, width - price_width))
+        plot_left = min(width, price_width + heat_width + 2.0)
+        market_height = min(height, max(24.0, float(label_font_height or 11.0) + 8.0))
+        totals_height = min(max(0.0, height - market_height),
+                            float(label_font_height or 11.0) + 6.0 if width < 280.0 else 0.0)
+        header_height = market_height + totals_height
+        center_height = min(max(0.0, height - header_height),
+                            max(24.0, font_height + float(label_font_height or 11.0) + 8.0
+                                if width < 240.0 else font_height + 8.0))
+        body_height = max(0.0, height - header_height - center_height)
+        center_top = header_height + math.floor(body_height * 0.5)
+        center_bottom = center_top + center_height
+        rows = max(1, int(math.ceil(max(center_top - header_height, height - center_bottom) / row_height)) + 1)
         columns = {'price': (0.0, price_width)}
         if width > plot_left:
             columns['liquidity'] = (plot_left, width)
@@ -1647,14 +1672,15 @@ def _compute_order_flow_dom_geometry(width: float, height: float, font_height: f
             'wide': width >= 674.0, 'row_density': density, 'shallow': height < 120.0,
             'bbo_only': False, 'price_only_due_width': len(columns) == 1,
             'depth_mode': 'profile', 'book_depth': True,
-            'top_height': 0.0, 'title_height': 38.0, 'metric_height': 0.0,
+            'top_height': header_height, 'title_height': header_height, 'metric_height': 0.0,
             'column_height': 0.0, 'row_height': row_height, 'nominal_row_height': row_height,
-            'center_height': 0.0, 'footer_height': 0.0, 'rows_per_side': rows,
-            'header_top': 0.0, 'column_top': 0.0, 'table_top': 0.0,
-            'center_top': center_top, 'center_bottom': center_top,
+            'center_height': center_height, 'footer_height': 0.0, 'rows_per_side': rows,
+            'header_top': 0.0, 'column_top': 0.0, 'table_top': header_height,
+            'center_top': center_top, 'center_bottom': center_bottom,
             'footer_top': height, 'footer_bottom': height,
             'columns': columns, 'column_minimums': {'price': price_width},
-            'heat_left': price_width + 1.0, 'heat_width': heat_width,
+            'heat_left': price_width, 'heat_width': heat_width,
+            'profile_market_height': market_height, 'profile_totals_height': totals_height,
             'state_full_label_width': 0.0, 'flow_max_width': 0.0,
             'column_preferences': {}, 'presentation_preset': preset,
             'primary_analytic': '', 'visible_analytics': (),
@@ -2438,6 +2464,17 @@ class _DomRasterCanvas(QtWidgets.QWidget):
             return
         step = 10.0 ** (math.floor(math.log10(mid)) - 2)
         target = max(1.0, step / self.price_tick_size)
+        # Price-only defaults can collapse the whole received book into one
+        # bucket. Fit the available depth before choosing an automatic step.
+        spans = []
+        if len(snapshot.bid_levels) > 1:
+            spans.append(snapshot.bid_levels[0].price - snapshot.bid_levels[-1].price)
+        if len(snapshot.ask_levels) > 1:
+            spans.append(snapshot.ask_levels[-1].price - snapshot.ask_levels[0].price)
+        if spans:
+            row_height = max(20.0, float(self._geometry.get('row_height', 24.0)))
+            target_rows = max(4, min(24, int(self.height() * 0.35 / row_height)))
+            target = min(target, max(1.0, max(spans) / (self.price_tick_size * target_rows)))
         multiplier = min(ORDER_FLOW_AGGREGATION_MULTIPLIERS, key=lambda value: abs(math.log(value / target)))
         self._profile_grouped_symbol = snapshot.symbol
         self.set_aggregation_multiplier(multiplier, emit=False)
@@ -2702,7 +2739,7 @@ class _DomRasterCanvas(QtWidgets.QWidget):
             semantic_columns.add('state')
         if bool(self._column_preferences.get('memory', False)) and 'memory' in columns and {'bid', 'ask'} & semantic_columns:
             semantic_columns.add('memory')
-        return {'mode': str(self._geometry.get('mode', 'unknown')), 'columns': tuple(columns), 'semantic_columns': tuple(sorted(semantic_columns)), 'primary': str(self._geometry.get('primary_analytic', self._column_preferences.get('primary', 'flow'))), 'visible_analytics': tuple((name for name in ('flow', 'delta', 'memory') if name in semantic_columns)), 'bbo_only': bool(self._geometry.get('bbo_only', False)), 'density': self._row_density, 'preset': self._presentation_preset, 'values': self._value_mode}
+        return {'mode': str(self._geometry.get('mode', 'unknown')), 'columns': tuple(columns), 'semantic_columns': tuple(sorted(semantic_columns)), 'primary': str(self._geometry.get('primary_analytic', self._column_preferences.get('primary', 'flow'))), 'visible_analytics': tuple((name for name in ('flow', 'delta', 'memory') if name in semantic_columns)), 'bbo_only': bool(self._geometry.get('bbo_only', False)), 'density': self._row_density, 'preset': self._presentation_preset, 'values': self._value_mode, 'range_adjustable': bool(self._geometry.get('profile_range_adjustable', False))}
 
     def _publish_layout_state(self) -> None:
         state = self.layout_state()
@@ -3163,10 +3200,12 @@ class _DomRasterCanvas(QtWidgets.QWidget):
             current = center
             if self._last_trade_price > 0.0 and step > 0.0:
                 bucket = math.floor(self._last_trade_price / step + 1e-7) * step
-                current += round((self._profile_anchor_price - bucket) / step) * float(g['row_height'])
+                side = 'ask' if self.snapshot is not None and self._last_trade_price >= self.snapshot.midpoint else 'bid'
+                current = self._profile_price_row_top(bucket, side) + float(g['row_height']) * 0.5
             previous = self._profile_last_drawn_y if self._profile_last_drawn_y is not None else center
-            top = max(0, int(math.floor(min(center, previous, current))) - 24)
-            bottom = min(self.height(), int(math.ceil(max(center + float(g['row_height']) + 20, previous + 2, current + 2))))
+            half_row = float(g['row_height']) * 0.5 + 1.0
+            top = max(0, int(math.floor(min(center - 1.0, previous - half_row, current - half_row))))
+            bottom = min(self.height(), int(math.ceil(max(float(g['center_bottom']) + 1.0, previous + half_row, current + half_row))))
             return QtGui.QRegion(0, top, self.width(), max(0, bottom - top))
         top = max(0, int(math.floor(float(self._geometry.get('center_top', 0.0)))) - 1)
         height = int(math.ceil(float(self._geometry.get('center_height', 0.0)))) + 2
@@ -3235,9 +3274,12 @@ class _DomRasterCanvas(QtWidgets.QWidget):
         """
         if self._book_depth:
             return (
-                (self.symbol, self._market_status), (),
-                (self._last_trade_price, self._profile_ruler_totals),
-                (self._profile_anchor_price,),
+                (self.symbol, self._market_status,
+                 self._profile_ruler_totals if self._geometry.get('profile_totals_height') else ()), (),
+                (self._last_trade_price, self.snapshot.midpoint if self.snapshot is not None else 0.0,
+                 self._profile_ruler_totals),
+                (self._profile_anchor_price, self._geometry.get('profile_ask_anchor'),
+                 self._geometry.get('profile_rulers')),
             )
         title_header: list[tuple[str, str, int]] = []
         for key in ('symbol', 'status', 'latency', 'latency_compact', 'source', 'spread'):
@@ -3688,7 +3730,7 @@ class _DomRasterCanvas(QtWidgets.QWidget):
                 widest_text = max((self._price_text(level.price) for level in
                                   (*snapshot.bid_levels[:32], *snapshot.ask_levels[:32])),
                                  key=len, default=self._price_text(snapshot.midpoint))
-            return max(94.0, float(math.ceil(self._price_metrics.horizontalAdvance(widest_text) + 12.0)))
+            return max(42.0, float(math.ceil(self._price_metrics.horizontalAdvance(widest_text) + 8.0)))
         font = typography_font_at_pixel_size(
             self._price_font, typography_min_pixel_size(TextRole.ORDERBOOK_PRICE)
         )
@@ -3958,7 +4000,7 @@ class _DomRasterCanvas(QtWidgets.QWidget):
             base_pixel = max(1, int(round(point * max(72.0, float(self.logicalDpiY())) / 72.0)))
         base_pixel = max(typography_min_pixel_size(TextRole.ORDERBOOK_PRICE), base_pixel)
         price_left, price_right = self._geometry['columns']['price']
-        price_padding = 16.0 if self._book_depth else 4.0
+        price_padding = 8.0 if self._book_depth else 4.0
         available = max(8.0, float(price_right) - float(price_left) - price_padding)
         widest_text = self._update_price_format_envelope(snapshot)
         cache_key = (widest_text, round(available, 2), base_pixel, typography_min_pixel_size(TextRole.ORDERBOOK_PRICE), round(float(self.devicePixelRatioF()), 3))
@@ -4726,18 +4768,31 @@ class _DomRasterCanvas(QtWidgets.QWidget):
             self._profile_paths[side] = (area, outline)
 
     def _profile_row_top(self, row: PreparedDomRow) -> float:
+        return self._profile_price_row_top(float(row.level.price), str(row.level.side))
+
+    def _profile_price_row_top(self, price: float, side: str) -> float:
         g = self._geometry
         step = float(g.get('profile_step', 0.0))
         if step <= 0.0:
             return float(g['center_top'])
-        return float(g['center_top']) + round((self._profile_anchor_price - row.level.price) / step) * float(g['row_height'])
+        row_height = float(g['row_height'])
+        price_anchor = float(g.get('profile_anchor', self._profile_anchor_price))
+        if side == 'ask':
+            anchor = float(g.get('profile_ask_anchor', price_anchor + step))
+            return float(g['center_top']) - row_height * (1.0 + max(0, round((price - anchor) / step)))
+        return float(g['center_bottom']) + max(0, round((price_anchor - price) / step)) * row_height
+
+    def _profile_ruler_limits(self) -> tuple[float, float, float]:
+        g = self._geometry
+        origin = (float(g['center_top']) + float(g['center_bottom'])) * 0.5
+        visible = max(0.0, min(origin - float(g.get('table_top', 0.0)), float(g['height']) - origin))
+        minimum = min(visible, float(g.get('profile_ruler_min', (float(g['center_height']) + float(g['row_height'])) * 0.5)))
+        available = max(minimum, min(visible, float(g.get('profile_ruler_extent', visible))))
+        return origin, minimum, available
 
     def _profile_rulers(self) -> tuple[float, float]:
-        g = self._geometry
-        row_height = float(g['row_height'])
-        origin = float(g['center_top']) + row_height
-        available = max(row_height, min(origin, float(g['height']) - origin))
-        distance = max(1, int(round(available * self._profile_ruler_fraction / row_height))) * row_height
+        origin, minimum, available = self._profile_ruler_limits()
+        distance = minimum + (available - minimum) * self._profile_ruler_fraction
         return origin - distance, origin + distance
 
     def set_depth_range(self, fraction: float, *, emit: bool=True) -> None:
@@ -4771,9 +4826,23 @@ class _DomRasterCanvas(QtWidgets.QWidget):
         anchor_tick = math.floor(mid / g['profile_step'] + 1e-7) if mid > 0.0 else 0
         self._profile_anchor_price = anchor_tick * g['profile_step']
         g['profile_anchor'] = self._profile_anchor_price
+        sides = {'bid': self._bid_rows[:limit], 'ask': self._ask_rows[:limit]}
+        ask_at_anchor = bool(sides['ask'] and math.isclose(sides['ask'][0].level.price,
+                            self._profile_anchor_price, rel_tol=0.0, abs_tol=g['profile_step'] * 1e-5))
+        g['profile_ask_anchor'] = self._profile_anchor_price + (0.0 if ask_at_anchor else g['profile_step'])
+        origin = (float(g['center_top']) + float(g['center_bottom'])) * 0.5
+        nearest = [(float(g['center_height']) + float(g['row_height'])) * 0.5]
+        farthest = []
+        for rows in sides.values():
+            if rows:
+                nearest.append(abs(self._profile_row_top(rows[0]) + float(g['row_height']) * 0.5 - origin))
+                farthest.append(abs(self._profile_row_top(rows[-1]) + float(g['row_height']) * 0.5 - origin))
+        g['profile_ruler_min'] = max(nearest)
+        g['profile_ruler_extent'] = max(farthest, default=g['profile_ruler_min']) + float(g['row_height']) * 0.5
+        _, minimum, available = self._profile_ruler_limits()
+        g['profile_range_adjustable'] = bool(farthest and available - minimum > float(g['row_height']) * 0.5 + 1.0)
         ruler_top, ruler_bottom = self._profile_rulers()
         g['profile_rulers'] = (ruler_top, ruler_bottom)
-        sides = {'bid': self._bid_rows[:limit], 'ask': self._ask_rows[:limit]}
         amounts: dict[str, list[tuple[float, float]]] = {}
         largest = 0.0
         totals: dict[str, float] = {}
@@ -5557,13 +5626,7 @@ class _DomRasterCanvas(QtWidgets.QWidget):
         g = self._geometry
         side = level.side
         hovered = self._hover_price == level.price
-        others = self._ask_rows if side == 'bid' else self._bid_rows
-        paired = others[0] if others and others[0].level.price == level.price else None
         bar_top, bar_height = top, max(1.0, height - 1.0)
-        if paired is not None:
-            bar_height = max(1.0, height * 0.5 - 0.5)
-            if side == 'bid':
-                bar_top += height * 0.5
         profile_key = (side, float(level.price))
         size = max(0.0, min(1.0, self._profile_size_current.get(profile_key, row.profile_size)))
         low = QtGui.QColor(ORDERBOOK_REFERENCE[f'{side}_fill']).getRgb()[:3]
@@ -5594,24 +5657,34 @@ class _DomRasterCanvas(QtWidgets.QWidget):
                 hover = QtGui.QColor(self._profile_colors[side])
                 hover.setAlpha(130)
                 painter.setPen(QtGui.QPen(hover, self._physical_pixel_width()))
-                self._draw_snapped_line(painter, float(g['heat_left']), top + height * 0.5,
-                                        lane.right() - 3.0, top + height * 0.5)
+                self._draw_snapped_line(painter, float(g['heat_left']), top + height - 1.0,
+                                        lane.right() - 3.0, top + height - 1.0)
+
+    def _draw_profile_row_values(self, painter: QtGui.QPainter, row: PreparedDomRow, top: float, height: float) -> None:
+        side = row.level.side
+        if 'liquidity' in self._geometry['columns']:
+            lane = self._column_rect('liquidity', top, height)
             text_color = QtGui.QColor(self._profile_bar_text[side])
             if not row.profile_in_range:
                 text_color.setAlpha(150)
             amount_left = lane.left()
             font = self._row_font
-            if paired is not None and (paired.profile_amount > row.profile_amount
-                                       or paired.profile_amount == row.profile_amount and side == 'ask'):
-                amount_left += self._row_metrics.horizontalAdvance(paired.notional_text) + 8.0
-                font = self._profile_annotation_font
             amount_width = min(lane.right() - amount_left, self._profile_amount_width)
             amount_rect = QtCore.QRectF(amount_left, top, max(0.0, amount_width), height)
             self._draw_numeric_text(painter, amount_rect, row.notional_text, text_color,
-                                    Qt.AlignmentFlag.AlignLeft, font=font, pad=4.0)
-            if hovered and paired is None:
+                                    Qt.AlignmentFlag.AlignLeft, font=font, pad=4.0, bar_contrast=True)
+            if self._hover_price == row.level.price:
                 cumulative = self._profile_quantity_text(row.profile_cumulative)
                 width = QtGui.QFontMetricsF(self._profile_annotation_font).horizontalAdvance(cumulative) + 4.0
+                if not self._geometry['profile_totals_height']:
+                    ruler_top, ruler_bottom = self._profile_rulers()
+                    total_top = (
+                        max(float(self._geometry['table_top']), min(ruler_top + 5.0, float(self._geometry['center_top']) - 20.0))
+                        if side == 'ask' else
+                        min(float(self._geometry['height']) - 20.0, max(ruler_bottom - 27.0, float(self._geometry['center_bottom'])))
+                    )
+                    if top < total_top + 20.0 and top + height > total_top:
+                        return
                 if lane.right() - width > amount_rect.right() + 4.0:
                     self._draw_numeric_text(painter, QtCore.QRectF(lane.right() - width - 3.0, top, width, height),
                                             cumulative, text_color, Qt.AlignmentFlag.AlignRight,
@@ -5625,6 +5698,9 @@ class _DomRasterCanvas(QtWidgets.QWidget):
         ruler_top, ruler_bottom = self._profile_rulers()
         lane = g['columns'].get('liquidity')
         pens = {}
+        painter.save()
+        painter.setClipRect(QtCore.QRectF(0.0, float(g['table_top']), width,
+                            max(0.0, height - float(g['table_top']))), Qt.ClipOperation.IntersectClip)
         if ready and lane is not None:
             left, right = float(lane[0]), float(lane[1]) - 3.0
             for side, (area, outline) in self._profile_paths.items():
@@ -5653,19 +5729,22 @@ class _DomRasterCanvas(QtWidgets.QWidget):
                                            max(0.0, height - ruler_bottom)), shade)
         if ready:
             step = float(g['profile_step'])
-            anchor_top = float(g['center_top'])
-            first = int(math.floor(-anchor_top / row_height))
-            last = int(math.ceil((height - anchor_top) / row_height))
-            for offset in range(first, last):
-                top = anchor_top + offset * row_height
-                price = self._profile_anchor_price - offset * step
-                if price <= 0.0 or not dirty.intersects(QtCore.QRect(0, int(top), int(width), int(row_height) + 1)):
-                    continue
-                in_range = ruler_top <= top + row_height * 0.5 <= ruler_bottom
-                major = round(price / step) % 10 == 0
-                color = QtGui.QColor('#FFFFFF') if major and in_range else self._profile_price if in_range else self._profile_dim_price
-                self._draw_price_text(painter, self._column_rect('price', top, row_height),
-                                      self._price_text(price), color, Qt.AlignmentFlag.AlignRight, pad=6.0)
+            for side, anchor, start, direction, available in (
+                ('ask', float(g['profile_ask_anchor']), float(g['center_top']) - row_height,
+                 1.0, float(g['center_top']) - float(g['table_top'])),
+                ('bid', self._profile_anchor_price, float(g['center_bottom']),
+                 -1.0, height - float(g['center_bottom'])),
+            ):
+                for index in range(max(0, int(math.ceil(available / row_height)))):
+                    top = start - index * row_height if side == 'ask' else start + index * row_height
+                    price = anchor + direction * index * step
+                    if price <= 0.0 or not dirty.intersects(QtCore.QRect(0, int(top), int(width), int(row_height) + 1)):
+                        continue
+                    in_range = ruler_top <= top + row_height * 0.5 <= ruler_bottom
+                    major = round(price / step) % 10 == 0
+                    color = QtGui.QColor('#FFFFFF') if major and in_range else self._profile_price if in_range else self._profile_dim_price
+                    self._draw_price_text(painter, self._column_rect('price', top, row_height),
+                                          self._price_text(price), color, Qt.AlignmentFlag.AlignRight, pad=4.0)
         rows_rendered = False
         if ready:
             for row in (*self._ask_rows, *self._bid_rows):
@@ -5690,58 +5769,34 @@ class _DomRasterCanvas(QtWidgets.QWidget):
             painter.setPen(QtGui.QPen(self._grid_strong, self._physical_pixel_width()))
             for y in (ruler_top, ruler_bottom):
                 self._draw_snapped_line(painter, 0.0, y, width - 3.0, y)
-            bid, ask = self._profile_ruler_totals
-            for value, y, color in (
-                (ask, ruler_top + 5.0, self._profile_bar_text['ask']),
-                (bid, ruler_bottom - 27.0, self._profile_bar_text['bid']),
-            ):
-                self._draw_numeric_text(painter, QtCore.QRectF(max(0.0, width - 96.0), y, min(93.0, width), 20.0),
-                                        self._profile_quantity_text(value) or '0', color,
-                                        Qt.AlignmentFlag.AlignRight, font=self._profile_annotation_font, pad=0.0)
-            last_price = self._last_trade_price or self.snapshot.midpoint
-            if last_price > 0.0 and lane is not None:
-                bucket = math.floor(last_price / g['profile_step'] + 1e-7) * g['profile_step']
-                y = float(g['center_top']) + round((self._profile_anchor_price - bucket) / g['profile_step']) * row_height
-                self._profile_last_drawn_y = y
-                painter.setPen(QtGui.QPen(self._profile_last, self._physical_pixel_width()))
-                self._draw_snapped_line(painter, float(g['heat_left']), y, width - 3.0, y)
-                last_text = format_book_price(last_price, self.price_decimals if self.price_tick_size > 0.0 else None)
-                if '.' in last_text:
-                    last_text = last_text.rstrip('0').rstrip('.')
-                self._draw_numeric_text(painter, QtCore.QRectF(max(0.0, width - 116.0), y - 23.0, min(113.0, width), 20.0),
-                                        last_text, self._profile_last, Qt.AlignmentFlag.AlignRight,
-                                        font=self._profile_annotation_font, pad=0.0)
-                touch = QtGui.QColor(self._profile_last)
-                touch.setAlpha(130)
-                painter.setPen(QtGui.QPen(touch, self._physical_pixel_width()))
-                self._draw_snapped_line(painter, float(g['heat_left']), float(g['center_top']) + row_height * 0.5,
-                                        width - 3.0, float(g['center_top']) + row_height * 0.5)
-            delta = bid - ask
-            delta_text = ('+' if delta > 0.0 else '-' if delta < 0.0 else '') + (self._profile_quantity_text(abs(delta)) or '0')
-            delta_color = self._profile_colors['bid' if delta >= 0.0 else 'ask']
-            metrics = QtGui.QFontMetricsF(self._profile_annotation_font)
-            text_width = metrics.horizontalAdvance(delta_text)
-            delta_top = float(g['center_top']) + row_height - 9.0
-            label = QtCore.QRectF(max(0.0, width - text_width - 17.0), delta_top, text_width + 14.0, 16.0)
-            painter.fillRect(label, self._profile_bg)
-            self._draw_numeric_text(painter, label.adjusted(12, 0, 0, 0), delta_text, delta_color,
-                                    Qt.AlignmentFlag.AlignRight, font=self._profile_annotation_font, pad=0.0)
-            if delta != 0.0:
-                x, y = label.left() + 4.0, label.center().y()
-                points = ((x - 3, y - 2), (x + 3, y - 2), (x, y + 3)) if delta < 0 else ((x - 3, y + 2), (x + 3, y + 2), (x, y - 3))
-                painter.setPen(Qt.PenStyle.NoPen)
-                painter.setBrush(delta_color)
-                painter.drawPolygon(QtGui.QPolygonF([QtCore.QPointF(a, b) for a, b in points]))
+            # Values are the last row layer so depth outlines cannot cross digits.
+            for row in (*self._ask_rows, *self._bid_rows):
+                top = self._profile_row_top(row)
+                if dirty.intersects(QtCore.QRect(0, int(top), int(width), int(row_height) + 1)):
+                    self._draw_profile_row_values(painter, row, top, row_height)
+            if not g['profile_totals_height']:
+                self._draw_profile_totals(painter, ruler_top, ruler_bottom)
+            if self._last_trade_price > 0.0:
+                bucket = math.floor(self._last_trade_price / g['profile_step'] + 1e-7) * g['profile_step']
+                side = 'ask' if self._last_trade_price >= self.snapshot.midpoint else 'bid'
+                top = self._profile_price_row_top(bucket, side)
+                self._profile_last_drawn_y = top + row_height * 0.5
+                # The print marker stays in the heat strip, clear of all digits.
+                painter.fillRect(QtCore.QRectF(float(g['heat_left']), top + 2.0,
+                                               2.0, max(1.0, row_height - 4.0)), self._profile_last)
+            self._draw_profile_midpoint(painter)
         else:
             message = self._syncing_message() if self._book_validity_known and not self._book_valid else 'Waiting for market data'
             self._draw_text(painter, QtCore.QRectF(4.0, height * 0.4, max(0.0, width - 8), 40.0),
                             message, self._profile_price, Qt.AlignmentFlag.AlignHCenter, font=self._label_font)
+        painter.restore()
+        painter.fillRect(QtCore.QRectF(0.0, 0.0, width, float(g['table_top'])), self._profile_bg)
         pair = self.symbol.removesuffix('USDT') + ' / USDT' if self.symbol.endswith('USDT') else self.symbol
         text = f'Binance · {pair}'
         if self._market_status == 'STALE':
             text += ' · Stale'
         pill_width = min(max(0.0, width - 16.0), math.ceil(self._label_metrics.horizontalAdvance(text)) + 18.0)
-        pill = QtCore.QRectF(8.0, 8.0, pill_width, 22.0)
+        pill = QtCore.QRectF(4.0, 2.0, pill_width, max(0.0, float(g['profile_market_height']) - 4.0))
         painter.save()
         painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing, True)
         painter.setPen(QtGui.QPen(self._grid, self._physical_pixel_width()))
@@ -5750,7 +5805,89 @@ class _DomRasterCanvas(QtWidgets.QWidget):
         painter.restore()
         self._draw_text(painter, pill, text, self._text, Qt.AlignmentFlag.AlignLeft,
                         font=self._label_font, pad=8.0)
+        if ready and g['profile_totals_height']:
+            self._draw_profile_totals(painter, ruler_top, ruler_bottom)
         return rows_rendered
+
+    def _draw_profile_totals(self, painter: QtGui.QPainter, ruler_top: float, ruler_bottom: float) -> None:
+        """Keep ruler totals clear of individual quantities and midpoint digits."""
+        g = self._geometry
+        width = float(g['width'])
+        bid, ask = self._profile_ruler_totals
+        metrics = QtGui.QFontMetricsF(self._profile_annotation_font)
+        if g['profile_totals_height']:
+            top, height = float(g['profile_market_height']), float(g['profile_totals_height'])
+            half = width * 0.5
+            for side, value, left in (('bid', bid, 4.0), ('ask', ask, half + 2.0)):
+                rect = QtCore.QRectF(left, top, max(0.0, half - 6.0), height)
+                amount = self._profile_quantity_text(value) or '0'
+                text = f'{side.title()} {amount}'
+                if metrics.horizontalAdvance(text) > rect.width():
+                    text = f'{side.title()} {self._compact_scalar(value) if value else "0"}'
+                self._draw_numeric_text(painter, rect, text, self._profile_bar_text[side],
+                                        Qt.AlignmentFlag.AlignLeft, font=self._profile_annotation_font, pad=0.0)
+            return
+        lane = g['columns'].get('liquidity')
+        if lane is None:
+            return
+        available = max(0.0, float(lane[1]) - float(lane[0]) - self._profile_amount_width - 10.0)
+        for side, value, y in (
+            ('ask', ask, max(float(g['table_top']), min(ruler_top + 5.0, float(g['center_top']) - 20.0))),
+            ('bid', bid, min(float(g['height']) - 20.0, max(ruler_bottom - 27.0, float(g['center_bottom'])))),
+        ):
+            text = self._profile_quantity_text(value) or '0'
+            if metrics.horizontalAdvance(text) + 6.0 > available:
+                text = self._compact_scalar(value) if value else '0'
+            text_width = min(available, metrics.horizontalAdvance(text) + 6.0)
+            rect = QtCore.QRectF(width - text_width - 3.0, y, text_width, 20.0)
+            painter.fillRect(rect, self._profile_bg)
+            self._draw_numeric_text(painter, rect, text, self._profile_bar_text[side],
+                                    Qt.AlignmentFlag.AlignRight, font=self._profile_annotation_font, pad=3.0)
+
+    def _draw_profile_midpoint(self, painter: QtGui.QPainter) -> None:
+        """Give exact midpoint and imbalance digits their own protected space."""
+        g = self._geometry
+        top, bottom = float(g['center_top']), float(g['center_bottom'])
+        width, height = float(g['width']), max(0.0, float(g['center_height']))
+        painter.fillRect(QtCore.QRectF(0.0, top, width, height), self._profile_bg)
+        painter.setPen(QtGui.QPen(self._grid_strong, self._physical_pixel_width()))
+        for y in (top, bottom):
+            self._draw_snapped_line(painter, 0.0, y, width, y)
+        midpoint = self.snapshot.midpoint or self.snapshot.microprice
+        precision = min(16, self.price_decimals + 1) if self.price_tick_size > 0.0 else None
+        price_text = format_book_price(midpoint, precision)
+        bid, ask = self._profile_ruler_totals
+        delta = bid - ask
+        delta_text = ('+' if delta > 0.0 else '−' if delta < 0.0 else '') + (self._profile_quantity_text(abs(delta)) or '0')
+        delta_font = self._profile_annotation_font
+        delta_width = QtGui.QFontMetricsF(delta_font).horizontalAdvance(delta_text) + 14.0
+        stacked = width < 240.0
+        available = max(1.0, width - 8.0 if stacked else width - delta_width - 16.0)
+        font = QtGui.QFont(self._effective_price_font)
+        pixel_size = font.pixelSize()
+        while pixel_size > typography_min_pixel_size(TextRole.ORDERBOOK_PRICE) and QtGui.QFontMetricsF(font).horizontalAdvance(price_text) > available:
+            pixel_size -= 1
+            font = typography_font_at_pixel_size(self._effective_price_font, pixel_size)
+        if stacked:
+            price_rect = QtCore.QRectF(4.0, top, width - 8.0, height * 0.55)
+            delta_rect = QtCore.QRectF(max(4.0, width - delta_width - 4.0), top + height * 0.55,
+                                      min(delta_width, width - 8.0), height * 0.45)
+        else:
+            price_rect = QtCore.QRectF(4.0, top, available, height)
+            delta_rect = QtCore.QRectF(max(4.0, width - delta_width - 4.0), top,
+                                      min(delta_width, width - 8.0), height)
+        self._draw_numeric_text(painter, price_rect, price_text, self._text,
+                                Qt.AlignmentFlag.AlignLeft, font=font, pad=0.0)
+        delta_color = self._profile_colors['bid' if delta >= 0.0 else 'ask']
+        self._draw_numeric_text(painter, delta_rect.adjusted(10.0, 0.0, 0.0, 0.0),
+                                delta_text, delta_color, Qt.AlignmentFlag.AlignRight,
+                                font=delta_font, pad=0.0)
+        if delta != 0.0:
+            x, y = delta_rect.left() + 4.0, delta_rect.center().y()
+            points = ((x - 3, y - 2), (x + 3, y - 2), (x, y + 3)) if delta < 0 else ((x - 3, y + 2), (x + 3, y + 2), (x, y - 3))
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(delta_color)
+            painter.drawPolygon(QtGui.QPolygonF([QtCore.QPointF(a, b) for a, b in points]))
 
     def _draw_center_price_clipped(
         self,
@@ -6268,10 +6405,9 @@ class _DomRasterCanvas(QtWidgets.QWidget):
 
     def _move_profile_control(self, position: QtCore.QPointF) -> bool:
         if self._profile_ruler_drag:
-            g = self._geometry
-            origin = float(g['center_top']) + float(g['row_height'])
-            available = max(float(g['row_height']), min(origin, float(g['height']) - origin))
-            self.set_depth_range(abs(position.y() - origin) / available, emit=False)
+            origin, minimum, available = self._profile_ruler_limits()
+            if available > minimum:
+                self.set_depth_range((abs(position.y() - origin) - minimum) / (available - minimum), emit=False)
             return True
         if self._profile_group_drag_origin is not None:
             y, _price = self._profile_group_drag_origin
@@ -6352,7 +6488,7 @@ class _DomRasterCanvas(QtWidgets.QWidget):
         if event.button() == Qt.MouseButton.LeftButton:
             if self._book_depth:
                 self.setFocus(Qt.FocusReason.MouseFocusReason)
-                if 10.0 <= event.position().y() <= 38.0:
+                if 0.0 <= event.position().y() < float(self._geometry.get('table_top', 0.0)):
                     self.customContextMenuRequested.emit(event.position().toPoint())
                     event.accept()
                     return
@@ -7043,14 +7179,21 @@ class OrderFlowDomCanvas(_DomRasterCanvas):
         if g.get('bbo_only') or not g['margin'] <= position.x() <= g['margin']+g['inner_width']:
             return None, 0.0, None
         if g.get('book_depth'):
-            if not 0.0 <= position.y() < g['height']:
+            if not float(g.get('table_top', 0.0)) <= position.y() < g['height']:
                 return None, 0.0, None
-            slot = math.floor((position.y() - g['center_top']) / g['row_height'])
-            target = float(g.get('profile_anchor', 0.0)) - slot * float(g.get('profile_step', 1.0))
-            for prices in frame['prices']:
-                for index, price in enumerate(prices):
-                    if math.isclose(price, target, rel_tol=0.0, abs_tol=max(1e-16, g.get('profile_step', 1.0) * 1e-5)):
-                        return index, price, None
+            if position.y() < float(g['center_top']):
+                side = 0
+                slot = max(0, math.ceil((g['center_top'] - position.y()) / g['row_height']) - 1)
+                target = float(g.get('profile_ask_anchor', 0.0)) + slot * float(g.get('profile_step', 1.0))
+            elif position.y() >= float(g['center_bottom']):
+                side = 1
+                slot = math.floor((position.y() - g['center_bottom']) / g['row_height'])
+                target = float(g.get('profile_anchor', 0.0)) - slot * float(g.get('profile_step', 1.0))
+            else:
+                return None, 0.0, None
+            for index, price in enumerate(frame['prices'][side]):
+                if math.isclose(price, target, rel_tol=0.0, abs_tol=max(1e-16, g.get('profile_step', 1.0) * 1e-5)):
+                    return index, price, None
             return None, 0.0, None
         if position.y() <= g['center_top']:
             side, index = 0, max(0, math.ceil((g['center_top']-position.y())/g['row_height'])-1)
@@ -7069,7 +7212,7 @@ class OrderFlowDomCanvas(_DomRasterCanvas):
             return
         if self._profile_ruler_at(event.position()):
             self.setCursor(Qt.CursorShape.SizeVerCursor)
-        elif self._book_depth and 10.0 <= event.position().y() <= 38.0:
+        elif self._book_depth and 0.0 <= event.position().y() < float(self._geometry.get('table_top', 0.0)):
             self.setCursor(Qt.CursorShape.PointingHandCursor)
         elif self._column_resize_active:
             self._update_column_resize(event.position().x())
@@ -7152,6 +7295,7 @@ class OrderBookWidget(QtWidgets.QWidget):
         self.canvas.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.canvas.customContextMenuRequested.connect(self._show_context_menu)
         self.controls = OrderBookControlBar(theme, self)
+        self.canvas.layout_state_changed.connect(lambda _state: self._sync_controls())
         self.controls.aggregation_selected.connect(lambda value: self.set_aggregation_multiplier(value, emit=True))
         self.controls.density_selected.connect(lambda value: self.set_row_density(value, emit=True))
         self.controls.value_mode_selected.connect(lambda value: self.set_value_mode(value, emit=True))
@@ -7241,6 +7385,7 @@ class OrderBookWidget(QtWidgets.QWidget):
             overlays=self.canvas.column_preferences(),
             depth_range=float(state.get('depth_range', 0.72)),
             auto_grouping=bool(state.get('auto_grouping', True)),
+            range_available=bool(self.canvas._geometry.get('profile_range_adjustable', False)),
         )
 
     def set_auto_grouping(self, enabled: bool) -> None:
