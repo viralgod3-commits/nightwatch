@@ -3,9 +3,11 @@ from __future__ import annotations
 
 
 from collections import deque
+from copy import deepcopy
 from pathlib import Path
 import math
 import time
+from uuid import uuid4
 
 from PySide6 import QtCore, QtGui, QtWidgets
 from PySide6.QtCore import QTimer, Qt, Signal
@@ -292,6 +294,11 @@ from ..constants import (
     DIRECTIONAL_COLOR_MODE_OPTIONS,
 )
 from ..utilities import TextRole
+from .panels import (
+    PANEL_IDS, PanelNode, SplitNode, decode_tree, detach_panel, encode_tree,
+    insert_panel, panel_ids, replace_split_weights, split_node, validate_tree,
+    valid_panel_names,
+)
 
 
 class IndicatorSettingsDialog(QtWidgets.QDialog):
@@ -707,175 +714,862 @@ class IndicatorShortcutsDialog(QtWidgets.QDialog):
         }
 
 
-class RightPanelPresetsDialog(QtWidgets.QDialog):
-    """Edit the ordered, expandable list of right-panel layout presets."""
+class _WorkspacePanelSource(QtWidgets.QToolButton):
+    """A panel in the library; click to add or drag into a docking target."""
 
-    def __init__(
-        self,
-        presets: dict[str, dict[str, Any]],
-        parent: QtWidgets.QWidget | None = None,
-        *, panel_names=None,
-    ):
+    MIME = "application/x-nightwatch-workspace-panel"
+
+    def __init__(self, name, panel_id, token, parent=None):
         super().__init__(parent)
-        self.panel_names = tuple(panel_names or RIGHT_PANEL_NAMES)
-        self.setWindowTitle("Panel presets")
-        self.setMinimumWidth(620)
-        self.resize(680, 390)
+        self.panel_id, self.token = panel_id, token
+        self.setText(RIGHT_PANEL_LABELS.get(name, name).title() + "  +")
+        self.setAccessibleName(f"Add {name}; drag to choose a position")
+        self.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
+        self.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Fixed)
+        self.setCursor(Qt.CursorShape.OpenHandCursor)
+        self.setFixedHeight(30)
+        self._press = None
+
+    def mousePressEvent(self, event):
+        self._press = event.position().toPoint() if event.button() == Qt.MouseButton.LeftButton else None
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        if (self._press is not None and event.buttons() & Qt.MouseButton.LeftButton
+                and (event.position().toPoint() - self._press).manhattanLength()
+                >= QtWidgets.QApplication.startDragDistance()):
+            self._press = None
+            self.setDown(False)
+            mime = QtCore.QMimeData()
+            mime.setData(self.MIME, f"{self.token}:{self.panel_id}".encode())
+            drag = QtGui.QDrag(self)
+            drag.setMimeData(mime)
+            drag.setPixmap(self.grab())
+            drag.setHotSpot(QtCore.QPoint(self.width() // 2, self.height() // 2))
+            drag.exec(Qt.DropAction.CopyAction)
+            return
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        self._press = None
+        super().mouseReleaseEvent(event)
+
+
+class _WorkspacePresetCanvas(QtWidgets.QWidget):
+    """Event-driven miniature workspace. No live panel widgets or data feeds."""
+
+    changed = Signal()
+    selection_changed = Signal(str)
+    history_changed = Signal(bool, bool)
+
+    def __init__(self, aliases, token, parent=None):
+        super().__init__(parent)
+        self.aliases, self.token = dict(aliases), token
+        self.titles = {pid: name for name, pid in aliases.items()}
+        self.root = None
+        self.selected = ""
+        self._undo, self._redo = [], []
+        self._rects, self._handles = {}, []
+        self._press = self._drag_panel = self._drop = self._resize = None
+        self.accent = QtGui.QColor("#f0b34a")
+        self.setMinimumSize(360, 240)
+        self.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Expanding)
+        self.setMouseTracking(True)
+        self.setAcceptDrops(True)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.setAccessibleName("Workspace preview. Drag panels to dock, drag dividers to resize. Tab selects a panel; Delete removes it.")
+
+    def set_tree(self, root):
+        validate_tree(root)
+        self.root = root
+        self._undo.clear()
+        self._redo.clear()
+        self._press = self._drag_panel = self._drop = self._resize = None
+        self._select("")
+        self._geometry()
+        self.history_changed.emit(False, False)
+        self.update()
+
+    def _select(self, pid):
+        if self.selected != pid:
+            self.selected = pid
+            self.setAccessibleDescription(self.titles.get(pid, "No panel selected"))
+            self.selection_changed.emit(pid)
+            self.update()
+
+    def _geometry(self):
+        frame = QtCore.QRectF(self.rect()).adjusted(12, 12, -12, -12)
+        chart_width = min(150.0, frame.width() * .22)
+        self._chart_rect = QtCore.QRectF(frame.x(), frame.y(), chart_width, frame.height())
+        self._rail_rect = frame.adjusted(chart_width + 8, 0, 0, 0)
+        self._rects, self._handles = {}, []
+
+        def visit(node, rect):
+            if isinstance(node, PanelNode):
+                self._rects[node.id] = rect
+            elif isinstance(node, SplitNode):
+                horizontal = node.axis == "h"
+                usable = (rect.width() if horizontal else rect.height()) - 6 * (len(node.children) - 1)
+                offset = 0.0
+                for index, (child, weight) in enumerate(zip(node.children, node.weights)):
+                    extent = usable * weight
+                    cell = (QtCore.QRectF(rect.x() + offset, rect.y(), extent, rect.height()) if horizontal
+                            else QtCore.QRectF(rect.x(), rect.y() + offset, rect.width(), extent))
+                    visit(child, cell)
+                    offset += extent
+                    if index < len(node.children) - 1:
+                        handle = (QtCore.QRectF(rect.x() + offset, rect.y(), 6, rect.height()) if horizontal
+                                  else QtCore.QRectF(rect.x(), rect.y() + offset, rect.width(), 6))
+                        self._handles.append((node, index, handle, usable))
+                        offset += 6
+        visit(self.root, self._rail_rect)
+
+    def resizeEvent(self, event):
+        self._geometry()
+        super().resizeEvent(event)
+
+    def _commit(self, root, before=None):
+        validate_tree(root)
+        if not set(panel_ids(root)) <= set(self.titles):
+            raise ValueError("Unknown workspace panel")
+        previous = self.root if before is None else before
+        if root == previous:
+            return
+        self._undo.append(previous)
+        self._undo = self._undo[-40:]
+        self._redo.clear()
+        self.root = root
+        if self.selected not in panel_ids(root):
+            self._select("")
+        self._geometry()
+        self.history_changed.emit(bool(self._undo), False)
+        self.changed.emit()
+        self.update()
+
+    def undo(self):
+        if self._undo:
+            self._redo.append(self.root)
+            self.root = self._undo.pop()
+            self._history_applied()
+
+    def redo(self):
+        if self._redo:
+            self._undo.append(self.root)
+            self.root = self._redo.pop()
+            self._history_applied()
+
+    def _history_applied(self):
+        self._select("")
+        self._geometry()
+        self.history_changed.emit(bool(self._undo), bool(self._redo))
+        self.changed.emit()
+        self.update()
+
+    def add_panel(self, pid):
+        if pid in self.titles and pid not in panel_ids(self.root):
+            leaves = panel_ids(self.root)
+            self._commit(insert_panel(self.root, PanelNode(pid), leaves[-1] if leaves else None, "below"))
+            self._select(pid)
+
+    def remove_panel(self, pid=None):
+        pid = pid or self.selected
+        if pid in panel_ids(self.root):
+            self._commit(detach_panel(self.root, pid))
+
+    def template(self, axis):
+        self._commit(split_node(axis, [PanelNode(pid) for pid in panel_ids(self.root)]))
+
+    def equalize(self):
+        def visit(node):
+            return (split_node(node.axis, [visit(c) for c in node.children], node_id=node.id)
+                    if isinstance(node, SplitNode) else node)
+        self._commit(visit(self.root))
+
+    def _target(self, point, source):
+        if not self._rail_rect.contains(point):
+            return None
+        if self.root is None:
+            return (None, "below", self._rail_rect)
+        target = next((pid for pid, rect in self._rects.items() if rect.contains(point)), None)
+        if target is None or target == source:
+            return None
+        rect = self._rects[target]
+        x, y = (point.x() - rect.x()) / rect.width(), (point.y() - rect.y()) / rect.height()
+        distances = {"left": x, "right": 1 - x, "above": y, "below": 1 - y}
+        edge = min(distances, key=distances.get)
+        if min(distances.values()) > .27 and source in self._rects:
+            return (target, "swap", rect)
+        overlay = QtCore.QRectF(rect)
+        if edge in ("left", "right"):
+            overlay.setWidth(rect.width() / 2)
+            if edge == "right":
+                overlay.moveRight(rect.right())
+        else:
+            overlay.setHeight(rect.height() / 2)
+            if edge == "below":
+                overlay.moveBottom(rect.bottom())
+        return (target, edge, overlay)
+
+    def dock_panel(self, source, target, edge):
+        if source not in self.titles or source == target or edge not in ("left", "right", "above", "below", "swap"):
+            return
+        leaves = panel_ids(self.root)
+        if self.root is not None and target not in leaves:
+            return
+        if edge == "swap":
+            if source not in leaves:
+                return
+            def swap(node):
+                if isinstance(node, PanelNode):
+                    return PanelNode(target if node.id == source else source if node.id == target else node.id)
+                return split_node(node.axis, [swap(c) for c in node.children], node.weights, node.id)
+            root = swap(self.root)
+        else:
+            root = insert_panel(detach_panel(self.root, source), PanelNode(source), target, edge)
+        self._commit(root)
+        self._select(source)
+
+    def _mime_panel(self, mime):
+        if not mime.hasFormat(_WorkspacePanelSource.MIME):
+            return None
+        try:
+            token, pid = bytes(mime.data(_WorkspacePanelSource.MIME)).decode().split(":", 1)
+        except (ValueError, UnicodeError):
+            return None
+        return pid if token == self.token and pid in self.titles and pid not in self._rects else None
+
+    def dragEnterEvent(self, event):
+        if self._mime_panel(event.mimeData()):
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def dragMoveEvent(self, event):
+        pid = self._mime_panel(event.mimeData())
+        self._drop = self._target(event.position(), pid) if pid else None
+        if self._drop:
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+        self.update()
+
+    def dragLeaveEvent(self, event):
+        self._drop = None
+        self.update()
+        event.accept()
+
+    def dropEvent(self, event):
+        pid = self._mime_panel(event.mimeData())
+        target = self._target(event.position(), pid) if pid else None
+        self._drop = None
+        if target:
+            self.dock_panel(pid, target[0], target[1])
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+        self.update()
+
+    @staticmethod
+    def _close_rect(rect):
+        return QtCore.QRectF(rect.right() - 24, rect.top() + 6, 18, 18)
+
+    def mousePressEvent(self, event):
+        if event.button() != Qt.MouseButton.LeftButton:
+            return super().mousePressEvent(event)
+        self.setFocus(Qt.FocusReason.MouseFocusReason)
+        point = event.position()
+        for node, index, rect, usable in reversed(self._handles):
+            if rect.contains(point):
+                self._resize = (node, index, usable, point, self.root)
+                self.setCursor(Qt.CursorShape.SplitHCursor if node.axis == "h" else Qt.CursorShape.SplitVCursor)
+                return
+        pid = next((pid for pid, rect in self._rects.items() if rect.contains(point)), "")
+        self._select(pid)
+        if pid and self._close_rect(self._rects[pid]).contains(point):
+            self.remove_panel(pid)
+        elif pid:
+            self._press = (pid, point)
+
+    def mouseMoveEvent(self, event):
+        point = event.position()
+        if self._resize:
+            node, index, usable, start, before = self._resize
+            delta = point.x() - start.x() if node.axis == "h" else point.y() - start.y()
+            weights = list(node.weights)
+            pair = weights[index] + weights[index + 1]
+            def minimum(child):
+                if isinstance(child, PanelNode):
+                    return 68 if node.axis == "h" else 48
+                values = [minimum(c) for c in child.children]
+                return sum(values) + 6 * (len(values) - 1) if child.axis == node.axis else max(values)
+            lower = min(pair * .45, minimum(node.children[index]) / max(1, usable))
+            upper = pair - min(pair * .45, minimum(node.children[index + 1]) / max(1, usable))
+            first = max(lower, min(upper, weights[index] + delta / max(1, usable)))
+            weights[index], weights[index + 1] = first, pair - first
+            self.root = replace_split_weights(before, node.id, weights)
+            self._geometry()
+            self.update()
+            return
+        if self._press and event.buttons() & Qt.MouseButton.LeftButton:
+            pid, start = self._press
+            if (point - start).manhattanLength() >= QtWidgets.QApplication.startDragDistance():
+                self._drag_panel = pid
+                self._drop = self._target(point, pid)
+                self.setCursor(Qt.CursorShape.ClosedHandCursor)
+                self.update()
+            return
+        handle = next((h for h in reversed(self._handles) if h[2].contains(point)), None)
+        cursor = (Qt.CursorShape.SplitHCursor if handle[0].axis == "h" else Qt.CursorShape.SplitVCursor) if handle else (
+            Qt.CursorShape.OpenHandCursor if any(r.contains(point) for r in self._rects.values()) else Qt.CursorShape.ArrowCursor)
+        self.setCursor(cursor)
+
+    def mouseReleaseEvent(self, event):
+        if event.button() != Qt.MouseButton.LeftButton:
+            return super().mouseReleaseEvent(event)
+        if self._resize:
+            before = self._resize[4]
+            root = self.root
+            self.root = before
+            self._commit(root)
+        elif self._drag_panel:
+            target = self._target(event.position(), self._drag_panel)
+            if target:
+                self.dock_panel(self._drag_panel, target[0], target[1])
+        self._press = self._drag_panel = self._drop = self._resize = None
+        self.unsetCursor()
+        self.update()
+
+    def cancel_gesture(self):
+        if not (self._press or self._drag_panel or self._drop or self._resize):
+            return False
+        if self._resize:
+            self.root = self._resize[4]
+            self._geometry()
+        self._press = self._drag_panel = self._drop = self._resize = None
+        self.unsetCursor()
+        self.update()
+        return True
+
+    def keyPressEvent(self, event):
+        if event.key() in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace):
+            self.remove_panel()
+        elif event.key() == Qt.Key.Key_Escape:
+            self.cancel_gesture()
+        elif event.matches(QtGui.QKeySequence.StandardKey.Undo):
+            self.undo()
+        elif event.matches(QtGui.QKeySequence.StandardKey.Redo):
+            self.redo()
+        else:
+            super().keyPressEvent(event)
+
+    def focusNextPrevChild(self, next):
+        leaves = panel_ids(self.root)
+        if self.hasFocus() and leaves:
+            index = leaves.index(self.selected) if self.selected in leaves else (-1 if next else len(leaves))
+            index += 1 if next else -1
+            if 0 <= index < len(leaves):
+                self._select(leaves[index])
+                return True
+        return super().focusNextPrevChild(next)
+
+    def contextMenuEvent(self, event):
+        pid = next((pid for pid, rect in self._rects.items() if rect.contains(event.pos())), self.selected)
+        if not pid:
+            return
+        self._select(pid)
+        menu = QtWidgets.QMenu(self)
+        for target in panel_ids(self.root):
+            if target == pid:
+                continue
+            moves = menu.addMenu(f"Move relative to {self.titles[target]}")
+            for edge, title in (("left", "Left"), ("right", "Right"), ("above", "Above"), ("below", "Below"), ("swap", "Swap")):
+                moves.addAction(title, lambda checked=False, source=pid, target=target, edge=edge: self.dock_panel(source, target, edge))
+        menu.addSeparator()
+        menu.addAction("Remove panel", lambda: self.remove_panel(pid))
+        menu.exec(event.globalPos())
+
+    def paintEvent(self, event):
+        painter = QtGui.QPainter(self)
+        painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing)
+        apply_text_render_hints(painter)
+        painter.fillRect(self.rect(), QtGui.QColor("#000000"))
+        font = QtGui.QFont(self.font())
+        font.setPointSizeF(9)
+        painter.setFont(font)
+        chart = self._chart_rect
+        painter.setPen(QtGui.QPen(QtGui.QColor("#222222"), 1))
+        painter.setBrush(QtGui.QColor("#080808"))
+        painter.drawRoundedRect(chart, 8, 8)
+        painter.setPen(QtGui.QColor("#777777"))
+        painter.drawText(chart.adjusted(12, 10, -8, -8), Qt.AlignmentFlag.AlignTop, "CHART")
+        painter.setPen(QtGui.QPen(QtGui.QColor("#161616"), 1))
+        for row in range(1, 6):
+            y = chart.y() + chart.height() * row / 6
+            painter.drawLine(QtCore.QPointF(chart.left() + 8, y), QtCore.QPointF(chart.right() - 8, y))
+        painter.setPen(QtGui.QPen(QtGui.QColor("#484848"), 1.4))
+        path = QtGui.QPainterPath()
+        for i in range(24):
+            point = QtCore.QPointF(chart.x() + 10 + (chart.width() - 20) * i / 23,
+                                  chart.y() + chart.height() * (.64 - i * .01 + .1 * math.sin(i * .8)))
+            path.moveTo(point) if i == 0 else path.lineTo(point)
+        painter.drawPath(path)
+        if self.root is None:
+            painter.setPen(QtGui.QPen(QtGui.QColor("#363636"), 1, Qt.PenStyle.DashLine))
+            painter.setBrush(QtGui.QColor("#080808"))
+            painter.drawRoundedRect(self._rail_rect.adjusted(1, 1, -1, -1), 8, 8)
+            painter.setPen(QtGui.QColor("#999999"))
+            painter.drawText(self._rail_rect, Qt.AlignmentFlag.AlignCenter, "Drag a panel here\nor click a panel below")
+        for pid, rect in self._rects.items():
+            active = pid == self.selected
+            painter.setPen(QtGui.QPen(self.accent if active else QtGui.QColor("#333333"), 1.3 if active else 1))
+            painter.setBrush(QtGui.QColor("#141414" if active else "#0d0d0d"))
+            painter.drawRoundedRect(rect.adjusted(.7, .7, -.7, -.7), 7, 7)
+            painter.save()
+            painter.setClipRect(rect.adjusted(3, 3, -3, -3))
+            painter.setPen(QtGui.QColor("#606060"))
+            for y in (12, 17, 22):
+                for x in (8, 12):
+                    painter.drawPoint(QtCore.QPointF(rect.x() + x, rect.y() + y))
+            painter.setPen(QtGui.QColor("#eeeeee"))
+            label = RIGHT_PANEL_LABELS.get(self.titles[pid], self.titles[pid]).title()
+            title_rect = rect.adjusted(21, 7, -28, 0)
+            title_rect.setHeight(20)
+            painter.drawText(title_rect, Qt.AlignmentFlag.AlignVCenter,
+                             painter.fontMetrics().elidedText(label, Qt.TextElideMode.ElideRight, max(0, int(title_rect.width()))))
+            close = self._close_rect(rect)
+            painter.setPen(QtGui.QColor("#888888"))
+            painter.drawLine(close.topLeft() + QtCore.QPointF(6, 6), close.bottomRight() - QtCore.QPointF(6, 6))
+            painter.drawLine(close.topRight() + QtCore.QPointF(-6, 6), close.bottomLeft() + QtCore.QPointF(6, -6))
+            body = rect.adjusted(12, 36, -12, -12)
+            if body.height() > 4 and body.width() > 4:
+                painter.setPen(Qt.PenStyle.NoPen)
+                for row in range(min(12, int(body.height() / 14))):
+                    y = body.y() + row * 14
+                    if pid == "depth":
+                        width = body.width() * (.2 + .22 * (1 + math.sin(row * .7)))
+                        painter.setBrush(QtGui.QColor("#27352c" if row > 5 else "#38282a"))
+                        painter.drawRoundedRect(QtCore.QRectF(body.right() - width, y, width, 8), 2, 2)
+                    painter.setBrush(QtGui.QColor("#303030"))
+                    painter.drawRoundedRect(QtCore.QRectF(body.x(), y, body.width() * (.26 if pid != "trading" else .8), 4), 2, 2)
+                    if pid != "trading":
+                        painter.drawRoundedRect(QtCore.QRectF(body.x() + body.width() * .55, y, body.width() * .23, 4), 2, 2)
+            painter.restore()
+        painter.setPen(QtGui.QPen(QtGui.QColor("#4a4a4a"), 2, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+        for node, index, rect, usable in self._handles:
+            center = rect.center()
+            offset = QtCore.QPointF(0, 10) if node.axis == "h" else QtCore.QPointF(10, 0)
+            painter.drawLine(center - offset, center + offset)
+        if self._drop:
+            target, edge, rect = self._drop
+            color = QtGui.QColor(self.accent)
+            color.setAlpha(45)
+            painter.setBrush(color)
+            painter.setPen(QtGui.QPen(self.accent, 1.5))
+            painter.drawRoundedRect(rect.adjusted(2, 2, -2, -2), 6, 6)
+            painter.setPen(self.accent)
+            label = "Swap panels" if edge == "swap" else "Place " + edge if target else "Add panel"
+            painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, label)
+        painter.end()
+
+
+class WorkspacePresetEditor(QtWidgets.QWidget):
+    """Draft editor shared by Settings and the preset dialog."""
+
+    apply_requested = Signal(object, str)
+
+    def __init__(self, presets, parent=None, *, panel_names=None, aliases=None,
+                 active_name=None, current_layout_provider=None):
+        super().__init__(parent)
+        self.setObjectName("workspacePresetEditor")
+        self.panel_names = tuple(RIGHT_PANEL_NAMES if panel_names is None else panel_names)
+        self.aliases = {name: (aliases or PANEL_IDS).get(name, name) for name in self.panel_names}
+        self._current_layout_provider = current_layout_provider
+        self._loading = False
+        self.dirty = False
+        self._token = uuid4().hex
+        self.setStyleSheet("""
+            QWidget#workspacePresetEditor { background: #000000; color: #eeeeee; }
+            QWidget#workspacePresetEditor QLabel { background: transparent; border: 0; color: #dddddd; }
+            QWidget#workspacePresetEditor QListWidget { background: #080808; border: 1px solid #272727; border-radius: 8px; padding: 5px; outline: 0; }
+            QWidget#workspacePresetEditor QListWidget::item { border-radius: 5px; padding: 8px; margin: 2px 0; color: #bbbbbb; }
+            QWidget#workspacePresetEditor QListWidget::item:selected { background: #24211a; color: #f0b34a; }
+            QWidget#workspacePresetEditor QLineEdit, QWidget#workspacePresetEditor QSpinBox { background: #101010; border: 1px solid #333333; border-radius: 5px; padding: 5px 8px; color: #eeeeee; min-height: 0; }
+            QWidget#workspacePresetEditor QPushButton, QWidget#workspacePresetEditor QToolButton { background: #141414; border: 1px solid #333333; border-radius: 5px; padding: 6px 10px; color: #dddddd; min-height: 0; }
+            QWidget#workspacePresetEditor QPushButton:hover, QWidget#workspacePresetEditor QToolButton:hover { background: #222222; border-color: #777777; }
+            QWidget#workspacePresetEditor QPushButton:disabled, QWidget#workspacePresetEditor QToolButton:disabled { color: #666666; border-color: #222222; }
+            QWidget#workspacePresetEditor QPushButton#workspaceSave { background: #f0b34a; border-color: #f0b34a; color: #080808; font-weight: 600; }
+            QWidget#workspacePresetEditor QLabel#workspaceHint { color: #888888; }
+        """)
+        root = QtWidgets.QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(10)
+        body = QtWidgets.QHBoxLayout()
+        body.setSpacing(12)
+        root.addLayout(body, 1)
+        sidebar = QtWidgets.QVBoxLayout()
+        sidebar.setSpacing(8)
+        sidebar.addWidget(QtWidgets.QLabel("PRESETS"))
+        self.presets = QtWidgets.QListWidget()
+        self.presets.setAccessibleName("Workspace presets; drag to reorder the layout cycle")
+        self.presets.setMinimumWidth(155)
+        self.presets.setMaximumWidth(200)
+        self.presets.setIconSize(QtCore.QSize(44, 34))
+        self.presets.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.presets.setDragDropMode(QtWidgets.QAbstractItemView.DragDropMode.InternalMove)
+        self.presets.setDefaultDropAction(Qt.DropAction.MoveAction)
+        sidebar.addWidget(self.presets, 1)
+        for title, callback in (("New preset", self._new), ("Duplicate", self._duplicate), ("Delete preset", self._delete)):
+            button = self._button(title, callback)
+            sidebar.addWidget(button)
+            if title == "Delete preset":
+                self.delete_button = button
+        body.addLayout(sidebar)
+        stage = QtWidgets.QVBoxLayout()
+        stage.setSpacing(9)
+        body.addLayout(stage, 1)
+        name_row = QtWidgets.QHBoxLayout()
+        self.name = QtWidgets.QLineEdit()
+        self.name.setFixedHeight(34)
+        self.name.setMaxLength(32)
+        self.name.setPlaceholderText("Preset name")
+        self.name.setAccessibleName("Preset name")
+        name_row.addWidget(self.name, 1)
+        name_row.addWidget(QtWidgets.QLabel("Width"))
+        self.rail_width_spin = QtWidgets.QSpinBox()
+        self.rail_width_spin.setFixedHeight(34)
+        self.rail_width_spin.setRange(300, 2400)
+        self.rail_width_spin.setSuffix(" px")
+        self.rail_width_spin.setAccessibleName("Saved right panel width in pixels")
+        name_row.addWidget(self.rail_width_spin)
+        stage.addLayout(name_row)
+        tools = QtWidgets.QHBoxLayout()
+        for title, callback in (("Stack", lambda: self.canvas.template("v")),
+                                ("Columns", lambda: self.canvas.template("h")),
+                                ("Even sizes", lambda: self.canvas.equalize())):
+            tools.addWidget(self._button(title, callback))
+        tools.addStretch(1)
+        self.undo_button = self._button("↶", lambda: self.canvas.undo())
+        self.undo_button.setAccessibleName("Undo panel arrangement")
+        self.redo_button = self._button("↷", lambda: self.canvas.redo())
+        self.redo_button.setAccessibleName("Redo panel arrangement")
+        tools.addWidget(self.undo_button)
+        tools.addWidget(self.redo_button)
+        stage.addLayout(tools)
+        self.canvas = _WorkspacePresetCanvas(self.aliases, self._token)
+        stage.addWidget(self.canvas, 1)
+        panel_row = QtWidgets.QGridLayout()
+        panel_row.setSpacing(6)
+        self.sources = {}
+        for index, name in enumerate(self.panel_names):
+            pid = self.aliases[name]
+            source = _WorkspacePanelSource(name, pid, self._token)
+            source.clicked.connect(lambda checked=False, pid=pid: self.canvas.add_panel(pid))
+            self.sources[pid] = source
+            panel_row.addWidget(source, index // 2, index % 2)
+        stage.addLayout(panel_row)
+        hint = QtWidgets.QLabel("Drag to an edge to split · Drag to the center to swap · Drag dividers to resize")
+        hint.setObjectName("workspaceHint")
+        hint.setWordWrap(True)
+        stage.addWidget(hint)
+        footer = QtWidgets.QHBoxLayout()
+        self.status = QtWidgets.QLabel()
+        self.status.setObjectName("workspaceHint")
+        self.status.setWordWrap(True)
+        root.addWidget(self.status)
+        footer.addWidget(self._button("Use current workspace", self._capture))
+        options = self._button("More", lambda: None)
+        menu = QtWidgets.QMenu(options)
+        menu.addAction("Clear panels", lambda: self.canvas._commit(None))
+        menu.addAction("Restore default presets", self._restore_defaults)
+        menu.addAction("Revert unsaved edits", self.revert)
+        options.setMenu(menu)
+        footer.addWidget(options)
+        footer.addStretch(1)
+        self.save_button = self._button("Save && apply", self._save)
+        self.save_button.setObjectName("workspaceSave")
+        footer.addWidget(self.save_button)
+        root.addLayout(footer)
+        self.name.textEdited.connect(self._name_changed)
+        self.rail_width_spin.valueChanged.connect(self._width_changed)
+        self.presets.currentRowChanged.connect(self._load_selected)
+        self.presets.model().rowsMoved.connect(self._mark_dirty)
+        self.canvas.changed.connect(self._canvas_changed)
+        self.canvas.history_changed.connect(self._history_changed)
+        self.set_presets(presets, active_name, force=True)
+
+    @staticmethod
+    def _button(title, callback):
+        button = QtWidgets.QPushButton(title)
+        button.setFixedHeight(30)
+        button.setAutoDefault(False)
+        button.clicked.connect(callback)
+        return button
+
+    def _normalized(self, definition):
+        result = deepcopy(definition)
+        visible = valid_panel_names(result.get("visible", ()), self.panel_names)
+        try:
+            tree = decode_tree(result.get("tree"))
+            validate_tree(tree)
+        except (ValueError, TypeError, RecursionError):
+            tree = None
+        wanted = {self.aliases[name] for name in visible}
+        for pid in panel_ids(tree):
+            if pid not in wanted:
+                tree = detach_panel(tree, pid)
+        for name in visible:
+            pid = self.aliases[name]
+            if pid not in panel_ids(tree):
+                leaves = panel_ids(tree)
+                tree = insert_panel(tree, PanelNode(pid), leaves[-1] if leaves else None, "below")
+        result["tree"] = encode_tree(tree)
+        result["visible"] = tuple(self.canvas.titles[pid] for pid in panel_ids(tree))
+        try:
+            result["rail_width"] = max(300, min(2400, int(result.get("rail_width", 660))))
+        except (TypeError, ValueError, OverflowError):
+            result["rail_width"] = 660
+        return result
+
+    def set_presets(self, presets, active_name=None, *, force=False):
+        if self.dirty and not force:
+            return
+        if not force and presets == self._saved_presets:
+            return
+        self._saved_presets = deepcopy(presets)
+        self._saved_active = active_name
+        self._loading = True
+        self.presets.clear()
+        for name, definition in presets.items():
+            self._add_item(name, definition)
+        if self.presets.count() == 0:
+            self._add_item("My workspace", {"visible": (), "tree": None})
+        names = [self.presets.item(i).data(Qt.ItemDataRole.UserRole)["name"] for i in range(self.presets.count())]
+        self._loading = False
+        self.presets.setCurrentRow(names.index(active_name) if active_name in names else 0)
+        self._load_selected(self.presets.currentRow())
+        self.dirty = False
+        self.status.setText("Arrange your panels, then save to use this layout.")
+
+    def _add_item(self, name, definition):
+        item = QtWidgets.QListWidgetItem()
+        item.setData(Qt.ItemDataRole.UserRole, {"name": name, "definition": self._normalized(definition)})
+        item.setSizeHint(QtCore.QSize(155, 62))
+        self.presets.addItem(item)
+        self._refresh_item(item)
+        return item
+
+    def _refresh_item(self, item):
+        record = item.data(Qt.ItemDataRole.UserRole)
+        tree = decode_tree(record["definition"]["tree"])
+        item.setText(record["name"] + "\n" + f"{len(panel_ids(tree))} panels")
+        item.setToolTip(record["name"])
+        pixmap = QtGui.QPixmap(44, 34)
+        pixmap.fill(QtGui.QColor("#000000"))
+        painter = QtGui.QPainter(pixmap)
+        def draw(node, rect):
+            if isinstance(node, PanelNode):
+                painter.fillRect(rect.adjusted(1, 1, -1, -1), QtGui.QColor("#69645a"))
+            elif isinstance(node, SplitNode):
+                offset = 0.0
+                for child, weight in zip(node.children, node.weights):
+                    size = (rect.width() if node.axis == "h" else rect.height()) * weight
+                    cell = (QtCore.QRectF(rect.x() + offset, rect.y(), size, rect.height()) if node.axis == "h"
+                            else QtCore.QRectF(rect.x(), rect.y() + offset, rect.width(), size))
+                    draw(child, cell)
+                    offset += size
+        draw(tree, QtCore.QRectF(0, 0, 44, 34))
+        painter.end()
+        icon = QtGui.QIcon(pixmap)
+        icon.addPixmap(pixmap, QtGui.QIcon.Mode.Selected)
+        item.setIcon(icon)
+
+    def _record(self):
+        item = self.presets.currentItem()
+        return item, item.data(Qt.ItemDataRole.UserRole) if item else None
+
+    def _load_selected(self, index):
+        if self._loading or index < 0:
+            return
+        item, record = self._record()
+        if record is None:
+            return
+        self._loading = True
+        self.name.setText(record["name"])
+        self.rail_width_spin.setValue(record["definition"]["rail_width"])
+        self.canvas.set_tree(decode_tree(record["definition"]["tree"]))
+        self._refresh_sources()
+        self.delete_button.setEnabled(self.presets.count() > 1)
+        self._loading = False
+
+    def _mark_dirty(self, *args):
+        if not self._loading:
+            self.dirty = True
+            self.status.setText("Unsaved changes · Save & apply to use this workspace.")
+
+    def _name_changed(self, text):
+        item, record = self._record()
+        if record is not None:
+            record["name"] = text
+            item.setData(Qt.ItemDataRole.UserRole, record)
+            self._refresh_item(item)
+            self._mark_dirty()
+
+    def _width_changed(self, value):
+        if self._loading:
+            return
+        item, record = self._record()
+        record["definition"]["rail_width"] = value
+        item.setData(Qt.ItemDataRole.UserRole, record)
+        self._mark_dirty()
+
+    def _canvas_changed(self):
+        item, record = self._record()
+        definition = record["definition"]
+        definition["tree"] = encode_tree(self.canvas.root)
+        definition["visible"] = tuple(self.canvas.titles[pid] for pid in panel_ids(self.canvas.root))
+        def horizontal(node):
+            return isinstance(node, SplitNode) and (node.axis == "h" or any(horizontal(c) for c in node.children))
+        definition["column_mode"] = 2 if horizontal(self.canvas.root) else 1
+        item.setData(Qt.ItemDataRole.UserRole, record)
+        def minimum_width(node):
+            if isinstance(node, PanelNode):
+                return 300
+            if isinstance(node, SplitNode):
+                widths = [minimum_width(c) for c in node.children]
+                return sum(widths) if node.axis == "h" else max(widths)
+            return 300
+        self.rail_width_spin.setValue(max(self.rail_width_spin.value(), minimum_width(self.canvas.root)))
+        self._refresh_item(item)
+        self._refresh_sources()
+        self._mark_dirty()
+
+    def _refresh_sources(self):
+        leaves = panel_ids(self.canvas.root)
+        for pid, source in self.sources.items():
+            source.setEnabled(pid not in leaves)
+            source.setText(RIGHT_PANEL_LABELS.get(self.canvas.titles[pid], self.canvas.titles[pid]).title()
+                           + ("  ✓" if pid in leaves else "  +"))
+
+    def _history_changed(self, undo, redo):
+        self.undo_button.setEnabled(undo)
+        self.redo_button.setEnabled(redo)
+
+    def _unique_name(self, base):
+        names = {self.presets.item(i).data(Qt.ItemDataRole.UserRole)["name"].strip().casefold()
+                 for i in range(self.presets.count())}
+        name, index = base[:32], 2
+        while name.casefold() in names or name.casefold() == "custom":
+            suffix = f" {index}"
+            name, index = base[:32 - len(suffix)] + suffix, index + 1
+        return name
+
+    def _new(self):
+        definition = self._current_layout_provider() if self._current_layout_provider else {"visible": (), "tree": None}
+        item = self._add_item(self._unique_name("My workspace"), definition)
+        self.presets.setCurrentItem(item)
+        self._mark_dirty()
+        self.name.setFocus()
+        self.name.selectAll()
+
+    def _duplicate(self):
+        item, record = self._record()
+        duplicate = self._add_item(self._unique_name(record["name"] + " copy"), record["definition"])
+        self.presets.setCurrentItem(duplicate)
+        self._mark_dirty()
+        self.name.setFocus()
+        self.name.selectAll()
+
+    def _delete(self):
+        if self.presets.count() > 1:
+            row = self.presets.currentRow()
+            self.presets.takeItem(row)
+            self.presets.setCurrentRow(min(row, self.presets.count() - 1))
+            self._load_selected(self.presets.currentRow())
+            self._mark_dirty()
+
+    def _capture(self):
+        if self._current_layout_provider:
+            item, record = self._record()
+            record["definition"] = self._normalized(self._current_layout_provider())
+            item.setData(Qt.ItemDataRole.UserRole, record)
+            self._refresh_item(item)
+            self._load_selected(self.presets.currentRow())
+            self._mark_dirty()
+
+    def _restore_defaults(self):
+        saved, active = self._saved_presets, self._saved_active
+        self.set_presets(RIGHT_LAYOUT_PRESETS, "Balanced", force=True)
+        self._saved_presets, self._saved_active = saved, active
+        self._mark_dirty()
+
+    def revert(self):
+        self.set_presets(self._saved_presets, self._saved_active, force=True)
+
+    def definitions(self):
+        definitions = {}
+        for index in range(self.presets.count()):
+            record = self.presets.item(index).data(Qt.ItemDataRole.UserRole)
+            name = record["name"].strip()
+            if not name or name.casefold() == "custom" or name.casefold() in {n.casefold() for n in definitions}:
+                raise ValueError("Use a unique name for every preset. Custom is reserved.")
+            definition = deepcopy(record["definition"])
+            tree = decode_tree(definition["tree"])
+            validate_tree(tree)
+            if set(panel_ids(tree)) != {self.aliases[n] for n in definition["visible"]}:
+                raise ValueError("Panel arrangement does not match the selected panels.")
+            definitions[name] = definition
+        return definitions
+
+    def selected_name(self):
+        item, record = self._record()
+        return record["name"].strip()
+
+    def _save(self):
+        try:
+            definitions = self.definitions()
+        except (ValueError, TypeError, RecursionError) as error:
+            self.status.setText(str(error))
+            self.name.setFocus()
+            return
+        self.apply_requested.emit(definitions, self.selected_name())
+
+    def mark_saved(self, definitions, active_name):
+        self._saved_presets, self._saved_active = deepcopy(definitions), active_name
+        self.dirty = False
+        self.status.setText(f"Saved · {active_name}")
+
+
+class RightPanelPresetsDialog(QtWidgets.QDialog):
+    """Compatibility entry point for the visual workspace editor."""
+
+    def __init__(self, presets, parent=None, *, panel_names=None):
+        super().__init__(parent)
+        self.setWindowTitle("Workspace presets")
+        self.resize(1000, 660)
+        controller = getattr(parent, "right_rail_controller", None)
         layout = QtWidgets.QVBoxLayout(self)
-        layout.setContentsMargins(16, 14, 16, 14)
-        layout.setSpacing(10)
-        heading = QtWidgets.QLabel("PANEL PRESETS")
-        heading.setObjectName("dialogHeading")
-        note = QtWidgets.QLabel(
-            "Choose the panels to show. Column buttons apply layout templates; "
-            "drag a panel grip or use its Move menu to arrange panels freely. "
-            "Layouts smaller than their content can be scrolled."
+        layout.setContentsMargins(16, 16, 16, 16)
+        self.editor = WorkspacePresetEditor(
+            presets, self, panel_names=panel_names,
+            aliases=controller.state.aliases if controller else None,
+            active_name=controller.state.active_preset if controller else None,
+            current_layout_provider=getattr(parent, "_current_right_panel_definition", None),
         )
-        note.setObjectName("subtleLabel")
-        note.setWordWrap(True)
-        layout.addWidget(heading)
-        layout.addWidget(note)
-        self.scroll = QtWidgets.QScrollArea()
-        self.scroll.setWidgetResizable(True)
-        self.scroll.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
-        content = QtWidgets.QWidget()
-        self.grid = QtWidgets.QGridLayout(content)
-        self.grid.setContentsMargins(0, 0, 6, 0)
-        self.grid.setHorizontalSpacing(8)
-        self.grid.setVerticalSpacing(7)
-        self.grid.setAlignment(Qt.AlignmentFlag.AlignTop)
-        self.grid.addWidget(QtWidgets.QLabel("NAME"), 0, 0)
-        self.grid.setColumnStretch(0, 1)
-        for column, panel_name in enumerate(self.panel_names, start=1):
-            label = QtWidgets.QLabel(RIGHT_PANEL_LABELS.get(panel_name, panel_name))
-            label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            label.setObjectName("subtleLabel")
-            self.grid.addWidget(label, 0, column)
-        self._definitions = {}
-        self.rows: list[tuple[QtWidgets.QLineEdit, dict[str, QtWidgets.QCheckBox]]] = []
-        self.remove_buttons: dict[QtWidgets.QLineEdit, QtWidgets.QPushButton] = {}
-        self.scroll.setWidget(content)
-        layout.addWidget(self.scroll, 1)
-        for name, preset in presets.items():
-            self._add_row(name, preset.get("visible", ()), preset)
-        add = QtWidgets.QPushButton("ADD PRESET")
-        add.setAutoDefault(False)
-        add.clicked.connect(self._add_preset)
-        layout.addWidget(add, 0, Qt.AlignmentFlag.AlignLeft)
-        buttons = QtWidgets.QDialogButtonBox(
-            QtWidgets.QDialogButtonBox.StandardButton.Save
-            | QtWidgets.QDialogButtonBox.StandardButton.Cancel
-        )
-        restore = buttons.addButton(
-            "RESTORE DEFAULTS", QtWidgets.QDialogButtonBox.ButtonRole.ResetRole
-        )
-        restore.clicked.connect(self._restore_defaults)
-        buttons.accepted.connect(self.accept)
+        self.editor.apply_requested.connect(lambda definitions, name: self.accept())
+        layout.addWidget(self.editor, 1)
+        buttons = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.StandardButton.Cancel)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
 
-    def _add_row(self, name: str, visible: tuple[str, ...], definition=None) -> None:
-        name_edit = QtWidgets.QLineEdit(name)
-        name_edit.setMaxLength(32)
-        self._definitions[name_edit] = dict(definition or {})
-        from .panels import valid_panel_names
-        allowed = set(valid_panel_names(visible, self.panel_names))
-        checks = {}
-        for panel_name in self.panel_names:
-            check = QtWidgets.QCheckBox()
-            check.setChecked(panel_name in allowed)
-            check.setAccessibleName(f"Include {RIGHT_PANEL_LABELS.get(panel_name, panel_name)}")
-            checks[panel_name] = check
-        remove = QtWidgets.QPushButton("−")
-        remove.setAccessibleName("Remove preset")
-        remove.setAutoDefault(False)
-        remove.clicked.connect(lambda _checked=False, edit=name_edit: self._remove_row(edit))
-        self.rows.append((name_edit, checks))
-        self.remove_buttons[name_edit] = remove
-        self._arrange_rows()
+    def definitions(self):
+        return self.editor.definitions()
 
-    def _arrange_rows(self) -> None:
-        for row, (name_edit, checks) in enumerate(self.rows, start=1):
-            widgets = [name_edit, *checks.values(), self.remove_buttons[name_edit]]
-            for widget in widgets:
-                self.grid.removeWidget(widget)
-            name_edit.setPlaceholderText(f"Preset {row}")
-            self.grid.addWidget(name_edit, row, 0)
-            for column, panel_name in enumerate(self.panel_names, start=1):
-                self.grid.addWidget(checks[panel_name], row, column, Qt.AlignmentFlag.AlignCenter)
-            remove = self.remove_buttons[name_edit]
-            remove.setEnabled(len(self.rows) > 1)
-            self.grid.addWidget(remove, row, len(self.panel_names) + 1)
+    def values(self):
+        return {name: definition["visible"] for name, definition in self.definitions().items()}
 
-    def _add_preset(self) -> None:
-        names = {edit.text().strip().casefold() for edit, _checks in self.rows}
-        index = len(self.rows) + 1
-        while f"preset {index}" in names:
-            index += 1
-        self._add_row(f"Preset {index}", ("Market depth", "Trading / positions"))
-        edit = self.rows[-1][0]
-        edit.setFocus(Qt.FocusReason.OtherFocusReason)
-        edit.selectAll()
-        QTimer.singleShot(0, lambda: self.scroll.ensureWidgetVisible(edit))
-
-    def _remove_row(self, name_edit: QtWidgets.QLineEdit) -> None:
-        if len(self.rows) <= 1:
-            return
-        checks = next(checks for edit, checks in self.rows if edit is name_edit)
-        self.rows = [(edit, checks) for edit, checks in self.rows if edit is not name_edit]
-        for widget in (name_edit, *checks.values(), self.remove_buttons.pop(name_edit)):
-            self.grid.removeWidget(widget)
-            widget.hide()
-            widget.deleteLater()
-        self._arrange_rows()
-
-    def _restore_defaults(self) -> None:
-        for name_edit, checks in self.rows:
-            for widget in (name_edit, *checks.values(), self.remove_buttons[name_edit]):
-                self.grid.removeWidget(widget)
-                widget.hide()
-                widget.deleteLater()
-        self.rows.clear()
-        self._definitions.clear()
-        self.remove_buttons.clear()
-        for name, preset in RIGHT_LAYOUT_PRESETS.items():
-            self._add_row(name, preset["visible"], preset)
-
-    def accept(self) -> None:
-        names = [name_edit.text().strip() for name_edit, _checks in self.rows]
-        if any(not name for name in names):
-            QtWidgets.QMessageBox.warning(
-                self,
-                "Preset name required",
-                "Every preset needs a name.",
-            )
-            return
-        if len({name.casefold() for name in names}) != len(names) or any(
-            name.casefold() == "custom" for name in names
-        ):
-            QtWidgets.QMessageBox.warning(
-                self,
-                "Preset names",
-                "Preset names must be unique, and Custom is reserved.",
-            )
-            return
-        super().accept()
-
-    def values(self) -> dict[str, tuple[str, ...]]:
-        return {
-            name_edit.text().strip(): tuple(
-                panel_name
-                for panel_name in self.panel_names
-                if checks[panel_name].isChecked()
-            )
-            for name_edit, checks in self.rows
-        }
-
-
-    def definitions(self) -> dict[str, dict[str, Any]]:
-        return {edit.text().strip(): {**self._definitions.get(edit, {}),
-                "visible": tuple(name for name, check in checks.items() if check.isChecked())}
-                for edit, checks in self.rows}
+    def reject(self):
+        if not self.editor.canvas.cancel_gesture():
+            super().reject()
 
 
 class NightwatchSettingsDialog(QtWidgets.QDialog):
@@ -1257,6 +1951,9 @@ class NightwatchSettingsDialog(QtWidgets.QDialog):
             self.categories.setCurrentRow(0)
 
     def _settings_escape(self) -> None:
+        editor = getattr(self, "workspace_editor", None)
+        if editor is not None and editor.canvas.cancel_gesture():
+            return
         if self._settings_search is not None and self._settings_search.text():
             self._settings_search.clear()
             self._settings_search.setFocus()
@@ -1699,55 +2396,40 @@ class NightwatchSettingsDialog(QtWidgets.QDialog):
                 grid.addWidget(check, index // 2, index % 2)
 
     def _build_workspace_page(self) -> QtWidgets.QWidget:
-        page, layout = self._scroll_page(
-            "Workspace",
-            "Arrange workspace panels and panel geometry. Order-book display controls live on the Market Depth panel itself.",
-        )
-        grid = self._settings_grid(layout)
-
-        panels_box, panels_layout = self._group("Visible panels")
-        panel_grid = QtWidgets.QGridLayout()
-        panel_grid.setContentsMargins(0, 0, 0, 0)
-        panel_grid.setHorizontalSpacing(14)
-        panel_grid.setVerticalSpacing(4)
-        self._panel_grid = panel_grid
-        self._refresh_panel_choices()
-        panels_layout.addLayout(panel_grid)
-        grid.addWidget(panels_box, 0, 0)
-
-        layout_box, layout_controls = self._group("Panel layout")
-        mode_group = QtWidgets.QButtonGroup(self)
-        mode_group.setExclusive(True)
-        for mode, label in ((1, "Stacked panels"), (2, "Independent columns")):
-            radio = QtWidgets.QRadioButton(label)
-            radio.toggled.connect(
-                lambda checked, value=mode: (
-                    self.host._set_right_panel_columns(value) if checked and not self._syncing else None
-                )
-            )
-            mode_group.addButton(radio)
-            self._mode_buttons[mode] = radio
-            layout_controls.addWidget(radio)
-        preset_row = QtWidgets.QHBoxLayout()
-        preset_row.addWidget(QtWidgets.QLabel("Preset"))
+        page = QtWidgets.QWidget()
+        page.setObjectName("settingsPage")
+        layout = QtWidgets.QVBoxLayout(page)
+        layout.setContentsMargins(20, 16, 20, 16)
+        layout.setSpacing(12)
+        active_row = QtWidgets.QHBoxLayout()
+        active_row.addWidget(QtWidgets.QLabel("Active layout"))
         self.panel_preset = QtWidgets.QComboBox()
+        self.panel_preset.setAccessibleName("Active workspace preset")
         self.panel_preset.activated.connect(self._panel_preset_selected)
-        preset_row.addWidget(self.panel_preset, 1)
-        layout_controls.addLayout(preset_row)
-        button_row = QtWidgets.QHBoxLayout()
-        edit = QtWidgets.QPushButton("Edit presets…")
-        edit.setAutoDefault(False)
-        edit.clicked.connect(self._edit_panel_presets)
-        reset = QtWidgets.QPushButton("Reset layout")
+        active_row.addWidget(self.panel_preset, 1)
+        reset = QtWidgets.QPushButton("Reset live layout")
         reset.setAutoDefault(False)
         reset.clicked.connect(self._reset_panels)
-        button_row.addWidget(edit)
-        button_row.addWidget(reset)
-        button_row.addStretch(1)
-        layout_controls.addLayout(button_row)
-        grid.addWidget(layout_box, 0, 1)
-
+        active_row.addWidget(reset)
+        layout.addLayout(active_row)
+        controller = self.host.right_rail_controller
+        self.workspace_editor = WorkspacePresetEditor(
+            self.host.right_layout_presets, panel_names=tuple(self.host.panel_sections),
+            aliases=controller.state.aliases, active_name=controller.state.active_preset,
+            current_layout_provider=self.host._current_right_panel_definition,
+        )
+        self.workspace_editor.apply_requested.connect(self._save_workspace_presets)
+        layout.addWidget(self.workspace_editor, 1)
         return page
+
+    def _save_workspace_presets(self, definitions, active_name) -> None:
+        try:
+            self.host._save_right_panel_presets(definitions, active_name)
+        except (ValueError, TypeError, RecursionError) as error:
+            self.workspace_editor.status.setText(str(error))
+            return
+        self.workspace_editor.mark_saved(self.host.right_layout_presets, active_name)
+        self.sync_from_owner()
 
     def _build_trading_page(self) -> QtWidgets.QWidget:
         page, layout = self._scroll_page(
@@ -2081,6 +2763,10 @@ class NightwatchSettingsDialog(QtWidgets.QDialog):
                     blocker = QtCore.QSignalBlocker(panel_preset)
                     panel_preset.setCurrentIndex(index)
                     del blocker
+
+            editor = getattr(self, "workspace_editor", None)
+            if editor is not None:
+                editor.set_presets(self.host.right_layout_presets, controller.state.active_preset)
 
             if self.embedded_ui_tuner is not None:
                 self.embedded_ui_tuner.sync_from_owner()

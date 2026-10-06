@@ -6948,38 +6948,51 @@ class MainWindow(QtWidgets.QMainWindow):
         if hasattr(self, "settings_dialog") and self.settings_dialog is not None:
             self._sync_settings_window()
 
+    def _current_right_panel_definition(self) -> dict[str, Any]:
+        controller = self.right_rail_controller
+        controller.capture_geometry()
+        state = controller.state
+        titles = {pid: name for name, pid in state.aliases.items()}
+        return {
+            "tree": encode_tree(state.root),
+            "visible": tuple(titles[pid] for pid in panel_ids(state.root) if pid in titles),
+            "column_mode": controller.column_mode,
+            "rail_width": state.rail_width(),
+            "sections": tuple(RIGHT_PANEL_DEFAULT_SIZES.get(name, 160) for name in self.panel_sections),
+        }
+
     def edit_right_panel_presets(self) -> None:
         dialog = RightPanelPresetsDialog(self.right_layout_presets, self, panel_names=tuple(self.panel_sections))
-        if dialog.exec() != QtWidgets.QDialog.DialogCode.Accepted:
-            return
-        configured = dialog.definitions()
-        self.right_layout_presets = {}
+        if dialog.exec() == QtWidgets.QDialog.DialogCode.Accepted:
+            self._save_right_panel_presets(dialog.definitions(), dialog.editor.selected_name())
+
+    def _save_right_panel_presets(self, configured: dict[str, dict[str, Any]], active_name: str | None = None) -> None:
+        # Validate the entire draft before replacing any application state.
         aliases = self.right_rail_controller.state.aliases
-        for name, definition in configured.items():
-            visible = tuple(definition["visible"])
-            tree = decode_tree(definition.get("tree", encode_tree(self.right_rail_controller.state.root)))
-            wanted = {aliases[n] for n in visible}
-            for pid in tuple(panel_ids(tree)):
-                if pid not in wanted:
-                    tree = detach_panel(tree, pid)
-            for panel in visible:
-                pid = aliases[panel]
-                if pid not in panel_ids(tree):
-                    leaves = panel_ids(tree)
-                    tree = insert_panel(tree, PanelNode(pid), leaves[-1] if leaves else None, "below")
-            self.right_layout_presets[name] = {**definition, "visible": visible,
-                                               "tree": encode_tree(tree),
-                                               "column_mode": definition.get("column_mode", self.right_rail_controller.column_mode),
-                                               "rail_width": definition.get("rail_width", self.right_rail_controller.state.rail_width()),
-                                               "sections": tuple(RIGHT_PANEL_DEFAULT_SIZES[n] for n in self.panel_sections)}
-        self.settings.setValue("right_layout_presets_v2", json.dumps(self.right_layout_presets, separators=(",", ":")))
+        presets = {}
+        names = set()
+        for raw_name, definition in configured.items():
+            name = str(raw_name).strip()
+            if not name or name.casefold() == "custom" or name.casefold() in names:
+                raise ValueError("Workspace preset names must be unique and nonempty")
+            names.add(name.casefold())
+            visible = valid_panel_names(definition.get("visible", ()), self.panel_sections)
+            tree = decode_tree(definition.get("tree"))
+            validate_tree(tree)
+            if set(panel_ids(tree)) != {aliases[n] for n in visible}:
+                raise ValueError("Preset tree must contain exactly its visible panels")
+            presets[name] = {**definition, "visible": visible, "tree": encode_tree(tree),
+                             "sections": tuple(RIGHT_PANEL_DEFAULT_SIZES.get(n, 160) for n in self.panel_sections)}
+        if not presets or (active_name is not None and active_name not in presets):
+            raise ValueError("Choose a saved workspace preset")
         previous_active = self.right_layout_preset
-        self.right_rail_controller.update_presets(self.right_layout_presets)
+        self.right_layout_presets = presets
+        self.settings.setValue("right_layout_presets_v2", json.dumps(presets, separators=(",", ":")))
+        self.right_rail_controller.update_presets(presets)
         self._rebuild_layout_menu()
-        if previous_active in self.right_layout_presets:
-            # The user edited the currently active named composition, so apply
-            # that definition. A Custom live layout stays untouched.
-            self._apply_right_layout_preset(previous_active)
+        selected = active_name or previous_active
+        if selected in presets:
+            self._apply_right_layout_preset(selected)
         else:
             self.right_rail_controller.save_state()
             self._right_rail_state_changed(self.right_rail_controller.state)
