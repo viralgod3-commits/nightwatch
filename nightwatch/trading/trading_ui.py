@@ -2073,8 +2073,13 @@ class OrderPanel(QtWidgets.QWidget):
     def _sync_scroll_height(self) -> None:
         self._desk_layout.activate()
         self._sync_field_widths()
-        self.ticket_scroll.setMaximumHeight(max(24, self._desk_layout.sizeHint().height()))
-        self.ticket_scroll.updateGeometry()
+        if not self._order_card.isHidden():
+            required = max(self._order_card_layout.sizeHint().height(),
+                           self._order_card_layout.minimumSize().height())
+            self._order_card.setMinimumHeight(max(36, required + 2))
+        maximum = max(24, self._desk_layout.sizeHint().height())
+        if self.ticket_scroll.maximumHeight() != maximum:
+            self.ticket_scroll.setMaximumHeight(maximum)
         self._publish_compact_minimum_height()
 
     def eventFilter(self, watched: QtCore.QObject, event: QtCore.QEvent) -> bool:
@@ -2122,6 +2127,7 @@ class OrderPanel(QtWidgets.QWidget):
         self._update_submit_text()
         self._sync_field_widths()
         if hasattr(self, "_active_order_fields"):
+            self._order_form_signature = None
             self._reflow_order_fields(self._active_order_fields)
         if hasattr(self, "_layout_sync_timer"):
             self._layout_sync_timer.start(0)
@@ -2174,9 +2180,9 @@ class OrderPanel(QtWidgets.QWidget):
 
     def resizeEvent(self, event: QtGui.QResizeEvent) -> None:
         super().resizeEvent(event)
-        if hasattr(self, "_active_order_fields"):
+        if (hasattr(self, "_active_order_fields")
+                and event.size().width() != event.oldSize().width()):
             self._reflow_order_fields(self._active_order_fields)
-            self._sync_field_widths()
             self._sync_position_desk()
             self._update_submit_text()
 
@@ -2368,12 +2374,21 @@ class OrderPanel(QtWidgets.QWidget):
         self._active_order_fields = list(active_fields)
         active = set(active_fields)
         form = self._order_form
-        for container in self._field_rows.values():
-            form.removeWidget(container)
         if self.current_order_type() not in CONDITIONAL_ORDER_TYPES:
             active.discard("type")
         if self.reduce_only.isChecked():
             active.discard("amount")
+        selector_width = sum(control.fontMetrics().horizontalAdvance(control.currentText()) + 32
+                             for control in (self.type_combo, self.working_type)) + form.horizontalSpacing()
+        available = self.ticket_scroll.viewport().width() if hasattr(self, "ticket_scroll") else self.width() - 20
+        selectors_share_row = selector_width <= available
+        signature = (frozenset(active), selectors_share_row)
+        if signature == getattr(self, "_order_form_signature", None):
+            self._sync_field_widths()
+            return
+        self._order_form_signature = signature
+        for container in self._field_rows.values():
+            form.removeWidget(container)
         for name, container in self._field_rows.items():
             container.setVisible(name in active)
         self.time_in_force.setVisible("tif" in active)
@@ -2393,10 +2408,7 @@ class OrderPanel(QtWidgets.QWidget):
 
         # Keep the numeric label grid vertical at every width. Conditional
         # selectors may stack when enlarged typography needs more room.
-        selector_width = sum(control.fontMetrics().horizontalAdvance(control.currentText()) + 32
-                             for control in (self.type_combo, self.working_type)) + form.horizontalSpacing()
-        available = self.ticket_scroll.viewport().width() if hasattr(self, "ticket_scroll") else self.width() - 20
-        if selector_width <= available:
+        if selectors_share_row:
             add_row(("type", "source"))
         else:
             add_row(("type",))

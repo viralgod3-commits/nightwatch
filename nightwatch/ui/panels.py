@@ -1458,7 +1458,12 @@ if QtWidgets is not None:
                 if self._outer_pending:
                     self._outer_pending = False
                     self._apply_outer_width()
-                self.sync_interaction_surfaces()
+                # Resizing queues these same splitters through their own
+                # resize/move events. Merge the sets so every grip is updated
+                # once after the frame's geometry transaction.
+                self._dirty_surfaces.update(self.interaction_splitters())
+                if isinstance(self._main_splitter, PanelSplitter):
+                    self._dirty_surfaces.add(self._main_splitter)
                 self.geometry_changed.emit()
                 self._overlay_pending = True
             if self._overlay_pending:

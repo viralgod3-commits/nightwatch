@@ -1011,6 +1011,8 @@ class ChartWorkspace(QtWidgets.QWidget):
             application._nightwatch_interaction_gc = guard
         self._interaction_gc = guard
         self.destroyed.connect(lambda _obj=None, token=id(self), guard=guard: guard.set_active(token, False))
+        self._resize_gc_token = (id(self), "resize")
+        self.destroyed.connect(lambda _obj=None, token=self._resize_gc_token, guard=guard: guard.set_active(token, False))
 
 
         self._analysis_pool = QtCore.QThreadPool(self)
@@ -3656,6 +3658,8 @@ class ChartWorkspace(QtWidgets.QWidget):
             return
         self._presentation_active = active
         if not active:
+            self._resize_expensive_deferred = False
+            self._interaction_gc.set_active(self._resize_gc_token, False)
             self._pending_zoom_range = None
             self._presentation_clock.cancel()
             for timer in (
@@ -8337,6 +8341,8 @@ class ChartWorkspace(QtWidgets.QWidget):
             grid.setRowMaximumHeight(row, maximum_height)
             grid.setRowStretchFactor(row, 2)
             plot.setVisible(True)
+            if plot not in self.graphics.ci.items:
+                self.graphics.ci.addItem(plot, row=row, col=0)
             plot.getViewBox().setMouseEnabled(x=True, y=True)
         else:
             plot.setVisible(False)
@@ -8345,6 +8351,12 @@ class ChartWorkspace(QtWidgets.QWidget):
             plot.setXLink(None)
             plot.setMinimumHeight(0)
             plot.setMaximumHeight(0)
+            # A zero-height PlotItem still receives every width change and
+            # relayouts its axes/ViewBox. Park it outside the grid while retaining
+            # scene ownership, then reuse the same study and data when shown.
+            if plot in self.graphics.ci.items:
+                self.graphics.ci.removeItem(plot)
+                plot.setParentItem(self.graphics.ci)
             grid.setRowMinimumHeight(row, 0)
             grid.setRowPreferredHeight(row, 0)
             grid.setRowMaximumHeight(row, 0)
@@ -8699,6 +8711,7 @@ class ChartWorkspace(QtWidgets.QWidget):
         if not self._snapshot_loaded and not self.candles:
             return
         self._resize_expensive_deferred = True
+        self._interaction_gc.set_active(self._resize_gc_token, True)
         self.detail_timer.stop()
 
 
@@ -8708,6 +8721,7 @@ class ChartWorkspace(QtWidgets.QWidget):
         if not self._resize_expensive_deferred:
             return
         self._resize_expensive_deferred = False
+        self._interaction_gc.set_active(self._resize_gc_token, False)
         self._position_overlay_labels()
         self._schedule_render_work(
             viewport=True,
@@ -9288,6 +9302,15 @@ class MultiChartContainer(QtWidgets.QWidget):
         self._auxiliary_theme = dict(theme)
         for pane in self.auxiliary:
             pane.apply_theme(theme)
+
+    def begin_interactive_resize(self) -> None:
+        for chart in (self.primary_chart, *(pane.chart for pane in self.auxiliary)):
+            if chart.isVisible():
+                chart.begin_interactive_resize()
+
+    def end_interactive_resize(self) -> None:
+        for chart in (self.primary_chart, *(pane.chart for pane in self.auxiliary)):
+            chart.end_interactive_resize()
 
     def set_volume_bar_height_percent(self, value: int) -> None:
         self._volume_bar_height_percent = max(5, min(45, int(value)))

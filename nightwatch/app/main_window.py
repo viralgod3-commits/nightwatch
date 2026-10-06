@@ -7393,6 +7393,11 @@ class MainWindow(QtWidgets.QMainWindow):
                 workspace.set_interaction_priority(active)
         if self.hub is not None:
             self.hub.set_interaction_priority(active)
+        self.orderbook.set_interaction_priority(active)
+        self.large_trades.set_interaction_priority(active)
+        self._order_flow_interaction_priority_requested.emit(
+            self._order_flow_generation, active
+        )
 
     def _set_chart_interaction_priority(self, active: bool) -> None:
         """Give direct chart manipulation exclusive GUI presentation priority."""
@@ -7401,11 +7406,6 @@ class MainWindow(QtWidgets.QMainWindow):
             return
         self._chart_interaction_priority_active = active
         self._sync_background_priority()
-        self.orderbook.set_interaction_priority(active)
-        self.large_trades.set_interaction_priority(active)
-        self._order_flow_interaction_priority_requested.emit(
-            self._order_flow_generation, active
-        )
         if active:
             # Keep pending rail geometry alive. The shared interaction phase
             # runs before _flush_presentation_frame, whose priority guard defers
@@ -9940,7 +9940,7 @@ class MainWindow(QtWidgets.QMainWindow):
         if not self._ui_resize_active:
             self._ui_resize_active = True
             self._sync_background_priority()
-            self.chart.begin_interactive_resize()
+            self.chart_container.begin_interactive_resize()
         if explicit_drag or self._active_splitter_drags:
             self.resize_settle_timer.stop()
         else:
@@ -9964,7 +9964,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._sync_background_priority()
         self.right_rail_controller.capture_geometry()
         self.right_rail_controller.sync_interaction_surfaces()
-        self.chart.end_interactive_resize()
+        self.chart_container.end_interactive_resize()
         if self.pending_ticker_symbols or self.ticker_rank_dirty:
             self.presentation_clock.request(immediate=True)
 

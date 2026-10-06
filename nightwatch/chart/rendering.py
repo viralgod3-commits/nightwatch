@@ -944,6 +944,10 @@ class PixelBarBatch:
         self.batches = []
         self._rect_batch_source = None
         self._rect_batches = []
+        self._cpu_image = QtGui.QImage()
+        self._cpu_image_rect = QtCore.QRect()
+        self._cpu_bounds = QtCore.QRectF()
+        self._cpu_disjoint = False
         self.cache_origin = (0.0, 0.0)
         self.cache_screen = QtCore.QRectF()
         self.gpu_enabled = False
@@ -969,35 +973,89 @@ class PixelBarBatch:
         self.data = prepared.data
         self.cache_key = None
         self.batches = []
+        self._rect_batch_source = None
+        self._rect_batches = []
+        self._cpu_image = QtGui.QImage()
         self._data_revision += 1
         return QtCore.QRectF(*prepared.bounds)
 
-    def _draw_cpu_batches(self, painter):
-
-
+    def _draw_cpu_batches(self, painter, screen):
+        """Retain rectangle geometry and a bounded physical-pixel pan cache."""
         if self._rect_batch_source is not self.batches:
             self._rect_batch_source = self.batches
             self._rect_batches = []
-            for brush, path in self.batches:
-                rects = None
-                disjoint = False
-                if brush.style() == Qt.BrushStyle.SolidPattern:
-                    polygons = path.toSubpathPolygons()
-                    if all(len(poly) == 5 and poly[0] == poly[-1] for poly in polygons):
-                        rects = [poly.boundingRect() for poly in polygons]
-                        ordered = sorted(rects, key=lambda rect: rect.left())
-                        disjoint = all(a.right() <= b.left() for a,b in zip(ordered, ordered[1:]))
-                self._rect_batches.append((brush, path, rects, disjoint))
-        for brush, path, rects, disjoint in self._rect_batches:
+            self._cpu_image = QtGui.QImage()
+            self._cpu_bounds = QtCore.QRectF()
+            for brush, rects in self.batches:
+                for rect in rects:
+                    self._cpu_bounds = self._cpu_bounds.united(rect)
+                # Overlapping translucent rectangles must blend once, as a
+                # winding-fill union. Opaque batches need no polygon roundtrip.
+                ordered = sorted(rects, key=lambda rect: rect.left())
+                disjoint = all(a.right() <= b.left() for a, b in zip(ordered, ordered[1:]))
+                path = None
+                if not disjoint:
+                    path = QtGui.QPainterPath()
+                    path.setFillRule(Qt.FillRule.WindingFill)
+                    if not brush.isOpaque():
+                        for rect in rects:
+                            path.addRect(rect)
+                self._rect_batches.append((brush, rects, disjoint, path))
+            ordered = sorted((rect for _brush, rects in self.batches for rect in rects),
+                             key=lambda rect: rect.left())
+            self._cpu_disjoint = all(a.right() <= b.left() for a, b in zip(ordered, ordered[1:]))
+
+        # The cache uses physical pixels, exactly like the bar geometry. Limit
+        # its memory, retain pan margins, and never resample candles on resize.
+        bounds = self._cpu_bounds
+        target = screen.intersected(bounds).toAlignedRect()
+        use_image = (sum(len(rects) for _brush, rects in self.batches) > 64
+                     and painter.opacity() == 1.0
+                     and painter.compositionMode() == QtGui.QPainter.CompositionMode.CompositionMode_SourceOver)
+        if use_image and not target.isEmpty():
+            if self._cpu_image.isNull() or not self._cpu_image_rect.contains(target):
+                padded = screen.adjusted(-screen.width() * .5, -screen.height() * .25,
+                                         screen.width() * .5, screen.height() * .25)
+                image_rect = padded.intersected(bounds).toAlignedRect()
+                # At most 16 MiB per history/volume cache, independent of zoom.
+                if image_rect.width() * image_rect.height() <= 4 * 1024 * 1024:
+                    image = QtGui.QImage(image_rect.size(), QtGui.QImage.Format.Format_ARGB32_Premultiplied)
+                    if not image.isNull():
+                        image.fill(Qt.GlobalColor.transparent)
+                        cache_painter = QtGui.QPainter(image)
+                        cache_painter.setPen(Qt.PenStyle.NoPen)
+                        cache_painter.translate(-image_rect.left(), -image_rect.top())
+                        if self._cpu_disjoint:
+                            # On a transparent, non-overlapping cache, copying
+                            # premultiplied colors is equivalent to blending.
+                            # This avoids Qt's costly translucent thin-rect path
+                            # for volume bars; the finished image still blends
+                            # normally with the chart underneath it.
+                            cache_painter.setCompositionMode(QtGui.QPainter.CompositionMode.CompositionMode_Source)
+                        self._paint_cpu_rectangles(cache_painter)
+                        cache_painter.end()
+                        self._cpu_image, self._cpu_image_rect = image, image_rect
+                else:
+                    self._cpu_image = QtGui.QImage()
+            if not self._cpu_image.isNull() and self._cpu_image_rect.contains(target):
+                painter.drawImage(QtCore.QPointF(self._cpu_image_rect.topLeft()), self._cpu_image)
+                return
+        self._paint_cpu_rectangles(painter)
+
+    def _paint_cpu_rectangles(self, painter):
+        for brush, rects, disjoint, path in self._rect_batches:
             painter.setBrush(brush)
-            if rects is not None and (disjoint or (brush.isOpaque() and painter.opacity() == 1.0)):
+            if disjoint or (brush.isOpaque() and painter.opacity() == 1.0):
                 painter.drawRects(rects)
             else:
+                if path.isEmpty():
+                    for rect in rects:
+                        path.addRect(rect)
                 painter.drawPath(path)
 
     @staticmethod
     def _append_rectangles(
-        target: QtGui.QPainterPath,
+        target: list[QtCore.QRectF],
         x: np.ndarray,
         y: np.ndarray,
         width: np.ndarray,
@@ -1006,13 +1064,7 @@ class PixelBarBatch:
         *,
         expand: float = 0.0,
     ) -> None:
-        """Clip rectangle arrays once and append them directly to ``target``.
-
-        PySide6 exposes ``QPainterPath.addRects`` on supported Qt builds.  Use
-        that bulk boundary when available so a rebuild does not perform one
-        Python->Qt call per rectangle.  The scalar fallback keeps compatibility
-        with older bindings without allocating QRectF wrappers unnecessarily.
-        """
+        """Clip once, retaining rectangles without converting through polygons."""
         if not len(x):
             return
 
@@ -1049,49 +1101,11 @@ class PixelBarBatch:
         valid_top = top[valid]
         valid_width = widths[valid]
         valid_height = heights[valid]
-        add_rects = getattr(target, "addRects", None)
-        if callable(add_rects):
-
-
-            chunk_size = 1024
-            count = len(valid_left)
-            for first in range(0, count, chunk_size):
-                last = min(count, first + chunk_size)
-                rects = [
-                    QtCore.QRectF(float(rx), float(ry), float(rw), float(rh))
-                    for rx, ry, rw, rh in zip(
-                        valid_left[first:last],
-                        valid_top[first:last],
-                        valid_width[first:last],
-                        valid_height[first:last],
-                    )
-                ]
-                try:
-                    add_rects(rects)
-                except (TypeError, AttributeError):
-
-
-                    add_rect = target.addRect
-                    for rect in rects:
-                        add_rect(rect)
-                    for rx, ry, rw, rh in zip(
-                        valid_left[last:],
-                        valid_top[last:],
-                        valid_width[last:],
-                        valid_height[last:],
-                    ):
-                        add_rect(float(rx), float(ry), float(rw), float(rh))
-                    return
-            return
-
-        add_rect = target.addRect
-        for rx, ry, rw, rh in zip(
-            valid_left, valid_top, valid_width, valid_height
-        ):
-            add_rect(float(rx), float(ry), float(rw), float(rh))
+        target.extend(QtCore.QRectF(float(rx), float(ry), float(rw), float(rh))
+                      for rx, ry, rw, rh in zip(valid_left, valid_top, valid_width, valid_height))
 
     @staticmethod
-    def _rect_path(
+    def _rectangles(
         x: np.ndarray,
         y: np.ndarray,
         width: np.ndarray,
@@ -1099,28 +1113,12 @@ class PixelBarBatch:
         clip: QtCore.QRectF,
         *,
         expand: float = 0.0,
-    ) -> QtGui.QPainterPath:
-        path = QtGui.QPainterPath()
-        path.setFillRule(Qt.FillRule.WindingFill)
+    ) -> list[QtCore.QRectF]:
+        rects: list[QtCore.QRectF] = []
         PixelBarBatch._append_rectangles(
-            path, x, y, width, height, clip, expand=expand
+            rects, x, y, width, height, clip, expand=expand
         )
-        return path
-
-    @staticmethod
-    def _append_rect_path(
-        target: QtGui.QPainterPath,
-        x: np.ndarray,
-        y: np.ndarray,
-        width: np.ndarray,
-        height: np.ndarray,
-        clip: QtCore.QRectF,
-        *,
-        expand: float = 0.0,
-    ) -> None:
-        PixelBarBatch._append_rectangles(
-            target, x, y, width, height, clip, expand=expand
-        )
+        return rects
 
     def set_gpu_enabled(self, enabled: bool) -> None:
         enabled = bool(enabled)
@@ -1439,9 +1437,9 @@ class PixelBarBatch:
             self.cache_origin = (transform.dx(), 0.0)
             dx = 0.0
             self.cache_screen = overlay_screen.adjusted(
-                -overlay_screen.width(),
+                -overlay_screen.width() * .5,
                 0.0,
-                overlay_screen.width(),
+                overlay_screen.width() * .5,
                 0.0,
             )
             build_screen = self.cache_screen
@@ -1494,19 +1492,19 @@ class PixelBarBatch:
                     np.floor(np.minimum(1.0, volumes / volume_max) * max_height),
                 )
                 tops = bottom - heights
-                path = self._rect_path(
+                rects = self._rectangles(
                     lefts.astype(np.float64, copy=False),
                     tops.astype(np.float64, copy=False),
                     widths.astype(np.float64, copy=False),
                     heights.astype(np.float64, copy=False),
                     build_screen,
                 )
-                if not path.isEmpty():
+                if rects:
                     color = style.get(
                         "up_color" if rising else "down_color",
                         fallback,
                     )
-                    self.batches.append((QtGui.QBrush(QtGui.QColor(color)), path))
+                    self.batches.append((QtGui.QBrush(QtGui.QColor(color)), rects))
 
         painter.save()
         painter.resetTransform()
@@ -1514,7 +1512,7 @@ class PixelBarBatch:
         painter.translate(round(dx), 0.0)
         painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing, False)
         painter.setPen(QtGui.QPen(Qt.PenStyle.NoPen))
-        self._draw_cpu_batches(painter)
+        self._draw_cpu_batches(painter, clip_screen.translated(-round(dx), 0.0))
         painter.restore()
 
     def paint(
@@ -1628,6 +1626,7 @@ class PixelBarBatch:
             up,
             down,
             volume,
+            painter.opacity(),
         )
         dx = transform.dx() - self.cache_origin[0]
         dy = transform.dy() - self.cache_origin[1]
@@ -1635,16 +1634,16 @@ class PixelBarBatch:
 
         if (
             key != self.cache_key
-            or not self.cache_screen.translated(pan_dx, pan_dy).contains(screen)
+            or not self.cache_screen.translated(pan_dx, pan_dy).contains(gl_screen)
         ):
             self.cache_key = key
             self.cache_origin = (transform.dx(), transform.dy())
             dx = dy = 0.0
-            self.cache_screen = screen.adjusted(
-                -screen.width(),
-                -screen.height(),
-                screen.width(),
-                screen.height(),
+            self.cache_screen = gl_screen.adjusted(
+                -gl_screen.width() * .5,
+                -gl_screen.height() * .25,
+                gl_screen.width() * .5,
+                gl_screen.height() * .25,
             )
             build_screen = self.cache_screen
             self.batches = []
@@ -1790,38 +1789,49 @@ class PixelBarBatch:
                 body_w = widths.astype(np.float64, copy=False)
                 body_h = heights.astype(np.float64, copy=False)
 
-                wick_path = self._rect_path(
+                wick_rects = self._rectangles(
                     wick_x,
                     wick_y,
                     wick_w,
                     wick_h,
                     build_screen,
                 )
-                body_path = self._rect_path(
-                    body_x,
-                    body_y,
-                    body_w,
-                    body_h,
+                has_edges = bool(hollow or fill != color)
+                collapsed = ((widths <= 2) | (heights <= 2)) if (
+                    has_edges and painter.opacity() == 1.0
+                    and QtGui.QColor(color).alpha() == 255
+                ) else np.zeros(len(indices), dtype=bool)
+                # At one/two pixels the outline covers the entire body. Draw
+                # that final opaque color once instead of filling and outlining
+                # the same pixels with four overlapping rectangles per bar.
+                if np.any(collapsed):
+                    self._append_rectangles(wick_rects, body_x[collapsed], body_y[collapsed],
+                                            body_w[collapsed], body_h[collapsed], build_screen)
+                body_mask = ~collapsed
+                body_rects = self._rectangles(
+                    body_x[body_mask],
+                    body_y[body_mask],
+                    body_w[body_mask],
+                    body_h[body_mask],
                     build_screen,
                 )
 
-                edge_path = QtGui.QPainterPath()
-                edge_path.setFillRule(Qt.FillRule.WindingFill)
-                has_edges = bool(hollow or fill != color)
+                edge_rects: list[QtCore.QRectF] = []
                 if has_edges:
-                    one = np.ones(len(indices), dtype=np.float64)
+                    edge_x, edge_y = body_x[body_mask], body_y[body_mask]
+                    edge_w, edge_h = body_w[body_mask], body_h[body_mask]
+                    one = np.ones(len(edge_x), dtype=np.float64)
 
-                    self._append_rect_path(
-                        edge_path,
-                        np.concatenate((body_x, body_x, body_x, body_x + body_w - 1.0)),
-                        np.concatenate((body_y, body_y + body_h - 1.0, body_y, body_y)),
-                        np.concatenate((body_w, body_w, one, one)),
-                        np.concatenate((one, one, body_h, body_h)),
+                    self._append_rectangles(
+                        edge_rects,
+                        np.concatenate((edge_x, edge_x, edge_x, edge_x + edge_w - 1.0)),
+                        np.concatenate((edge_y, edge_y + edge_h - 1.0, edge_y, edge_y)),
+                        np.concatenate((edge_w, edge_w, one, one)),
+                        np.concatenate((one, one, edge_h, edge_h)),
                         build_screen,
                     )
 
-                close_tick_path = QtGui.QPainterPath()
-                close_tick_path.setFillRule(Qt.FillRule.WindingFill)
+                close_tick_rects: list[QtCore.QRectF] = []
                 close_tick_brush: QtGui.QBrush | None = None
                 if not volume and style.get("close_tick"):
                     tick_length = np.maximum(
@@ -1838,8 +1848,8 @@ class PixelBarBatch:
                         centers.astype(np.float64, copy=False),
                         centers.astype(np.float64, copy=False) - tick_length,
                     )
-                    self._append_rect_path(
-                        close_tick_path,
+                    self._append_rectangles(
+                        close_tick_rects,
                         tick_x,
                         tick_y,
                         tick_length,
@@ -1881,14 +1891,13 @@ class PixelBarBatch:
                             int(math.ceil(float(style.get("glow_width", 2.0)) * 0.5)),
                         )
 
-                bloom_path = QtGui.QPainterPath()
-                bloom_path.setFillRule(Qt.FillRule.WindingFill)
+                bloom_rects: list[QtCore.QRectF] = []
                 if bloom_brush is not None and bloom_radius:
 
 
                     one = np.ones(len(indices), dtype=np.float64)
-                    self._append_rect_path(
-                        bloom_path,
+                    self._append_rectangles(
+                        bloom_rects,
                         np.concatenate((wick_x, body_x, body_x, body_x, body_x + body_w - 1.0)),
                         np.concatenate((wick_y, body_y, body_y + body_h - 1.0, body_y, body_y)),
                         np.concatenate((wick_w, body_w, body_w, one, one)),
@@ -1898,20 +1907,20 @@ class PixelBarBatch:
                     )
 
 
-                if bloom_brush is not None and not bloom_path.isEmpty():
-                    self.batches.append((bloom_brush, bloom_path))
-                if color and not wick_path.isEmpty():
+                if bloom_brush is not None and bloom_rects:
+                    self.batches.append((bloom_brush, bloom_rects))
+                if color and wick_rects:
                     self.batches.append(
-                        (QtGui.QBrush(QtGui.QColor(color)), wick_path)
+                        (QtGui.QBrush(QtGui.QColor(color)), wick_rects)
                     )
-                if not body_path.isEmpty():
-                    self.batches.append((QtGui.QBrush(fill), body_path))
-                if color and not edge_path.isEmpty():
+                if body_rects:
+                    self.batches.append((QtGui.QBrush(fill), body_rects))
+                if color and edge_rects:
                     self.batches.append(
-                        (QtGui.QBrush(QtGui.QColor(color)), edge_path)
+                        (QtGui.QBrush(QtGui.QColor(color)), edge_rects)
                     )
-                if close_tick_brush is not None and not close_tick_path.isEmpty():
-                    self.batches.append((close_tick_brush, close_tick_path))
+                if close_tick_brush is not None and close_tick_rects:
+                    self.batches.append((close_tick_brush, close_tick_rects))
 
         painter.save()
 
@@ -1925,7 +1934,7 @@ class PixelBarBatch:
         )
         painter.setPen(QtGui.QPen(Qt.PenStyle.NoPen))
 
-        self._draw_cpu_batches(painter)
+        self._draw_cpu_batches(painter, gl_screen.translated(-round(dx), -round(dy)))
 
         painter.restore()
         self._gpu_diagnostics.cpu_paint(
