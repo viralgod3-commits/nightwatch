@@ -6,6 +6,8 @@
 - Do not inspect git history, remotes, Cloudflare status, deployment status, or browser state unless the task requires it.
 - Do not rediscover the whole repo. Read only files directly relevant to the request.
 - Do not run tests or builds by default unless the change might affect performance or is risky.
+- Do not make changes that negatively impact performance
+- in code reviews focus first on UI & performance optimization. Also the quality of the application from trader perspective and trading execution integrity.
 
 ## Commits and pushes
 
