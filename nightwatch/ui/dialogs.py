@@ -1186,6 +1186,7 @@ class WorkspacePresetEditor(QtWidgets.QWidget):
         self._current_layout_provider = current_layout_provider
         self._loading = False
         self.dirty = False
+        self._source_presets = None
         self._token = uuid4().hex
         self.setStyleSheet("""
             QWidget#workspacePresetEditor { background: #000000; color: #eeeeee; }
@@ -1333,6 +1334,11 @@ class WorkspacePresetEditor(QtWidgets.QWidget):
     def set_presets(self, presets, active_name=None, *, force=False):
         if self.dirty and not force:
             return
+        # The owner replaces this dictionary on save/reset. Ordinary state
+        # synchronization therefore needs no recursive preset comparison.
+        if not force and presets is self._source_presets:
+            return
+        self._source_presets = presets
         if not force and presets == self._saved_presets:
             return
         self._saved_presets = deepcopy(presets)
@@ -1534,6 +1540,7 @@ class WorkspacePresetEditor(QtWidgets.QWidget):
         self.apply_requested.emit(definitions, self.selected_name())
 
     def mark_saved(self, definitions, active_name):
+        self._source_presets = definitions
         self._saved_presets, self._saved_active = deepcopy(definitions), active_name
         self.dirty = False
         self.status.setText(f"Saved · {active_name}")
@@ -1588,6 +1595,11 @@ class NightwatchSettingsDialog(QtWidgets.QDialog):
         "Data & Alerts",
         "Advanced",
     )
+    WORKSPACE_SEARCH_TERMS = (
+        "workspace panels panel layout custom presets preset name width "
+        "depth trading positions large trades watchlist stack columns even sizes "
+        "undo redo new duplicate delete save apply current clear restore defaults revert"
+    )
 
     def __init__(
         self,
@@ -1632,7 +1644,6 @@ class NightwatchSettingsDialog(QtWidgets.QDialog):
             self._build_advanced_page,
         )
         self._built_pages: set[int] = set()
-        self._prewarm_running = False
         self._developer_tab_keys: list[str] = []
         self._developer_placeholders: dict[str, QtWidgets.QWidget] = {}
 
@@ -1772,22 +1783,6 @@ class NightwatchSettingsDialog(QtWidgets.QDialog):
         self._settings_search.clear()
         self.categories.setCurrentRow(self.CATEGORIES.index(category))
 
-    def prewarm_remaining_pages(self) -> None:
-        if self._prewarm_running:
-            return
-        self._prewarm_running = True
-        QtCore.QTimer.singleShot(0, self._prewarm_next_page)
-
-    def _prewarm_next_page(self) -> None:
-        if not self._prewarm_running:
-            return
-        for index in range(len(self._page_builders)):
-            if index not in self._built_pages:
-                self._ensure_page_built(index)
-                QtCore.QTimer.singleShot(16, self._prewarm_next_page)
-                return
-        self._prewarm_running = False
-
     def _available_screen_geometry(self) -> QtCore.QRect:
         parent = self.parentWidget()
         screen = None
@@ -1914,9 +1909,11 @@ class NightwatchSettingsDialog(QtWidgets.QDialog):
 
     def _apply_settings_search(self, text: str) -> None:
         query = str(text or "").strip().casefold()
+        workspace_index = self.CATEGORIES.index("Workspace")
         if query:
             for index in range(len(self._page_builders)):
-                self._ensure_page_built(index)
+                if index != workspace_index:
+                    self._ensure_page_built(index)
             self.sync_from_owner()
         first_match = -1
         current = self.categories.currentRow()
@@ -1925,7 +1922,16 @@ class NightwatchSettingsDialog(QtWidgets.QDialog):
             page = self.pages.widget(index)
             category = self.CATEGORIES[index].casefold() if index < len(self.CATEGORIES) else ""
             category_match = bool(query and query in category)
-            page_match = not query or category_match or query in self._searchable_text(page)
+            if not query or category_match:
+                page_match = True
+            elif index == workspace_index:
+                # Search metadata without materializing the virtual workspace.
+                page_text = " ".join((self.WORKSPACE_SEARCH_TERMS,
+                                      *self.host.right_layout_presets,
+                                      *self.host.panel_sections)).casefold()
+                page_match = query in page_text
+            else:
+                page_match = query in self._searchable_text(page)
             item = self.categories.item(index)
             if item is not None:
                 item.setHidden(not page_match)
@@ -2730,43 +2736,44 @@ class NightwatchSettingsDialog(QtWidgets.QDialog):
                 )
                 del blocker
 
-            controller = self.host.right_rail_controller
-            self._refresh_panel_choices()
-            for name, check in self._panel_checks.items():
-                blocker = QtCore.QSignalBlocker(check)
-                check.setChecked(controller.panel_enabled(name))
-                del blocker
-            for mode, radio in self._mode_buttons.items():
-                blocker = QtCore.QSignalBlocker(radio)
-                radio.setChecked(controller.column_mode == mode)
-                del blocker
-
-            panel_preset = getattr(self, "panel_preset", None)
-            if panel_preset is not None:
-                names = list(self.host.right_layout_presets)
-                current_names = [
-                    str(panel_preset.itemData(index) or panel_preset.itemText(index))
-                    for index in range(panel_preset.count())
-                ]
-                if current_names != names:
-                    blocker = QtCore.QSignalBlocker(panel_preset)
-                    panel_preset.clear()
-                    for name in names:
-                        panel_preset.addItem(name, name)
+            if self.pages.currentIndex() == self.CATEGORIES.index("Workspace"):
+                controller = self.host.right_rail_controller
+                self._refresh_panel_choices()
+                for name, check in self._panel_checks.items():
+                    blocker = QtCore.QSignalBlocker(check)
+                    check.setChecked(controller.panel_enabled(name))
                     del blocker
-                active = controller.state.active_preset
-                index = panel_preset.findData(active)
-                if index < 0:
-                    panel_preset.setCurrentIndex(-1)
-                    panel_preset.setPlaceholderText("Custom")
-                else:
-                    blocker = QtCore.QSignalBlocker(panel_preset)
-                    panel_preset.setCurrentIndex(index)
+                for mode, radio in self._mode_buttons.items():
+                    blocker = QtCore.QSignalBlocker(radio)
+                    radio.setChecked(controller.column_mode == mode)
                     del blocker
 
-            editor = getattr(self, "workspace_editor", None)
-            if editor is not None:
-                editor.set_presets(self.host.right_layout_presets, controller.state.active_preset)
+                panel_preset = getattr(self, "panel_preset", None)
+                if panel_preset is not None:
+                    names = list(self.host.right_layout_presets)
+                    current_names = [
+                        str(panel_preset.itemData(index) or panel_preset.itemText(index))
+                        for index in range(panel_preset.count())
+                    ]
+                    if current_names != names:
+                        blocker = QtCore.QSignalBlocker(panel_preset)
+                        panel_preset.clear()
+                        for name in names:
+                            panel_preset.addItem(name, name)
+                        del blocker
+                    active = controller.state.active_preset
+                    index = panel_preset.findData(active)
+                    if index < 0:
+                        panel_preset.setCurrentIndex(-1)
+                        panel_preset.setPlaceholderText("Custom")
+                    else:
+                        blocker = QtCore.QSignalBlocker(panel_preset)
+                        panel_preset.setCurrentIndex(index)
+                        del blocker
+
+                editor = getattr(self, "workspace_editor", None)
+                if editor is not None:
+                    editor.set_presets(self.host.right_layout_presets, controller.state.active_preset)
 
             if self.embedded_ui_tuner is not None:
                 self.embedded_ui_tuner.sync_from_owner()
@@ -2780,7 +2787,6 @@ class NightwatchSettingsDialog(QtWidgets.QDialog):
     def showEvent(self, event: QtGui.QShowEvent) -> None:
 
 
-        self._prewarm_running = False
         self.sync_from_owner()
         self._refresh_frame_benchmark()
         self._fit_to_available_screen(prefer_default=False)

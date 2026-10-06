@@ -1300,20 +1300,8 @@ class MainWindow(QtWidgets.QMainWindow):
         elif stage == 3:
             self._configure_crisp_ui()
             self._startup_mark("deferred startup stages complete")
-            # Settings is intentionally prewarmed only after the visible shell,
-            # feeds, hidden tape and analytics surfaces have had time to settle.
-            # Its normal pages are then built across separate event-loop turns.
-            QTimer.singleShot(1500, self._prewarm_settings_dialog)
-
-    def _prewarm_settings_dialog(self) -> None:
-        if self._closing:
-            return
-        dialog = self.settings_dialog
-        if dialog is None:
-            dialog = NightwatchSettingsDialog(self)
-            self.settings_dialog = dialog
-            self._startup_mark("settings shell prewarmed")
-        dialog.prewarm_remaining_pages()
+            # Settings pages are built only on request. Hidden configuration
+            # widgets must not compete with market data or chart presentation.
 
     def _fit_normal_window_to_available_height(self) -> None:
         """Keep restored normal mode inside the current monitor work area.
@@ -6902,8 +6890,10 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _reset_right_panel_layout(self) -> None:
         default_name = "Balanced"
-        self.right_layout_presets[default_name] = json.loads(json.dumps(RIGHT_LAYOUT_PRESETS[default_name]))
-        self.right_rail_controller.update_presets(self.right_layout_presets)
+        presets = dict(self.right_layout_presets)
+        presets[default_name] = json.loads(json.dumps(RIGHT_LAYOUT_PRESETS[default_name]))
+        self.right_layout_presets = presets
+        self.right_rail_controller.update_presets(presets)
         self._rebuild_layout_menu()
         self.right_rail_controller.reset(
             default_name, self.right_layout_presets[default_name]
