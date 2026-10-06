@@ -2236,7 +2236,7 @@ class MainWindow(QtWidgets.QMainWindow):
         }
         target = category_aliases.get(str(category), category)
         if target in dialog.CATEGORIES:
-            dialog.categories.setCurrentRow(dialog.CATEGORIES.index(target))
+            dialog.select_category(target)
         if was_visible:
             dialog.sync_from_owner()
         dialog.show()
@@ -8280,10 +8280,12 @@ class MainWindow(QtWidgets.QMainWindow):
             "trading/hotkeys_v1", json.dumps(shortcuts, sort_keys=True)
         )
         self.settings.sync()
+        message = "SHORTCUT PRESET SAVED"
         if self.trading_gateway.has_credentials():
             self.order_panel._request_leverage(int(preset["leverage"]))
+            message += " · LEVERAGE SYNC STARTED"
         self.statusBar().showMessage(
-            "SHORTCUT PRESET SAVED · LEVERAGE SYNC STARTED · CTRL+SHIFT+A TOGGLE QUICK-ORDER LOCK",
+            message + " · CTRL+SHIFT+A TOGGLE QUICK-ORDER LOCK",
             5000,
         )
 

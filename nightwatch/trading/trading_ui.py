@@ -2160,7 +2160,7 @@ class OrderPanel(QtWidgets.QWidget):
     def _typography_changed(self) -> None:
         self._sync_control_heights()
         if self.compact:
-            QTimer.singleShot(0, self._publish_compact_minimum_height)
+            QTimer.singleShot(0, self, self._publish_compact_minimum_height)
 
 
     def changeEvent(self, event: QtCore.QEvent) -> None:
@@ -2169,8 +2169,8 @@ class OrderPanel(QtWidgets.QWidget):
             QtCore.QEvent.Type.StyleChange,
             QtCore.QEvent.Type.FontChange,
         }:
-            QTimer.singleShot(0, self._sync_control_heights)
-            QTimer.singleShot(0, self._publish_compact_minimum_height)
+            QTimer.singleShot(0, self, self._sync_control_heights)
+            QTimer.singleShot(0, self, self._publish_compact_minimum_height)
 
     def resizeEvent(self, event: QtGui.QResizeEvent) -> None:
         super().resizeEvent(event)
@@ -2420,7 +2420,7 @@ class OrderPanel(QtWidgets.QWidget):
         self._order_card.setMinimumHeight(max(36, target_height + 2) if row else 0)
         self._order_card.updateGeometry()
         if self.compact:
-            QTimer.singleShot(0, self._publish_compact_minimum_height)
+            QTimer.singleShot(0, self, self._publish_compact_minimum_height)
 
     def _intent_changed(self, reducing: bool) -> None:
         current_type = self.current_order_type()
@@ -2583,7 +2583,7 @@ class OrderPanel(QtWidgets.QWidget):
         self.quantity_edit.setPlaceholderText(placeholder)
         self._update_order_summary()
         if self.compact:
-            QTimer.singleShot(0, self._publish_compact_minimum_height)
+            QTimer.singleShot(0, self, self._publish_compact_minimum_height)
 
     def edit_protections(self) -> None:
         dialog = ProtectionEditorDialog(self.protection_plans, self)
@@ -2616,7 +2616,7 @@ class OrderPanel(QtWidgets.QWidget):
         if self.protection_summary.isVisible() != bool(text):
             self.protection_summary.setVisible(bool(text))
             if self.compact:
-                QTimer.singleShot(0, self._publish_compact_minimum_height)
+                QTimer.singleShot(0, self, self._publish_compact_minimum_height)
         self._update_order_summary()
 
     def set_execution_market_state(self, live: bool, book_valid: bool, reason: str = "") -> None:
@@ -2648,7 +2648,7 @@ class OrderPanel(QtWidgets.QWidget):
                 self._submission_generation += 1
                 self._update_execution_state()
                 self._update_submit_text()
-            QTimer.singleShot(delay, clear_if_current)
+            QTimer.singleShot(delay, self, clear_if_current)
 
     def set_protection_lifecycle(self, text: str) -> None:
         self._protection_lifecycle = str(text or "").upper()
@@ -2663,7 +2663,7 @@ class OrderPanel(QtWidgets.QWidget):
             changed = True
         self._sync_position_desk()
         if self.compact and changed:
-            QTimer.singleShot(0, self._publish_compact_minimum_height)
+            QTimer.singleShot(0, self, self._publish_compact_minimum_height)
 
     def _mark_is_fresh(self) -> bool:
         return bool(
@@ -2765,7 +2765,7 @@ class OrderPanel(QtWidgets.QWidget):
         if reconcile_changed:
             self.reconcile_button.setVisible(uncertain)
         if self.compact and (state_changed or reconcile_changed):
-            QTimer.singleShot(0, self._publish_compact_minimum_height)
+            QTimer.singleShot(0, self, self._publish_compact_minimum_height)
         self.reconcile_button.setEnabled(self.gateway.has_credentials() and not self.gateway.stopping)
         self._sync_position_desk()
 
@@ -3104,6 +3104,23 @@ class OrderPanel(QtWidgets.QWidget):
         )
 
 
+def _validated_limit_price(value: str, rules: SymbolRules, label: str = "Limit price") -> str:
+    price = validate_step(value, rules.tick_size, label, offset=str(rules.min_price))
+    number = Decimal(price)
+    if number < Decimal(str(rules.min_price)) or (
+        rules.max_price > 0 and number > Decimal(str(rules.max_price))
+    ):
+        raise ValueError(f"{label} must be between {rules.min_price:g} and {rules.max_price:g}.")
+    return price
+
+
+def _validated_limit_quantity(value: str, rules: SymbolRules, label: str = "Quantity") -> str:
+    quantity = validate_step(value, rules.lot_step, label, offset=str(rules.min_qty))
+    if not Decimal(str(rules.min_qty)) <= Decimal(quantity) <= Decimal(str(rules.max_qty)):
+        raise ValueError(f"{label} must be between {rules.min_qty:g} and {rules.max_qty:g}.")
+    return quantity
+
+
 class BatchOrderDialog(QtWidgets.QDialog):
     def __init__(
         self,
@@ -3190,20 +3207,14 @@ class BatchOrderDialog(QtWidgets.QDialog):
         self.validation.setVisible(bool(message))
 
     def _validate_live(self, _text: str = "") -> None:
-        for index, (_side, price, quantity) in enumerate(self.rows, start=1):
-            price_text = price.text().replace(",", "").strip()
-            quantity_text = quantity.text().replace(",", "").strip()
-            if not price_text and not quantity_text:
-                continue
-            if not price_text or not quantity_text:
-                self._set_validation(f"ROW {index} · ENTER BOTH PRICE AND SIZE")
-                return
-            try:
-                validate_step(price_text, self.rules.tick_size, f"Row {index} limit price", offset=str(self.rules.min_price))
-                validate_step(quantity_text, self.rules.lot_step, f"Row {index} quantity", offset=str(self.rules.min_qty))
-            except ValueError as exc:
-                self._set_validation(str(exc))
-                return
+        if not any(price.text().strip() or quantity.text().strip() for _side, price, quantity in self.rows):
+            self._set_validation("")
+            return
+        try:
+            self.orders()
+        except ValueError as exc:
+            self._set_validation(str(exc))
+            return
         self._set_validation("")
 
     def _accept_validated(self) -> None:
@@ -3224,12 +3235,18 @@ class BatchOrderDialog(QtWidgets.QDialog):
                 continue
             if not price_text or not quantity_text:
                 raise ValueError(f"Row {index} needs both price and quantity.")
+            validated_price = _validated_limit_price(price_text, self.rules, f"Row {index} limit price")
+            validated_quantity = _validated_limit_quantity(quantity_text, self.rules, f"Row {index} quantity")
+            if self.rules.min_notional and Decimal(validated_price) * Decimal(validated_quantity) < Decimal(str(self.rules.min_notional)):
+                raise ValueError(
+                    f"Row {index} order value must be at least {self.rules.min_notional:g} {self.rules.quote_asset}."
+                )
             item = {
                 "symbol": self.symbol,
                 "side": side.currentText(),
                 "type": "LIMIT",
-                "price": validate_step(price_text, self.rules.tick_size, "Limit price", offset=str(self.rules.min_price)),
-                "quantity": validate_step(quantity_text, self.rules.lot_step, "Quantity", offset=str(self.rules.min_qty)),
+                "price": validated_price,
+                "quantity": validated_quantity,
                 "timeInForce": "GTC",
                 "positionSide": self.position_side,
             }
@@ -3301,7 +3318,7 @@ class ModifyOrderDialog(QtWidgets.QDialog):
         self.price.textChanged.connect(self._validate_live)
 
     def _validated_changes(self) -> dict[str, Any]:
-        quantity = validate_step(self.quantity.text(), self.rules.lot_step, "New total quantity", offset=str(self.rules.min_qty))
+        quantity = _validated_limit_quantity(self.quantity.text(), self.rules, "New total quantity")
         try:
             executed = Decimal(str(self.order.get("executedQty") or self.order.get("cumQty") or "0"))
         except InvalidOperation as exc:
@@ -3316,7 +3333,7 @@ class ModifyOrderDialog(QtWidgets.QDialog):
             "side": self.order.get("side"),
             "quantity": quantity,
             "_minimumExecutedQty": str(executed),
-            "price": validate_step(self.price.text(), self.rules.tick_size, "Price", offset=str(self.rules.min_price)),
+            "price": _validated_limit_price(self.price.text(), self.rules, "Price"),
         }
         if self.order.get('reduceOnly') is True or str(self.order.get('reduceOnly')).lower() == 'true':
             changes['reduceOnly'] = True
@@ -3436,8 +3453,12 @@ class CloseLimitDialog(QtWidgets.QDialog):
         position: dict[str, Any],
         percent: int,
         parent: QtWidgets.QWidget | None = None,
+        *,
+        rules: SymbolRules | None = None,
     ):
         super().__init__(parent)
+        self.position = dict(position)
+        self.rules = rules
         symbol = str(position.get("symbol") or "POSITION")
         direction = _position_direction(position)
         self.setWindowTitle(f"Close {symbol} with limit order")
@@ -3455,9 +3476,20 @@ class CloseLimitDialog(QtWidgets.QDialog):
         mark = safe_float(position.get("markPrice"))
         self.price_edit.setPlaceholderText("Limit price")
         if mark > 0:
-            self.price_edit.setText(format_price(mark).replace(",", ""))
+            price = str(position.get("markPrice"))
+            if rules is not None:
+                try:
+                    price = quantize_step(price, rules.tick_size, offset=str(rules.min_price))
+                except ValueError:
+                    price = ""
+            self.price_edit.setText(price)
         self.price_edit.selectAll()
         layout.addWidget(self.price_edit)
+        self.validation = QtWidgets.QLabel("")
+        self.validation.setObjectName("subtleLabel")
+        self.validation.setWordWrap(True)
+        self.validation.hide()
+        layout.addWidget(self.validation)
         buttons = QtWidgets.QDialogButtonBox(
             QtWidgets.QDialogButtonBox.StandardButton.Ok
             | QtWidgets.QDialogButtonBox.StandardButton.Cancel
@@ -3465,12 +3497,42 @@ class CloseLimitDialog(QtWidgets.QDialog):
         confirm = buttons.button(QtWidgets.QDialogButtonBox.StandardButton.Ok)
         confirm.setText("PLACE CLOSE LIMIT")
         confirm.setObjectName("dangerButton")
-        buttons.accepted.connect(self.accept)
+        buttons.accepted.connect(self._accept_validated)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
+        self.price_edit.textChanged.connect(self._validate_live)
 
     def price_text(self) -> str:
         return self.price_edit.text().replace(",", "").strip()
+
+    def validated_price(self) -> str:
+        if self.rules is None:
+            return validate_step(self.price_text(), "0", "Limit price")
+        price = _validated_limit_price(self.price_text(), self.rules)
+        mark = safe_float(self.position.get("markPrice"))
+        if mark > 0:
+            number = Decimal(price)
+            close_side = _position_close_side(self.position)
+            if close_side == "BUY" and self.rules.price_multiplier_up and number > Decimal(str(mark)) * Decimal(str(self.rules.price_multiplier_up)):
+                raise ValueError("Limit price is above Binance's current price band.")
+            if close_side == "SELL" and self.rules.price_multiplier_down and number < Decimal(str(mark)) * Decimal(str(self.rules.price_multiplier_down)):
+                raise ValueError("Limit price is below Binance's current price band.")
+        return price
+
+    def _validate_live(self, _text: str = "") -> None:
+        try:
+            self.validated_price()
+        except ValueError as exc:
+            self.validation.setText(str(exc))
+            self.validation.show()
+            return
+        self.validation.clear()
+        self.validation.hide()
+
+    def _accept_validated(self) -> None:
+        self._validate_live()
+        if not self.validation.text():
+            self.accept()
 
 
 class FillAccountCard(QtWidgets.QFrame):
@@ -4937,7 +4999,7 @@ class TradingWorkspace(QtWidgets.QWidget):
             self.setProperty("rightRailMinimumHeight", required)
             self.updateGeometry()
             self.rail_minimum_height_changed.emit()
-        QTimer.singleShot(0, self._refresh_adaptive_activity)
+        QTimer.singleShot(0, self, self._refresh_adaptive_activity)
 
     def set_bottom_panel(self, bottom: bool) -> None:
         bottom = bool(bottom)
@@ -5060,6 +5122,7 @@ class TradingWorkspace(QtWidgets.QWidget):
         return table
 
     def set_symbol(self, symbol: str, rules: SymbolRules) -> None:
+        changed = symbol != self.symbol
         self.symbol = symbol
         self.rules = rules
         self.ticket.set_symbol(symbol, rules)
@@ -5070,8 +5133,9 @@ class TradingWorkspace(QtWidgets.QWidget):
         self.account_frame.set_positions(self._position_payloads, symbol, self.gateway.has_credentials())
         self.account_frame.set_orders(self._open_orders, symbol, self.gateway.has_credentials())
         self._sync_account_actions(self.tabs.currentIndex())
-        _populate_account_cards(self.fills, [], None, f"Loading fills for {symbol}…"
-                                if self.gateway.has_credentials() else "Connect API credentials to view fills")
+        if changed:
+            _populate_account_cards(self.fills, [], None, f"Loading fills for {symbol}…"
+                                    if self.gateway.has_credentials() else "Connect API credentials to view fills")
         self.status.setText(f"{symbol} · ACCOUNT DATA")
         self._refresh_adaptive_activity()
         self._poll_account_if_open()
@@ -5101,8 +5165,8 @@ class TradingWorkspace(QtWidgets.QWidget):
         if self._account_view_open and not self.account_age_timer.isActive():
             self.account_age_timer.start()
             self._refresh_account_freshness()
-        QTimer.singleShot(0, self._poll_account_if_open)
-        QTimer.singleShot(0, self._refresh_adaptive_activity)
+        QTimer.singleShot(0, self, self._poll_account_if_open)
+        QTimer.singleShot(0, self, self._refresh_adaptive_activity)
 
     def hideEvent(self, event: QtGui.QHideEvent) -> None:
         self.account_age_timer.stop()
@@ -5544,32 +5608,19 @@ class TradingWorkspace(QtWidgets.QWidget):
             self.status.setText(f"NO EXCHANGE RULES AVAILABLE FOR {symbol}")
             return
         percent = max(1, min(100, int(percent)))
-        dialog = CloseLimitDialog(position, percent, self)
-        if dialog.exec() != QtWidgets.QDialog.DialogCode.Accepted:
-            return
         try:
             quantity = quantize_step(
                 str(abs(Decimal(str(position.get('positionAmt')))) * Decimal(percent) / 100), rules.lot_step, offset=str(rules.min_qty)
             )
-            quantity_value = safe_float(quantity)
-            if not (rules.min_qty <= quantity_value <= rules.max_qty):
-                raise ValueError(
-                    f"Close quantity must be between {rules.min_qty:g} and {rules.max_qty:g}."
-                )
-            price = validate_step(dialog.price_text(), rules.tick_size, "Limit price", offset=str(rules.min_price))
-            price_value = safe_float(price)
-            if price_value < rules.min_price or (rules.max_price > 0 and price_value > rules.max_price):
-                raise ValueError(
-                    f"Limit price must be between {format_price(rules.min_price)} "
-                    f"and {format_price(rules.max_price)}."
-                )
-            mark = safe_float(position.get("markPrice"))
-            if mark > 0:
-                close_side = _position_close_side(position)
-                if close_side == 'BUY' and rules.price_multiplier_up and price_value > mark * rules.price_multiplier_up:
-                    raise ValueError("Limit price is above Binance's current price band.")
-                if close_side == 'SELL' and rules.price_multiplier_down and price_value < mark * rules.price_multiplier_down:
-                    raise ValueError("Limit price is below Binance's current price band.")
+            quantity = _validated_limit_quantity(quantity, rules, "Close quantity")
+        except ValueError as exc:
+            self.status.setText(f"CLOSE NOT SENT · {exc}")
+            return
+        dialog = CloseLimitDialog(position, percent, self, rules=rules)
+        if dialog.exec() != QtWidgets.QDialog.DialogCode.Accepted:
+            return
+        try:
+            price = dialog.validated_price()
         except ValueError as exc:
             QtWidgets.QMessageBox.warning(self, "Invalid close limit", str(exc))
             return
@@ -5609,4 +5660,4 @@ class TradingWorkspace(QtWidgets.QWidget):
         self.theme = theme
         self.setStyleSheet(_trading_stylesheet(theme))
         self.ticket.apply_theme(theme)
-        QTimer.singleShot(0, self._sync_view_tabs_geometry)
+        QTimer.singleShot(0, self, self._sync_view_tabs_geometry)

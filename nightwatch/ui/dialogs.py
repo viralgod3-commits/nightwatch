@@ -1070,6 +1070,14 @@ class NightwatchSettingsDialog(QtWidgets.QDialog):
         if index == self.CATEGORIES.index("Advanced") and self.isVisible():
             QtCore.QTimer.singleShot(0, self._ensure_current_developer_tool)
 
+    def select_category(self, category: str) -> None:
+        if category not in self.CATEGORIES:
+            return
+        # Opening a category from elsewhere in the app must reveal its controls,
+        # even when a search from a previous settings visit excluded the page.
+        self._settings_search.clear()
+        self.categories.setCurrentRow(self.CATEGORIES.index(category))
+
     def prewarm_remaining_pages(self) -> None:
         if self._prewarm_running:
             return
@@ -1749,6 +1757,7 @@ class NightwatchSettingsDialog(QtWidgets.QDialog):
         grid = self._settings_grid(layout)
 
         model_box, model_layout = self._group("Execution model")
+        model_box.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Preferred)
         model = QtWidgets.QLabel(
             "Manual ticket — explicit submit\n"
             "Quick entry — ARM required\n"
@@ -1758,7 +1767,7 @@ class NightwatchSettingsDialog(QtWidgets.QDialog):
         model.setObjectName("subtleLabel")
         model.setWordWrap(True)
         model_layout.addWidget(model)
-        grid.addWidget(model_box, 0, 0)
+        grid.addWidget(model_box, 0, 0, alignment=Qt.AlignmentFlag.AlignTop)
 
         tools_box, tools_layout = self._group("Execution controls")
         for action in self.host.trading_menu.actions():

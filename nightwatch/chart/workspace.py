@@ -8590,6 +8590,12 @@ class ChartWorkspace(QtWidgets.QWidget):
     def set_logarithmic(self, enabled: bool) -> None:
         if enabled == self.logarithmic:
             return
+        manual_range = None
+        if not self.auto_scale:
+            low, high = self.price_plot.viewRange()[1]
+            low, high = raw_price(float(low), self.logarithmic), raw_price(float(high), self.logarithmic)
+            if 0 < low < high and math.isfinite(high):
+                manual_range = (chart_y(low, enabled), chart_y(high, enabled))
         rail_price = self.order_rail_raw_price()
         manual_drawings = self.export_manual_drawings()
         auto_fib_active = self.auto_fib_enabled
@@ -8598,6 +8604,8 @@ class ChartWorkspace(QtWidgets.QWidget):
         self.cancel_drawing()
         self.logarithmic = enabled
         self.price_axis.set_logarithmic(enabled)
+        if manual_range is not None:
+            self.price_plot.setYRange(*manual_range, padding=0)
         for item in (self.history_candles, self.live_candle):
             item.set_logarithmic(enabled)
         self.rendered_window = None
@@ -8614,7 +8622,7 @@ class ChartWorkspace(QtWidgets.QWidget):
         self.import_manual_drawings(manual_drawings)
         if auto_fib_active:
             self._render_auto_fibonacci()
-        if self.candles:
+        if self.candles and (self.auto_scale or manual_range is None):
             x0, x1 = self.price_plot.viewRange()[0]
             self._fit_y_to_visible(x0, x1)
 
