@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import html
 import json
 import math
@@ -577,7 +578,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._universe_ready = False
         # Theme identity is a saved presentation preference. A CLI theme wins for
         # this launch; otherwise restore the last valid theme. Color overrides
-        # remain an independent layer resolved after the selected base theme.
+        # are valid only for the source palette they were created against.
         stored_theme = self.settings.value("theme", DEFAULT_THEME_NAME, str)
         requested_theme = str(theme_name or stored_theme or DEFAULT_THEME_NAME)
         if requested_theme not in THEMES:
@@ -2394,8 +2395,9 @@ class MainWindow(QtWidgets.QMainWindow):
         controller = typography_controller()
         return {
             "schema": "nightwatch-ui-profile",
-            "version": 1,
+            "version": 2,
             "base_theme": self.theme_name,
+            "color_contract": self._developer_ui_color_contract(self.theme_name),
             "directional_modes": dict(self.directional_color_modes),
             # Resolved colors are informational. Only explicit overrides are
             # imported back into the dependency-aware color resolver.
@@ -2413,6 +2415,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 for key, default in DEV_UI_SURFACE_DEFAULTS.items()
             },
             "status_bar": dict(self.developer_ui_status),
+            "status_bar_overrides": dict(self._developer_ui_status_overrides),
             "typography": {
                 role: dict(controller.profile(role))
                 for role in TYPOGRAPHY_DEFAULTS
@@ -2482,7 +2485,7 @@ class MainWindow(QtWidgets.QMainWindow):
         if (
             not isinstance(profile, dict)
             or profile.get("schema") != "nightwatch-ui-profile"
-            or profile.get("version") != 1
+            or profile.get("version") not in (1, 2)
         ):
             QtWidgets.QMessageBox.warning(
                 self,
@@ -2491,10 +2494,17 @@ class MainWindow(QtWidgets.QMainWindow):
             )
             return False
 
-        # Old UI-color snapshots are intentionally not imported. They contained
-        # fully resolved children and would pin semantic dependencies. Current
-        # profiles persist only genuine explicit color overrides.
-        colors = profile.get("color_overrides")
+        imported_theme = str(profile.get("base_theme") or self.theme_name)
+        if imported_theme not in THEMES:
+            imported_theme = DEFAULT_THEME_NAME
+        colors_compatible = (
+            profile.get("version") == 2
+            and profile.get("color_contract")
+            == self._developer_ui_color_contract(imported_theme)
+        )
+        # Unversioned or outdated appearance snapshots must not revive colors
+        # from an older source palette. Other profile preferences remain usable.
+        colors = profile.get("color_overrides") if colors_compatible else None
         imported_colors: dict[str, str] = {}
         if isinstance(colors, dict):
             allowed_colors = {key for key, _label in DEV_UI_COLOR_PROFILE_FIELDS}
@@ -2504,7 +2514,11 @@ class MainWindow(QtWidgets.QMainWindow):
                     imported_colors[key] = color.name(
                         QtGui.QColor.NameFormat.HexRgb
                     ).upper()
+        self.theme_name = imported_theme
+        self.theme = THEMES[imported_theme]
+        self._prepare_developer_color_settings()
         self.developer_ui_colors = imported_colors
+        self.ui_theme = ui_palette(self.theme, imported_colors)
         self.settings.remove("developer/ui_colors_v1")
         if imported_colors:
             self.settings.setValue(
@@ -2517,23 +2531,8 @@ class MainWindow(QtWidgets.QMainWindow):
         # Geometry/surface density remains a build-time contract, but typography
         # is a live semantic contract owned by TypographyController.  Older v1
         # profiles that omit typography simply preserve the current typography.
-        status_bar = profile.get("status_bar")
-        if isinstance(status_bar, dict):
-            status_values = {
-                key: status_bar.get(key)
-                for key, _label in DEV_UI_STATUS_COLOR_FIELDS
-                if key in status_bar
-            }
-            for key in DEV_UI_STATUS_FONT_DEFAULTS:
-                if key in status_bar:
-                    status_values[key] = status_bar.get(key)
-            if status_values:
-                self.developer_ui_status = self._normalize_developer_ui_status(status_values)
-                self._developer_ui_status_custom = True
-                self.settings.setValue(
-                    "developer/ui_status_v1",
-                    json.dumps(self.developer_ui_status, separators=(",", ":")),
-                )
+        status_values = profile.get("status_bar_overrides") if colors_compatible else None
+        self.developer_ui_status = self._store_developer_ui_status_overrides(status_values)
 
         self.developer_ui_layout = dict(DEV_UI_LAYOUT_DEFAULTS)
         self.developer_ui_surfaces = dict(DEV_UI_SURFACE_DEFAULTS)
@@ -2580,9 +2579,6 @@ class MainWindow(QtWidgets.QMainWindow):
             )
             self._save_directional_color_modes()
 
-        imported_theme = str(profile.get("base_theme") or self.theme_name)
-        if imported_theme not in THEMES:
-            imported_theme = DEFAULT_THEME_NAME
         self.settings.setValue("theme", imported_theme)
         self.apply_theme(imported_theme)
         self._apply_developer_ui_layout()
@@ -2621,10 +2617,10 @@ class MainWindow(QtWidgets.QMainWindow):
             self.ui_tuner_dialog.sync_from_owner()
         if self.magnetic_rail_lab_dialog is not None:
             self.magnetic_rail_lab_dialog.sync_from_owner()
-        self.statusBar().showMessage(
-            f"UI PROFILE IMPORTED · {os.path.basename(path)}",
-            4500,
-        )
+        message = f"UI PROFILE IMPORTED · {os.path.basename(path)}"
+        if not colors_compatible:
+            message += " · Older color settings skipped; current theme colors applied"
+        self.statusBar().showMessage(message, 4500)
         return True
 
 
@@ -2703,7 +2699,30 @@ class MainWindow(QtWidgets.QMainWindow):
         )
 
 
+    @staticmethod
+    def _developer_ui_color_contract(theme_name: str) -> str:
+        """Identify the source defaults behind saved appearance overrides."""
+        source = {
+            "palette": ui_palette(THEMES[theme_name]),
+            "status_fields": DEV_UI_STATUS_COLOR_FIELDS,
+            "status_fonts": DEV_UI_STATUS_FONT_DEFAULTS,
+        }
+        encoded = json.dumps(source, sort_keys=True, separators=(",", ":"))
+        return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+    def _prepare_developer_color_settings(self) -> None:
+        contract = self._developer_ui_color_contract(self.theme_name)
+        key = "developer/ui_color_contract_v1"
+        if self.settings.value(key, "", str) != contract:
+            # Old installs have no provenance: defaults saved as overrides can
+            # silently replace today's palette, unlike a fresh installation.
+            # Invalidate only appearance overrides, once per source palette.
+            self.settings.remove("developer/ui_color_overrides_v2")
+            self.settings.remove("developer/ui_status_v1")
+            self.settings.setValue(key, contract)
+
     def _load_developer_ui_colors(self) -> dict[str, str]:
+        self._prepare_developer_color_settings()
         self.settings.remove("developer/ui_colors_v1")
         stored = self.settings.value("developer/ui_color_overrides_v2", "", str)
         if not stored:
@@ -2780,29 +2799,30 @@ class MainWindow(QtWidgets.QMainWindow):
             result[key] = role if role in TYPOGRAPHY_DEFAULTS else default
         return result
 
+    def _store_developer_ui_status_overrides(self, source: object) -> dict[str, object]:
+        normalized = self._normalize_developer_ui_status(source)
+        defaults = self._default_developer_ui_status()
+        allowed = {key for key, _label in DEV_UI_STATUS_COLOR_FIELDS}
+        allowed.update(DEV_UI_STATUS_FONT_DEFAULTS)
+        self._developer_ui_status_overrides = {
+            key: normalized[key] for key in allowed if normalized[key] != defaults[key]
+        }
+        if self._developer_ui_status_overrides:
+            self.settings.setValue(
+                "developer/ui_status_v1",
+                json.dumps(self._developer_ui_status_overrides, separators=(",", ":")),
+            )
+        else:
+            self.settings.remove("developer/ui_status_v1")
+        return normalized
+
     def _load_developer_ui_status(self) -> dict[str, object]:
         stored = self.settings.value("developer/ui_status_v1", "", str)
-        if not stored:
-            self._developer_ui_status_custom = False
-            return self._default_developer_ui_status()
         try:
-            decoded = json.loads(stored)
+            decoded = json.loads(stored) if stored else {}
         except (TypeError, json.JSONDecodeError):
             decoded = {}
-        stored_values: dict[str, object] = {}
-        if isinstance(decoded, dict):
-            allowed = {key for key, _label in DEV_UI_STATUS_COLOR_FIELDS}
-            allowed.update(DEV_UI_STATUS_FONT_DEFAULTS)
-            stored_values = {
-                key: value for key, value in decoded.items() if key in allowed
-            }
-        normalized = self._normalize_developer_ui_status(stored_values)
-        self._developer_ui_status_custom = bool(stored_values)
-        self.settings.setValue(
-            "developer/ui_status_v1",
-            json.dumps(normalized, separators=(",", ":")),
-        )
-        return normalized
+        return self._store_developer_ui_status_overrides(decoded)
 
     def _load_developer_typography_globals(self) -> dict[str, Any]:
         result = dict(TYPOGRAPHY_GLOBAL_DEFAULTS)
@@ -2915,13 +2935,9 @@ class MainWindow(QtWidgets.QMainWindow):
     def _refresh_developer_ui_colors(self) -> None:
         self.ui_theme = ui_palette(self.theme, self._effective_ui_color_overrides())
         self._refresh_directional_surface_palettes()
-        if (
-            hasattr(self, "developer_ui_status")
-            and not bool(getattr(self, "_developer_ui_status_custom", False))
-        ):
-            # Keep the status bar coherent with the selected shell palette unless
-            # the user explicitly customized the status-bar contract.
-            self.developer_ui_status = self._default_developer_ui_status()
+        # Unedited status fields follow the palette even when another field has
+        # an explicit customization. A resolved snapshot would freeze them all.
+        self.developer_ui_status = self._load_developer_ui_status()
         self._apply_stylesheet()
         self.chart.apply_theme(self.chart_theme)
         self.chart_container.apply_theme(self.chart_theme)
@@ -2979,17 +2995,12 @@ class MainWindow(QtWidgets.QMainWindow):
         if not filtered:
             # Status geometry remains a build-time contract.
             return
-        updated = dict(self.developer_ui_status)
+        updated = dict(self._developer_ui_status_overrides)
         updated.update(filtered)
         normalized = self._normalize_developer_ui_status(updated)
         if normalized == self.developer_ui_status:
             return
-        self.developer_ui_status = normalized
-        self._developer_ui_status_custom = True
-        self.settings.setValue(
-            "developer/ui_status_v1",
-            json.dumps(self.developer_ui_status, separators=(",", ":")),
-        )
+        self.developer_ui_status = self._store_developer_ui_status_overrides(updated)
         self._apply_developer_ui_status()
 
     def set_developer_ui_status_value(self, key: str, value: object) -> None:
@@ -3007,7 +3018,7 @@ class MainWindow(QtWidgets.QMainWindow):
         return "Custom"
 
     def reset_developer_ui_status(self) -> None:
-        self._developer_ui_status_custom = False
+        self._developer_ui_status_overrides = {}
         self.developer_ui_status = self._default_developer_ui_status()
         self.settings.remove("developer/ui_status_v1")
         self._apply_developer_ui_status()
@@ -7224,10 +7235,10 @@ class MainWindow(QtWidgets.QMainWindow):
         self.theme_name = name
         self.settings.setValue("theme", name)
         self.theme = THEMES[name]
+        self.developer_ui_colors = self._load_developer_ui_colors()
         self.ui_theme = ui_palette(self.theme, self._effective_ui_color_overrides())
         self._refresh_directional_surface_palettes()
-        if not getattr(self, "_developer_ui_status_custom", False):
-            self.developer_ui_status = self._default_developer_ui_status()
+        self.developer_ui_status = self._load_developer_ui_status()
         display_name = THEME_DISPLAY_NAMES[name]
         for theme_name, action in getattr(self, "theme_actions", {}).items():
             blocker = QtCore.QSignalBlocker(action)
