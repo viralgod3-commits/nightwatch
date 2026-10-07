@@ -5008,7 +5008,21 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def eventFilter(self, watched: QtCore.QObject, event: QtCore.QEvent) -> bool:
         event_type = event.type()
-        if event_type == QtCore.QEvent.Type.ApplicationStateChange:
+        if (
+            event_type == QtCore.QEvent.Type.Show
+            and os.name == "nt"
+            and self._windows_borderless_fullscreen
+            and isinstance(watched, QtWidgets.QWidget)
+            and watched.windowType() == Qt.WindowType.Popup
+            and self._popup_belongs_to_terminal(watched)
+        ):
+            # Qt finishes native popup creation after Show. Keep its own HWND
+            # above fullscreen without moving or activating the chart window.
+            QTimer.singleShot(
+                0, watched,
+                lambda popup=watched: self._raise_windows_fullscreen_popup(popup),
+            )
+        elif event_type == QtCore.QEvent.Type.ApplicationStateChange:
             # QApplication updates applicationState as this event completes.
             QTimer.singleShot(0, self, self._sync_terminal_keyboard_activation)
             if os.name == "nt":
@@ -6449,6 +6463,14 @@ class MainWindow(QtWidgets.QMainWindow):
             from ctypes import wintypes
 
             user32 = ctypes.WinDLL("user32", use_last_error=True)
+            get_window_long_ptr = user32.GetWindowLongPtrW
+            get_window_long_ptr.argtypes = [wintypes.HWND, ctypes.c_int]
+            get_window_long_ptr.restype = ctypes.c_ssize_t
+            hwnd = wintypes.HWND(hwnd_value)
+            # Qt popups are topmost windows without a native owner. Raising an
+            # already-topmost main HWND can cover them and recompose the chart.
+            if bool(int(get_window_long_ptr(hwnd, -20)) & 0x00000008) == bool(active):
+                return
             user32.SetWindowPos.argtypes = [
                 wintypes.HWND, wintypes.HWND, ctypes.c_int, ctypes.c_int,
                 ctypes.c_int, ctypes.c_int, wintypes.UINT,
@@ -6461,7 +6483,7 @@ class MainWindow(QtWidgets.QMainWindow):
             swp_noactivate = 0x0010
             swp_noownerzorder = 0x0200
             user32.SetWindowPos(
-                wintypes.HWND(hwnd_value),
+                hwnd,
                 hwnd_topmost if active else hwnd_notopmost,
                 0, 0, 0, 0,
                 swp_nosize | swp_nomove | swp_noactivate | swp_noownerzorder,
@@ -6476,12 +6498,54 @@ class MainWindow(QtWidgets.QMainWindow):
         application = QtWidgets.QApplication.instance()
         if application is None:
             return
-        # Win32 moves owned dialogs with their topmost owner. Explicitly making
-        # a closing dialog non-topmost also demotes its owner and flashes the
-        # fullscreen OpenGL surface, so only ever move the owner here.
-        self._set_windows_fullscreen_z_order(
-            active=application.applicationState() == Qt.ApplicationState.ApplicationActive
-        )
+        active = application.applicationState() == Qt.ApplicationState.ApplicationActive
+        self._set_windows_fullscreen_z_order(active=active)
+        if active:
+            self._raise_windows_fullscreen_popup(application.activePopupWidget())
+
+    def _popup_belongs_to_terminal(self, popup: QtWidgets.QWidget) -> bool:
+        # QWidget.isAncestorOf stops at top-level boundaries; popup widgets
+        # retain a QObject parent chain even though their Win32 HWND is unowned.
+        owner = popup.parent()
+        while owner is not None:
+            if owner is self:
+                return True
+            owner = owner.parent()
+        return False
+
+    def _raise_windows_fullscreen_popup(self, popup: QtWidgets.QWidget | None) -> None:
+        """Keep Qt's unowned native menus above the active fullscreen HWND."""
+        if (
+            os.name != "nt"
+            or not self._windows_borderless_fullscreen
+            or not isinstance(popup, QtWidgets.QWidget)
+            or not popup.isVisible()
+            or popup.windowType() != Qt.WindowType.Popup
+            or not self._popup_belongs_to_terminal(popup)
+            or QtWidgets.QApplication.applicationState()
+            != Qt.ApplicationState.ApplicationActive
+        ):
+            return
+        handle = popup.windowHandle()
+        if handle is None:
+            return
+        try:
+            import ctypes
+            from ctypes import wintypes
+
+            user32 = ctypes.WinDLL("user32", use_last_error=True)
+            user32.SetWindowPos.argtypes = [
+                wintypes.HWND, wintypes.HWND, ctypes.c_int, ctypes.c_int,
+                ctypes.c_int, ctypes.c_int, wintypes.UINT,
+            ]
+            user32.SetWindowPos.restype = wintypes.BOOL
+            user32.SetWindowPos(
+                wintypes.HWND(int(handle.winId())), wintypes.HWND(-1),
+                0, 0, 0, 0,
+                0x0001 | 0x0002 | 0x0010 | 0x0200,
+            )
+        except (AttributeError, OSError, TypeError, ValueError, RuntimeError):
+            return
 
     def _enter_windows_borderless_fullscreen(self, serial: int | None = None) -> None:
         """Enter monitor-filling Windows fullscreen without using Qt true fullscreen.
