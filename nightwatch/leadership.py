@@ -1142,7 +1142,7 @@ class LeadershipTimelineWidget(QtWidgets.QWidget):
             self.table.setUpdatesEnabled(True)
         self.table.verticalScrollBar().setValue(scroll)
 
-        if self.selected not in ordered and self.symbols:
+        if self.selected not in ordered:
             fallback_order = ordered
             self.selected = next((symbol for symbol in fallback_order if self.metrics[symbol]["state"] == "Leading"),
                                  next((symbol for symbol in fallback_order if self.metrics[symbol]["state"] == "Improving"),

@@ -3333,7 +3333,9 @@ class ModifyOrderDialog(QtWidgets.QDialog):
         self.price.textChanged.connect(self._validate_live)
 
     def _validated_changes(self) -> dict[str, Any]:
-        quantity = _validated_limit_quantity(self.quantity.text(), self.rules, "New total quantity")
+        quantity = _validated_limit_quantity(
+            self.quantity.text().replace(",", "").strip(), self.rules, "New total quantity"
+        )
         try:
             executed = Decimal(str(self.order.get("executedQty") or self.order.get("cumQty") or "0"))
         except InvalidOperation as exc:
@@ -3348,7 +3350,9 @@ class ModifyOrderDialog(QtWidgets.QDialog):
             "side": self.order.get("side"),
             "quantity": quantity,
             "_minimumExecutedQty": str(executed),
-            "price": _validated_limit_price(self.price.text(), self.rules, "Price"),
+            "price": _validated_limit_price(
+                self.price.text().replace(",", "").strip(), self.rules, "Price"
+            ),
         }
         if self.order.get('reduceOnly') is True or str(self.order.get('reduceOnly')).lower() == 'true':
             changes['reduceOnly'] = True

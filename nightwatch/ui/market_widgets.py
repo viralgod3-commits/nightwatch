@@ -1308,7 +1308,8 @@ class MetricDetailDialog(QtWidgets.QDialog):
             button.setObjectName("metricDialogTab")
             button.setCheckable(True)
             button.setAutoDefault(False)
-            button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+            button.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+            button.setStyleSheet("QPushButton#metricDialogTab:focus { border-style: dotted; }")
             button.clicked.connect(
                 lambda _checked=False, value=key: self._switch_metric(value)
             )

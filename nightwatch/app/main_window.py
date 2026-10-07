@@ -90,7 +90,7 @@ from ..models import (
     OrderFlowPresentationFrame,
     TradingGatewayPort,
 )
-from ..leadership import LeadershipTimelineWidget, SectorOverviewWidget, RotationScannerWidget
+from ..leadership import LeadershipTimelineWidget, SectorOverviewWidget, RotationScannerWidget, RotationBubbleChart
 from ..models import (
     Candle,
     SymbolRules,
@@ -4856,6 +4856,21 @@ class MainWindow(QtWidgets.QMainWindow):
         except RuntimeError:
             return False
 
+    @staticmethod
+    def _arrow_navigation_has_keyboard_focus(widget: QtWidgets.QWidget | None) -> bool:
+        """Keep arrow navigation with the focused control, including its viewport."""
+        while widget is not None:
+            if isinstance(widget, (
+                QtWidgets.QAbstractItemView,
+                QtWidgets.QTabBar,
+                QtWidgets.QAbstractSlider,
+                QtWidgets.QAbstractButton,
+                RotationBubbleChart,
+            )):
+                return True
+            widget = widget.parentWidget()
+        return False
+
     def _native_main_window_has_keyboard_foreground(self) -> bool:
         """Use the Windows foreground HWND only as a fallback for stale Qt state."""
         if os.name != "nt" or not self.isVisible():
@@ -5312,6 +5327,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 and self.symbol_search_dialog is None
                 and shortcut_modifiers == Qt.KeyboardModifier.NoModifier
                 and key in {int(Qt.Key.Key_Up), int(Qt.Key.Key_Down)}
+                and not self._arrow_navigation_has_keyboard_focus(focus)
             ):
                 self._cycle_watchlist_symbol(
                     -1 if key == int(Qt.Key.Key_Up) else 1
@@ -5323,6 +5339,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 and self.workspace_stack.currentIndex() == 0
                 and shortcut_modifiers == Qt.KeyboardModifier.NoModifier
                 and key in {int(Qt.Key.Key_Left), int(Qt.Key.Key_Right)}
+                and not self._arrow_navigation_has_keyboard_focus(focus)
                 and self.market_bar_timeframes
             ):
                 step = -1 if key == int(Qt.Key.Key_Left) else 1
