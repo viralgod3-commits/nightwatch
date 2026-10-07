@@ -1465,6 +1465,8 @@ class OrderBookControlBar(QtWidgets.QFrame):
         self.view_button.setText('View ▾' if short_view else 'Heatmap ▾' if self._book_depth else 'Ladder ▾')
         show_units = expanded_view or width >= (self.view_button.sizeHint().width()
             + self.value_mode_button.sizeHint().width() + self.settings_button.sizeHint().width() + 24)
+        show_range_label = width >= (self.range_label.sizeHint().width()
+            + self.range_slider.minimumWidth() + self.range_value.width() + 24)
         auto_width = self.auto_button.sizeHint().width() + 4 if self._book_depth else 0
         step_width = max(44, min(150, self.aggregation_button.minimumSizeHint().width(),
                                 max(44, width - 12 - auto_width)))
@@ -1482,7 +1484,7 @@ class OrderBookControlBar(QtWidgets.QFrame):
         if show_rows:
             required += self.density_button.sizeHint().width() + 4
         show_step_label = width >= required + self.step_label.sizeHint().width() + 4
-        state = (expanded_view, show_units, short_view, show_auto, show_step_label,
+        state = (expanded_view, show_units, show_range_label, short_view, show_auto, show_step_label,
                  show_step_buttons, show_rows, step_width, self._book_depth)
         if state == self._responsive_layout_state:
             return
@@ -1490,6 +1492,7 @@ class OrderBookControlBar(QtWidgets.QFrame):
         self._view_container.setVisible(expanded_view)
         self.view_button.setVisible(not expanded_view)
         self.value_mode_button.setVisible(show_units)
+        self.range_label.setVisible(show_range_label)
         self.auto_button.setVisible(show_auto)
         self.step_label.setVisible(show_step_label)
         self.step_down_button.setVisible(show_step_buttons)
@@ -2417,7 +2420,11 @@ class _DomRasterCanvas(QtWidgets.QWidget):
         self.reset()
 
     def set_price_tick_size(self, tick_size: float) -> None:
-        self.price_tick_size = max(0.0, safe_float(tick_size))
+        resolved = max(0.0, safe_float(tick_size))
+        if resolved == self.price_tick_size:
+            return
+        self.price_tick_size = resolved
+        self._profile_grouped_symbol = None
         self._invalidate_aggregation()
         self._price_envelope_integer_digits = 0
         self._price_envelope_text = '0'
@@ -3548,7 +3555,9 @@ class _DomRasterCanvas(QtWidgets.QWidget):
         previous_ready = bool(previous is not None and previous.ready)
         prepared_size_matches = self._prepared_size == (max(1, self.width()), max(1, self.height()))
         rows_unchanged = False
-        if previous is not None and prepared_size_matches:
+        # Forced commits follow display/rule changes; equal source levels do
+        # not imply that their cached price and amount text is still valid.
+        if not force and previous is not None and prepared_size_matches:
             if levels_unchanged(display_snapshot, previous):
                 rows_unchanged = True
                 self._row_revision_reuses += 1
@@ -3755,10 +3764,9 @@ class _DomRasterCanvas(QtWidgets.QWidget):
         """Width that preserves every exact price digit at the readability floor."""
         widest_text = self._update_price_format_envelope(snapshot)
         if self._book_depth:
-            if snapshot is not None and snapshot.ready:
-                widest_text = max((self._price_text(level.price) for level in
-                                  (*snapshot.bid_levels[:32], *snapshot.ask_levels[:32])),
-                                 key=len, default=self._price_text(snapshot.midpoint))
+            # Reserve native precision at the configured font size. Grouping
+            # may shorten row labels, but must not narrow their lane and shrink
+            # the font that also renders the midpoint.
             return max(42.0, float(math.ceil(self._price_metrics.horizontalAdvance(widest_text) + 8.0)))
         font = typography_font_at_pixel_size(
             self._price_font, typography_min_pixel_size(TextRole.ORDERBOOK_PRICE)
