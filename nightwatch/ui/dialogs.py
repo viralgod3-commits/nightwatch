@@ -758,7 +758,7 @@ class _WorkspacePanelSource(QtWidgets.QToolButton):
 class _WorkspacePresetCanvas(QtWidgets.QWidget):
     """Event-driven miniature workspace. No live panel widgets or data feeds."""
 
-    changed = Signal()
+    changed = Signal(object)
     selection_changed = Signal(str)
     history_changed = Signal(bool, bool)
 
@@ -767,6 +767,7 @@ class _WorkspacePresetCanvas(QtWidgets.QWidget):
         self.aliases, self.token = dict(aliases), token
         self.titles = {pid: name for name, pid in aliases.items()}
         self.root = None
+        self.rail_width = None
         self.selected = ""
         self._undo, self._redo = [], []
         self._rects, self._handles = {}, []
@@ -804,15 +805,41 @@ class _WorkspacePresetCanvas(QtWidgets.QWidget):
         self._rail_rect = frame.adjusted(chart_width + 8, 0, 0, 0)
         self._rects, self._handles = {}, []
 
+        def minimum(node, axis):
+            if isinstance(node, PanelNode):
+                return 68 if axis == "h" else 48
+            values = [minimum(child, axis) for child in node.children]
+            return sum(values) + 6 * (len(values) - 1) if node.axis == axis else max(values)
+
         def visit(node, rect):
             if isinstance(node, PanelNode):
                 self._rects[node.id] = rect
             elif isinstance(node, SplitNode):
                 horizontal = node.axis == "h"
-                usable = (rect.width() if horizontal else rect.height()) - 6 * (len(node.children) - 1)
+                usable = max(1.0, (rect.width() if horizontal else rect.height()) - 6 * (len(node.children) - 1))
+                minima = [minimum(child, node.axis) for child in node.children]
+                extents = [0.0] * len(node.children)
+                if sum(minima) >= usable:
+                    extents = [value * usable / sum(minima) for value in minima]
+                else:
+                    remaining, available = set(range(len(extents))), usable
+                    while remaining:
+                        mass = sum(node.weights[index] for index in remaining)
+                        small = [index for index in remaining
+                                 if available * node.weights[index] / mass < minima[index]]
+                        if not small:
+                            for index in remaining:
+                                extents[index] = available * node.weights[index] / mass
+                            break
+                        for index in small:
+                            extents[index] = minima[index]
+                            available -= minima[index]
+                            remaining.remove(index)
+                # Clamp the preview only. Resizing starts from the displayed
+                # proportions; loading a preset does not alter its saved tree.
+                displayed = split_node(node.axis, node.children, extents, node.id)
                 offset = 0.0
-                for index, (child, weight) in enumerate(zip(node.children, node.weights)):
-                    extent = usable * weight
+                for index, (child, extent) in enumerate(zip(node.children, extents)):
                     cell = (QtCore.QRectF(rect.x() + offset, rect.y(), extent, rect.height()) if horizontal
                             else QtCore.QRectF(rect.x(), rect.y() + offset, rect.width(), extent))
                     visit(child, cell)
@@ -820,7 +847,7 @@ class _WorkspacePresetCanvas(QtWidgets.QWidget):
                     if index < len(node.children) - 1:
                         handle = (QtCore.QRectF(rect.x() + offset, rect.y(), 6, rect.height()) if horizontal
                                   else QtCore.QRectF(rect.x(), rect.y() + offset, rect.width(), 6))
-                        self._handles.append((node, index, handle, usable))
+                        self._handles.append((displayed, index, handle, usable))
                         offset += 6
         visit(self.root, self._rail_rect)
 
@@ -835,7 +862,7 @@ class _WorkspacePresetCanvas(QtWidgets.QWidget):
         previous = self.root if before is None else before
         if root == previous:
             return
-        self._undo.append(previous)
+        self._undo.append((previous, self.rail_width))
         self._undo = self._undo[-40:]
         self._redo.clear()
         self.root = root
@@ -843,26 +870,26 @@ class _WorkspacePresetCanvas(QtWidgets.QWidget):
             self._select("")
         self._geometry()
         self.history_changed.emit(bool(self._undo), False)
-        self.changed.emit()
+        self.changed.emit(None)
         self.update()
 
     def undo(self):
         if self._undo:
-            self._redo.append(self.root)
-            self.root = self._undo.pop()
-            self._history_applied()
+            self._redo.append((self.root, self.rail_width))
+            self.root, width = self._undo.pop()
+            self._history_applied(width)
 
     def redo(self):
         if self._redo:
-            self._undo.append(self.root)
-            self.root = self._redo.pop()
-            self._history_applied()
+            self._undo.append((self.root, self.rail_width))
+            self.root, width = self._redo.pop()
+            self._history_applied(width)
 
-    def _history_applied(self):
+    def _history_applied(self, width):
         self._select("")
         self._geometry()
         self.history_changed.emit(bool(self._undo), bool(self._redo))
-        self.changed.emit()
+        self.changed.emit(width)
         self.update()
 
     def add_panel(self, pid):
@@ -1054,7 +1081,8 @@ class _WorkspacePresetCanvas(QtWidgets.QWidget):
         if event.key() in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace):
             self.remove_panel()
         elif event.key() == Qt.Key.Key_Escape:
-            self.cancel_gesture()
+            if not self.cancel_gesture():
+                super().keyPressEvent(event)
         elif event.matches(QtGui.QKeySequence.StandardKey.Undo):
             self.undo()
         elif event.matches(QtGui.QKeySequence.StandardKey.Redo):
@@ -1402,6 +1430,7 @@ class WorkspacePresetEditor(QtWidgets.QWidget):
         self._loading = True
         self.name.setText(record["name"])
         self.rail_width_spin.setValue(record["definition"]["rail_width"])
+        self.canvas.rail_width = self.rail_width_spin.value()
         self.canvas.set_tree(decode_tree(record["definition"]["tree"]))
         self._refresh_sources()
         self.delete_button.setEnabled(self.presets.count() > 1)
@@ -1421,6 +1450,7 @@ class WorkspacePresetEditor(QtWidgets.QWidget):
             self._mark_dirty()
 
     def _width_changed(self, value):
+        self.canvas.rail_width = value
         if self._loading:
             return
         item, record = self._record()
@@ -1428,7 +1458,7 @@ class WorkspacePresetEditor(QtWidgets.QWidget):
         item.setData(Qt.ItemDataRole.UserRole, record)
         self._mark_dirty()
 
-    def _canvas_changed(self):
+    def _canvas_changed(self, restored_width=None):
         item, record = self._record()
         definition = record["definition"]
         definition["tree"] = encode_tree(self.canvas.root)
@@ -1442,9 +1472,12 @@ class WorkspacePresetEditor(QtWidgets.QWidget):
                 return 300
             if isinstance(node, SplitNode):
                 widths = [minimum_width(c) for c in node.children]
-                return sum(widths) if node.axis == "h" else max(widths)
+                return sum(widths) + 4 * (len(widths) - 1) if node.axis == "h" else max(widths)
             return 300
-        self.rail_width_spin.setValue(max(self.rail_width_spin.value(), minimum_width(self.canvas.root)))
+        width = (restored_width if restored_width is not None
+                 else max(self.rail_width_spin.value(), minimum_width(self.canvas.root)))
+        self.rail_width_spin.setValue(width)
+        self.canvas.rail_width = self.rail_width_spin.value()
         self._refresh_item(item)
         self._refresh_sources()
         self._mark_dirty()
@@ -1540,6 +1573,15 @@ class WorkspacePresetEditor(QtWidgets.QWidget):
         self.apply_requested.emit(definitions, self.selected_name())
 
     def mark_saved(self, definitions, active_name):
+        for index in range(self.presets.count()):
+            item = self.presets.item(index)
+            record = item.data(Qt.ItemDataRole.UserRole)
+            name = record["name"].strip()
+            if name != record["name"]:
+                record["name"] = name
+                item.setData(Qt.ItemDataRole.UserRole, record)
+                self._refresh_item(item)
+        self.name.setText(self.selected_name())
         self._source_presets = definitions
         self._saved_presets, self._saved_active = deepcopy(definitions), active_name
         self.dirty = False
@@ -1565,6 +1607,7 @@ class RightPanelPresetsDialog(QtWidgets.QDialog):
         self.editor.apply_requested.connect(lambda definitions, name: self.accept())
         layout.addWidget(self.editor, 1)
         buttons = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.StandardButton.Cancel)
+        buttons.button(QtWidgets.QDialogButtonBox.StandardButton.Cancel).setAutoDefault(False)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
 

@@ -6893,6 +6893,7 @@ class MainWindow(QtWidgets.QMainWindow):
         presets = dict(self.right_layout_presets)
         presets[default_name] = json.loads(json.dumps(RIGHT_LAYOUT_PRESETS[default_name]))
         self.right_layout_presets = presets
+        self.settings.setValue("right_layout_presets_v2", json.dumps(presets, separators=(",", ":")))
         self.right_rail_controller.update_presets(presets)
         self._rebuild_layout_menu()
         self.right_rail_controller.reset(
