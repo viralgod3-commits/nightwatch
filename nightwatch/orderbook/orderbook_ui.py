@@ -567,7 +567,7 @@ class _TradesTapeModel(QtCore.QAbstractTableModel):
             movement = f"\nPrice direction: {direction}" if trade.outcome in {'FOLLOW_THROUGH', 'REJECTED'} else ''
             return (f"{trade.aggressor_side.upper()} aggressor\nPrice: {cells[0]}\n"
                     f"Quantity: {format_book_price(trade.quantity)}\nValue: {_format_tape_quote(trade.notional)}\n"
-                    f"Relative size: {trade.relative_size:.1f}×\n500 ms outcome: {outcome}{movement}")
+                    f"UTC time: {cells[3]}\nRelative size: {trade.relative_size:.1f}×\n500 ms outcome: {outcome}{movement}")
         return None
 
     def _row(self, trade):
@@ -652,6 +652,9 @@ class _TradesTapeModel(QtCore.QAbstractTableModel):
             del self.rows[retained:]
             del self.keys[retained:]
             self.endRemoveRows()
+            if retained and not prefix:
+                # This price now has no older neighbor; its emphasis changed.
+                self.dataChanged.emit(self.index(retained - 1, 0), self.index(retained - 1, 0))
         if prefix:
             self.beginInsertRows(QtCore.QModelIndex(), 0, prefix - 1)
             self.rows[:0] = [self._row(updates[key]) for key in order[:prefix]]
@@ -677,6 +680,9 @@ class _TradesTapeModel(QtCore.QAbstractTableModel):
             self.corrected_rows += 1
             self.dataChanged.emit(self.index(row, 0 if numeric_change else 2),
                                   self.index(row, 3 if numeric_change else 2))
+            if row > 0 and old.price != trade.price:
+                # The preceding displayed price compares its digits with this row.
+                self.dataChanged.emit(self.index(row - 1, 0), self.index(row - 1, 0))
 
     def reformat_rows(self):
         self.beginResetModel()
@@ -895,6 +901,7 @@ class TradesTapeWidget(QtWidgets.QWidget):
         controls.addWidget(self.units_button)
         layout.addLayout(controls)
         self.table = QtWidgets.QTableView(self)
+        self.table.setProperty('essentialToolTip', True)
         self.model = _TradesTapeModel(self.table)
         self.table.setModel(self.model)
         self.table.setItemDelegateForColumn(0, _TradePriceDelegate(self.table))
@@ -946,20 +953,26 @@ class TradesTapeWidget(QtWidgets.QWidget):
         # Stable lanes with the spare room shared evenly. Neither numeric
         # column consumes all the space left by a cramped tag/time pair.
         natural = (80, 74, 36, metrics.horizontalAdvance('00:00:00') + 16)
+        compact = width < 180
+        self.table.setColumnHidden(2, compact)
+        self.table.setColumnHidden(3, width < sum(natural))
         if width >= sum(natural):
             extra = (width - sum(natural)) / 4
             sizes = [round(value + extra) for value in natural]
             sizes[-1] = width - sum(sizes[:-1])
+        elif compact:
+            # Keep price and size readable before spending narrow-panel space
+            # on secondary columns. Full details remain in each row's tooltip.
+            price = round(width * .52)
+            sizes = (price, width - price, 0, 0)
         else:
-            tag = min(36, round(width * .16))
-            time = min(natural[-1], round(width * .32))
-            numeric = max(0, width - tag - time)
+            tag = 36
+            numeric = max(0, width - tag)
             price = round(numeric * .52)
-            sizes = (price, numeric - price, tag, time)
+            sizes = (price, numeric - price, tag, 0)
         for column, size in enumerate(sizes):
             header.resizeSection(column, size)
         header.setFixedHeight(max(24, header.fontMetrics().height() + 8))
-        self.table.setColumnHidden(2, False)
         self.table.verticalHeader().setDefaultSectionSize(max(26, metrics.height() + 9))
 
     def resizeEvent(self, event):
@@ -1016,9 +1029,7 @@ class TradesTapeWidget(QtWidgets.QWidget):
             self._owned_tape_source = None
         self._tape_source = source
         self._tape_consumer = source.register(self) if source is not None else None
-        self._tape_revision = None
-        self._pending_tape_frame = None
-        self._request_tape_view()
+        self.reset(clear_source=False)
 
     def _request_tape_view(self):
         self._tape_token += 1
@@ -1081,9 +1092,10 @@ class TradesTapeWidget(QtWidgets.QWidget):
             return
         self._mode = mode
         self.mode_button.setText('All' if mode == 'ALL' else 'Large')
-        self.empty.setText('Waiting for trades…' if mode == 'ALL' else 'Waiting for large trades…')
         self._reformat = self._dirty = True
-        self._request_tape_view()
+        # Rows and revisions belong to one mode. A delayed seed must not leave
+        # the previous mode's prints under the newly selected filter.
+        self.reset(clear_source=False)
         self._schedule_refresh()
         if emit:
             self.mode_changed.emit(mode)
@@ -1156,6 +1168,8 @@ class TradesTapeWidget(QtWidgets.QWidget):
             return
         self._refresh_timer.stop()
         frame = self._pending_tape_frame
+        if frame is None and self._tape_revision is None and not self.model.rows:
+            return  # Keep the waiting state until this view receives its seed.
         bar = self.table.verticalScrollBar()
         follow = bar.value() == 0
         top = self.table.rowAt(0)
@@ -2017,6 +2031,7 @@ class _DomRasterCanvas(QtWidgets.QWidget):
         self._profile_ruler_fraction = 0.72
         self._profile_ruler_drag = False
         self._profile_group_drag_origin = None
+        self._profile_group_drag_start_x = None
         self._profile_group_drag_multiplier = 1
         self._profile_group_drag_moved = False
         self._profile_ruler_totals = (0.0, 0.0)
@@ -6494,6 +6509,7 @@ class _DomRasterCanvas(QtWidgets.QWidget):
         self._profile_ruler_drag = False
         self._profile_group_drag_origin = None
         self._profile_group_drag_moved = False
+        self._profile_group_drag_start_x = None
         self._column_resize_active = False
         self._column_resize_boundary = None
         if QtWidgets.QWidget.mouseGrabber() is self:
@@ -6512,6 +6528,8 @@ class _DomRasterCanvas(QtWidgets.QWidget):
             y, _price = self._profile_group_drag_origin
             distance = y - position.y()
             self._profile_group_drag_moved |= abs(distance) >= 8.0
+            if self._profile_group_drag_start_x is not None:
+                self._profile_group_drag_moved |= abs(position.x() - self._profile_group_drag_start_x) >= QtWidgets.QApplication.startDragDistance()
             if not self._profile_group_drag_moved:
                 return True
             start = ORDER_FLOW_AGGREGATION_MULTIPLIERS.index(self._profile_group_drag_multiplier)
@@ -6605,6 +6623,7 @@ class _DomRasterCanvas(QtWidgets.QWidget):
                 _, price, _ = self._hover_level(event.position())
                 if price > 0.0 and event.position().x() < float(self._geometry['heat_left']):
                     self._profile_group_drag_origin = (event.position().y(), price)
+                    self._profile_group_drag_start_x = event.position().x()
                     self._profile_group_drag_multiplier = self.aggregation_multiplier
                     self._profile_group_drag_moved = False
                     event.accept()
@@ -6631,9 +6650,12 @@ class _DomRasterCanvas(QtWidgets.QWidget):
             return
         if event.button() == Qt.MouseButton.LeftButton and self._profile_group_drag_origin is not None:
             _, price = self._profile_group_drag_origin
+            start_x = self._profile_group_drag_start_x
             self._profile_group_drag_origin = None
+            self._profile_group_drag_start_x = None
             _, released_price, _ = self._hover_level(event.position())
             if (not self._profile_group_drag_moved and self.aggregation_multiplier == 1
+                    and (start_x is None or abs(event.position().x() - start_x) < QtWidgets.QApplication.startDragDistance())
                     and released_price == price):
                 self.price_selected.emit(price)
             event.accept()
@@ -7481,7 +7503,7 @@ class OrderBookWidget(QtWidgets.QWidget):
         layout.addWidget(self.controls, 0)
         layout.addWidget(self.splitter, 1)
         self.setObjectName('orderBookWorkspace')
-        self.setProperty('suppressTooltips', True)
+        self.setProperty('suppressNonessentialTooltips', True)
         self.setStyleSheet(f"QWidget#orderBookWorkspace {{ background: {ORDERBOOK_REFERENCE['bg']}; }}")
         self.setMinimumSize(0, 0)
         self.set_symbol(self.symbol)
