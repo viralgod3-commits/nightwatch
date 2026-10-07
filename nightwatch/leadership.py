@@ -704,6 +704,8 @@ class LeadershipTimelineWidget(QtWidgets.QWidget):
             elif self._view_visible and not was_visible:
                 self.render()
                 self._schedule_details()
+            if self._view_visible and (not was_active or not was_visible):
+                self._refresh_live_prices()
             return
 
 
@@ -771,12 +773,12 @@ class LeadershipTimelineWidget(QtWidgets.QWidget):
         if self.rest is None or not self.can_load() or not self.valid_symbols or not self.tickers:
             return
         minimum = int(self.liquidity.currentData() or 20_000_000)
-        liquid = sorted((symbol for symbol in self.valid_symbols
+        liquid = sorted((symbol for symbol in self.valid_symbols if symbol != BENCHMARK
                          if safe_float(self.tickers.get(symbol, {}).get("q")) >= minimum),
                         key=lambda symbol: (-safe_float(self.tickers[symbol].get("q")), symbol))
         self.eligible_count = len(liquid)
         count = int(self.limit.currentData() or 0)
-        self.symbols = [symbol for symbol in (liquid[:count] if count else liquid) if symbol != BENCHMARK]
+        self.symbols = liquid[:count] if count else liquid
         end = int((time.time() * 1000 + self.clock_offset - 2000) // HOUR) * HOUR
         if end != self.end:
             self.generation += 1
@@ -1052,8 +1054,9 @@ class LeadershipTimelineWidget(QtWidgets.QWidget):
                              and previous[0][4] == theme_key)
                 if unchanged:
                     current_rows[symbol] = previous if previous[1] == price_text else (previous[0], price_text)
-                    if previous[1] != price_text:
-                        self.table.item(row_index, 3).setText(price_text)
+                    price_item = self.table.item(row_index, 3)
+                    if price_item.text() != price_text:
+                        price_item.setText(price_text)
                     continue
                 # Snapshot only changed rows. Rebuilding thousands of temporary
                 # metric tuples on unchanged commits also creates GC pressure.
@@ -1129,14 +1132,17 @@ class LeadershipTimelineWidget(QtWidgets.QWidget):
                     item.setForeground(QtGui.QColor(detail.get("foreground", self.theme.get("text", "#EDEDED"))))
 
             if list(positions) != ordered:
+                header = self.table.horizontalHeader()
+                indicator = header.sortIndicatorSection(), header.sortIndicatorOrder()
                 self.table.sortItems(0, Qt.SortOrder.AscendingOrder)
+                header.setSortIndicator(*indicator)
             self._leader_row_cache = current_rows
 
         finally:
             self.table.setUpdatesEnabled(True)
         self.table.verticalScrollBar().setValue(scroll)
 
-        if self.selected not in ordered:
+        if self.selected not in ordered and self.symbols:
             fallback_order = ordered
             self.selected = next((symbol for symbol in fallback_order if self.metrics[symbol]["state"] == "Leading"),
                                  next((symbol for symbol in fallback_order if self.metrics[symbol]["state"] == "Improving"),
@@ -1145,8 +1151,8 @@ class LeadershipTimelineWidget(QtWidgets.QWidget):
             self.table.selectRow(ordered.index(self.selected))
         del blocker
         self.table.verticalScrollBar().setValue(scroll)
-        self.chart_button.setEnabled(bool(self.selected))
-        self.watch_button.setEnabled(bool(self.selected) and self.watchlist is not None)
+        self.chart_button.setEnabled(self.selected in ordered)
+        self.watch_button.setEnabled(self.selected in ordered and self.watchlist is not None)
         self.chart_button.setText("Open " + self.selected.removesuffix("USDT") if self.selected else "Open chart")
 
         for state, cards in self.cards.items():
@@ -1214,7 +1220,8 @@ class LeadershipTimelineWidget(QtWidgets.QWidget):
         if key != self.detail_wanted:
             self.detail_cancel.set()
             self.detail_wanted = key
-        if self.active and not self._interaction_paused and self.selected and not self.play.isChecked():
+        if (self.active and not self._interaction_paused and self.selected in self.symbols
+                and not self.play.isChecked()):
             if not self.detail_timer.isActive():
                 self.detail_timer.start()
 
@@ -2743,6 +2750,8 @@ def update_dashboard(owner, prepared) -> None:
     categories = prepared["categories"]
     current = owner.category_filter.currentText() or "All Sectors"
     desired = ["All Sectors", *categories]
+    if current not in desired:
+        desired.append(current)
     if [owner.category_filter.itemText(i) for i in range(owner.category_filter.count())] != desired:
         blocker = QtCore.QSignalBlocker(owner.category_filter)
         owner.category_filter.clear()
@@ -3113,6 +3122,13 @@ def _sector_overview_merge_candles(existing: list[Candle], fetched: list[Candle]
     merged = {int(round(row.time * 1000)): row for row in existing}
     merged.update({int(round(row.time * 1000)): row for row in fetched})
     return [merged[key] for key in sorted(merged)]
+
+
+def _sector_overview_adopt_history(existing: dict[int, Candle], incoming: dict[int, Candle]) -> dict[int, Candle]:
+    """Keep newer completed bars when a delayed batch or shared snapshot arrives."""
+    if existing and existing is not incoming and max(existing) > max(incoming):
+        return {**incoming, **existing}
+    return incoming
 
 
 def _prepare_sector_batch_rows(output):
@@ -4277,10 +4293,10 @@ class SectorOverviewWidget(QtWidgets.QWidget):
         self.end_hour = max(self.end_hour, int(snapshot.get("end") or 0))
         for symbol, rows in snapshot.get("series", {}).items():
             if rows:
-                self.hourly[symbol] = rows
+                self.hourly[symbol] = _sector_overview_adopt_history(self.hourly.get(symbol, {}), rows)
         for symbol, rows in snapshot.get("spot", {}).items():
             if rows:
-                self.spot_hourly[symbol] = rows
+                self.spot_hourly[symbol] = _sector_overview_adopt_history(self.spot_hourly.get(symbol, {}), rows)
 
     @profile_callback("workspace.sectors.refresh_ms")
     def refresh(self) -> None:
@@ -4424,20 +4440,16 @@ class SectorOverviewWidget(QtWidgets.QWidget):
                     count = self._component_retries.get(key, (0, 0.0))[0] + 1
                     self._component_retries[key] = (count, time.monotonic() + min(60.0, 1.5 * 2 ** min(count - 1, 6)))
         for symbol, entry in result.get("data", {}).items():
-            rows = entry.get("futures_15m") or []
-            if rows:
-                self.futures_15m[symbol] = rows
-            rows = entry.get("futures_1h") or []
-            if rows:
-                self.hourly[symbol] = rows
-            rows = entry.get("spot_15m") or []
-            if rows:
-                self.spot_15m[symbol] = rows
-            rows = entry.get("spot_1h") or []
-            if rows:
-                self.spot_hourly[symbol] = rows
+            for component, target in (("futures_15m", self.futures_15m), ("futures_1h", self.hourly),
+                                      ("spot_15m", self.spot_15m), ("spot_1h", self.spot_hourly)):
+                rows = entry.get(component)
+                if rows:
+                    target[symbol] = _sector_overview_adopt_history(target.get(symbol, {}), rows)
             rows = entry.get("daily") or []
             if rows:
+                existing = self.daily.get(symbol, [])
+                if existing and existing[-1].time > rows[-1].time:
+                    rows = _sector_overview_merge_candles(rows, existing)[-32:]
                 self.daily[symbol] = rows
         self.render()
         if self.active and not self._interaction_paused:
@@ -4617,8 +4629,11 @@ class SectorOverviewWidget(QtWidgets.QWidget):
         if sector not in self.tiles or sector == self.selected_sector:
             return
         self.selected_sector = sector
+        visible = {name for name, tile in self.tiles.items() if not tile.isHidden()}
+        self._arrange_tiles()
         for name, tile in self.tiles.items():
             tile.set_selected(name == sector)
+            tile.setVisible(name in visible)
         self._sync_table_sector()
         if self._prepared_analysis and getattr(self, "_prepared_sector_key", None) == self._analysis_view_key():
             self.detail.update_data(sector, self._prepared_analysis["metrics"].get(sector, {}),
@@ -4636,6 +4651,7 @@ class SectorOverviewWidget(QtWidgets.QWidget):
             item = self.tile_layout.takeAt(0)
             widget = item.widget()
             if widget is not None and widget not in self.tiles.values():
+                widget.hide()
                 widget.deleteLater()
 
         selected = self.tiles[self.selected_sector]
@@ -5441,6 +5457,7 @@ class RotationScannerWidget(LeadershipTimelineWidget):
         self._rotation_pending_key = None
         self._rotation_snapshot_end = None
         self._rotation_snapshot_complete = False
+        self._rotation_reload_pending = False
         self._rotation_universe = ()
         self._rotation_turnover = {}
         self._filtered_points = []
@@ -5738,6 +5755,8 @@ class RotationScannerWidget(LeadershipTimelineWidget):
     def _update_categories(self):
         desired = ["All sectors", *sorted({self.identity(s)[1] for s in self.symbols if self.identity(s)[1] != "—"})]
         current = self.category_filter.currentText()
+        if current and current not in desired:
+            desired.append(current)
         if [self.category_filter.itemText(i) for i in range(self.category_filter.count())] != desired:
             blocker = QtCore.QSignalBlocker(self.category_filter)
             self.category_filter.clear()
@@ -5974,9 +5993,15 @@ class RotationScannerWidget(LeadershipTimelineWidget):
 
     def _refresh_detail_view(self):
         if self.active and self._view_visible and not self._interaction_paused and self._prepared_analysis:
-            # Book expiry and live facts must not re-filter or re-rank the map.
-            self._populate_candidates()
-            self._render_facts()
+            # Completed-hour coordinates stay fixed; an explicitly enabled
+            # book filter must still reflect fresh details and their expiry.
+            visible = {p["symbol"] for p in self._filtered_points}
+            if (self.hide_thin.isChecked() and visible !=
+                    {p["symbol"] for p in self._prepared_analysis["points"] if self._visible(p)}):
+                self._view_changed()
+            else:
+                self._populate_candidates()
+                self._render_facts()
 
     def set_active(self, active, *, visible=True):
         super().set_active(active, visible=visible)
@@ -6035,6 +6060,7 @@ class RotationScannerWidget(LeadershipTimelineWidget):
         self.generation += 1
         self._rotation_snapshot_end = None
         self._rotation_snapshot_complete = False
+        self._rotation_reload_pending = False
         self._rotation_pending_key = None
         self.leadership = leadership
         if leadership is not None:
@@ -6067,6 +6093,7 @@ class RotationScannerWidget(LeadershipTimelineWidget):
     def _leaders_changed(self, *, force=False):
         if self.leadership is None or self.closing:
             return
+        force = force or self._rotation_reload_pending
         self._adopt_shared_bindings()
         snapshot = self.leadership.sector_hourly_snapshot()
         end = snapshot["end"]
@@ -6091,6 +6118,7 @@ class RotationScannerWidget(LeadershipTimelineWidget):
             return
         # Cached subsets and empty analyses remain eligible for same-hour
         # completion. Only a finished batch with plotted data freezes the hour.
+        self._rotation_reload_pending = False
         self._rotation_snapshot_end = end
         self._rotation_snapshot_complete = not pending
         self._set_end(end)
@@ -6139,6 +6167,7 @@ class RotationScannerWidget(LeadershipTimelineWidget):
 
     def _reload_snapshot(self):
         # Only an explicit refresh may replace an already-published hour.
+        self._rotation_reload_pending = True
         self._leaders_changed(force=True)
         self._view_changed()
 
