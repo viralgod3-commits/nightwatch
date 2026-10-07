@@ -1643,6 +1643,44 @@ class NightwatchSettingsDialog(QtWidgets.QDialog):
         "depth trading positions large trades watchlist stack columns even sizes "
         "undo redo new duplicate delete save apply current clear restore defaults revert"
     )
+    # Index the controls on lazy pages without constructing their widgets.
+    # Action labels/tooltips and option names are added from the live host below.
+    PAGE_SEARCH_TERMS = (
+        "Theme Buy / sell colors Candle appearance Theme, directional trading colors, and candle rendering. "
+        "The common choices are kept on one screen. "
+        "Choose the base visual identity. Component colors continue to follow the selected theme unless "
+        "you explicitly choose classic trading colors below. "
+        "Use each theme's own BUY/SELL colors, or switch only the selected trading surface to familiar "
+        "high-contrast green and red. Theme colors preserve the selected theme. "
+        "Classic green / red changes this surface only. "
+        "Change candle geometry and rendering style without changing your selected BUY/SELL color mode. "
+        "Candles Order book",
+        "Market bar timeframes Choose 1–9 timeframes. Number shortcuts follow the selected buttons "
+        "from left to right. Your current chart interval stays unchanged; if omitted, it remains visible "
+        "until you switch. Chart behavior, visible layers, drawing tools, and studies are grouped here "
+        "so the complete chart setup is one click away. "
+        "30-second chart benchmark Click Start, then continuously pan/zoom the chart for 30 seconds. "
+        "The capture uses Nightwatch's existing presentation clock and reports FPS and frame-time percentiles. "
+        "START 30S BENCHMARK Record 30 seconds of chart presentation timing; click the chart and pan/zoom "
+        "while it runs. Not captured yet. Chart workspace Price scale Auto-scale price Logarithmic scale "
+        "Fit chart to visible data Visible chart layers Drawing tools Measure / ruler Fibonacci "
+        "Horizontal level Clear chart drawings Volume overlay Volume is drawn directly inside the price "
+        "pane with no background or separate scale. Bars stay anchored to the bottom and normalize to "
+        "the visible chart range. Maximum bar height Maximum volume-bar height as a percentage of the "
+        "main price viewport. Indicators Enable studies directly. Detailed parameters and shortcuts "
+        "remain available below. Indicator settings… Shortcuts… Auto Fibonacci",
+        WORKSPACE_SEARCH_TERMS,
+        "Execution model Execution controls Execution behavior and safeguards. Manual ticket orders submit "
+        "explicitly; quick-entry hotkeys require ARM; cancel/close remain risk-reduction controls; "
+        "magnetic-rail BUY/SELL is an explicit chart-side submit routed through the normal shell and "
+        "gateway safety path. Manual ticket — explicit submit Quick entry — ARM required "
+        "Cancel / close — risk reduction Magnetic rail — hover controls + explicit BUY/SELL submit",
+        "Alerts Market data Market-data behavior and trader notifications are kept together because "
+        "they both control what Nightwatch monitors and surfaces.",
+        "Guidance Application help Open order book guide… Guidance and advanced tools. Normal trading "
+        "configuration should rarely require this page. DEVELOPER TOOLS "
+        "UI TUNER · loads when selected MAGNETIC RAIL · loads when selected",
+    )
 
     def __init__(
         self,
@@ -1785,6 +1823,9 @@ class NightwatchSettingsDialog(QtWidgets.QDialog):
         root.addWidget(footer)
 
         self.categories.currentRowChanged.connect(self._on_category_changed)
+        self._settings_search_timer = QtCore.QTimer(self)
+        self._settings_search_timer.setSingleShot(True)
+        self._settings_search_timer.timeout.connect(self._continue_settings_search)
         self._settings_search.textChanged.connect(self._apply_settings_search)
         find_shortcut = QtGui.QShortcut(QtGui.QKeySequence.StandardKey.Find, self)
         find_shortcut.activated.connect(self._settings_search.setFocus)
@@ -1815,6 +1856,8 @@ class NightwatchSettingsDialog(QtWidgets.QDialog):
         self._ensure_page_built(index)
         self.pages.setCurrentIndex(index)
         self.sync_from_owner()
+        if self._settings_search.text().strip() and not self._settings_search_timer.isActive():
+            self._filter_settings_pages(self._settings_search.text().strip().casefold())
         if index == self.CATEGORIES.index("Advanced") and self.isVisible():
             QtCore.QTimer.singleShot(0, self._ensure_current_developer_tool)
 
@@ -1951,13 +1994,59 @@ class NightwatchSettingsDialog(QtWidgets.QDialog):
         return " ".join(str(part) for part in parts if part).casefold()
 
     def _apply_settings_search(self, text: str) -> None:
+        self._settings_search_timer.stop()
         query = str(text or "").strip().casefold()
-        workspace_index = self.CATEGORIES.index("Workspace")
         if query:
-            for index in range(len(self._page_builders)):
-                if index != workspace_index:
-                    self._ensure_page_built(index)
-            self.sync_from_owner()
+            # Coalesce typing; only the selected search result may build a page.
+            self._settings_search_timer.start(100)
+        else:
+            self._filter_settings_pages(query)
+
+    def _continue_settings_search(self) -> None:
+        if not self.isVisible():
+            return
+        query = self._settings_search.text().strip().casefold()
+        self._filter_settings_pages(query)
+
+    def _page_search_metadata(self, index: int) -> str:
+        parts = [self.PAGE_SEARCH_TERMS[index]]
+        actions: list[QtGui.QAction] = []
+        if index == 0:
+            actions.extend(self.host.theme_actions.values())
+            actions.extend(self.host.candle_style_actions.values())
+            parts.extend(label for _mode, label in DIRECTIONAL_COLOR_MODE_OPTIONS)
+        elif index == 1:
+            for mapping in (self.host.chart_layout_actions, self.host.chart_visibility_actions,
+                            self.host.indicator_actions):
+                actions.extend(mapping.values())
+            actions.extend((self.host.auto_scale_action, self.host.logarithmic_action,
+                            self.host.fit_chart_action, self.host.ruler_action,
+                            self.host.fibonacci_action, self.host.horizontal_action,
+                            self.host.clear_drawings_action, self.host.indicator_settings_action,
+                            self.host.indicator_shortcuts_action, self.host.auto_fibonacci_action))
+            parts.extend(TIMEFRAMES)
+            parts.extend(MARKET_BAR_TIMEFRAME_PRESETS)
+        elif index == 2:
+            parts.extend(self.host.right_layout_presets)
+            parts.extend(self.host.panel_sections)
+        elif index == 3:
+            actions.extend(self.host.trading_menu.actions())
+        elif index == 4:
+            actions.extend(self.host.alert_menu.actions())
+            actions.extend(self.host.data_menu.actions())
+        elif index == 5:
+            actions.extend(self.host.help_menu.actions())
+            app = QtWidgets.QApplication.instance()
+            if app is not None and app.property("nightwatchDiagnosticsEnabled"):
+                parts.append("DIAGNOSTICS · loads when selected")
+        for action in actions:
+            parts.extend((action.text().replace("&", ""), action.toolTip()))
+            submenu = action.menu()
+            if submenu is not None:
+                actions.extend(submenu.actions())
+        return " ".join(parts).casefold()
+
+    def _filter_settings_pages(self, query: str) -> None:
         first_match = -1
         current = self.categories.currentRow()
         current_visible = False
@@ -1967,12 +2056,8 @@ class NightwatchSettingsDialog(QtWidgets.QDialog):
             category_match = bool(query and query in category)
             if not query or category_match:
                 page_match = True
-            elif index == workspace_index:
-                # Search metadata without materializing the virtual workspace.
-                page_text = " ".join((self.WORKSPACE_SEARCH_TERMS,
-                                      *self.host.right_layout_presets,
-                                      *self.host.panel_sections)).casefold()
-                page_match = query in page_text
+            elif index == self.CATEGORIES.index("Workspace") or index not in self._built_pages:
+                page_match = query in self._page_search_metadata(index)
             else:
                 page_match = query in self._searchable_text(page)
             item = self.categories.item(index)
@@ -1991,7 +2076,6 @@ class NightwatchSettingsDialog(QtWidgets.QDialog):
 
         if query and not current_visible and first_match >= 0:
             self.categories.setCurrentRow(first_match)
-            self.pages.setCurrentIndex(first_match)
         elif query and first_match < 0:
             self.pages.setCurrentWidget(self._no_results_page)
         elif current >= 0:
@@ -2834,5 +2918,11 @@ class NightwatchSettingsDialog(QtWidgets.QDialog):
         self._refresh_frame_benchmark()
         self._fit_to_available_screen(prefer_default=False)
         super().showEvent(event)
+        if self._settings_search.text().strip():
+            self._settings_search_timer.start(0)
         if self.categories.currentRow() == self.CATEGORIES.index("Advanced"):
             QtCore.QTimer.singleShot(0, self._ensure_current_developer_tool)
+
+    def hideEvent(self, event: QtGui.QHideEvent) -> None:
+        self._settings_search_timer.stop()
+        super().hideEvent(event)

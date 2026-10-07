@@ -3281,16 +3281,19 @@ class ModifyOrderDialog(QtWidgets.QDialog):
         symbol = str(order.get("symbol") or "")
         side = str(order.get("side") or "").upper()
         order_type = str(order.get("type") or order.get("orderType") or "LIMIT").upper()
-        original = safe_float(order.get("origQty") or order.get("quantity"))
-        executed = safe_float(order.get("executedQty") or order.get("cumQty"))
-        remaining = max(0.0, original - executed)
+        original = order.get("origQty") or order.get("quantity") or "0"
+        executed = order.get("executedQty") or order.get("cumQty") or "0"
+        try:
+            remaining = max(Decimal("0"), Decimal(str(original)) - Decimal(str(executed)))
+        except (InvalidOperation, TypeError, ValueError):
+            remaining = None
         self.setWindowTitle(f"Modify working order · {symbol}")
         self.setMinimumWidth(440)
         root = QtWidgets.QVBoxLayout(self)
         root.setContentsMargins(16, 14, 16, 14)
         root.setSpacing(8)
         context = QtWidgets.QLabel(
-            f"{symbol} · {side} · {order_type} · REMAINING {human_number(remaining)}"
+            f"{symbol} · {side} · {order_type} · REMAINING {_quantity_text(remaining)}"
         )
         context.setObjectName("controlSectionTitle")
         root.addWidget(context)
@@ -3308,7 +3311,7 @@ class ModifyOrderDialog(QtWidgets.QDialog):
         set_text_role(self.quantity, TextRole.MARKET_VALUE)
         set_text_role(self.price, TextRole.MARKET_VALUE)
         self.quantity.setToolTip(
-            f"New TOTAL order quantity, including fills. Already filled: {human_number(executed)}. "
+            f"New TOTAL order quantity, including fills. Already filled: {_quantity_text(executed)}. "
             f"Step: {_exchange_step_text(rules.lot_step)}. Remaining = total minus filled."
         )
         form.addRow("New total quantity", self.quantity)

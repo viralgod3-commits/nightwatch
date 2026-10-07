@@ -5165,8 +5165,13 @@ class MainWindow(QtWidgets.QMainWindow):
                 and shortcut_modifiers == Qt.KeyboardModifier.NoModifier
                 and (typed.isdigit() or typed == ".")
             ):
-                focused_ticket.quantity_edit.setFocus(Qt.FocusReason.ShortcutFocusReason)
-                focused_ticket.quantity_edit.insert(typed)
+                editor = (
+                    focused_ticket.reduce_amount_edit
+                    if focused_ticket.reduce_only.isChecked()
+                    else focused_ticket.quantity_edit
+                )
+                editor.setFocus(Qt.FocusReason.ShortcutFocusReason)
+                editor.insert(typed)
                 return True
             if (
                 not text_input

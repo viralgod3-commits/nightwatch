@@ -1631,6 +1631,12 @@ class MetricCard(QtWidgets.QFrame):
         self.detail_popup = None
         self.identity = bool(identity and compact)
         self.compact = bool(compact)
+        self.setFocusPolicy(
+            Qt.FocusPolicy.StrongFocus
+            if not self.identity or COMPACT_SECONDARY_METRICS
+            else Qt.FocusPolicy.NoFocus
+        )
+        self.setAccessibleName(title)
         self._reported_metric_width = None
         self.setObjectName(
             "topMarketIdentity"
@@ -1837,33 +1843,51 @@ class MetricCard(QtWidgets.QFrame):
             self.detail_popup.set_histories(self.history_options or [(self.detail_title, self.history, self.history_caption)],
                                            percent=self.history_percent, bars=self.history_bars, ratio=self.history_ratio)
 
+    def _activate_detail(self) -> bool:
+        QtWidgets.QToolTip.hideText()
+        owner = getattr(self, "metric_owner", None)
+        metric_key = str(getattr(self, "metric_key", ""))
+        if self.identity and self.compact and owner is not None and COMPACT_SECONDARY_METRICS:
+            owner.open_compact_secondary_metrics(
+                self.mapToGlobal(QtCore.QPoint(0, self.height()))
+            )
+            return True
+        if not self.identity:
+            if owner is not None and metric_key in METRIC_DETAIL_KEYS:
+                owner.open_metric_detail(metric_key)
+            else:
+                if self.detail_popup is None:
+                    self.detail_popup = MetricDetailDialog(self)
+                self._refresh_popup()
+                self.detail_popup.open()
+            return True
+        return False
+
     def mousePressEvent(self, event):
-        if event.button() == Qt.MouseButton.LeftButton:
-            QtWidgets.QToolTip.hideText()
-            owner = getattr(self, "metric_owner", None)
-            metric_key = str(getattr(self, "metric_key", ""))
-            if (
-                self.identity
-                and self.compact
-                and owner is not None
-                and COMPACT_SECONDARY_METRICS
-            ):
-                owner.open_compact_secondary_metrics(
-                    self.mapToGlobal(QtCore.QPoint(0, self.height()))
-                )
-                event.accept()
-                return
-            if not self.identity:
-                if owner is not None and metric_key in METRIC_DETAIL_KEYS:
-                    owner.open_metric_detail(metric_key)
-                else:
-                    if self.detail_popup is None:
-                        self.detail_popup = MetricDetailDialog(self)
-                    self._refresh_popup()
-                    self.detail_popup.open()
-                event.accept()
-                return
+        if event.button() == Qt.MouseButton.LeftButton and self._activate_detail():
+            event.accept()
+            return
         super().mousePressEvent(event)
+
+    def keyPressEvent(self, event: QtGui.QKeyEvent) -> None:
+        if (
+            event.modifiers() == Qt.KeyboardModifier.NoModifier
+            and event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter, Qt.Key.Key_Space)
+        ):
+            if event.isAutoRepeat() or self._activate_detail():
+                event.accept()
+                return
+        super().keyPressEvent(event)
+
+    def paintEvent(self, event: QtGui.QPaintEvent) -> None:
+        super().paintEvent(event)
+        if self.hasFocus():
+            painter = QtGui.QPainter(self)
+            pen = QtGui.QPen(self.title.palette().color(QtGui.QPalette.ColorRole.WindowText))
+            pen.setStyle(Qt.PenStyle.DotLine)
+            pen.setCosmetic(True)
+            painter.setPen(pen)
+            painter.drawRect(QtCore.QRectF(self.rect()).adjusted(3.5, 3.5, -3.5, -3.5))
 
     def clear_detail(self) -> None:
         self.history_options = []
@@ -3704,7 +3728,7 @@ class SymbolSearchDialog(QtWidgets.QDialog):
             self.sort_mode = "volume"
         matches = [symbol for symbol in self.symbols if query in symbol]
         if query and getattr(self, "_query_volume_sort", True):
-            matches.sort(key=lambda symbol: (symbol != query, -safe_float(self.tickers.get(symbol, {}).get("q")), symbol))
+            matches.sort(key=lambda symbol: (symbol != query, -self._volume_for(symbol), symbol))
         elif self.sort_mode in {"symbol", "symbol_desc"}:
             matches.sort(reverse=self.sort_mode == "symbol_desc")
         elif self.sort_mode in {"price", "price_asc"}:
