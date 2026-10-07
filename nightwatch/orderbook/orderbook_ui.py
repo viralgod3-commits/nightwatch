@@ -2413,6 +2413,7 @@ class _DomRasterCanvas(QtWidgets.QWidget):
         self._price_envelope_text = '0'
         self._last_trade_price = 0.0
         self._last_trade_side = ''
+        self._profile_grouped_symbol = None
         self.reset()
 
     def set_price_tick_size(self, tick_size: float) -> None:
@@ -2475,7 +2476,7 @@ class _DomRasterCanvas(QtWidgets.QWidget):
             display_tick = (raw_tick + multiplier - 1) // multiplier * multiplier
         return display_tick * self.price_tick_size
 
-    def _initialize_profile_grouping(self, snapshot: OrderFlowSnapshot) -> None:
+    def _initialize_profile_grouping(self, snapshot: OrderFlowSnapshot, *, emit: bool=True) -> None:
         if (snapshot.symbol != self.symbol or not self._book_depth or not self._profile_auto_grouping or not snapshot.ready
                 or self.price_tick_size <= 0.0 or self._profile_grouped_symbol == snapshot.symbol):
             return
@@ -2498,8 +2499,9 @@ class _DomRasterCanvas(QtWidgets.QWidget):
         multiplier = min(ORDER_FLOW_AGGREGATION_MULTIPLIERS, key=lambda value: abs(math.log(value / target)))
         self._profile_grouped_symbol = snapshot.symbol
         self.set_aggregation_multiplier(multiplier, emit=False)
-        self.aggregation_changed.emit(multiplier)
-        self.presentation_changed.emit(self.presentation_state())
+        if emit:
+            self.aggregation_changed.emit(multiplier)
+            self.presentation_changed.emit(self.presentation_state())
 
     def column_preferences(self) -> dict[str, object]:
         return dict(self._column_preferences)
@@ -2610,7 +2612,9 @@ class _DomRasterCanvas(QtWidgets.QWidget):
     def height_for_rows(self, rows_per_side: int) -> int:
         """Return the canvas height required for an exact symmetric row count."""
         geometry = self._geometry
-        rows = max(0, int(rows_per_side))
+        # Profile capacity includes one extra row for a clipped edge. It must
+        # not turn into another visible row each time density is changed.
+        rows = max(0, int(rows_per_side) - int(self._book_depth))
         fixed_height = (
             float(geometry.get('margin', 0.0))
             + float(geometry.get('top_height', 0.0))
@@ -2622,7 +2626,10 @@ class _DomRasterCanvas(QtWidgets.QWidget):
         # a pixel remainder. Density-driven panel resizing must use the nominal
         # spacing or repeated density changes would compound that stretch.
         row_height = max(1.0, float(geometry.get('nominal_row_height', geometry.get('row_height', 1.0))))
-        return max(1, int(math.ceil(fixed_height + rows * row_height * 2.0)))
+        height = fixed_height + rows * row_height * 2.0
+        if self._book_depth and not fixed_height.is_integer():
+            height = math.floor(height) - 1
+        return max(1, int(math.ceil(height)))
 
     def set_row_density(self, density: str, *, emit: bool=True) -> None:
         normalized = str(density or 'normal').lower()
@@ -2844,8 +2851,7 @@ class _DomRasterCanvas(QtWidgets.QWidget):
         self._reset_profile_animation()
         self._profile_totals = (0.0, 0.0)
         self._profile_footer_text = ('BID —', 'ASK —')
-        if self._book_depth:
-            self._prepare_display(reuse_rows=True)
+        self._prepare_display(reuse_rows=True)
         self.update()
 
     @staticmethod
@@ -6824,6 +6830,10 @@ class _DomRasterProcess:
                  and canvas._market_status not in {'STALE', 'LAST KNOWN', 'SYNCING', 'CONNECTING'})
         result['prices'] = (tuple(row.level.price for row in canvas._ask_rows) if ready else (),
                             tuple(row.level.price for row in canvas._bid_rows) if ready else ())
+        result['prices_valid_until'] = (canvas.snapshot.generated_monotonic + min(
+            BOOK_DEPTH_FRESH_SECONDS - canvas.snapshot.depth_age_seconds,
+            BOOK_BBO_FRESH_SECONDS - canvas.snapshot.bbo_age_seconds,
+        )) if ready else 0.0
         result['sequence'] = canvas._latest_applied_sequence
         result['layout'] = canvas.layout_state()
 
@@ -7002,7 +7012,13 @@ class OrderFlowDomCanvas(_DomRasterCanvas):
                       typography=self._remote_typography)
         if config == self._sent_config:
             return
-        self._display_epoch += 1
+        # Pacing changes do not change the drawn prices or hit geometry. The
+        # worker may keep its current image, so these must not invalidate it.
+        if self._sent_config is None or any(
+            value != self._sent_config[key] for key, value in config.items()
+            if key not in {'interval', 'interaction_priority'}
+        ):
+            self._display_epoch += 1
         self._sent_config = config
         link.submit('config', (self._display_epoch, config))
 
@@ -7024,7 +7040,11 @@ class OrderFlowDomCanvas(_DomRasterCanvas):
             book_depth=self._book_depth)
         fixed = sum(float(g[key]) for key in ('margin', 'top_height',
                                               'column_height', 'center_height', 'footer_height'))
-        return max(1, int(math.ceil(fixed + max(0, int(rows_per_side))*g['nominal_row_height']*2)))
+        rows = max(0, int(rows_per_side) - int(self._book_depth))
+        height = fixed + rows*g['nominal_row_height']*2
+        if self._book_depth and not fixed.is_integer():
+            height = math.floor(height) - 1
+        return max(1, int(math.ceil(height)))
 
     def update(self, *args):
         # Setters invalidate remote state; only a completed image dirties Qt.
@@ -7098,6 +7118,7 @@ class OrderFlowDomCanvas(_DomRasterCanvas):
         QtWidgets.QWidget.update(self)
 
     def resizeEvent(self, event):
+        self._cancel_pointer_interaction()
         self._queue_configuration()
         QtWidgets.QWidget.resizeEvent(self, event)
 
@@ -7251,10 +7272,11 @@ class OrderFlowDomCanvas(_DomRasterCanvas):
         frame = self._display_frame
         if (frame is None or frame['epoch'] != self._display_epoch
                 or (self._book_validity_known and not self._book_valid)
+                or time.monotonic() > frame.get('prices_valid_until', 0.0)
                 or not self._native_frame(frame)):
             return None, 0.0, None
         g = frame['geometry']
-        if g.get('bbo_only') or not g['margin'] <= position.x() <= g['margin']+g['inner_width']:
+        if g.get('bbo_only') or not g['margin'] <= position.x() < g['margin']+g['inner_width']:
             return None, 0.0, None
         # Layout arithmetic can land a few ULPs below an exact row boundary.
         # Stabilize the index before choosing the price drawn in that row.
@@ -7287,6 +7309,19 @@ class OrderFlowDomCanvas(_DomRasterCanvas):
         if not 0 <= index < min(len(prices), int(g['rows_per_side'])):
             return None, 0.0, None
         return index, prices[index], None
+
+    def _profile_ruler_at(self, position):
+        frame = self._display_frame
+        return (frame is not None and frame['epoch'] == self._display_epoch
+                and self._native_frame(frame)
+                and super()._profile_ruler_at(position))
+
+    def _column_resize_boundary_at(self, position):
+        frame = self._display_frame
+        if (frame is None or frame['epoch'] != self._display_epoch
+                or not self._native_frame(frame)):
+            return None
+        return super()._column_resize_boundary_at(position)
 
     def mouseMoveEvent(self, event):
         if self._move_profile_control(event.position()):
@@ -7368,6 +7403,7 @@ class OrderBookWidget(QtWidgets.QWidget):
         self._latest_snapshot: OrderFlowSnapshot | None = None
         self._last_depth_capacity = 0
         self.canvas = OrderFlowDomCanvas(theme, self)
+        self._last_row_density = self.canvas.row_density()
         self.canvas.price_selected.connect(self.price_selected.emit)
         self.canvas.aggregation_changed.connect(self._on_canvas_aggregation_changed)
         self.canvas.column_preferences_changed.connect(self._on_canvas_column_preferences_changed)
@@ -7410,7 +7446,7 @@ class OrderBookWidget(QtWidgets.QWidget):
         self.setMinimumSize(0, 0)
         self.set_symbol(self.symbol)
         self._sync_controls()
-        QtCore.QTimer.singleShot(0, self._ensure_trades_tape)
+        QtCore.QTimer.singleShot(0, self, self._ensure_trades_tape)
 
     def _ensure_trades_tape(self):
         # Some hosts provide their own tape during construction. Do not replace
@@ -7444,6 +7480,7 @@ class OrderBookWidget(QtWidgets.QWidget):
 
     def _on_canvas_aggregation_changed(self, value: int) -> None:
         self._sync_controls()
+        self._publish_depth_capacity()
         self.aggregation_changed.emit(int(value))
 
     def _on_canvas_column_preferences_changed(self, preferences: object) -> None:
@@ -7451,7 +7488,14 @@ class OrderBookWidget(QtWidgets.QWidget):
         self.column_preferences_changed.emit(preferences)
 
     def _on_canvas_presentation_changed(self, _state: object) -> None:
+        density = self.canvas.row_density()
+        density_changed = density != self._last_row_density
+        self._last_row_density = density
         self._sync_controls()
+        rows = self.canvas.visible_rows_per_side()
+        if density_changed and rows > 0:
+            target = self.controls.height() + self.canvas.height_for_rows(rows)
+            self.right_rail_height_requested.emit(max(1, int(target)))
         self._emit_presentation_changed()
 
 
@@ -7485,6 +7529,7 @@ class OrderBookWidget(QtWidgets.QWidget):
         self.canvas.set_book_depth_enabled(True, emit=False)
         self.canvas.set_presentation_preset('execution', emit=False)
         self.canvas.set_row_density('normal', emit=False)
+        self._last_row_density = self.canvas.row_density()
         self.canvas.set_value_mode('base', emit=False)
         self.canvas.set_depth_range(0.72, emit=False)
         self.canvas._profile_auto_grouping = True
@@ -7730,12 +7775,14 @@ class OrderBookWidget(QtWidgets.QWidget):
     def set_column_preferences(self, preferences: dict[str, object] | None, *, emit: bool=False) -> None:
         values = dict(preferences or {})
         self.canvas.set_column_preferences(values, emit=emit)
+        self._sync_controls()
 
     def column_preferences(self) -> dict[str, object]:
         return self.canvas.column_preferences()
 
     def set_primary_analytic(self, name: str, *, emit: bool=True) -> None:
         self.canvas.set_primary_analytic(name, emit=emit)
+        self._sync_controls()
 
     def set_row_density(self, density: str, *, emit: bool=True) -> None:
         normalized = str(density or 'normal').lower()
@@ -7749,13 +7796,10 @@ class OrderBookWidget(QtWidgets.QWidget):
         # density toggle. Preserve the currently visible depth and ask the right
         # rail to resize this panel to the exact height required by the new row
         # height. This also removes any black remainder left below a capped DOM.
-        rows_per_side = max(0, int(self.canvas.visible_rows_per_side()))
         self.canvas.set_row_density(normalized, emit=emit)
+        self._last_row_density = self.canvas.row_density()
         self._sync_controls()
         self._publish_depth_capacity()
-        if emit and rows_per_side > 0:
-            target = self.controls.height() + self.canvas.height_for_rows(rows_per_side)
-            self.right_rail_height_requested.emit(max(1, int(target)))
 
     def set_presentation_preset(self, name: str, *, emit: bool=True) -> None:
         # Compatibility entry point for old saved state/callers. Analytical lanes
@@ -7768,6 +7812,8 @@ class OrderBookWidget(QtWidgets.QWidget):
 
     def set_book_depth_enabled(self, enabled: bool, *, emit: bool=True) -> None:
         self.canvas.set_book_depth_enabled(enabled, emit=emit)
+        if enabled and self._latest_snapshot is not None:
+            self.canvas._initialize_profile_grouping(self._latest_snapshot, emit=emit)
         self._sync_controls()
         self._publish_depth_capacity()
 
@@ -7785,6 +7831,7 @@ class OrderBookWidget(QtWidgets.QWidget):
         migrated = values.get('profile_version') != 1
         self.canvas.set_presentation_preset('execution', emit=False)
         self.canvas.set_row_density('normal' if migrated else str(values.get('density', 'normal')), emit=False)
+        self._last_row_density = self.canvas.row_density()
         self.canvas.set_value_mode('base' if migrated else str(values.get('values', 'base')), emit=False)
         self.canvas.restore_column_width_state(values.get('column_widths', {}))
         if isinstance(values.get('columns'), dict):
@@ -7792,8 +7839,11 @@ class OrderBookWidget(QtWidgets.QWidget):
         self.canvas.set_book_depth_enabled(True if migrated else bool(values.get('book_depth', True)), emit=False)
         self.canvas.set_depth_range(values.get('depth_range', 0.72), emit=False)
         self.canvas._profile_auto_grouping = migrated or bool(values.get('auto_grouping', False))
+        self.canvas._profile_grouped_symbol = None
         if not migrated:
             self.canvas.set_aggregation_multiplier(values.get('aggregation', 1), emit=False)
+        if self._latest_snapshot is not None:
+            self.canvas._initialize_profile_grouping(self._latest_snapshot, emit=False)
         self._tape_enabled = False if migrated else bool(values.get('tape_enabled', False))
         self._tape_mode = 'ALL' if str(values.get('tape_mode', 'LARGE')).upper() == 'ALL' else 'LARGE'
         if self._tape is not None:
@@ -7829,6 +7879,8 @@ class OrderBookWidget(QtWidgets.QWidget):
         tick_size = safe_float(getattr(rules, 'tick_size', 0.0)) if rules is not None else 0.0
         self.price_tick_size = max(0.0, tick_size)
         self.canvas.set_price_tick_size(self.price_tick_size)
+        if self._latest_snapshot is not None:
+            self.canvas._initialize_profile_grouping(self._latest_snapshot)
         if self._tape is not None:
             self._tape.set_market(self.symbol, self._tape.quote_volume_24h, tick_size=self.price_tick_size)
         self._sync_controls()
