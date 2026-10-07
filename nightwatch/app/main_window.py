@@ -494,6 +494,12 @@ class _TickerPreparation:
 
 
 class MainWindow(QtWidgets.QMainWindow):
+    _application_filter_events = frozenset((
+        QtCore.QEvent.Type.ApplicationStateChange, QtCore.QEvent.Type.WindowActivate,
+        QtCore.QEvent.Type.Close, QtCore.QEvent.Type.Hide, QtCore.QEvent.Type.Show,
+        QtCore.QEvent.Type.KeyPress, QtCore.QEvent.Type.ShortcutOverride,
+        QtCore.QEvent.Type.Shortcut, QtCore.QEvent.Type.ToolTip,
+    ))
     # Stable latest-wins handoff for the advanced DOM. The analyzer itself is
     # worker-thread-owned; only immutable presentation frames return to the GUI.
     order_flow_snapshot_ready = QtCore.Signal(object)
@@ -5008,6 +5014,11 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def eventFilter(self, watched: QtCore.QObject, event: QtCore.QEvent) -> bool:
         event_type = event.type()
+        # This application-wide filter sees every child layout/paint event.
+        # Only activation, popup stacking, keyboard ownership and tooltips need
+        # Python handling.
+        if event_type not in self._application_filter_events:
+            return False
         if (
             event_type == QtCore.QEvent.Type.Show
             and os.name == "nt"
@@ -5063,7 +5074,7 @@ class MainWindow(QtWidgets.QMainWindow):
             QtWidgets.QToolTip.hideText()
             return True
         if (
-            event.type() == QtCore.QEvent.Type.KeyPress
+            event_type == QtCore.QEvent.Type.KeyPress
             and event.isAutoRepeat()
             and self.trading_gateway.armed
         ):
@@ -5074,7 +5085,7 @@ class MainWindow(QtWidgets.QMainWindow):
             if not text_input and event.text().upper() in set("BS0123456789"):
                 return True
         if (
-            event.type() == QtCore.QEvent.Type.KeyPress
+            event_type == QtCore.QEvent.Type.KeyPress
             and self.isVisible()
             and not event.isAutoRepeat()
         ):

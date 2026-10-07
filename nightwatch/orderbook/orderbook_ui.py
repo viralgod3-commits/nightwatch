@@ -518,6 +518,7 @@ class _TradesTapeModel(QtCore.QAbstractTableModel):
         self.buy = QtGui.QColor(ORDERBOOK_REFERENCE['bid'])
         self.sell = QtGui.QColor(ORDERBOOK_REFERENCE['ask'])
         self.muted = QtGui.QColor(ORDERBOOK_REFERENCE['muted'])
+        self.text_color = QtGui.QColor(ORDERBOOK_REFERENCE['text'])
 
     def rowCount(self, parent=QtCore.QModelIndex()):
         return 0 if parent.isValid() else len(self.rows)
@@ -548,7 +549,7 @@ class _TradesTapeModel(QtCore.QAbstractTableModel):
             if column == 0:
                 return self.buy if trade.aggressor_side.upper() == 'BUY' else self.sell
             if column == 1:
-                return QtGui.QColor(ORDERBOOK_REFERENCE['text'])
+                return self.text_color
             if column == 2 and trade.outcome in {'FOLLOW_THROUGH', 'REJECTED'}:
                 direction = trade.outcome_direction
                 if not direction and trade.outcome == 'FOLLOW_THROUGH':
@@ -693,6 +694,20 @@ class _TradePriceDelegate(QtWidgets.QStyledItemDelegate):
         super().__init__(parent)
         self._amount = bool(amount)
         self._layouts = OrderedDict()
+        self._masks = OrderedDict()
+        self._refresh_typography()
+        typography_controller().changed.connect(self._refresh_typography)
+
+    def _refresh_typography(self):
+        regular_state = 'trade_amount_fraction' if self._amount else 'trade_price_regular'
+        changed_state = 'trade_amount_units' if self._amount else 'trade_price_changed'
+        self._regular_font = typography_font(TextRole.TABLE_VALUE, state=regular_state)
+        self._changed_font = typography_font(TextRole.TABLE_VALUE, state=changed_state)
+        self._font_keys = (self._regular_font.key(), self._changed_font.key())
+        self._layouts.clear()
+        parent = self.parent()
+        if isinstance(parent, QtWidgets.QAbstractItemView):
+            parent.viewport().update()
 
     @staticmethod
     def emphasis_mask(price: str, previous: str) -> tuple[bool, ...]:
@@ -721,7 +736,8 @@ class _TradePriceDelegate(QtWidgets.QStyledItemDelegate):
     def _layout(self, text, mask, regular, changed, device, color):
         regular_opacity = typography_state_opacity('trade_amount_fraction' if self._amount else 'trade_price_regular')
         changed_opacity = typography_state_opacity('trade_amount_units' if self._amount else 'trade_price_changed')
-        key = (text, mask, regular.key(), changed.key(),
+        font_keys = self._font_keys if regular is self._regular_font and changed is self._changed_font else (regular.key(), changed.key())
+        key = (text, mask, *font_keys,
                device.logicalDpiX(), device.logicalDpiY(), device.devicePixelRatioF(),
                color.rgba(), regular_opacity, changed_opacity)
         cached = self._layouts.get(key)
@@ -758,16 +774,32 @@ class _TradePriceDelegate(QtWidgets.QStyledItemDelegate):
         return cached
 
     def paint(self, painter, option, index):
-        text = str(index.data() or '')
-        previous = str(index.model().index(index.row() + 1, index.column()).data() or '')
-        mask = self.amount_emphasis_mask(text) if self._amount else self.emphasis_mask(text, previous)
+        model, row, column = index.model(), index.row(), index.column()
+        if isinstance(model, _TradesTapeModel) and 0 <= row < len(model.rows):
+            # The model already owns formatted rows. Avoid repeated Qt model
+            # role callbacks and temporary indexes for each painted cell.
+            trade, cells = model.rows[row]
+            text = cells[column]
+            previous = model.rows[row + 1][1][column] if row + 1 < len(model.rows) else ''
+            color = model.text_color if self._amount else model.buy if trade.aggressor_side.upper() == 'BUY' else model.sell
+        else:
+            text = str(index.data() or '')
+            previous = str(model.index(row + 1, column).data() or '')
+            color = index.data(Qt.ItemDataRole.ForegroundRole)
+        mask_key = (text, '' if self._amount else previous)
+        mask = self._masks.get(mask_key)
+        if mask is None:
+            mask = self.amount_emphasis_mask(text) if self._amount else self.emphasis_mask(text, previous)
+            self._masks[mask_key] = mask
+            if len(self._masks) > self.LAYOUT_CACHE_LIMIT:
+                self._masks.popitem(last=False)
+        else:
+            self._masks.move_to_end(mask_key)
         rect = QtCore.QRectF(option.rect).adjusted(8, 0, -8, 0)
         if not text or rect.width() <= 0:
             return
         device = painter.device()
-        color = index.data(Qt.ItemDataRole.ForegroundRole)
-        regular = typography_font(TextRole.TABLE_VALUE, state='trade_amount_fraction' if self._amount else 'trade_price_regular')
-        changed = typography_font(TextRole.TABLE_VALUE, state='trade_amount_units' if self._amount else 'trade_price_changed')
+        regular, changed = self._regular_font, self._changed_font
         layout, line = self._layout(text, mask, regular, changed, device, color)
         if line.naturalTextWidth() > rect.width():
             pixels = regular.pixelSize() if regular.pixelSize() > 0 else round(regular.pointSizeF() * device.logicalDpiY() / 72)
@@ -7606,7 +7638,8 @@ class OrderBookWidget(QtWidgets.QWidget):
     def resizeEvent(self, event: QtGui.QResizeEvent) -> None:
         super().resizeEvent(event)
         self._sync_tape_visibility()
-        self._sync_controls()
+        # The control bar handles its own responsive geometry. Actual canvas
+        # state/geometry signals refresh its values after the worker catches up.
 
     def set_trades_tape(self, tape: TradesTapeWidget | None) -> None:
         if tape is self._tape:

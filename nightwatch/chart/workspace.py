@@ -262,6 +262,13 @@ class PriceAxisItem(pg.AxisItem):
         self.picture = None
         self.update()
 
+    def setRange(self, mn: float, mx: float) -> None:
+        # A horizontal pane resize does not change this axis's ticks. Its own
+        # resize/style handlers still invalidate the picture when needed.
+        if getattr(self, "range", None) == [mn, mx] and not self.grid:
+            return
+        super().setRange(mn, mx)
+
     def set_tick_precision(self, tick_value: object) -> None:
         self._tick_precision_value = tick_value
         self.picture = None
@@ -330,6 +337,11 @@ class ScalableStudyAxisItem(pg.AxisItem):
 
     manual_scale_requested = Signal()
     reset_scale_requested = Signal()
+
+    def setRange(self, mn: float, mx: float) -> None:
+        if getattr(self, "range", None) == [mn, mx] and not self.grid:
+            return
+        super().setRange(mn, mx)
 
     def __init__(self, *args: Any, **kwargs: Any):
         super().__init__(*args, **kwargs)
@@ -3659,6 +3671,7 @@ class ChartWorkspace(QtWidgets.QWidget):
         self._presentation_active = active
         if not active:
             self._resize_expensive_deferred = False
+            self._set_bar_resize_active(False)
             self._interaction_gc.set_active(self._resize_gc_token, False)
             self._pending_zoom_range = None
             self._presentation_clock.cancel()
@@ -8704,6 +8717,15 @@ class ChartWorkspace(QtWidgets.QWidget):
         self._fit_y_to_visible(visible[0].time, visible[-1].time)
         return True
 
+    def _set_bar_resize_active(self, active: bool) -> None:
+        for batch in (self.history_candles.pixel_batch, self.live_candle.pixel_batch,
+                      self.volume_overlay.history_batch, self.volume_overlay.live_batch):
+            if batch.interactive_resize and not active:
+                # The final resize paint restores pan margins before the next
+                # gesture. Keep the transform origin so pixels do not shift.
+                batch.cache_screen = QtCore.QRectF()
+            batch.interactive_resize = active
+
     def begin_interactive_resize(self) -> None:
         """Keep cheap presentation live while deferring resize-expensive analysis."""
         if self._resize_expensive_deferred:
@@ -8711,6 +8733,7 @@ class ChartWorkspace(QtWidgets.QWidget):
         if not self._snapshot_loaded and not self.candles:
             return
         self._resize_expensive_deferred = True
+        self._set_bar_resize_active(True)
         self._interaction_gc.set_active(self._resize_gc_token, True)
         self.detail_timer.stop()
 
@@ -8721,6 +8744,7 @@ class ChartWorkspace(QtWidgets.QWidget):
         if not self._resize_expensive_deferred:
             return
         self._resize_expensive_deferred = False
+        self._set_bar_resize_active(False)
         self._interaction_gc.set_active(self._resize_gc_token, False)
         self._position_overlay_labels()
         self._schedule_render_work(

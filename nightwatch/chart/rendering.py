@@ -949,7 +949,9 @@ class PixelBarBatch:
         self._cpu_bounds = QtCore.QRectF()
         self._cpu_disjoint = False
         self.cache_origin = (0.0, 0.0)
+        self._cpu_geometry_transform = QtGui.QTransform()
         self.cache_screen = QtCore.QRectF()
+        self.interactive_resize = False
         self.gpu_enabled = False
         self._data_revision = 0
         self._gl_resources: dict[int, dict[str, Any]] = {}
@@ -1014,8 +1016,9 @@ class PixelBarBatch:
                      and painter.compositionMode() == QtGui.QPainter.CompositionMode.CompositionMode_SourceOver)
         if use_image and not target.isEmpty():
             if self._cpu_image.isNull() or not self._cpu_image_rect.contains(target):
-                padded = screen.adjusted(-screen.width() * .5, -screen.height() * .25,
-                                         screen.width() * .5, screen.height() * .25)
+                padded = screen if self.interactive_resize else screen.adjusted(
+                    -screen.width() * .5, -screen.height() * .25,
+                    screen.width() * .5, screen.height() * .25)
                 image_rect = padded.intersected(bounds).toAlignedRect()
                 # At most 16 MiB per history/volume cache, independent of zoom.
                 if image_rect.width() * image_rect.height() <= 4 * 1024 * 1024:
@@ -1436,7 +1439,7 @@ class PixelBarBatch:
             self.cache_key = key
             self.cache_origin = (transform.dx(), 0.0)
             dx = 0.0
-            self.cache_screen = overlay_screen.adjusted(
+            self.cache_screen = QtCore.QRectF(overlay_screen) if self.interactive_resize else overlay_screen.adjusted(
                 -overlay_screen.width() * .5,
                 0.0,
                 overlay_screen.width() * .5,
@@ -1636,10 +1639,22 @@ class PixelBarBatch:
             key != self.cache_key
             or not self.cache_screen.translated(pan_dx, pan_dy).contains(gl_screen)
         ):
+            if key != self.cache_key:
+                self.cache_origin = (transform.dx(), transform.dy())
+                self._cpu_geometry_transform = QtGui.QTransform(transform)
+                dx = dy = 0.0
             self.cache_key = key
-            self.cache_origin = (transform.dx(), transform.dy())
-            dx = dy = 0.0
-            self.cache_screen = gl_screen.adjusted(
+            # Resize changes the scale each frame, so pan margins would be
+            # rebuilt before they could be reused. Retain only the visible
+            # region plus neighboring bloom. Preserve the transform origin on
+            # pan-only rebuilds so fractional-DPI bars keep their pixel phase.
+            build_view = gl_screen.translated(-round(dx), -round(dy))
+            bloom_margin = max(2, int(style.get("up_bloom_radius", 0)),
+                               int(style.get("down_bloom_radius", 0)),
+                               math.ceil(float(style.get("glow_width", 2.0)) * .5)) + 1
+            self.cache_screen = build_view.adjusted(
+                -bloom_margin, -bloom_margin, bloom_margin, bloom_margin
+            ) if self.interactive_resize else build_view.adjusted(
                 -gl_screen.width() * .5,
                 -gl_screen.height() * .25,
                 gl_screen.width() * .5,
@@ -1650,7 +1665,7 @@ class PixelBarBatch:
 
             data = self.data
             x_ref, y_ref = data[0, :2]
-            origin = transform.map(QtCore.QPointF(x_ref, y_ref))
+            origin = self._cpu_geometry_transform.map(QtCore.QPointF(x_ref, y_ref))
             xs = (data[:, 0] - x_ref) * transform.m11() + origin.x()
             ys = (data[:, 1:5] - y_ref) * transform.m22() + origin.y()
             slots = abs(transform.m11()) * data[:, 6]
