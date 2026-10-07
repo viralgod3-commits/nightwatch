@@ -6374,9 +6374,8 @@ class MainWindow(QtWidgets.QMainWindow):
     def _set_windows_dwm_border_visual(hwnd_value: int, *, white: bool) -> None:
         """Use a white DWM frame in fullscreen and restore the system default on exit.
 
-        The native WS_BORDER keeps DWM's stable composition boundary for the
-        OpenGL-bearing owner. Fullscreen geometry puts it outside the monitor
-        so the client area reaches every screen edge.
+        The visible native WS_BORDER keeps DWM's stable composition boundary
+        for the OpenGL-bearing owner while menus and dialogs are shown.
         """
         if os.name != "nt" or not int(hwnd_value):
             return
@@ -6656,8 +6655,8 @@ class MainWindow(QtWidgets.QMainWindow):
                 return
 
             # Keep Qt's WS_BORDER workaround for dialogs over fullscreen OpenGL.
-            # Size the client area to the monitor below; the native frame stays
-            # outside it instead of consuming a pixel at every screen edge.
+            # Keep the native frame inside the monitor so its visible border
+            # preserves the Windows 10 DWM composition workaround.
             ws_caption = 0x00C00000
             ws_thickframe = 0x00040000
             ws_border = 0x00800000
@@ -6689,22 +6688,8 @@ class MainWindow(QtWidgets.QMainWindow):
             set_window_long_ptr(hwnd, gwl_exstyle, fullscreen_ex_style)
             self._set_windows_dwm_border_visual(hwnd_value, white=True)
 
-            # rcMonitor describes the desired client area, not the outer frame.
-            # Account for the native border at this monitor's physical DPI.
-            rect = RECT(info.rcMonitor.left, info.rcMonitor.top,
-                        info.rcMonitor.right, info.rcMonitor.bottom)
-            user32.GetDpiForWindow.argtypes = [wintypes.HWND]
-            user32.GetDpiForWindow.restype = wintypes.UINT
-            user32.AdjustWindowRectExForDpi.argtypes = [
-                ctypes.POINTER(RECT), wintypes.DWORD, wintypes.BOOL,
-                wintypes.DWORD, wintypes.UINT,
-            ]
-            user32.AdjustWindowRectExForDpi.restype = wintypes.BOOL
-            if not user32.AdjustWindowRectExForDpi(
-                ctypes.byref(rect), fullscreen_style, False, fullscreen_ex_style,
-                user32.GetDpiForWindow(hwnd) or 96,
-            ):
-                raise ctypes.WinError(ctypes.get_last_error())
+            # Size the outer window to the monitor, retaining the visible border.
+            rect = info.rcMonitor
             width = int(rect.right - rect.left)
             height = int(rect.bottom - rect.top)
             swp_framechanged = 0x0020
