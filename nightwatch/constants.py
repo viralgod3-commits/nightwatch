@@ -10,12 +10,6 @@ APP_NAME = "Nightwatch Futures V2"
 ORG_NAME = "Nightwatch"
 
 
-# Compatibility mirrors for the untouched leadership surface. utilities.py is
-# the sole typography authority and refreshes these after bundled fonts load.
-UI_FONT_FAMILY = ""
-NUMERIC_FONT_FAMILY = ""
-
-
 DEFAULT_SYMBOL = "BTCUSDT"
 
 

@@ -33,13 +33,27 @@ def _imports(file: Path) -> list[tuple[int, str]]:
     return found
 
 
-def _forbid(file: Path, prefixes: tuple[str, ...], reason: str) -> list[str]:
+def _forbid(
+    file: Path, prefixes: tuple[str, ...], reason: str, *,
+    allowed_symbols: dict[str, set[str]] | None = None,
+) -> list[str]:
     if not file.exists():
         return [f"required architecture file missing: {file.relative_to(PACKAGE_ROOT)}"]
     errors: list[str] = []
-    for line, imported in _imports(file):
-        if any(imported == prefix or imported.startswith(prefix + ".") for prefix in prefixes):
-            errors.append(f"{file.relative_to(PACKAGE_ROOT)}:{line}: {reason}: {imported}")
+    for node in ast.walk(_tree(file)):
+        if isinstance(node, ast.ImportFrom):
+            imported = _absolute_import(node.module, node.level, file)
+            permitted = (allowed_symbols or {}).get(imported, set())
+            if permitted and all(alias.name in permitted for alias in node.names):
+                continue
+            modules = (imported,)
+        elif isinstance(node, ast.Import):
+            modules = tuple(alias.name for alias in node.names)
+        else:
+            continue
+        for imported in modules:
+            if any(imported == prefix or imported.startswith(prefix + ".") for prefix in prefixes):
+                errors.append(f"{file.relative_to(PACKAGE_ROOT)}:{node.lineno}: {reason}: {imported}")
     return errors
 
 
@@ -63,7 +77,7 @@ def _retired_feature_checks() -> list[str]:
     retired_paths = (
         "sector_overview.py", "app/composition.py", "leadership_cache.py",
         "contracts.py", "diagnostics.py", "chart/analysis_process.py",
-        "chart/overlay.py",
+        "chart/overlay.py", "chart/jobs.py", "chart/surface.py", "rotation.py",
         "orderbook/runtime.py", "trading/controller.py",
         "trading/rail_execution.py", "networking/core.py",
         "sound_system.py", "ui/data_tools.py", "market/microstructure.py",
@@ -128,7 +142,14 @@ def check() -> list[str]:
     errors += _forbid(PACKAGE_ROOT / "trading" / "trading_ui.py", ("nightwatch.trading.gateway", "nightwatch.networking", "nightwatch.app", "nightwatch.orderbook.backend"), "trading UI must use ports/controller abstractions")
     errors += _forbid(PACKAGE_ROOT / "trading" / "orders.py", ("nightwatch.trading.gateway", "nightwatch.networking", "nightwatch.app", "nightwatch.ui"), "order construction and rail amendments must not import transport or shell code")
 
-    errors += _forbid(PACKAGE_ROOT / "orderbook" / "orderbook_ui.py", ("nightwatch.orderbook.backend", "nightwatch.market.data", "nightwatch.networking", "nightwatch.trading.gateway", "nightwatch.app"), "orderbook frontend must consume contracts only")
+    # The raster frontend uses the shared process transport, not the analyzer.
+    # Keep analytical/backend imports forbidden while permitting that one link.
+    errors += _forbid(
+        PACKAGE_ROOT / "orderbook" / "orderbook_ui.py",
+        ("nightwatch.orderbook.backend", "nightwatch.market.data", "nightwatch.networking", "nightwatch.trading.gateway", "nightwatch.app"),
+        "orderbook frontend must consume contracts only",
+        allowed_symbols={"nightwatch.orderbook.backend": {"_OrderBookProcessLink"}},
+    )
     errors += _forbid(PACKAGE_ROOT / "orderbook" / "backend.py", ("nightwatch.orderbook.orderbook_ui", "nightwatch.ui", "nightwatch.trading", "nightwatch.networking", "nightwatch.app", "nightwatch.theme"), "orderbook backend must not depend on UI or trading code")
 
     errors += _forbid(PACKAGE_ROOT / "chart" / "rendering.py", ("nightwatch.chart.workspace", "nightwatch.market", "nightwatch.networking", "nightwatch.trading", "nightwatch.app"), "chart rendering must be independently replaceable")

@@ -1535,8 +1535,13 @@ class MagneticOrderRailPanel(QtWidgets.QWidget):
         order = getattr(self, 'working_order', {})
         popup = QtWidgets.QMenu(self)
         popup.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
-        color = '#23d99a' if self.side == 'BUY' else '#f35472'
-        popup.setStyleSheet(f"QMenu {{ background:#09121c; color:#d9e9f4; border:1px solid {color}; padding:8px; }} QMenu::item:selected {{ background:#1a3040; }}")
+        color = self._paint_green_color if self.side == 'BUY' else self._paint_red_color
+        hover = self.theme.get('control_hover', self._paint_surface_color.name())
+        popup.setStyleSheet(
+            f"QMenu {{ background:{self._paint_opaque_color.name()}; "
+            f"color:{self._paint_text_color.name()}; border:1px solid {color.name()}; padding:8px; }} "
+            f"QMenu::item:selected {{ background:{hover}; }}"
+        )
         kind = order.get('type') or order.get('orderType') or 'ORDER'
         for label in (
             f"{order.get('symbol', '')}  ·  {self.side}  ·  {kind}",

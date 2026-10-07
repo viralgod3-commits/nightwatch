@@ -1382,10 +1382,18 @@ if QtWidgets is not None:
                     if _safe_int(payload.get("version"), 0) > STATE_VERSION:
                         self._future_schema = True
                         break
-                    return RightRailState.from_dict(payload, names, sizes, aliases)
+                    state = RightRailState.from_dict(payload, names, sizes, aliases)
+                    if state.active_preset not in (*self.presets, "Custom"):
+                        state.active_preset = "Custom"
+                    return state
                 except (ValueError, TypeError, OverflowError, RecursionError):
                     continue
             preset_name = self.settings.value("right_layout_preset", self.initial_preset, str)
+            if preset_name not in (*self.presets, "Custom"):
+                preset_name = (
+                    self.initial_preset if self.initial_preset in self.presets
+                    else next(iter(self.presets), "Custom")
+                )
             preset = self.presets.get(preset_name, self.presets.get(self.initial_preset, {}))
             visible = valid_panel_names(preset.get("visible", ()), names)
             if any(self.settings.contains(f"panel/{n}") for n in (*names, "Alerts")):

@@ -2491,7 +2491,7 @@ class _DomRasterCanvas(QtWidgets.QWidget):
     def set_aggregation_multiplier(self, multiplier: int, *, emit: bool=True) -> None:
         try:
             resolved = int(multiplier)
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             resolved = 1
         if resolved not in ORDER_FLOW_AGGREGATION_MULTIPLIERS:
             resolved = 1

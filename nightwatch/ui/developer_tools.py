@@ -1249,8 +1249,6 @@ class DeveloperDialog(QtWidgets.QWidget):
         cache_rebuild_cost = self._timing_profile(timings.get('analysis.orderflow_level_cache_rebuild_ms', ()))
         cache_hit_cost = self._timing_profile(timings.get('analysis.orderflow_level_cache_hit_ms', ()), precision=3)
         order_flow_state_getter = getattr(self.host, 'order_flow_diagnostic_state', None)
-        if not callable(order_flow_state_getter):
-            order_flow_state_getter = getattr(getattr(getattr(self.host, 'market_inference', None), 'order_flow', None), 'diagnostic_state', None)
         if callable(order_flow_state_getter):
             order_flow_state = order_flow_state_getter()
             self.summary_labels['orderflow_cache'].setText(f"rebuild {cache_rebuild_cost} · hit {cache_hit_cost} (1/16 sampled) · counts R{int(order_flow_state.get('snapshot_level_cache_rebuilds', 0))} H{int(order_flow_state.get('snapshot_level_cache_hits', 0))}")

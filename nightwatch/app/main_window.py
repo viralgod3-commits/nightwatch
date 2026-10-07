@@ -601,6 +601,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.developer_typography_globals,
             notify=False,
         )
+        self._save_developer_typography()
         self.ui_theme = ui_palette(self.theme, self._effective_ui_color_overrides())
         self._refresh_directional_surface_palettes()
         self.developer_ui_status = self._load_developer_ui_status()
@@ -1710,28 +1711,14 @@ class MainWindow(QtWidgets.QMainWindow):
                 restored_orderbook_presentation, emit=False
             )
         else:
-            # Explicit v1 -> v2 migration. The old primary lane becomes the
-            # closest new semantic preset; tape defaults to adaptive LARGE mode.
-            legacy_primary = str(restored_orderbook_columns.get("primary", "flow")).lower()
-            legacy_memory = bool(restored_orderbook_columns.get("memory", False))
-            migrated_preset = (
-                "liquidity" if legacy_primary == "memory" or legacy_memory
-                else "execution"
-            )
-            self.orderbook.restore_presentation_state(
-                {
-                    "preset": migrated_preset,
-                    "density": "normal",
-                    "values": "quote",
-                    "tape_enabled": True,
-                    "tape_mode": "LARGE",
-                },
-                emit=False,
-            )
-        # Presentation state and overlay preferences are persisted separately.
-        # Apply the saved overlay state after the preset so user choices made in
-        # the order-book-local Options menu survive application restarts.
-        if restored_orderbook_columns:
+            self.orderbook.restore_presentation_state({}, emit=False)
+        # Current profiles own their overlays. Consult the separate legacy key
+        # only when no current embedded column preferences were saved.
+        current_columns = (
+            restored_orderbook_presentation.get("profile_version") == 1
+            and isinstance(restored_orderbook_presentation.get("columns"), dict)
+        )
+        if restored_orderbook_columns and not current_columns:
             self.orderbook.set_column_preferences(
                 restored_orderbook_columns,
                 emit=False,
@@ -2154,42 +2141,14 @@ class MainWindow(QtWidgets.QMainWindow):
         self._sync_settings_window()
 
     def _persist_orderbook_presentation(self, state: object) -> None:
-        values = state if isinstance(state, dict) else {}
-        normalized = {
-            "preset": str(values.get("preset", "execution")),
-            "density": str(values.get("density", "normal")),
-            "values": "base" if str(values.get("values", "quote")).lower() == "base" else "quote",
-            "tape_enabled": bool(values.get("tape_enabled", True)),
-            "tape_mode": "ALL" if str(values.get("tape_mode", "LARGE")).upper() == "ALL" else "LARGE",
-        }
-        width_state: dict[str, dict[str, float]] = {}
-        raw_widths = values.get("column_widths", {})
-        if isinstance(raw_widths, dict):
-            allowed_columns = {"state", "memory", "delta", "bid", "price", "ask", "flow"}
-            for preset in ("execution", "liquidity", "footprint"):
-                raw_preset = raw_widths.get(preset)
-                if not isinstance(raw_preset, dict):
-                    continue
-                cleaned: dict[str, float] = {}
-                for name, raw_width in raw_preset.items():
-                    if str(name) not in allowed_columns:
-                        continue
-                    try:
-                        width = float(raw_width)
-                    except (TypeError, ValueError, OverflowError):
-                        continue
-                    if math.isfinite(width) and 12.0 <= width <= 2000.0:
-                        cleaned[str(name)] = round(width, 2)
-                if cleaned:
-                    width_state[preset] = cleaned
-        normalized["column_widths"] = width_state
-        if normalized["preset"] not in {"execution", "liquidity", "footprint"}:
-            normalized["preset"] = "execution"
-        if normalized["density"] not in {"compact", "normal", "relaxed"}:
-            normalized["density"] = "normal"
+        # The widget owns validation and the versioned persistence contract.
+        # Saving a second, older schema made current preferences look legacy.
         self.settings.setValue(
             "orderbook/presentation_v2",
-            json.dumps(normalized, separators=(",", ":"), sort_keys=True),
+            json.dumps(
+                self.orderbook.presentation_state(),
+                separators=(",", ":"), sort_keys=True, allow_nan=False,
+            ),
         )
         self._sync_settings_window()
 
@@ -2421,6 +2380,12 @@ class MainWindow(QtWidgets.QMainWindow):
                 for role in TYPOGRAPHY_DEFAULTS
             },
             "typography_globals": dict(controller.globals()),
+            "typography_contract": self._developer_typography_contract(),
+            "typography_overrides": dict(self.developer_typography),
+            "typography_global_overrides": {
+                key: value for key, value in controller.globals().items()
+                if value != TYPOGRAPHY_GLOBAL_DEFAULTS[key]
+            },
             "dpi_rounding": self.settings.value(
                 "developer/typography_dpi_rounding_v1", "auto", str
             ),
@@ -2528,9 +2493,7 @@ class MainWindow(QtWidgets.QMainWindow):
         else:
             self.settings.remove("developer/ui_color_overrides_v2")
 
-        # Geometry/surface density remains a build-time contract, but typography
-        # is a live semantic contract owned by TypographyController.  Older v1
-        # profiles that omit typography simply preserve the current typography.
+        # Geometry/surface density remains a build-time contract.
         status_values = profile.get("status_bar_overrides") if colors_compatible else None
         self.developer_ui_status = self._store_developer_ui_status_overrides(status_values)
 
@@ -2539,30 +2502,21 @@ class MainWindow(QtWidgets.QMainWindow):
         self.settings.remove("developer/ui_layout_v1")
         self.settings.remove("developer/ui_surfaces_v1")
 
-        imported_typography = profile.get("typography")
-        if isinstance(imported_typography, dict):
-            merged_profiles = {
-                role: typography_controller().profile(role)
-                for role in TYPOGRAPHY_DEFAULTS
-            }
-            for role, values in imported_typography.items():
-                if role not in TYPOGRAPHY_DEFAULTS or not isinstance(values, dict):
-                    continue
-                allowed = TYPOGRAPHY_DEFAULTS[role]
-                merged_profiles[role].update(
-                    {key: value for key, value in values.items() if key in allowed}
-                )
-            self.developer_typography = merged_profiles
-        imported_globals = profile.get("typography_globals")
-        if isinstance(imported_globals, dict):
-            self.developer_typography_globals = {
-                **self.developer_typography_globals,
-                **{
-                    key: value
-                    for key, value in imported_globals.items()
-                    if key in TYPOGRAPHY_GLOBAL_DEFAULTS
-                },
-            }
+        typography_compatible = (
+            profile.get("version") == 2
+            and profile.get("typography_contract") == self._developer_typography_contract()
+        )
+        # Resolved snapshots contain the exporting build's defaults. Import only
+        # explicit, compatible overrides so old profiles cannot pin retired fonts.
+        if typography_compatible:
+            imported_typography = profile.get("typography_overrides")
+            self.developer_typography = (
+                imported_typography if isinstance(imported_typography, dict) else {}
+            )
+            imported_globals = profile.get("typography_global_overrides")
+            self.developer_typography_globals = (
+                imported_globals if isinstance(imported_globals, dict) else {}
+            )
         if "dpi_rounding" in profile:
             self.developer_typography_globals["dpi_rounding"] = profile.get("dpi_rounding")
 
@@ -2620,6 +2574,8 @@ class MainWindow(QtWidgets.QMainWindow):
         message = f"UI PROFILE IMPORTED · {os.path.basename(path)}"
         if not colors_compatible:
             message += " · Older color settings skipped; current theme colors applied"
+        if not typography_compatible and "typography" in profile:
+            message += " · Older typography settings skipped"
         self.statusBar().showMessage(message, 4500)
         return True
 
@@ -2750,6 +2706,7 @@ class MainWindow(QtWidgets.QMainWindow):
         return dict(DEV_UI_SURFACE_DEFAULTS)
 
     def _load_developer_typography(self) -> dict[str, dict[str, Any]]:
+        self._prepare_developer_typography_settings()
         stored = self.settings.value("developer/typography_v1", "", str)
         if not stored:
             return {}
@@ -2768,6 +2725,20 @@ class MainWindow(QtWidgets.QMainWindow):
                 key: value for key, value in values.items() if key in allowed
             }
         return result
+
+    @staticmethod
+    def _developer_typography_contract() -> str:
+        source = {"roles": TYPOGRAPHY_DEFAULTS, "globals": TYPOGRAPHY_GLOBAL_DEFAULTS}
+        encoded = json.dumps(source, sort_keys=True, separators=(",", ":"))
+        return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+    def _prepare_developer_typography_settings(self) -> None:
+        contract = self._developer_typography_contract()
+        key = "developer/typography_contract_v1"
+        if self.settings.value(key, "", str) != contract:
+            self.settings.remove("developer/typography_v1")
+            self.settings.remove("developer/typography_global_v1")
+            self.settings.setValue(key, contract)
 
     def _default_developer_ui_status(self) -> dict[str, object]:
         t = self.ui_theme

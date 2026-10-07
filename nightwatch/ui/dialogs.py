@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from collections import deque
 from copy import deepcopy
-from pathlib import Path
 import math
 import time
 from uuid import uuid4
@@ -24,7 +23,6 @@ class MicrostructureNewsCard(QtWidgets.QFrame):
     clicked = Signal()
 
 
-    _IDLE_LOGO_HEIGHT = 67
     _TICKER_SIDE_INSET = 0.0
     _TICKER_PASSES = 20
     _FALLBACK_REFRESH_HZ = 60.0
@@ -39,16 +37,6 @@ class MicrostructureNewsCard(QtWidgets.QFrame):
         self._color = QtGui.QColor("#f0a020")
         self._pending: deque[tuple[str, str]] = deque(maxlen=4)
         self._hover_html = ""
-        self._idle_logo = QtGui.QPixmap(
-            str(Path(__file__).resolve().parent.parent / "media" / "logo.png")
-        )
-        self._idle_logo_scaled = QtGui.QPixmap()
-        if not self._idle_logo.isNull():
-            self._idle_logo_scaled = self._idle_logo.scaledToHeight(
-                self._IDLE_LOGO_HEIGHT,
-                Qt.TransformationMode.SmoothTransformation,
-            )
-        self._idle_wrapped = False
         self._scroll_speed = 45.0
         self._last_frame = time.monotonic()
         self._timer = QTimer(self)
@@ -58,7 +46,7 @@ class MicrostructureNewsCard(QtWidgets.QFrame):
         set_text_role(self, TextRole.NEWS_TEXT)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setAccessibleName("Current-symbol microstructure signals")
-        self._restart_idle_logo()
+        self._reset_idle_state()
 
     def _update_frame_interval(self) -> None:
         """Run ticker updates at the active monitor refresh rate or faster."""
@@ -71,28 +59,20 @@ class MicrostructureNewsCard(QtWidgets.QFrame):
         interval_ms = max(1, int(1000.0 / refresh_hz))
         self._timer.setInterval(interval_ms)
 
-    def _restart_idle_logo(self) -> None:
-        """Run logo.png through the same right-to-left track used by ticker text."""
+    def _reset_idle_state(self) -> None:
         self._text = ""
-        self._text_width = (
-            self._idle_logo_scaled.width() if not self._idle_logo_scaled.isNull() else 0
-        )
+        self._text_width = 0
         _left, right = self._ticker_bounds()
         self._offset = right
-        self._idle_wrapped = False
         self._last_frame = time.monotonic()
-        if self._text_width > 0 and self.isVisible():
-            self._timer.start()
-        else:
-            self._timer.stop()
+        self._timer.stop()
         self.update()
 
     def showEvent(self, event: QtGui.QShowEvent) -> None:
         self._update_frame_interval()
         self._last_frame = time.monotonic()
         if not self._text:
-
-            self._restart_idle_logo()
+            self._reset_idle_state()
         elif self._text_width > 0:
             self._timer.start()
         super().showEvent(event)
@@ -184,7 +164,7 @@ class MicrostructureNewsCard(QtWidgets.QFrame):
     def _stop_signal(self) -> None:
         self._passes_remaining = 0
         self._copies_started = 0
-        self._restart_idle_logo()
+        self._reset_idle_state()
 
     def _advance(self) -> None:
         now = time.monotonic()
@@ -192,15 +172,7 @@ class MicrostructureNewsCard(QtWidgets.QFrame):
         self._last_frame = now
 
         if not self._text:
-
-
-            self._offset -= self._scroll_speed * elapsed
-            left, _right = self._ticker_bounds()
-            span = self._ticker_repeat_span()
-            while self._offset <= left:
-                self._offset += span
-                self._idle_wrapped = True
-            self.update()
+            self._timer.stop()
             return
 
 
@@ -225,26 +197,9 @@ class MicrostructureNewsCard(QtWidgets.QFrame):
 
     def paintEvent(self, event: QtGui.QPaintEvent) -> None:
         super().paintEvent(event)
-        painter = QtGui.QPainter(self)
-
         if not self._text:
-            if self._idle_logo_scaled.isNull():
-                return
-            left, right = self._ticker_bounds()
-            painter.setClipRect(
-                QtCore.QRectF(left, 0.0, max(0.0, right - left), float(self.height()))
-            )
-            span = self._ticker_repeat_span()
-            y = (self.height() - self._idle_logo_scaled.height()) / 2.0
-            positions = [self._offset]
-            if self._idle_wrapped:
-                positions.append(self._offset - span)
-            for x in positions:
-                if x > right or x + self._idle_logo_scaled.width() < left:
-                    continue
-                painter.drawPixmap(QtCore.QPointF(x, y), self._idle_logo_scaled)
             return
-
+        painter = QtGui.QPainter(self)
         apply_text_render_hints(painter)
         painter.setFont(self.font())
         clip = QtCore.QRectF(self.rect()).adjusted(
@@ -2794,11 +2749,6 @@ class NightwatchSettingsDialog(QtWidgets.QDialog):
 
 
     def _open_orderbook_guide(self) -> None:
-        guide_path = Path(__file__).resolve().parent.parent / "orderbook_guide.html"
-        if guide_path.is_file() and QtGui.QDesktopServices.openUrl(
-            QtCore.QUrl.fromLocalFile(str(guide_path))
-        ):
-            return
         dialog = self.findChild(QtWidgets.QDialog, "orderbookGuideDialog")
         if dialog is None:
             dialog = QtWidgets.QDialog(self)
@@ -2814,8 +2764,8 @@ class NightwatchSettingsDialog(QtWidgets.QDialog):
                 <p><b>Step − / +</b> changes price grouping. The step menu selects a
                 multiplier; <b>Auto</b> adapts grouping to the visible range.
                 <b>Rows</b> controls row density and <b>Range</b> controls the depth range.</p>
-                <p>The <b>…</b> menu controls visible lanes and the embedded trade tape.
-                Use <b>Reset</b> to restore the display defaults.</p>
+                <p>The <b>Display menu</b> controls depth overlays and the embedded trade tape.
+                Use <b>Reset orderbook display</b> to restore the display defaults.</p>
                 <h3>Prices and gestures</h3>
                 <p>Click a price to prefill the current ticket. An existing unfocused
                 price is preserved; focus that field to replace it. Drag the

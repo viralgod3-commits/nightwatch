@@ -745,8 +745,10 @@ class DiagnosticsHostPort(Protocol):
     settings: Any
     chart: Any
     orderbook: Any
-    market_inference: Any
     testing_flags: dict[str, bool]
+
+    def order_flow_diagnostic_state(self) -> dict[str, Any]:
+        ...
 
     def _set_testing_flag(self, name: str, enabled: bool) -> None:
         ...

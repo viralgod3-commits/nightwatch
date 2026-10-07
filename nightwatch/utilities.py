@@ -6,14 +6,12 @@ from __future__ import annotations
 # ========================================================================
 import os
 import html
+import math
 import re
 import weakref
 from typing import Any
 
 from PySide6 import QtCore, QtGui, QtWidgets
-
-from . import constants
-
 
 # Shared order-book design tokens. The canvas and trade tape use the same
 # directional colors so switching views never changes the meaning of color.
@@ -437,14 +435,13 @@ class TypographyController(QtCore.QObject):
             for key, value in values.items():
                 if key in profile:
                     profile[key] = value
-            self._sanitize_profile(profile)
+            self._sanitize_profile(profile, TYPOGRAPHY_DEFAULTS[role])
         self._globals = dict(TYPOGRAPHY_GLOBAL_DEFAULTS)
         for key, value in (global_overrides or {}).items():
             if key in self._globals:
                 self._globals[key] = value
-        self._globals["painter_text_antialias"] = bool(
-            self._globals.get("painter_text_antialias", True)
-        )
+        if not isinstance(self._globals["painter_text_antialias"], bool):
+            self._globals["painter_text_antialias"] = TYPOGRAPHY_GLOBAL_DEFAULTS["painter_text_antialias"]
         dpi_rounding = str(self._globals.get("dpi_rounding", "auto")).lower()
         if dpi_rounding not in {
             "auto", "round", "passthrough", "round_prefer_floor", "floor", "ceil"
@@ -457,44 +454,45 @@ class TypographyController(QtCore.QObject):
             self.changed.emit()
 
     @staticmethod
-    def _sanitize_profile(profile: dict[str, Any]) -> None:
-        profile["family"] = "numeric" if str(profile.get("family")) == "numeric" else "ui"
-        profile["size_mode"] = "pixel" if str(profile.get("size_mode")) == "pixel" else "point"
-        try:
-            profile["size"] = max(5.0, min(24.0, float(profile.get("size", 9.0))))
-        except (TypeError, ValueError):
-            profile["size"] = 9.0
-        try:
-            weight = int(profile.get("weight", 400))
-        except (TypeError, ValueError):
-            weight = 400
-        profile["weight"] = min((400, 500, 600, 700), key=lambda value: abs(value - weight))
-        profile["numeric_width"] = (
-            "extended" if str(profile.get("numeric_width", "normal")) == "extended" else "normal"
-        )
-        for key, default, minimum, maximum in (
-            ("letter_spacing", 100.0, 75.0, 140.0),
-            ("word_spacing", 0.0, -8.0, 20.0),
-            ("stretch", 100, 50, 200),
+    def _sanitize_profile(profile: dict[str, Any], defaults: dict[str, Any]) -> None:
+        # Invalid or retired values must return to this role's source defaults,
+        # rather than changing numeric pixel roles into generic 9-point UI text.
+        for key, choices in (
+            ("family", {"numeric", "ui"}),
+            ("size_mode", {"pixel", "point"}),
+            ("numeric_width", {"normal", "extended"}),
+            ("hinting", {"default", "none", "vertical", "full"}),
+            ("antialias", {"default", "prefer", "none"}),
+            ("quality", {"default", "quality", "match"}),
         ):
+            value = str(profile.get(key))
+            profile[key] = value if value in choices else defaults[key]
+
+        def bounded_number(key: str, minimum: float, maximum: float) -> float:
             try:
-                value = float(profile.get(key, default))
-            except (TypeError, ValueError):
-                value = float(default)
-            value = max(float(minimum), min(float(maximum), value))
+                raw = profile.get(key)
+                if isinstance(raw, bool):
+                    raise ValueError("Boolean font metric")
+                value = float(raw)
+            except (TypeError, ValueError, OverflowError):
+                value = float(defaults[key])
+            if not math.isfinite(value):
+                value = float(defaults[key])
+            return max(minimum, min(maximum, value))
+
+        profile["size"] = bounded_number("size", 5.0, 24.0)
+        weight = bounded_number("weight", 400.0, 700.0)
+        profile["weight"] = min((400, 500, 600, 700), key=lambda value: abs(value - weight))
+        for key, minimum, maximum in (
+            ("letter_spacing", 75.0, 140.0),
+            ("word_spacing", -8.0, 20.0),
+            ("stretch", 50.0, 200.0),
+        ):
+            value = bounded_number(key, minimum, maximum)
             profile[key] = int(round(value)) if key == "stretch" else value
-        profile["kerning"] = bool(profile.get("kerning", True))
-        profile["fixed_pitch"] = bool(profile.get("fixed_pitch", False))
-        profile["hinting"] = str(profile.get("hinting", "default"))
-        if profile["hinting"] not in {"default", "none", "vertical", "full"}:
-            profile["hinting"] = "default"
-        profile["antialias"] = str(profile.get("antialias", "default"))
-        if profile["antialias"] not in {"default", "prefer", "none"}:
-            profile["antialias"] = "default"
-        profile["quality"] = str(profile.get("quality", "default"))
-        if profile["quality"] not in {"default", "quality", "match"}:
-            profile["quality"] = "default"
-        profile["no_subpixel"] = bool(profile.get("no_subpixel", False))
+        for key in ("kerning", "fixed_pitch", "no_subpixel"):
+            if not isinstance(profile.get(key), bool):
+                profile[key] = defaults[key]
 
     def profile(self, role: str) -> dict[str, Any]:
         return dict(self._profiles.get(role, self._profiles[TextRole.UI_BODY]))
@@ -1002,11 +1000,6 @@ def load_app_fonts(application: QtGui.QGuiApplication, package_root: str) -> Non
         (("extended", 600), "numeric_extended_semibold"),
     ):
         _NUMERIC_FONT_FAMILIES[face_key], _NUMERIC_FONT_STYLES[face_key] = registered[key]
-
-    # leadership.py is intentionally untouched; keep its legacy constants in
-    # sync without allowing constants.py to own typography configuration.
-    constants.UI_FONT_FAMILY = _UI_FONT_FAMILY
-    constants.NUMERIC_FONT_FAMILY = _NUMERIC_FONT_FAMILY
 
     # Family identities can change after bundled-font registration. Discard any
     # bootstrap-era templates before the application asks for its first font.
