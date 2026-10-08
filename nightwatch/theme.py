@@ -18,13 +18,19 @@ _ORDERBOOK_BASE = {
 ORDERBOOK_THEMES: Final[dict[str, dict[str, str]]] = {
     'Nightwatch': {**_ORDERBOOK_BASE},
     'TapeSurf': {
-        **_ORDERBOOK_BASE, 'bg': '#101012', 'surface_top': '#101012',
-        'surface_raised': '#151517', 'surface_center': '#101012', 'control': '#101012',
+        **_ORDERBOOK_BASE, 'bg': '#1F1E20', 'surface_top': '#1F1E20',
+        'surface_raised': '#252426', 'surface_center': '#1F1E20', 'control': '#1F1E20',
         'grid': '#252527', 'grid_strong': '#38383A', 'text': '#D6D8D5',
-        'muted': '#929590', 'dim_price': '#70746F', 'bid': '#00D68B', 'ask': '#E9A21B',
-        'bid_fill': '#053B32', 'ask_fill': '#3B1913',
-        'bid_fill_strong': '#008C71', 'ask_fill_strong': '#97420C',
-        'bid_heat_high': '#00DF88', 'ask_heat_high': '#FFD324',
+        'muted': '#929590', 'dim_price': '#70746F', 'bid': '#00E5B3', 'ask': '#B6A000',
+        'bid_fill': '#133A35', 'ask_fill': '#3B2420',
+        'bid_fill_strong': '#009583', 'ask_fill_strong': '#8F2019',
+        'bid_bar_start': '#009583', 'bid_bar_end': '#009757',
+        'ask_bar_start': '#8F2019', 'ask_bar_end': '#977F19',
+        'bid_background_start': '#133A35', 'bid_background_end': '#193A31',
+        'ask_background_start': '#3B2420', 'ask_background_end': '#3A3221',
+        'bid_line_start': '#00D7C3', 'bid_line_end': '#00E078',
+        'ask_line_start': '#D94A20', 'ask_line_end': '#B6A000',
+        'bid_heat_high': '#009583', 'ask_heat_high': '#977F19',
         'bid_text': '#C3EEE2', 'ask_text': '#F6D4B1', 'mid': '#00DDC4',
         'amber': '#E9BB32', 'price_line': '#00DDC4', 'last_price_line': '#00DDC4',
     },
@@ -50,6 +56,20 @@ ORDERBOOK_THEMES: Final[dict[str, dict[str, str]]] = {
 }
 for _name, _palette in ORDERBOOK_THEMES.items():
     _palette['orderbook_style'] = _name
+    # Every palette supplies the same directional gradients, in both views.
+    for _side in ('bid', 'ask'):
+        for _kind, _start, _end in (
+            ('bar', f'{_side}_fill_strong', _side),
+            ('background', f'{_side}_fill', f'{_side}_fill_strong'),
+            ('line', f'{_side}_fill_strong', _side),
+        ):
+            _palette.setdefault(f'{_side}_{_kind}_start', _palette[_start])
+            _end_color = _palette[_end]
+            if _kind == 'background':
+                _end_color = '#' + ''.join(
+                    f'{round(int(_palette[_start][i:i + 2], 16) * .75 + int(_end_color[i:i + 2], 16) * .25):02X}'
+                    for i in (1, 3, 5))
+            _palette.setdefault(f'{_side}_{_kind}_end', _end_color)
 
 
 def orderbook_palette(source: object = None) -> dict[str, str]:

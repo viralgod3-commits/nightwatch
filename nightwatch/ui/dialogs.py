@@ -1619,8 +1619,16 @@ class _SettingsPreviewChoice(QtWidgets.QAbstractButton):
                     continue
                 side = "ask" if index < 3 else "bid"
                 bar_x = area.left() + area.width() * .37
+                background = QtGui.QLinearGradient(bar_x, 0, area.right(), 0)
+                bars = QtGui.QLinearGradient(bar_x, 0, area.right(), 0)
+                for position, suffix in ((0., "start"), (1., "end")):
+                    background.setColorAt(position, QtGui.QColor(p[f"{side}_background_{suffix}"]))
+                    bars.setColorAt(position, QtGui.QColor(p[f"{side}_bar_{suffix}"]))
+                cumulative = (.95, .75, .48, 0, .48, .75, .95)[index]
+                painter.fillRect(QtCore.QRectF(bar_x, y, area.width() * .6 * cumulative, row_height),
+                                 QtGui.QBrush(background))
                 painter.fillRect(QtCore.QRectF(bar_x, y, area.width() * .6 * strength, row_height - 1),
-                                 QtGui.QColor(p[f"{side}_fill_strong"]))
+                                 QtGui.QBrush(bars))
                 low = QtGui.QColor(p[f"{side}_fill"])
                 high = QtGui.QColor(p.get(f"{side}_heat_high", p[side]))
                 heat = QtGui.QColor(*(round(a + (b - a) * strength)

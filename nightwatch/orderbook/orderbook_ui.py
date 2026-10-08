@@ -2269,8 +2269,28 @@ class _DomRasterCanvas(QtWidgets.QWidget):
             self._profile_pens[side] = pen
             self._profile_in_bar_pens[side] = in_bar_pen
 
+    def _directional_brush(self, side: str, kind: str, left: float, right: float,
+                           *, reverse: bool = False, dim: bool = False) -> QtGui.QBrush:
+        """Cache lane-wide gradients; bar length never changes their color scale."""
+        key = (side, kind, reverse, dim)
+        bounds = (left, right)
+        cached = self._directional_brushes.get(key)
+        if cached is not None and cached[0] == bounds:
+            return cached[1]
+        gradient = QtGui.QLinearGradient(right if reverse else left, 0.0,
+                                        left if reverse else right, 0.0)
+        for position, suffix in ((0.0, 'start'), (1.0, 'end')):
+            color = QtGui.QColor(self.theme[f'{side}_{kind}_{suffix}'])
+            if dim:
+                color.setAlpha(100 if kind == 'line' else 115)
+            gradient.setColorAt(position, color)
+        brush = QtGui.QBrush(gradient)
+        self._directional_brushes[key] = (bounds, brush)
+        return brush
+
     def _refresh_theme_cache(self) -> None:
         p = self.theme
+        self._directional_brushes = {}
         self._bg = QtGui.QColor(p['bg'])
         self._text = QtGui.QColor(p['text'])
         self._muted = QtGui.QColor(p['muted'])
@@ -2285,10 +2305,6 @@ class _DomRasterCanvas(QtWidgets.QWidget):
         self._surface_top = QtGui.QColor(p['surface_top'])
         self._surface_raised = QtGui.QColor(p['surface_raised'])
         self._price_axis_fill = QtGui.QColor(p['bg'])
-        self._bid_zone_fill = QtGui.QColor(p['bid_fill'])
-        self._bid_zone_fill.setAlpha(0)
-        self._ask_zone_fill = QtGui.QColor(p['ask_fill'])
-        self._ask_zone_fill.setAlpha(0)
         self._bid_fill = QtGui.QColor(p['bid_fill'])
         self._ask_fill = QtGui.QColor(p['ask_fill'])
         # Resting-size bars should communicate length first, not dominate the
@@ -5386,12 +5402,11 @@ class _DomRasterCanvas(QtWidgets.QWidget):
                     painter.drawPath(outline)
             return
 
-        # Keep the ladder readable as three distinct zones. The tint is subtle
-        # enough that the actual resting-size bars remain the visual data.
-        if 'bid' in columns:
-            painter.fillRect(self._column_rect('bid', top, height), self._bid_zone_fill)
-        if 'ask' in columns:
-            painter.fillRect(self._column_rect('ask', top, height), self._ask_zone_fill)
+        for side in ('bid', 'ask'):
+            if side in columns:
+                lane = self._column_rect(side, top, height)
+                painter.fillRect(lane, self._directional_brush(
+                    side, 'background', lane.left(), lane.right(), reverse=side == 'bid'))
         if 'price' in columns:
             price_rect = self._column_rect('price', top, height)
             painter.fillRect(price_rect, self._price_axis_fill)
@@ -5587,11 +5602,11 @@ class _DomRasterCanvas(QtWidgets.QWidget):
                 inner_top = top + (row_height - inner_h) * 0.5
                 if level.side == 'bid':
                     bar = QtCore.QRectF(resting_rect.right() - width - 1.0, inner_top, width, inner_h)
-                    fill = self._bid_fill
                 else:
                     bar = QtCore.QRectF(resting_rect.left() + 1.0, inner_top, width, inner_h)
-                    fill = self._ask_fill
-                painter.fillRect(bar, fill)
+                painter.fillRect(bar, self._directional_brush(
+                    level.side, 'bar', resting_rect.left(), resting_rect.right(),
+                    reverse=level.side == 'bid'))
             self._draw_numeric_text(
                 painter, resting_rect, str(row.notional_text), side_color,
                 Qt.AlignmentFlag.AlignRight if level.side == 'bid' else Qt.AlignmentFlag.AlignLeft,
@@ -5652,18 +5667,10 @@ class _DomRasterCanvas(QtWidgets.QWidget):
             lane = self._column_rect('liquidity', top, height)
             plot_width = max(0.0, lane.width() - 3.0)
             if size > 0.0 and plot_width > 0.0:
-                gradient = QtGui.QLinearGradient(lane.left(), 0.0, lane.right(), 0.0)
-                alpha = min(235, round(40 + size * 195))
-                if not row.profile_in_range:
-                    alpha = round(alpha * 0.45)
-                start = self._profile_colors[side].darker(155)
-                end = self._profile_colors[side].darker(115)
-                start.setAlpha(alpha)
-                end.setAlpha(alpha)
-                gradient.setColorAt(0.0, start)
-                gradient.setColorAt(1.0, end)
                 painter.fillRect(QtCore.QRectF(lane.left(), bar_top, plot_width * size,
-                                               bar_height), QtGui.QBrush(gradient))
+                                               bar_height), self._directional_brush(
+                                                   side, 'bar', lane.left(), lane.right(),
+                                                   dim=not row.profile_in_range))
             if hovered:
                 hover = QtGui.QColor(self._profile_colors[side])
                 hover.setAlpha(130)
@@ -5716,24 +5723,10 @@ class _DomRasterCanvas(QtWidgets.QWidget):
         if ready and lane is not None:
             left, right = float(lane[0]), float(lane[1]) - 3.0
             for side, (area, outline) in self._profile_paths.items():
-                fill = QtGui.QLinearGradient(left, 0.0, right, 0.0)
-                start = QtGui.QColor(self.theme[f'{side}_fill'])
-                end = QtGui.QColor(start)
-                start.setAlpha(130)
-                end.setAlpha(75)
-                fill.setColorAt(0.0, start)
-                fill.setColorAt(1.0, end)
-                painter.fillPath(area, QtGui.QBrush(fill))
-                line = QtGui.QLinearGradient(left, 0.0, right, 0.0)
-                line.setColorAt(0.0, self._profile_colors[side].darker(140))
-                line.setColorAt(1.0, self._profile_colors[side])
-                pen = QtGui.QPen(QtGui.QBrush(line), self._physical_pixel_width())
-                dim_line = QtGui.QLinearGradient(line)
-                for position, color in line.stops():
-                    dim_color = QtGui.QColor(color)
-                    dim_color.setAlpha(100)
-                    dim_line.setColorAt(position, dim_color)
-                pens[side] = (pen, QtGui.QPen(QtGui.QBrush(dim_line), self._physical_pixel_width()))
+                painter.fillPath(area, self._directional_brush(side, 'background', left, right))
+                pens[side] = tuple(QtGui.QPen(
+                    self._directional_brush(side, 'line', left, right, dim=dim),
+                    self._physical_pixel_width()) for dim in (False, True))
             shade = QtGui.QColor(self._profile_bg)
             shade.setAlpha(150)
             painter.fillRect(QtCore.QRectF(left, 0.0, right - left, max(0.0, ruler_top)), shade)
