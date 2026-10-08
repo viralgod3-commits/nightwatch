@@ -142,7 +142,6 @@ from ..ui.dialogs import (
     IndicatorShortcutsDialog,
     MicrostructureNewsCard,
     NightwatchSettingsDialog,
-    RightPanelPresetsDialog,
 )
 from ..ui.market_widgets import (
     MarketFilterDialog,
@@ -7016,11 +7015,6 @@ class MainWindow(QtWidgets.QMainWindow):
             "sections": tuple(RIGHT_PANEL_DEFAULT_SIZES.get(name, 160) for name in self.panel_sections),
         }
 
-    def edit_right_panel_presets(self) -> None:
-        dialog = RightPanelPresetsDialog(self.right_layout_presets, self, panel_names=tuple(self.panel_sections))
-        if dialog.exec() == QtWidgets.QDialog.DialogCode.Accepted:
-            self._save_right_panel_presets(dialog.definitions(), dialog.editor.selected_name())
-
     def _save_right_panel_presets(self, configured: dict[str, dict[str, Any]], active_name: str | None = None) -> None:
         # Validate the entire draft before replacing any application state.
         aliases = self.right_rail_controller.state.aliases
@@ -8197,11 +8191,6 @@ class MainWindow(QtWidgets.QMainWindow):
                 return current
             current = current.parentWidget()
         return None
-
-
-    @staticmethod
-    def _informational_tooltip_allowed(watched: QtCore.QObject) -> bool:
-        return tooltips_allowed(watched)
 
     def _execution_book_ready(self) -> bool:
         hub = getattr(self, "hub", None)

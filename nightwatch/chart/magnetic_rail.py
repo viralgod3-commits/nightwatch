@@ -165,7 +165,6 @@ def hit_control_key(point: Any, layout: Mapping[str, Any], *, blocked: bool) -> 
 
 import math
 import time
-from typing import Any
 from PySide6 import QtCore, QtGui, QtWidgets
 from PySide6.QtCore import QTimer, Qt, Signal
 from ..models import format_price

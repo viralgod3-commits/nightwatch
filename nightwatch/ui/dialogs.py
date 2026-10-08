@@ -1543,40 +1543,6 @@ class WorkspacePresetEditor(QtWidgets.QWidget):
         self.status.setText(f"Saved · {active_name}")
 
 
-class RightPanelPresetsDialog(QtWidgets.QDialog):
-    """Compatibility entry point for the visual workspace editor."""
-
-    def __init__(self, presets, parent=None, *, panel_names=None):
-        super().__init__(parent)
-        self.setWindowTitle("Workspace presets")
-        self.resize(1000, 660)
-        controller = getattr(parent, "right_rail_controller", None)
-        layout = QtWidgets.QVBoxLayout(self)
-        layout.setContentsMargins(16, 16, 16, 16)
-        self.editor = WorkspacePresetEditor(
-            presets, self, panel_names=panel_names,
-            aliases=controller.state.aliases if controller else None,
-            active_name=controller.state.active_preset if controller else None,
-            current_layout_provider=getattr(parent, "_current_right_panel_definition", None),
-        )
-        self.editor.apply_requested.connect(lambda definitions, name: self.accept())
-        layout.addWidget(self.editor, 1)
-        buttons = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.StandardButton.Cancel)
-        buttons.button(QtWidgets.QDialogButtonBox.StandardButton.Cancel).setAutoDefault(False)
-        buttons.rejected.connect(self.reject)
-        layout.addWidget(buttons)
-
-    def definitions(self):
-        return self.editor.definitions()
-
-    def values(self):
-        return {name: definition["visible"] for name, definition in self.definitions().items()}
-
-    def reject(self):
-        if not self.editor.canvas.cancel_gesture():
-            super().reject()
-
-
 class NightwatchSettingsDialog(QtWidgets.QDialog):
     """Single large settings surface for configuration and developer tooling.
 
@@ -2787,10 +2753,6 @@ class NightwatchSettingsDialog(QtWidgets.QDialog):
         name = str(self.panel_preset.itemData(index) or self.panel_preset.itemText(index))
         if name in self.host.right_layout_presets:
             self.host._apply_right_layout_preset(name)
-
-    def _edit_panel_presets(self) -> None:
-        self.host.edit_right_panel_presets()
-        self.sync_from_owner()
 
     def _reset_panels(self) -> None:
         self.host._reset_right_panel_layout()

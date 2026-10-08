@@ -22,3 +22,5 @@ jobs:
             printf '%s\n' 'Test files are intentionally excluded from this repository:' "$forbidden"
             exit 1
           fi
+      - name: Check architecture boundaries
+        run: python3 -m nightwatch.architecture_rules

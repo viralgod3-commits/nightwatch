@@ -476,9 +476,6 @@ class LeadershipTimelineWidget(QtWidgets.QWidget):
         self.detail_timer.setSingleShot(True)
         self.detail_timer.setInterval(450)
         self.detail_timer.timeout.connect(self._request_details)
-        self.play_timer = QtCore.QTimer(self)
-        self.play_timer.setInterval(900)
-        self.play_timer.timeout.connect(self._play_step)
         self._apply_fixed_palette()
     def _build_ui(self):
         build_leaders(self)
@@ -693,7 +690,6 @@ class LeadershipTimelineWidget(QtWidgets.QWidget):
         if not self._view_visible:
             self.detail_timer.stop()
             self.detail_cancel.set()
-            self.play_timer.stop()
             self.play.setChecked(False)
         if self.active:
             if not was_active:
@@ -714,7 +710,6 @@ class LeadershipTimelineWidget(QtWidgets.QWidget):
         self._refresh_pending = False
         self.cancel.set()
         self.detail_timer.stop()
-        self.play_timer.stop()
         self.play.setChecked(False)
         self.detail_cancel.set()
 
@@ -741,7 +736,6 @@ class LeadershipTimelineWidget(QtWidgets.QWidget):
         self.refresh_timer.stop()
         self.load_timer.stop()
         self.detail_timer.stop()
-        self.play_timer.stop()
         self.cancel.set()
         self.detail_cancel.set()
         if hasattr(self, "context_expiry_timer"):
@@ -891,32 +885,6 @@ class LeadershipTimelineWidget(QtWidgets.QWidget):
     def _cursor_changed(self) -> None:
         self.render()
         self._schedule_details()
-
-    def _seek(self, step: int) -> None:
-        self.play.setChecked(False)
-        self.replay.setValue(max(0, min(24, self.replay.value() + step)))
-
-    def _latest(self) -> None:
-        self.play.setChecked(False)
-        self.replay.setValue(24)
-
-    def _toggle_play(self, playing: bool) -> None:
-        self.play.update()
-        if playing:
-            self.detail_timer.stop()
-            self.detail_cancel.set()
-            if self.replay.value() == 24:
-                self.replay.setValue(0)
-            self.play_timer.start()
-        else:
-            self.play_timer.stop()
-            self._schedule_details()
-
-    def _play_step(self) -> None:
-        self.replay.setValue(min(24, self.replay.value() + 1))
-        if self.replay.value() == 24:
-            self.play.setChecked(False)
-
 
     def _analysis_view_key(self):
         return (self.generation, self.cursor_end(), tuple(self.symbols),
@@ -1372,14 +1340,6 @@ class LeadershipTimelineWidget(QtWidgets.QWidget):
     def _apply_fixed_palette(self) -> None:
         palette = dict(LEADERS_PALETTE)
         self.theme = palette
-        if hasattr(self, "sector_bars"):
-            self.sector_bars.set_theme(palette)
-        if hasattr(self, "distribution_bar"):
-            self.distribution_bar.set_theme(palette)
-        for button_name in ("back", "play", "forward"):
-            button = getattr(self, button_name, None)
-            if button is not None and hasattr(button, "set_theme"):
-                button.set_theme(palette)
         self.setStyleSheet(leaders_stylesheet(palette) + _workspace_stylesheet("leadershipTimeline"))
         self.render()
 
@@ -1665,49 +1625,10 @@ class LeadershipCellDelegate(QtWidgets.QStyledItemDelegate):
         painter.restore()
 
 
-class LeadershipHistoryTable(QtWidgets.QTableWidget):
-    def paintEvent(self, event):
-        super().paintEvent(event)
-
-
 class _LeadershipRankItem(QtWidgets.QTableWidgetItem):
     def __lt__(self, other):
         return int(self.text()) < int(other.text())
 
-
-class LeadershipTransport(QtWidgets.QPushButton):
-    def __init__(self, kind: str, theme: dict[str, str] | None = None, parent: QtWidgets.QWidget | None = None):
-        super().__init__(parent)
-        self.kind = kind
-        self.theme = dict(theme or {})
-        self.setObjectName("leadershipTransport")
-        self.setFixedSize(27, 25)
-        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
-
-    def set_theme(self, theme: dict[str, str]) -> None:
-        self.theme = dict(theme)
-        self.update()
-
-    def paintEvent(self, event: QtGui.QPaintEvent) -> None:
-        super().paintEvent(event)
-        painter = QtGui.QPainter(self)
-        painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing)
-        ink = QtGui.QColor(self.theme.get("muted", self.theme.get("text", "#8E8E96")))
-        if self.isChecked():
-            ink = QtGui.QColor(self.theme.get("text", ink.name()))
-        painter.setPen(QtGui.QPen(ink, 1.2))
-        painter.setBrush(ink if self.kind == "play" else Qt.BrushStyle.NoBrush)
-        x, y = self.width() / 2, self.height() / 2
-        if self.kind == "play" and self.isChecked():
-            painter.drawRect(QtCore.QRectF(x - 4, y - 5, 2, 10))
-            painter.drawRect(QtCore.QRectF(x + 2, y - 5, 2, 10))
-        else:
-            direction = -1 if self.kind == "back" else 1
-            points = [QtCore.QPointF(x - 4 * direction, y - 5), QtCore.QPointF(x + 4 * direction, y),
-                      QtCore.QPointF(x - 4 * direction, y + 5)]
-            painter.drawPolygon(QtGui.QPolygonF(points))
-            if self.kind != "play":
-               painter.drawLine(QtCore.QPointF(x + 6 * direction, y - 5), QtCore.QPointF(x + 6 * direction, y + 5))
 
 class LeadersPairCard(QtWidgets.QFrame):
     """Compatibility card kept for the existing detail/fact pipeline."""
@@ -1825,173 +1746,6 @@ class LeadersPairCard(QtWidgets.QFrame):
         self.watch.setText("?" if watched else "?")
 
 
-class DistributionBar(QtWidgets.QWidget):
-    def __init__(self, theme: dict[str, str] | None = None, parent: QtWidgets.QWidget | None = None):
-        super().__init__(parent)
-        self.theme = dict(theme or {})
-        self.setMinimumHeight(20)
-        self.setMaximumHeight(20)
-        self.counts: dict[str, int] = {}
-
-    def set_theme(self, theme: dict[str, str]) -> None:
-        self.theme = dict(theme)
-        self.update()
-
-    def set_counts(self, counts: dict[str, int]) -> None:
-        next_counts = dict(counts)
-        if next_counts == self.counts:
-            return
-        self.counts = next_counts
-        self.update()
-
-    def paintEvent(self, event: QtGui.QPaintEvent) -> None:
-
-        painter = QtGui.QPainter(self)
-        painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing)
-        rect = QtCore.QRectF(self.rect()).adjusted(0.5, 3.5, -0.5, -3.5)
-        painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(QtGui.QColor(self.theme.get("panel2", self.theme.get("control", "#000000"))))
-        painter.drawRoundedRect(rect, 5, 5)
-        total = sum(max(0, int(v)) for v in self.counts.values())
-        if total <= 0:
-            return
-        x = rect.left()
-        order = ("Leading", "Improving", "Cooling", "Lagging", "Flat", "Waiting")
-        for state in order:
-            count = max(0, int(self.counts.get(state, 0)))
-            if not count:
-                continue
-            width = rect.width() * count / total
-            seg = QtCore.QRectF(x, rect.top(), width, rect.height())
-            painter.setBrush(QtGui.QColor(_leader_color(state, self.theme)))
-            painter.drawRect(seg)
-            x += width
-
-
-class SectorBars(QtWidgets.QWidget):
-    def __init__(self, theme: dict[str, str] | None = None, parent: QtWidgets.QWidget | None = None):
-        super().__init__(parent)
-        self.theme = dict(theme or {})
-        self.values: list[tuple[str, float]] = []
-        self.setMinimumHeight(108)
-
-    def set_theme(self, theme: dict[str, str]) -> None:
-        self.theme = dict(theme)
-        self.update()
-
-    def set_values(self, values: list[tuple[str, float]]) -> None:
-        next_values = values[:6]
-        if next_values == self.values:
-            return
-        self.values = next_values
-        self.update()
-
-    def paintEvent(self, event: QtGui.QPaintEvent) -> None:
-        painter = QtGui.QPainter(self)
-        painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing)
-        apply_text_render_hints(painter)
-        if not self.values:
-            painter.setPen(QtGui.QColor(self.theme.get("muted", "#8E8E96")))
-            painter.setFont(typography_font(TextRole.UI_BODY))
-            painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, "Waiting for sector data")
-            return
-        rect = QtCore.QRectF(self.rect()).adjusted(4, 7, -4, -4)
-        n = len(self.values)
-        gap = 8.0
-        width = max(12.0, (rect.width() - gap * (n - 1)) / n)
-        max_abs = max(0.25, max(abs(v) for _, v in self.values))
-        top_area = rect.height() - 28
-        for i, (name, value) in enumerate(self.values):
-            x = rect.left() + i * (width + gap)
-            bar_h = max(3.0, top_area * min(1.0, abs(value) / max_abs))
-            y = rect.top() + top_area - bar_h
-            color = QtGui.QColor(self.theme.get("green", "#22D27A") if value >= 0 else self.theme.get("red", "#FF7A85"))
-            gradient = QtGui.QLinearGradient(x, y, x, y + bar_h)
-            top = QtGui.QColor(color); top.setAlpha(230)
-            bottom = QtGui.QColor(color); bottom.setAlpha(75)
-            gradient.setColorAt(0, top); gradient.setColorAt(1, bottom)
-            painter.setPen(Qt.PenStyle.NoPen)
-            painter.setBrush(gradient)
-            painter.drawRoundedRect(QtCore.QRectF(x, y, width, bar_h), 2, 2)
-            name_rect = device_pixel_rect(
-                self,
-                QtCore.QRectF(x - 3, rect.top() + top_area + 3, width + 6, 12),
-            )
-            value_rect = device_pixel_rect(
-                self,
-                QtCore.QRectF(x - 3, rect.top() + top_area + 15, width + 6, 12),
-            )
-            painter.setPen(QtGui.QColor(self.theme.get("muted", "#8E8E96")))
-            painter.setFont(typography_font(TextRole.UI_LABEL))
-            painter.drawText(name_rect, Qt.AlignmentFlag.AlignCenter, name[:8])
-            painter.setPen(color)
-            painter.setFont(typography_font(TextRole.MARKET_VALUE_EMPHASIZED))
-            painter.drawText(value_rect, Qt.AlignmentFlag.AlignCenter, f"{value:+.1f}%")
-
-
-def _metric_block(parent_layout: QtWidgets.QHBoxLayout, title: str) -> tuple[QtWidgets.QLabel, QtWidgets.QLabel]:
-    frame = QtWidgets.QFrame()
-    frame.setObjectName("leadersMetricBlock")
-    layout = QtWidgets.QVBoxLayout(frame)
-    layout.setContentsMargins(12, 10, 12, 10)
-    layout.setSpacing(3)
-    frame.setMinimumHeight(88)
-    head = QtWidgets.QLabel(title)
-    head.setObjectName("leadersMetricTitle")
-    set_text_role(head, TextRole.UI_LABEL)
-    value = QtWidgets.QLabel("-")
-    value.setObjectName("leadersMetricValue")
-    set_text_role(value, TextRole.MARKET_VALUE_LARGE)
-    sub = ElidedLabel("")
-    sub.setObjectName("leadersMetricSub")
-    set_text_role(sub, TextRole.UI_BODY)
-    layout.addWidget(head)
-    layout.addWidget(value)
-    layout.addWidget(sub)
-    parent_layout.addWidget(frame, 1)
-    return value, sub
-
-
-def _rank_panel(title: str) -> tuple[QtWidgets.QFrame, QtWidgets.QVBoxLayout, list[tuple[QtWidgets.QLabel, QtWidgets.QLabel, QtWidgets.QLabel]]]:
-    panel = QtWidgets.QFrame()
-    panel.setObjectName("leadersSidePanel")
-    layout = QtWidgets.QVBoxLayout(panel)
-    layout.setContentsMargins(12, 10, 12, 10)
-    layout.setSpacing(7)
-    panel.setMinimumHeight(176)
-    header = QtWidgets.QHBoxLayout()
-    label = QtWidgets.QLabel(title)
-    label.setObjectName("leadersSideTitle")
-    set_text_role(label, TextRole.PANEL_TITLE)
-    header.addWidget(label)
-    header.addStretch(1)
-    layout.addLayout(header)
-    rows: list[tuple[QtWidgets.QLabel, QtWidgets.QLabel, QtWidgets.QLabel]] = []
-    for i in range(5):
-        row = QtWidgets.QHBoxLayout()
-        row.setSpacing(7)
-        rank = QtWidgets.QLabel(str(i + 1))
-        rank.setObjectName("leadersRank")
-        set_text_role(rank, TextRole.TABLE_VALUE)
-        rank.setFixedWidth(14)
-        symbol = QtWidgets.QLabel("-")
-        symbol.setObjectName("leadersRankSymbol")
-        set_text_role(symbol, TextRole.INSTRUMENT_SYMBOL)
-        name = QtWidgets.QLabel("")
-        name.setObjectName("leadersRankName")
-        set_text_role(name, TextRole.UI_BODY)
-        change = QtWidgets.QLabel("-")
-        change.setObjectName("leadersRankChange")
-        set_text_role(change, TextRole.MARKET_VALUE_EMPHASIZED)
-        row.addWidget(rank)
-        row.addWidget(symbol)
-        row.addWidget(name, 1)
-        row.addWidget(change)
-        layout.addLayout(row)
-        rows.append((symbol, name, change))
-    return panel, layout, rows
-
-
 class _WorkspaceContent(QtWidgets.QWidget):
     """An optional inspector overlays the view without shrinking its canvas."""
 
@@ -2087,15 +1841,13 @@ def _workspace_combo(items, index=0):
 def _workspace_finish(owner):
     for widget in owner.findChildren(QtWidgets.QLabel):
         if any(token in widget.objectName().lower() for token in
-               ("muted", "subtitle", "caption", "controllabel", "metrictitle", "metricsub", "stattitle", "coverage")):
+               ("muted", "subtitle", "caption", "controllabel", "stattitle", "coverage")):
             widget.setProperty("workspaceMuted", True)
     for widget in owner.findChildren(QtWidgets.QFrame):
-        if widget.objectName() in {"leadersContextStrip", "leadersMainPanel", "leadersSidePanel",
+        if widget.objectName() in {"leadersContextStrip", "leadersMainPanel",
                                   "sectorPanel", "sectorStatCard", "rotationPanel"}:
             widget.setProperty("workspacePanel", True)
     for widget in owner.findChildren(QtWidgets.QAbstractButton):
-        if widget.objectName() == "leadershipTransport":
-            continue
         widget.setCursor(Qt.CursorShape.PointingHandCursor)
         widget.setAccessibleName(widget.accessibleName() or widget.text() or widget.toolTip())
         if widget.objectName() == "sectorPeerSymbol":
@@ -2609,7 +2361,7 @@ def build_leaders(owner) -> None:
     owner.refresh_button = QtWidgets.QPushButton("Refresh")
     owner.refresh_button.clicked.connect(lambda _checked=False: owner.refresh(force=True))
     owner.actions_layout.addWidget(owner.refresh_button)
-    owner.table = LeadershipHistoryTable()
+    owner.table = QtWidgets.QTableWidget()
     owner.table.setObjectName("leadershipTable")
     owner.table.setColumnCount(len(_LEADER_HEADERS))
     owner.table.setHorizontalHeaderLabels(_LEADER_HEADERS)
@@ -2770,8 +2522,6 @@ def update_dashboard(owner, prepared) -> None:
         if button.text() != button_text:
             button.setText(button_text)
 
-
-
 def leaders_stylesheet(theme: dict[str, str] | None = None) -> str:
     """Leaders cells and chrome using the shared market workspace palette."""
 
@@ -2801,17 +2551,9 @@ def leaders_stylesheet(theme: dict[str, str] | None = None) -> str:
         QLabel#leadershipSubtitle {{ color: {muted}; }}
         QLabel#leadershipCoverage, QLabel#leadershipMuted {{ color: {muted}; }}
 
-        QFrame#leadersContextStrip, QFrame#leadersMainPanel, QFrame#leadersSidePanel, QFrame#leadersControlsPanel {{
+        QFrame#leadersContextStrip, QFrame#leadersMainPanel, QFrame#leadersControlsPanel {{
             background: {panel}; border: 1px solid {border}; border-radius: 6px;
         }}
-        QFrame#leadersMetricBlock {{
-            background: transparent; border: 0; border-right: 1px solid {separator}; border-radius: 0;
-        }}
-        QLabel#leadersMetricTitle {{ color: {muted}; }}
-        QLabel#leadersMetricValue {{ color: {text}; }}
-        QLabel#leadersMetricValue[direction="positive"] {{ color: {green}; }}
-        QLabel#leadersMetricValue[direction="negative"] {{ color: {red}; }}
-        QLabel#leadersMetricSub {{ color: {muted}; }}
 
         QLabel#leadersControlLabel {{ color: {muted}; padding: 0 2px; }}
         QLabel#leadersVenueChip {{
@@ -2873,25 +2615,11 @@ def leaders_stylesheet(theme: dict[str, str] | None = None) -> str:
         }}
         QTableWidget#leadershipTable QHeaderView::section:hover {{ color: {text}; background: {hover}; }}
 
-        QWidget#leadersReplayBar {{ background: {panel2}; border: 0; border-top: 1px solid {separator}; }}
-        QLabel#leadersTinyLabel {{ color: {muted}; }}
-        QPushButton#leadershipTransport {{ background: transparent; border: 0; padding: 0; }}
-        QPushButton#leadersLatestButton {{ background: {control}; color: {muted}; border: 1px solid {border}; border-radius: 4px; padding: 2px 7px; }}
-        QSlider#leadershipReplay::groove:horizontal {{ background: {separator}; height: 3px; }}
-        QSlider#leadershipReplay::handle:horizontal {{ background: {active_line}; width: 8px; margin: -4px 0; border-radius: 4px; }}
-
         QComboBox#leadersCombo {{ background: #000000; color: {text}; border: 1px solid {border}; border-radius: 5px; min-height: 30px; padding: 0 10px; }}
         QComboBox#leadersCombo QAbstractItemView {{ background: #000000; color: {text}; selection-background-color: #000000; selection-color: {active_line}; border: 1px solid {border}; }}
         QComboBox#leadersCombo:focus, QLineEdit#leadersSearch:focus {{ border-color: {active_line}; }}
         QPushButton#leadersToolbarButton:focus, QToolButton#leadersToolbarButton:focus, QPushButton#leadersStateTab:focus {{ border-color: {active_line}; }}
         QPushButton#leadersToolbarButton:disabled {{ color: {muted}; border-color: {separator}; }}
-        QLabel#leadersSideTitle {{ color: {text}; }}
-        QLabel#leadersRank {{ color: {muted}; }}
-        QLabel#leadersRankSymbol {{ color: {text}; min-width: 52px; }}
-        QLabel#leadersRankName {{ color: {muted}; }}
-        QLabel#leadersRankChange {{ color: {text}; }}
-        QLabel#leadersDistributionValue {{ color: {muted}; }}
-
         QMenu#leadershipFilters, QWidget#leadershipTimeline QMenu {{ background: {panel}; color: {text}; border: 1px solid {border}; }}
         QWidget#leadershipTimeline QMenu QPushButton {{
             background: {control}; color: {text}; border: 1px solid {border}; border-radius: 4px; min-height: 24px; padding: 3px 7px;
@@ -4759,10 +4487,6 @@ class SectorOverviewWidget(QtWidgets.QWidget):
         settings.setValue("markets/sectors/selected_v1", self.selected_sector)
         _workspace_save_chrome(self, settings, "sectors")
 
-
-import math
-
-
 def encode_histories(histories, end):
     return {
         symbol: [
@@ -5437,14 +5161,6 @@ def _rotation_button(text, name="rotationButton"):
     button.setCursor(Qt.CursorShape.PointingHandCursor)
     button.setAccessibleName(text)
     return button
-
-
-def _rotation_combo(items):
-    combo = QtWidgets.QComboBox()
-    combo.setMinimumHeight(36)
-    for caption, data in items:
-        combo.addItem(caption, data)
-    return combo
 
 
 class RotationScannerWidget(LeadershipTimelineWidget):

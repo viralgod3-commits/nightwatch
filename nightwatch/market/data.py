@@ -1144,12 +1144,9 @@ class _DepthParserWorker(QtCore.QObject):
             self._emit_book(event)
 
 
-import json
 import random
-import time
 from collections import OrderedDict
 from collections.abc import Callable
-from typing import Any
 
 import numpy as np
 from PySide6 import QtCore, QtNetwork
@@ -1176,7 +1173,6 @@ from ..constants import (
 from ..models import Candle, shift_candle_time
 from ..networking.binance import ApiTask, launch_task
 from ..networking.binance import BINANCE_RATE_LIMITER
-from ..models import safe_float
 
 
 DEPTH_SNAPSHOT_RETRY_DELAYS_MS = (400, 800, 1600)

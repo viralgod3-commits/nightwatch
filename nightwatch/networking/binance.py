@@ -319,7 +319,6 @@ def http_bytes(
     return run_async(
         http_bytes_async(url, headers=headers, timeout=timeout, max_bytes=max_bytes)
     )
-from collections.abc import Callable
 from typing import Any
 from PySide6 import QtCore
 from PySide6.QtCore import Signal
@@ -409,17 +408,12 @@ def launch_task(function: Callable[[], Any], finished: Callable[[Any], None], fa
     return task
 
 
-import asyncio
 import math
-import logging
 from logging.handlers import RotatingFileHandler
 import os
 import re
-import threading
-import time
 from collections import deque
 from email.utils import parsedate_to_datetime
-from typing import Any
 from ..constants import BINANCE_WS_CONNECTION_LIMIT_5M
 from ..models import safe_float
 _BINANCE_ERROR_CODE = re.compile('(?<!\\d)(-\\d{3,5})(?!\\d)')
@@ -912,15 +906,11 @@ SPOT_RATE_LIMITER = BinanceRateLimiter("SPOT")
 BINANCE_RATE_LIMITER = BinanceRateLimiter()
 import csv
 import io
-import time
 import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
 import zipfile
-from collections.abc import Callable
 from datetime import datetime, timezone
-from typing import Any
-from ..constants import APP_NAME
 from ..database import AppDatabase
 VISION_BUCKET = 'https://s3-ap-northeast-1.amazonaws.com/data.binance.vision'
 VISION_FILES = 'https://data.binance.vision/'
@@ -1039,19 +1029,9 @@ class BinanceVisionArchive:
             imported_rows += len(events)
             time.sleep(0.01)
         return (imported_files, imported_rows)
-import asyncio
-import csv
 import hashlib
 import hmac
-import json
-import os
-import threading
-import time
-import urllib.parse
-from collections import deque
 from collections.abc import Awaitable, Callable
-from datetime import datetime, timezone
-from typing import Any
 import numpy as np
 from ..constants import CONDITIONAL_ORDER_TYPES, HISTORY_PAGE_LIMIT, MAIN_REST, MAX_CHART_CANDLES, TEST_REST
 from ..models import Candle, shift_candle_time

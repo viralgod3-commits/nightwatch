@@ -1016,10 +1016,7 @@ def load_app_fonts(application: QtGui.QGuiApplication, package_root: str) -> Non
 # ========================================================================
 # utilities
 # ========================================================================
-import math
-import os
 
-from PySide6 import QtCore, QtGui, QtWidgets
 from PySide6.QtCore import Qt
 
 
@@ -1814,7 +1811,6 @@ def application_data_directory() -> str:
 import threading
 import time
 from collections import Counter, defaultdict, deque
-from typing import Any
 
 
 class DiagnosticsHub:

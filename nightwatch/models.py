@@ -139,7 +139,6 @@ def validate_step(value: str, step: str, label: str, *, offset: str = '0') -> st
 
 
 from dataclasses import dataclass
-from typing import Any
 
 
 @dataclass(slots=True)
@@ -212,9 +211,6 @@ class PriceAlert:
     level: float
     direction: str
     active: bool = True
-
-
-from typing import Any
 
 import numpy as np
 
@@ -361,6 +357,29 @@ class OrderFlowLevelMetrics:
     visible_delta_notional: float = 0.0
 
 
+def order_flow_semantic_event(
+    *,
+    trade_reload_count: int,
+    recent_replenished_notional: float,
+    restack_count: int,
+    recent_restacked_notional: float,
+    rejected_buy_prints: int,
+    rejected_sell_prints: int,
+) -> tuple[str, str]:
+    """Return the canonical sparse event for one analytical price level."""
+    if trade_reload_count > 0 and recent_replenished_notional > 0.0:
+        return ('reload', 'Reload')
+    if restack_count > 0 and recent_restacked_notional > 0.0:
+        return ('restack', 'Restack')
+    if rejected_sell_prints > 0 and rejected_buy_prints == 0:
+        return ('rejected_sell', 'Sell reject')
+    if rejected_buy_prints > 0 and rejected_sell_prints == 0:
+        return ('rejected_buy', 'Buy reject')
+    if rejected_buy_prints > 0 and rejected_sell_prints > 0:
+        return ('rejected_both', 'Two-way')
+    return ('', '')
+
+
 @dataclass(frozen=True, slots=True)
 class OrderFlowDisplayLevel:
     """Display-ready immutable state for one DOM price level.
@@ -488,16 +507,6 @@ class OrderFlowSnapshot:
 
 
 @dataclass(frozen=True, slots=True)
-class DomWorkingOrder:
-    price: float
-    quantity: float
-    side: str
-    label: str
-    reduce_only: bool = False
-    source: str = 'STANDARD'
-
-
-@dataclass(frozen=True, slots=True)
 class DomPositionOverlay:
     side: str
     quantity: float
@@ -506,13 +515,6 @@ class DomPositionOverlay:
     unrealized_pnl: float
     leverage: int = 0
     liquidation_price: float = 0.0
-
-
-@dataclass(frozen=True, slots=True)
-class DomExecutionContext:
-    symbol: str
-    positions: tuple[DomPositionOverlay, ...] = ()
-    orders: tuple[DomWorkingOrder, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -802,9 +804,6 @@ class SettingsHostPort(Protocol):
         ...
 
     def _apply_right_layout_preset(self, name: str) -> None:
-        ...
-
-    def edit_right_panel_presets(self) -> None:
         ...
 
     def _current_right_panel_definition(self) -> dict[str, Any]:

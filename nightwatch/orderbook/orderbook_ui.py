@@ -56,7 +56,7 @@ _PAIRED_ANALYTIC_WIDTH = 70.0
 from ..models import (
     ORDER_FLOW_AGGREGATION_MULTIPLIERS, DomPositionOverlay,
     OrderFlowDisplayLevel, OrderFlowPresentationFrame,
-    OrderFlowSnapshot, OrderFlowTradePrint,
+    OrderFlowSnapshot, OrderFlowTradePrint, order_flow_semantic_event,
 )
 from .revisions import (
     amount_inputs, amount_revision_key, levels_unchanged,
@@ -73,20 +73,6 @@ from ..chart.analysis import LatestJob
 
 def _clamp(value: float, low: float=0.0, high: float=1.0) -> float:
     return max(low, min(high, value))
-
-def _order_flow_semantic_event(*, trade_reload_count: int, recent_replenished_notional: float, restack_count: int, recent_restacked_notional: float, rejected_buy_prints: int, rejected_sell_prints: int) -> tuple[str, str]:
-    """Return the canonical sparse event for one analytical price level."""
-    if trade_reload_count > 0 and recent_replenished_notional > 0.0:
-        return ('reload', 'Reload')
-    if restack_count > 0 and recent_restacked_notional > 0.0:
-        return ('restack', 'Restack')
-    if rejected_sell_prints > 0 and rejected_buy_prints == 0:
-        return ('rejected_sell', 'Sell reject')
-    if rejected_buy_prints > 0 and rejected_sell_prints == 0:
-        return ('rejected_buy', 'Buy reject')
-    if rejected_buy_prints > 0 and rejected_sell_prints > 0:
-        return ('rejected_both', 'Two-way')
-    return ('', '')
 
 def _order_flow_view_scale(values: list[float]) -> float:
     positives = sorted((abs(value) for value in values if math.isfinite(value) and abs(value) > 1e-12))
@@ -272,7 +258,14 @@ def aggregate_order_flow_snapshot(
             restacked = sum((max(0.0, level.recent_restacked_notional) for level in members))
             reload_count = sum((max(0, int(level.trade_reload_count)) for level in members))
             restack_count = sum((max(0, int(level.restack_count)) for level in members))
-            semantic_event_kind, semantic_event_label = _order_flow_semantic_event(trade_reload_count=reload_count, recent_replenished_notional=replenished, restack_count=restack_count, recent_restacked_notional=restacked, rejected_buy_prints=rejected_buy, rejected_sell_prints=rejected_sell)
+            semantic_event_kind, semantic_event_label = order_flow_semantic_event(
+                trade_reload_count=reload_count,
+                recent_replenished_notional=replenished,
+                restack_count=restack_count,
+                recent_restacked_notional=restacked,
+                rejected_buy_prints=rejected_buy,
+                rejected_sell_prints=rejected_sell,
+            )
             weight = notional if notional > 1e-12 else float(len(members))
             persistence = sum((level.persistence_ratio * max(level.notional, 0.0) for level in members)) / weight if notional > 1e-12 else sum((level.persistence_ratio for level in members)) / max(1, len(members))
             history, history_presence, history_peak, history_mean = _aggregate_bucket_liquidity_history(members)
@@ -1214,9 +1207,6 @@ class TradesTapeWidget(QtWidgets.QWidget):
             f"QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{ background: transparent; }}"
         )
 
-import math
-from PySide6 import QtCore, QtGui, QtWidgets
-from PySide6.QtCore import Qt, Signal
 from ..models import ORDER_FLOW_AGGREGATION_MULTIPLIERS
 from ..utilities import TextRole, typography_controller, typography_font, typography_font_at_pixel_size, typography_min_pixel_size
 
@@ -1602,12 +1592,9 @@ class OrderBookControlBar(QtWidgets.QFrame):
         self.range_value.setText(f'{round(self._depth_range * 100)}%')
         for key, action in self._density_actions.items():
             self._set_checked_without_signal(action, key == self._density)
-import math
-import time
 from collections import Counter, OrderedDict, deque
 from dataclasses import dataclass, replace
 from typing import ClassVar
-from PySide6 import QtCore, QtGui, QtWidgets
 from PySide6.QtCore import QTimer, Qt, Signal
 from ..models import DomPositionOverlay, OrderFlowPresentationFrame
 from ..models import ORDER_FLOW_AGGREGATION_MULTIPLIERS, OrderFlowDisplayLevel, OrderFlowSnapshot
@@ -2170,8 +2157,6 @@ class _DomRasterCanvas(QtWidgets.QWidget):
         self._last_painted_sequence = -1
         self._last_painted_depth_ingress_id = -1
         self._last_pipe_sample_at = 0.0
-        self._latency_summary_cache = ''
-        self._latency_summary_cache_at = 0.0
         self._required_paint_regions: dict[int, QtGui.QRegion] = {}
         self._required_paint_rows_seen: set[int] = set()
         self._latest_applied_sequence = -1
@@ -2263,12 +2248,6 @@ class _DomRasterCanvas(QtWidgets.QWidget):
         if self._theme_cache_ready:
             self._prepare_display()
             self.update()
-
-    @staticmethod
-    def _contrast_text_color(color: QtGui.QColor) -> QtGui.QColor:
-        r, g, b, _a = color.getRgb()
-        luminance = 0.2126 * r + 0.7152 * g + 0.0722 * b
-        return QtGui.QColor('#050506' if luminance >= 142.0 else '#F2F5F7')
 
     def _refresh_profile_bar_palette(self, theme: dict[str, object] | None) -> None:
         del theme
@@ -2849,8 +2828,6 @@ class _DomRasterCanvas(QtWidgets.QWidget):
         self._last_painted_sequence = -1
         self._last_painted_depth_ingress_id = -1
         self._last_pipe_sample_at = 0.0
-        self._latency_summary_cache = ''
-        self._latency_summary_cache_at = 0.0
         self._required_paint_regions.clear()
         self._required_paint_rows_seen.clear()
         self._market_anchor_snapshot = None
@@ -3765,44 +3742,6 @@ class _DomRasterCanvas(QtWidgets.QWidget):
         self._latency_stage_max_ms[name] = max(self._latency_stage_max_ms.get(name, 0.0), value)
         return value
 
-    def _pipeline_latency_summary_text(self) -> str:
-        now = time.monotonic()
-        if self._latency_summary_cache_at > 0.0 and now - self._latency_summary_cache_at < self.LATENCY_DISPLAY_INTERVAL_SECONDS:
-            return self._latency_summary_cache
-        labels = (
-            ('socket_to_parser', 'socket→parser'),
-            ('parser_to_gui_dispatch', 'parser→GUI dispatch'),
-            ('gui_dispatch_to_main', 'GUI ingress queue'),
-            ('parser_to_main', 'parser→main'),
-            ('main_depth_handler', 'main depth handler'),
-            ('main_to_worker', 'worker queue'),
-            ('worker_depth_process', 'depth analysis'),
-            ('worker_wait', 'snapshot pacing wait'),
-            ('snapshot_build', 'snapshot build'),
-            ('worker_to_gui', 'GUI delivery'),
-            ('dom_queue', 'DOM queue'),
-            ('aggregation', 'display aggregation'),
-            ('prepare', 'prepare total'),
-            ('prepare_to_paint', 'paint wait'),
-            ('paint', 'paint'),
-            ('dom_to_paint', 'DOM receive→rows'),
-            ('socket_to_paint', 'socket→rows'),
-        )
-        lines = []
-        for key, label in labels:
-            samples = self._latency_stage_samples.get(key)
-            if not samples:
-                continue
-            lines.append(
-                f"{label}: p50 {self._latency_ms_text(self._percentile(samples, 0.50))}, "
-                f"p95 {self._latency_ms_text(self._percentile(samples, 0.95))}, "
-                f"p99 {self._latency_ms_text(self._percentile(samples, 0.99))}, "
-                f"MAX {self._latency_ms_text(self._latency_stage_max_ms.get(key, 0.0))}"
-            )
-        self._latency_summary_cache = '\n'.join(lines)
-        self._latency_summary_cache_at = now
-        return self._latency_summary_cache
-
     def _fitted_price_text(self, value: float, metrics: QtGui.QFontMetricsF, width: float) -> str:
         del metrics, width
         return self._price_text(value)
@@ -4118,31 +4057,6 @@ class _DomRasterCanvas(QtWidgets.QWidget):
 
     def _draw_snapped_line(self, painter: QtGui.QPainter, x1: float, y1: float, x2: float, y2: float) -> None:
         painter.drawLine(QtCore.QPointF(self._snap(x1), self._snap(y1)), QtCore.QPointF(self._snap(x2), self._snap(y2)))
-
-    def _draw_row_line_around_state(
-        self,
-        painter: QtGui.QPainter,
-        left: float,
-        y: float,
-        right: float,
-    ) -> None:
-        """Draw a moving row marker without crossing the STATE text lane."""
-        columns = self._geometry.get('columns', {})
-        state_bounds = columns.get('state') if isinstance(columns, dict) else None
-        if not (
-            isinstance(state_bounds, tuple)
-            and len(state_bounds) == 2
-            and float(state_bounds[1]) > float(state_bounds[0])
-        ):
-            self._draw_snapped_line(painter, left, y, right, y)
-            return
-
-        state_left = max(float(left), float(state_bounds[0]))
-        state_right = min(float(right), float(state_bounds[1]))
-        if state_left > float(left):
-            self._draw_snapped_line(painter, left, y, state_left, y)
-        if state_right < float(right):
-            self._draw_snapped_line(painter, state_right, y, right, y)
 
     def _row_market_anchor_state(self, level: OrderFlowDisplayLevel) -> tuple[bool, float, bool, float]:
         """Resolve BBO/LTP row membership once per published snapshot."""
@@ -6682,11 +6596,8 @@ class _DomRasterCanvas(QtWidgets.QWidget):
             event.accept()
             return
         super().keyPressEvent(event)
-from PySide6 import QtCore, QtGui, QtWidgets
-from PySide6.QtCore import Qt, Signal
 from ..models import OrderFlowPresentationFrame
 from ..models import ORDER_FLOW_AGGREGATION_MULTIPLIERS, OrderFlowSnapshot
-from ..models import safe_float
 
 
 class _DomRasterWorkerCanvas(_DomRasterCanvas):

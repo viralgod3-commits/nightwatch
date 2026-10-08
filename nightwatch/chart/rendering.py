@@ -2623,7 +2623,6 @@ class NativeBarCompositeItem(pg.GraphicsObject):
         return self._bounds
 
 
-from PySide6 import QtCore, QtGui, QtWidgets
 
 
 from ..presentation import record_frame_request

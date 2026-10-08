@@ -1283,8 +1283,6 @@ if QtWidgets is not None:
             self._chart_minimum_width = RIGHT_RAIL_CHART_MIN_WIDTH
             self._clock = clock
             self._dirty_splitters, self._dirty_surfaces = set(), set()
-            self._overlays = {}
-            self._overlay_pending = False
             self._geometry_pending, self._outer_pending = False, False
             self._margin, self._edge_style = 0, None
             self.rail = QtWidgets.QFrame()
@@ -1473,14 +1471,6 @@ if QtWidgets is not None:
                 if isinstance(self._main_splitter, PanelSplitter):
                     self._dirty_surfaces.add(self._main_splitter)
                 self.geometry_changed.emit()
-                self._overlay_pending = True
-            if self._overlay_pending:
-                self._overlay_pending = False
-                for pid, (overlay, enabled) in tuple(self._overlays.items()):
-                    if enabled():
-                        self.position_overlay(pid, overlay)
-                    elif not overlay.isHidden():
-                        overlay.hide()
             surfaces, self._dirty_surfaces = self._dirty_surfaces, set()
             for splitter in surfaces:
                 splitter.sync_grab_surfaces()
@@ -1836,37 +1826,6 @@ if QtWidgets is not None:
                         visit(child); return
             visit(self.model.state.root)
             return result
-
-        def register_overlay(self, name, overlay, enabled):
-            pid = self.model.resolve(name)
-            self._overlays[pid] = (overlay, enabled)
-            overlay.destroyed.connect(lambda _obj=None, pid=pid: self._overlays.pop(pid, None))
-            self.request_overlay_positions()
-
-        def request_overlay_positions(self):
-            self._overlay_pending = True
-            self._request_frame()
-
-        def position_overlay(self, name, overlay, *, preferred_width=500, preferred_height=520):
-            pid = self.model.resolve(name)
-            spec = self.registry.get(pid)
-            if spec is None or not self.panel_active(pid):
-                overlay.hide(); return
-            shell, parent = self.sections[spec.title], overlay.parentWidget()
-            origin = shell.mapTo(parent, QtCore.QPoint())
-            width = min(preferred_width, parent.width())
-            height = min(preferred_height, shell.height(), parent.height())
-            x = origin.x()-width-6
-            if x < 0:
-                x = origin.x()+shell.width()+6
-            x = max(0, min(x, parent.width()-width))
-            y = max(0, min(origin.y(), parent.height()-height))
-            geometry = QtCore.QRect(x, y, width, height)
-            if overlay.geometry() != geometry:
-                overlay.setGeometry(geometry)
-            if overlay.isHidden():
-                overlay.show()
-            overlay.raise_()
 
         def eventFilter(self, watched, event):
             kind = event.type()

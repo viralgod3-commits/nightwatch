@@ -450,7 +450,6 @@ def main() -> int:
         return application.exec()
 
 
-import os
 from dataclasses import dataclass
 from typing import Any
 

@@ -9,7 +9,10 @@ from dataclasses import dataclass, field, replace
 from typing import Any
 
 from ..models import OrderFlowDisplayLevel, OrderFlowLevelMetrics, OrderFlowSnapshot, OrderFlowTradePrint
-from ..models import BOOK_BBO_FRESH_SECONDS, BOOK_DEPTH_FRESH_SECONDS, book_data_is_fresh
+from ..models import (
+    BOOK_BBO_FRESH_SECONDS, BOOK_DEPTH_FRESH_SECONDS, book_data_is_fresh,
+    order_flow_semantic_event,
+)
 from .revisions import OrderFlowRevisionTracker
 from .tape import (
     TapePublisher, TapeSeedRequired, TapeStateDecoder, TapeStateEncoder,
@@ -25,20 +28,6 @@ def _number(value: Any) -> float:
 
 def _clamp(value: float, low: float=0.0, high: float=1.0) -> float:
     return max(low, min(high, value))
-
-def _order_flow_semantic_event(*, trade_reload_count: int, recent_replenished_notional: float, restack_count: int, recent_restacked_notional: float, rejected_buy_prints: int, rejected_sell_prints: int) -> tuple[str, str]:
-    """Return the canonical sparse event for one analytical price level."""
-    if trade_reload_count > 0 and recent_replenished_notional > 0.0:
-        return ('reload', 'Reload')
-    if restack_count > 0 and recent_restacked_notional > 0.0:
-        return ('restack', 'Restack')
-    if rejected_sell_prints > 0 and rejected_buy_prints == 0:
-        return ('rejected_sell', 'Sell reject')
-    if rejected_buy_prints > 0 and rejected_sell_prints == 0:
-        return ('rejected_buy', 'Buy reject')
-    if rejected_buy_prints > 0 and rejected_sell_prints > 0:
-        return ('rejected_both', 'Two-way')
-    return ('', '')
 
 @dataclass(slots=True)
 class _OrderFlowTradeBucket:
@@ -2273,7 +2262,7 @@ class OrderFlowAnalyzer:
             rejected_buy, rejected_sell,
         ) = self._price_execution_window(level.price, now, self.LEVEL_ACTIVITY_SECONDS)
         exact_trade = buy_trade + sell_trade
-        semantic_event_kind, semantic_event_label = _order_flow_semantic_event(
+        semantic_event_kind, semantic_event_label = order_flow_semantic_event(
             trade_reload_count=level.trade_reload_count,
             recent_replenished_notional=level.recent_replenished_notional,
             restack_count=level.restack_count,
@@ -2654,8 +2643,6 @@ class OrderFlowAnalyzer:
         return {'symbol': self.symbol, 'tick_size': self.tick_size, 'trade_buckets': len(self.trade_buckets), 'liquidity_buckets': len(self.liquidity_buckets), 'level_states': len(self._levels), 'pending_executions': len(self._pending_exec), 'recent_executions': sum((len(queue) for queue in self._recent_executions.values())), 'pending_cancellations': sum((len(queue) for queue in self._pending_cancellations.values())), 'recent_finalized_cancellations': sum((len(queue) for queue in self._recent_finalized_cancellations.values())), 'current_bid_levels': len(self._current_keys['bid']), 'current_ask_levels': len(self._current_keys['ask']), 'depth_capacity': self._depth_capacity, 'source_bid_levels': len(self._source_depth_bids), 'source_ask_levels': len(self._source_depth_asks), 'source_depth_update_id': self._source_depth_update_id, 'depth_initialized': self._depth_initialized, 'revision': self._revision, 'snapshot_sequence': self._snapshot_sequence, 'level_revision': self._level_revision, 'dirty_snapshot_prices': len(self._snapshot_dirty_price_keys), 'recent_price_keys': len(self._recent_price_keys), 'print_revision': self._print_revision, 'unresolved_prints': len(self._unresolved_prints), 'unresolved_print_capacity': self.UNRESOLVED_PRINT_CAPACITY, 'unresolved_print_evictions': self._unresolved_print_evictions, 'recent_print_cache_revision': self._recent_prints_cache_revision, 'snapshot_level_cache_hits': self._snapshot_level_cache_hits, 'current_level_order_revision': self._current_level_order_revision, 'current_level_sorted_revision': self._current_level_sorted_revision, 'snapshot_base_cache_levels': len(self._snapshot_base_levels), 'snapshot_level_partial_refreshes': self._snapshot_level_partial_refreshes, 'snapshot_level_full_refreshes': self._snapshot_level_full_refreshes, 'recent_print_cache_hits': self._recent_print_cache_hits, 'metrics_cache_hits': self._metrics_cache_hits, 'metrics_cache_revision': self._metrics_cache_revision, 'metrics_cache_expires': self._metrics_cache_expires, 'state_signal_transitions': sum(self._state_signal_counts.values()), 'state_signal_exits': sum(self._state_exit_counts.values()), 'state_significance_suppressed': sum(self._state_significance_suppressed.values()), 'state_active_suppressions': len(self._state_suppression_active), 'state_tracked_classifications': len(self._state_last_classification), 'state_overlap_entries': sum(self._state_overlap_counts.values()), 'price_execution_cache_hits': self._price_execution_cache_hits, 'price_execution_cache_entries': len(self._price_execution_cache), 'liquidity_history_cache_hits': self._liquidity_history_cache_hits, 'liquidity_history_cache_entries': len(self._liquidity_history_cache), 'last_depth_time': self._last_depth_time, 'last_trade_time': self._last_trade_time, 'book_ticker_time': self._book_ticker_time, 'book_ticker_update_id': self._book_ticker_update_id, 'last_trade_id': self._last_trade_id}
 
 
-import math
-import time
 from collections import deque
 from dataclasses import dataclass
 from typing import Any, Iterable
@@ -3043,10 +3030,6 @@ class MicrostructureAnalyzer:
             depth_age_seconds=depth_age,
             live=True,
         )
-
-
-import math
-import time
 
 from PySide6 import QtCore
 from PySide6.QtCore import Qt
