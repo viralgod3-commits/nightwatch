@@ -1208,11 +1208,11 @@ class TradesTapeWidget(QtWidgets.QWidget):
         )
 
 from ..models import ORDER_FLOW_AGGREGATION_MULTIPLIERS
-from ..utilities import TextRole, typography_controller, typography_font, typography_font_at_pixel_size, typography_min_pixel_size
+from ..utilities import TextRole, line_icon, typography_controller, typography_font, typography_font_at_pixel_size, typography_min_pixel_size
 
 class _OrderBookSurfaceButton(QtWidgets.QPushButton):
     """Keyboard-accessible control with a clear selected state."""
-    BUTTON_HEIGHT = 28
+    BUTTON_HEIGHT = 26
     HORIZONTAL_PADDING = 6
     MIN_CONTENT_WIDTH = 26
 
@@ -1239,7 +1239,7 @@ class _OrderBookSurfaceButton(QtWidgets.QPushButton):
             f"QPushButton:focus {{ border-color: {p['mid']}; }}"
             f"QPushButton:disabled {{ color: #454B53; background: transparent; border-color: {p['grid']}; }}"
             f"QPushButton#orderBookViewChoice {{ border-color: transparent; }}"
-            f"QPushButton#orderBookViewChoice:checked {{ background: {p['grid']}; }}"
+            f"QPushButton#orderBookViewChoice:checked {{ color: {p['text']}; background: {p['grid']}; }}"
             f"QPushButton#orderBookViewChoice:focus {{ border-color: {p['control_hover_line']}; }}"
         )
 
@@ -1263,7 +1263,7 @@ class OrderBookControlBar(QtWidgets.QFrame):
     auto_grouping_toggled = Signal(bool)
     reset_requested = Signal()
     display_option_toggled = Signal(str, bool)
-    CONTROL_BAR_HEIGHT = 94
+    CONTROL_BAR_HEIGHT = 60
     _DENSITIES = ('compact', 'normal', 'relaxed')
     _DENSITY_NAMES = {'compact': 'Compact', 'normal': 'Balanced', 'relaxed': 'Spacious'}
 
@@ -1283,7 +1283,7 @@ class OrderBookControlBar(QtWidgets.QFrame):
         root.setSpacing(4)
         self._layout = root
         self._top_layout = QtWidgets.QHBoxLayout()
-        self._top_layout.setSpacing(4)
+        self._top_layout.setSpacing(6)
         root.addLayout(self._top_layout)
 
         self._view_container, view_layout = self._make_group()
@@ -1311,29 +1311,20 @@ class OrderBookControlBar(QtWidgets.QFrame):
         self.view_button = self._plain_button('Heatmap ▾', 'Choose orderbook view')
         self.view_button.clicked.connect(lambda: self._popup(self._view_menu, self.view_button))
         self._top_layout.addWidget(self.view_button)
-        self._top_layout.addStretch(1)
         self.value_mode_button = self._plain_button('Qty', 'Switch between base quantity and USDT value')
         self.value_mode_button.clicked.connect(self._toggle_value_mode)
-        self._top_layout.addWidget(self.value_mode_button)
-        self.settings_button = self._plain_button('···', 'Orderbook display options')
+        self.settings_button = self._plain_button('', 'Orderbook display options', compact_width=30)
         self.settings_button.setAccessibleName('Orderbook display options')
-        self._top_layout.addWidget(self.settings_button)
-
-        self._step_layout = QtWidgets.QHBoxLayout()
-        self._step_layout.setSpacing(4)
-        root.addLayout(self._step_layout)
-        self.step_label = QtWidgets.QLabel('Step', self)
-        set_text_role(self.step_label, TextRole.ORDERBOOK_LABEL)
-        self.step_label.setSizePolicy(QtWidgets.QSizePolicy.Policy.Fixed, QtWidgets.QSizePolicy.Policy.Fixed)
-        self._step_layout.addWidget(self.step_label)
-        self.step_down_button = self._plain_button('−', 'Use a smaller price step', compact_width=26)
-        self.step_down_button.setAccessibleName('Decrease price grouping')
-        self.step_down_button.clicked.connect(lambda: self._change_aggregation(-1))
-        self._step_layout.addWidget(self.step_down_button)
+        self.settings_button.setIconSize(QtCore.QSize(16, 16))
         self._aggregation_menu = QtWidgets.QMenu('Price grouping', self)
         self._aggregation_actions = {}
         self._aggregation_action_group = QtGui.QActionGroup(self)
         self._aggregation_action_group.setExclusive(True)
+        self.auto_action = self._aggregation_menu.addAction('Automatic')
+        self.auto_action.setCheckable(True)
+        self._aggregation_action_group.addAction(self.auto_action)
+        self.auto_action.triggered.connect(lambda checked: self.auto_grouping_toggled.emit(True) if checked else None)
+        self._aggregation_menu.addSeparator()
         for multiplier in ORDER_FLOW_AGGREGATION_MULTIPLIERS:
             value = int(multiplier)
             action = self._aggregation_menu.addAction(f'{value}× exchange tick')
@@ -1343,20 +1334,11 @@ class OrderBookControlBar(QtWidgets.QFrame):
             self._aggregation_actions[value] = action
         self.aggregation_button = self._plain_button('1× ▾', 'Choose the price step')
         self.aggregation_button.setAccessibleName('Choose price grouping')
-        self.aggregation_button.setSizePolicy(QtWidgets.QSizePolicy.Policy.Ignored, QtWidgets.QSizePolicy.Policy.Fixed)
-        self.aggregation_button.setMinimumWidth(44)
-        self.aggregation_button.setMaximumWidth(150)
         self.aggregation_button.clicked.connect(lambda: self._popup(self._aggregation_menu, self.aggregation_button))
-        self._step_layout.addWidget(self.aggregation_button, 1)
-        self.step_up_button = self._plain_button('+', 'Use a larger price step', compact_width=26)
-        self.step_up_button.setAccessibleName('Increase price grouping')
-        self.step_up_button.clicked.connect(lambda: self._change_aggregation(1))
-        self._step_layout.addWidget(self.step_up_button)
-        self.auto_button = self._toggle_button('Auto', 'Choose the price step automatically for this market')
-        self.auto_button.setAccessibleName('Automatic price grouping')
-        self.auto_button.toggled.connect(self.auto_grouping_toggled.emit)
-        self._step_layout.addWidget(self.auto_button)
-        self._step_layout.addStretch(1)
+        self._top_layout.addWidget(self.aggregation_button)
+        self._top_layout.addStretch(1)
+        self._top_layout.addWidget(self.value_mode_button)
+        self._top_layout.addWidget(self.settings_button)
         self._density_menu = QtWidgets.QMenu('Row spacing', self)
         self._density_actions = {}
         self._density_action_group = QtGui.QActionGroup(self)
@@ -1367,10 +1349,6 @@ class OrderBookControlBar(QtWidgets.QFrame):
             self._density_action_group.addAction(action)
             action.triggered.connect(lambda checked=False, selected=density: self.density_selected.emit(selected) if checked else None)
             self._density_actions[density] = action
-        self.density_button = self._plain_button('Rows ▾', 'Choose row spacing')
-        self.density_button.setAccessibleName('Choose row spacing')
-        self.density_button.clicked.connect(lambda: self._popup(self._density_menu, self.density_button))
-        self._step_layout.addWidget(self.density_button)
 
         self._range_container = QtWidgets.QWidget(self)
         range_layout = QtWidgets.QHBoxLayout(self._range_container)
@@ -1400,13 +1378,11 @@ class OrderBookControlBar(QtWidgets.QFrame):
         self._display_menu = QtWidgets.QMenu(self)
         self._display_menu.addSection('Display')
         self._display_menu.addMenu(self._view_menu).setText('View')
+        self._display_menu.addMenu(self._aggregation_menu)
         self._display_menu.addMenu(self._density_menu)
         self.units_action = self._display_menu.addAction('Show base-asset quantities')
         self.units_action.setCheckable(True)
         self.units_action.triggered.connect(lambda checked: self.value_mode_selected.emit('base' if checked else 'quote'))
-        self.auto_action = self._display_menu.addAction('Automatic price grouping')
-        self.auto_action.setCheckable(True)
-        self.auto_action.triggered.connect(self.auto_grouping_toggled.emit)
         self._analytics_menu = self._display_menu.addMenu('Price-level analytics')
         self._lane_actions = {}
         for key, label in (('flow', 'Aggressor flow · 5s'), ('delta', 'Liquidity change · 5s'), ('state', 'Liquidity signals'), ('memory', 'Liquidity history · 30s')):
@@ -1450,12 +1426,6 @@ class OrderBookControlBar(QtWidgets.QFrame):
     def _toggle_value_mode(self):
         self.value_mode_selected.emit('base' if self._value_mode == 'quote' else 'quote')
 
-    def _change_aggregation(self, direction):
-        values = tuple(ORDER_FLOW_AGGREGATION_MULTIPLIERS)
-        index = values.index(self._aggregation) if self._aggregation in values else 0
-        selected = values[max(0, min(len(values) - 1, index + int(direction)))]
-        self.aggregation_selected.emit(int(selected))
-
     def _refresh_typography(self):
         for button in self.findChildren(_OrderBookSurfaceButton):
             button.setFont(typography_font(TextRole.ORDERBOOK_CONTROL))
@@ -1479,6 +1449,7 @@ class OrderBookControlBar(QtWidgets.QFrame):
         )
         for button in self.findChildren(_OrderBookSurfaceButton):
             button.set_theme({})
+        self.settings_button.setIcon(line_icon('gear', p['muted'], self.devicePixelRatioF()))
         for menu in self.findChildren(QtWidgets.QMenu):
             menu.setStyleSheet(
                 f"QMenu {{ background: {p['bg']}; color: {p['text']}; border: 1px solid {p['grid_strong']}; padding: 5px; }}"
@@ -1492,50 +1463,36 @@ class OrderBookControlBar(QtWidgets.QFrame):
         self._refresh_responsive_layout(event.size().width())
 
     def _refresh_responsive_layout(self, width):
-        # Narrow docks keep all controls reachable; the view menu and display
-        # menu take over only when the corresponding buttons cannot fit.
-        view_width = self._view_container.sizeHint().width()
-        top_width = view_width + self.value_mode_button.sizeHint().width() + self.settings_button.sizeHint().width() + 24
-        expanded_view = width >= max(220, top_width)
-        short_view = width < 150
+        # Keep controls at their natural widths. Narrow rails use the same
+        # menus as the full toolbar, so hiding a control never removes a setting.
+        available = max(0, int(width) - 12)
+        view_width = self.depth_button.sizeHint().width() + self.ladder_button.sizeHint().width() + 6
+        step_width = self.aggregation_button.sizeHint().width()
+        units_width = self.value_mode_button.sizeHint().width()
+        settings_width = self.settings_button.sizeHint().width()
+        expanded_view = available >= view_width + step_width + units_width + settings_width + 18
+        short_view = width < 200
         self.view_button.setText('View ▾' if short_view else 'Heatmap ▾' if self._book_depth else 'Ladder ▾')
-        show_units = expanded_view or width >= (self.view_button.sizeHint().width()
-            + self.value_mode_button.sizeHint().width() + self.settings_button.sizeHint().width() + 24)
-        show_range_label = width >= (self.range_label.sizeHint().width()
-            + self.range_slider.minimumWidth() + self.range_value.width() + 24)
-        auto_width = self.auto_button.sizeHint().width() + 4 if self._book_depth else 0
-        step_width = max(44, min(150, self.aggregation_button.minimumSizeHint().width(),
-                                max(44, width - 12 - auto_width)))
-        self.aggregation_button.setMinimumWidth(step_width)
-        required = step_width + 12
-        # Keep grouping controls ahead of row spacing on narrow docks.
-        show_auto = self._book_depth and width >= required + auto_width
-        if show_auto:
-            required += auto_width
-        step_buttons_width = self.step_down_button.sizeHint().width() + self.step_up_button.sizeHint().width() + 8
-        show_step_buttons = width >= required + step_buttons_width
-        if show_step_buttons:
-            required += step_buttons_width
-        show_rows = width >= required + self.density_button.sizeHint().width() + 4
-        if show_rows:
-            required += self.density_button.sizeHint().width() + 4
-        show_step_label = width >= required + self.step_label.sizeHint().width() + 4
-        state = (expanded_view, show_units, show_range_label, short_view, show_auto, show_step_label,
-                 show_step_buttons, show_rows, step_width, self._book_depth)
+        view_width = view_width if expanded_view else self.view_button.sizeHint().width()
+        show_view = available >= view_width + settings_width + 6
+        required = settings_width + (view_width + 6 if show_view else 0)
+        show_grouping = available >= required + step_width + 6
+        if show_grouping:
+            required += step_width + 6
+        show_units = available >= required + units_width + 6
+        show_range_label = available >= (self.range_label.sizeHint().width()
+            + self.range_slider.minimumWidth() + self.range_value.width() + 12)
+        state = (expanded_view, show_view, show_units, show_grouping, show_range_label, short_view, self._book_depth)
         if state == self._responsive_layout_state:
             return
         self._responsive_layout_state = state
-        self._view_container.setVisible(expanded_view)
-        self.view_button.setVisible(not expanded_view)
+        self._view_container.setVisible(expanded_view and show_view)
+        self.view_button.setVisible(not expanded_view and show_view)
+        self.aggregation_button.setVisible(show_grouping)
         self.value_mode_button.setVisible(show_units)
         self.range_label.setVisible(show_range_label)
-        self.auto_button.setVisible(show_auto)
-        self.step_label.setVisible(show_step_label)
-        self.step_down_button.setVisible(show_step_buttons)
-        self.step_up_button.setVisible(show_step_buttons)
-        self.density_button.setVisible(show_rows)
         self._range_container.setVisible(self._book_depth)
-        self.setFixedHeight(self.CONTROL_BAR_HEIGHT if self._book_depth else 68)
+        self.setFixedHeight(self.CONTROL_BAR_HEIGHT if self._book_depth else 34)
 
     @staticmethod
     def _set_checked_without_signal(button, checked):
@@ -1556,6 +1513,7 @@ class OrderBookControlBar(QtWidgets.QFrame):
             action.setEnabled(not self._book_depth)
         self._analytics_menu.menuAction().setVisible(not self._book_depth)
         self.auto_action.setEnabled(self._book_depth)
+        self.auto_action.setVisible(self._book_depth)
         self._refresh_text()
         self.range_slider.setEnabled(bool(range_available))
         self.range_slider.setToolTip('Adjust the range used to scale liquidity.' if range_available
@@ -1572,26 +1530,26 @@ class OrderBookControlBar(QtWidgets.QFrame):
         for enabled, action in self._view_actions.items():
             self._set_checked_without_signal(action, enabled == self._book_depth)
         self.view_button.setText('Heatmap ▾' if self._book_depth else 'Ladder ▾')
+        automatic = self._book_depth and self._auto_grouping
         for multiplier, action in self._aggregation_actions.items():
             effective = format_book_price(self._tick_size * multiplier) if self._tick_size else 'exchange tick'
-            self._set_checked_without_signal(action, multiplier == self._aggregation)
+            self._set_checked_without_signal(action, not automatic and multiplier == self._aggregation)
             action.setText(f'{effective} · {multiplier}×')
         effective = format_book_price(self._tick_size * self._aggregation) if self._tick_size else f'{self._aggregation}×'
-        self.aggregation_button.setText(f'{effective} ▾')
-        self.aggregation_button.setAccessibleDescription(f'Current price step: {effective}')
-        self.step_down_button.setEnabled(self._aggregation > ORDER_FLOW_AGGREGATION_MULTIPLIERS[0])
-        self.step_up_button.setEnabled(self._aggregation < ORDER_FLOW_AGGREGATION_MULTIPLIERS[-1])
+        self.aggregation_button.setText(f'Auto · {effective} ▾' if automatic else f'{effective} ▾')
+        self.aggregation_button.setAccessibleDescription(f'Current price step: {effective}; automatic' if automatic
+                                                       else f'Current price step: {effective}; manual')
         self.value_mode_button.setText('Qty' if self._value_mode == 'base' else 'USDT')
         self.value_mode_button.setAccessibleName('Switch to USDT value' if self._value_mode == 'base' else 'Switch to base quantity')
         self._set_checked_without_signal(self.units_action, self._value_mode == 'base')
         self._set_checked_without_signal(self.tape_action, self._tape_enabled)
-        self._set_checked_without_signal(self.auto_button, self._auto_grouping)
-        self._set_checked_without_signal(self.auto_action, self._auto_grouping)
+        self._set_checked_without_signal(self.auto_action, automatic)
         with QtCore.QSignalBlocker(self.range_slider):
             self.range_slider.setValue(round(self._depth_range * 100))
         self.range_value.setText(f'{round(self._depth_range * 100)}%')
         for key, action in self._density_actions.items():
             self._set_checked_without_signal(action, key == self._density)
+        self._density_menu.setTitle(f'Row spacing · {self._DENSITY_NAMES.get(self._density, "Balanced")}')
 from collections import Counter, OrderedDict, deque
 from dataclasses import dataclass, replace
 from typing import ClassVar
