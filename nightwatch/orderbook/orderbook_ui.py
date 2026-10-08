@@ -1677,6 +1677,7 @@ class PreparedDomRow:
     profile_depth: float = 0.0
     profile_previous_depth: float = 0.0
     profile_amount: float = 0.0
+    profile_amount_text_offset: float = 0.0
     profile_cumulative: float = 0.0
     profile_in_range: bool = True
 
@@ -2165,6 +2166,7 @@ class _DomRasterCanvas(QtWidgets.QWidget):
         self._fast_paint_timestamps: deque[float] = deque(maxlen=240)
         self._partial_paint_timestamps: deque[float] = deque(maxlen=240)
         self._text_layout_cache: OrderedDict[tuple[str, str, int], str] = OrderedDict()
+        self._profile_amount_text_widths: OrderedDict[str, float] = OrderedDict()
         self._price_metrics_cache: OrderedDict[tuple[str, float, float], QtGui.QFontMetricsF] = OrderedDict()
         self._price_fit_cache: OrderedDict[tuple[object, ...], float] = OrderedDict()
         # Amount versions survive process transfer and ignore age/state-only
@@ -2237,6 +2239,7 @@ class _DomRasterCanvas(QtWidgets.QWidget):
         self._symbol_font_key = self._symbol_font.toString()
         self._label_font_key = self._label_font.toString()
         self._text_layout_cache.clear()
+        self._profile_amount_text_widths.clear()
         self._price_metrics_cache.clear()
         self._price_fit_cache.clear()
         self._amount_width_cache_key = None
@@ -3321,6 +3324,7 @@ class _DomRasterCanvas(QtWidgets.QWidget):
                 round(row.profile_size, 6), round(row.profile_depth, 6),
                 round(row.profile_previous_depth, 6),
                 round(row.profile_amount, 8), round(row.profile_cumulative, 8), row.profile_in_range,
+                round(row.profile_amount_text_offset, 4), round(self._profile_amount_width, 4),
             )
         return signature
 
@@ -3335,6 +3339,7 @@ class _DomRasterCanvas(QtWidgets.QWidget):
         if self._book_depth:
             return (
                 (self.symbol, self._market_status, self._profile_header_key,
+                 round(self._profile_amount_width, 4),
                  self._profile_ruler_totals if self._geometry.get('profile_totals_height') else ()), (),
                 (self._last_trade_price, self.snapshot.midpoint if self.snapshot is not None else 0.0,
                  self._profile_ruler_totals),
@@ -4894,9 +4899,30 @@ class _DomRasterCanvas(QtWidgets.QWidget):
         )
         if self.snapshot is None or not self.snapshot.ready:
             self._profile_footer_text = ('BID —', 'ASK —')
-        amount_texts = [row.notional_text for rows in sides.values() for row in rows]
-        measured_amount = max((self._row_metrics.horizontalAdvance(text) for text in amount_texts), default=0.0)
-        self._profile_amount_width = max(32.0, measured_amount + 8.0)
+        # Align both sides at one decimal position, including compact values
+        # such as .01 and integers with an implicit decimal point. Measure only
+        # new text runs during preparation; painting needs no font metrics.
+        amount_layouts = []
+        for rows in sides.values():
+            for row in rows:
+                whole, separator, fraction = row.notional_text.partition('.')
+                widths = []
+                for run in (whole, separator + fraction):
+                    width = self._profile_amount_text_widths.get(run)
+                    if width is None:
+                        width = self._row_metrics.horizontalAdvance(run)
+                        if len(self._profile_amount_text_widths) >= self.TEXT_LAYOUT_CACHE_CAPACITY:
+                            self._profile_amount_text_widths.popitem(last=False)
+                        self._profile_amount_text_widths[run] = width
+                    else:
+                        self._profile_amount_text_widths.move_to_end(run)
+                    widths.append(width)
+                amount_layouts.append((row, *widths))
+        decimal_offset = max((whole for _, whole, _ in amount_layouts), default=0.0)
+        fraction_width = max((fraction for _, _, fraction in amount_layouts), default=0.0)
+        self._profile_amount_width = max(32.0, decimal_offset + fraction_width + 8.0)
+        for row, whole_width, _ in amount_layouts:
+            row.profile_amount_text_offset = decimal_offset - whole_width
         self._profile_scale_text = (
             f'Depth ruler range · {unit}\n'
             f'Solid bars: size at price; full width = {self._compact_scalar(largest)} {unit}\n'
@@ -5137,7 +5163,7 @@ class _DomRasterCanvas(QtWidgets.QWidget):
             self._text_cache_hits += 1
         painter.drawText(device_pixel_rect(self, text_rect), alignment | Qt.AlignmentFlag.AlignVCenter, rendered)
 
-    def _draw_numeric_text(self, painter: QtGui.QPainter, rect: QtCore.QRectF, text: str, color: QtGui.QColor, alignment: Qt.AlignmentFlag, *, font: QtGui.QFont | None=None, pad: float=3.0, bar_contrast: bool=False) -> None:
+    def _draw_numeric_text(self, painter: QtGui.QPainter, rect: QtCore.QRectF, text: str, color: QtGui.QColor, alignment: Qt.AlignmentFlag, *, font: QtGui.QFont | None=None, pad: float=3.0, bar_contrast: bool=False, text_offset: float=0.0) -> None:
         """Draw exact market numerics without ellipsis or cross-column bleed.
 
         Bar-backed values get at most one subtle dark baseline shadow. The DOM
@@ -5147,7 +5173,11 @@ class _DomRasterCanvas(QtWidgets.QWidget):
         if rect.width() <= 1.0 or rect.height() <= 1.0:
             return
         chosen_font = font or self._row_font
-        text_rect = rect.adjusted(pad, 0.0, -pad, 0.0)
+        text_rect = device_pixel_rect(self, rect.adjusted(pad, 0.0, -pad, 0.0))
+        # Preserve fractional glyph advances after snapping the shared origin,
+        # so different integer lengths cannot move the decimal by a pixel.
+        if text_offset:
+            text_rect.setLeft(text_rect.left() + text_offset)
         painter.save()
         try:
             painter.setClipRect(device_pixel_rect(self, rect), Qt.ClipOperation.IntersectClip)
@@ -5158,9 +5188,12 @@ class _DomRasterCanvas(QtWidgets.QWidget):
                 shadow.setAlpha(150)
                 painter.setPen(shadow)
                 px = max(0.65, min(1.0, self._physical_pixel_width()))
-                painter.drawText(device_pixel_rect(self, text_rect.translated(0.0, px)), flags, text)
+                shadow_rect = text_rect.translated(0.0, px)
+                if not text_offset:
+                    shadow_rect = device_pixel_rect(self, shadow_rect)
+                painter.drawText(shadow_rect, flags, text)
             painter.setPen(color)
-            painter.drawText(device_pixel_rect(self, text_rect), flags, text)
+            painter.drawText(text_rect, flags, text)
         finally:
             painter.restore()
 
@@ -5690,7 +5723,8 @@ class _DomRasterCanvas(QtWidgets.QWidget):
             amount_width = min(lane.right() - amount_left, self._profile_amount_width)
             amount_rect = QtCore.QRectF(amount_left, top, max(0.0, amount_width), height)
             self._draw_numeric_text(painter, amount_rect, row.notional_text, text_color,
-                                    Qt.AlignmentFlag.AlignLeft, font=font, pad=4.0, bar_contrast=True)
+                                    Qt.AlignmentFlag.AlignLeft, font=font, pad=4.0, bar_contrast=True,
+                                    text_offset=row.profile_amount_text_offset)
             if self._hover_price == row.level.price:
                 cumulative = self._profile_quantity_text(row.profile_cumulative)
                 width = QtGui.QFontMetricsF(self._profile_annotation_font).horizontalAdvance(cumulative) + 4.0

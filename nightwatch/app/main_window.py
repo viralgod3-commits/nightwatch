@@ -5328,9 +5328,12 @@ class MainWindow(QtWidgets.QMainWindow):
                 index = (
                     timeframes.index(self.current_interval)
                     if self.current_interval in timeframes
-                    else (-1 if step > 0 else 0)
+                    else (-1 if step > 0 else len(timeframes))
                 )
-                timeframe = timeframes[(index + step) % len(timeframes)]
+                next_index = index + step
+                if not 0 <= next_index < len(timeframes):
+                    return True
+                timeframe = timeframes[next_index]
                 self.switch_interval(timeframe)
                 timeframe_label = timeframe.upper() if timeframe in {"1d", "1w"} else timeframe
                 self.statusBar().showMessage(f"TIMEFRAME · {timeframe_label}", 1800)
