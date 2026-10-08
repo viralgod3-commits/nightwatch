@@ -1247,7 +1247,7 @@ class _OrderBookSurfaceButton(QtWidgets.QPushButton):
         width = self.fontMetrics().horizontalAdvance(self.text()) + 2 * self.HORIZONTAL_PADDING + 2
         if not self.icon().isNull():
             width += self.iconSize().width() + (4 if self.text() else 0)
-        return QtCore.QSize(max(self.MIN_CONTENT_WIDTH, int(self._compact_width or 0), width), self.BUTTON_HEIGHT)
+        return QtCore.QSize(max(self.MIN_CONTENT_WIDTH, int(self._compact_width or 0), width), self.height())
 
     def sizeHint(self):
         return self.minimumSizeHint()
@@ -1429,7 +1429,9 @@ class OrderBookControlBar(QtWidgets.QFrame):
     def _refresh_typography(self):
         for button in self.findChildren(_OrderBookSurfaceButton):
             button.setFont(typography_font(TextRole.ORDERBOOK_CONTROL))
+            button.setFixedHeight(max(button.BUTTON_HEIGHT, button.fontMetrics().height() + 6))
             button.updateGeometry()
+        self.range_value.setFixedWidth(max(32, self.range_value.fontMetrics().horizontalAdvance('95%') + 2))
         for menu in self.findChildren(QtWidgets.QMenu):
             menu.setFont(typography_font(TextRole.ORDERBOOK_CONTROL))
         self._responsive_layout_state = None
@@ -1482,7 +1484,13 @@ class OrderBookControlBar(QtWidgets.QFrame):
         show_units = available >= required + units_width + 6
         show_range_label = available >= (self.range_label.sizeHint().width()
             + self.range_slider.minimumWidth() + self.range_value.width() + 12)
-        state = (expanded_view, show_view, show_units, show_grouping, show_range_label, short_view, self._book_depth)
+        toolbar_height = self.aggregation_button.height() + 8
+        range_height = max(self.range_slider.height(), self.range_value.sizeHint().height(),
+                           self.range_label.sizeHint().height() if show_range_label else 0)
+        height = max(self.CONTROL_BAR_HEIGHT if self._book_depth else toolbar_height,
+                     toolbar_height + (range_height + 4 if self._book_depth else 0))
+        state = (expanded_view, show_view, show_units, show_grouping, show_range_label,
+                 short_view, self._book_depth, height)
         if state == self._responsive_layout_state:
             return
         self._responsive_layout_state = state
@@ -1492,7 +1500,7 @@ class OrderBookControlBar(QtWidgets.QFrame):
         self.value_mode_button.setVisible(show_units)
         self.range_label.setVisible(show_range_label)
         self._range_container.setVisible(self._book_depth)
-        self.setFixedHeight(self.CONTROL_BAR_HEIGHT if self._book_depth else 34)
+        self.setFixedHeight(height)
 
     @staticmethod
     def _set_checked_without_signal(button, checked):
@@ -7364,6 +7372,7 @@ class OrderBookWidget(QtWidgets.QWidget):
         self._tape_mode = 'LARGE'
         self._latest_snapshot: OrderFlowSnapshot | None = None
         self._last_depth_capacity = 0
+        self._context_menu = None
         self.canvas = OrderFlowDomCanvas(theme, self)
         self._last_row_density = self.canvas.row_density()
         self.canvas.price_selected.connect(self.price_selected.emit)
@@ -7665,30 +7674,36 @@ class OrderBookWidget(QtWidgets.QWidget):
 
     def _show_context_menu(self, pos: QtCore.QPoint) -> None:
         """The floating market label opens the heatmap's compact controls."""
-        menu = QtWidgets.QMenu(self)
-        views = QtGui.QActionGroup(menu)
-        views.setExclusive(True)
-        for enabled, name in ((True, 'Heatmap'), (False, 'Price ladder')):
-            view = menu.addAction(name)
-            view.setCheckable(True)
-            view.setChecked(self.canvas._book_depth == enabled)
-            views.addAction(view)
-            view.triggered.connect(lambda checked=False, value=enabled:
-                self.set_book_depth_enabled(value) if checked else None)
-        menu.addMenu(self.controls._aggregation_menu).setText('Grouping')
-        menu.addMenu(self.controls._display_menu).setText('Display')
-        menu.addSeparator()
-        reset_widths = menu.addAction('Reset column widths')
-        reset_widths.setEnabled(bool(self.canvas.column_width_state()))
-        reset_widths.triggered.connect(
-            lambda: self.canvas.reset_column_widths(
-                self.canvas.presentation_state().get('preset'), emit=True
+        # These submenus also belong to the toolbar. Keep one context menu for
+        # the widget lifetime instead of accumulating popup/action objects.
+        if self._context_menu is None:
+            self._context_menu = menu = QtWidgets.QMenu(self)
+            views = QtGui.QActionGroup(menu)
+            views.setExclusive(True)
+            self._context_view_actions = {}
+            for enabled, name in ((True, 'Heatmap'), (False, 'Price ladder')):
+                view = menu.addAction(name)
+                view.setCheckable(True)
+                views.addAction(view)
+                view.triggered.connect(lambda checked=False, value=enabled:
+                    self.set_book_depth_enabled(value) if checked else None)
+                self._context_view_actions[enabled] = view
+            menu.addMenu(self.controls._aggregation_menu).setText('Grouping')
+            menu.addMenu(self.controls._display_menu).setText('Display')
+            menu.addSeparator()
+            self._context_reset_widths = menu.addAction('Reset column widths')
+            self._context_reset_widths.triggered.connect(
+                lambda: self.canvas.reset_column_widths(
+                    self.canvas.presentation_state().get('preset'), emit=True
+                )
             )
-        )
-        menu.addSeparator()
-        reset_display = menu.addAction('Reset order book display')
-        reset_display.triggered.connect(self._reset_display_options)
-        menu.exec(self.canvas.mapToGlobal(pos))
+            menu.addSeparator()
+            reset_display = menu.addAction('Reset order book display')
+            reset_display.triggered.connect(self._reset_display_options)
+        for enabled, action in self._context_view_actions.items():
+            self.controls._set_checked_without_signal(action, self.canvas._book_depth == enabled)
+        self._context_reset_widths.setEnabled(bool(self.canvas.column_width_state()))
+        self._context_menu.exec(self.canvas.mapToGlobal(pos))
 
 
     def set_order_flow_snapshot(self, snapshot: object) -> None:
