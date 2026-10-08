@@ -20,6 +20,7 @@ from ..constants import (
 )
 from ..models import SymbolRules
 from ..models import TradingGatewayPort
+from ..theme import DEFAULT_THEME_NAME, THEMES, ui_palette
 from ..utilities import ElidedLabel, line_icon
 from ..utilities import TextRole, set_text_role, typography_controller, typography_font
 from ..models import format_price, human_number, quantize_step, safe_float, validate_step
@@ -34,10 +35,7 @@ _ACCOUNT_POLL_MINIMUM_INTERVAL = 8.0
 
 def _trading_stylesheet(theme: dict[str, str]) -> str:
     """Keep the ticket and account surfaces styled without changing the shell."""
-    t = {"panel": "#040404", "panel2": "#080808", "control": "#0C0C0C",
-         "control_hover": "#161616", "border": "#252525", "control_border": "#353535",
-         "text": "#EDEDED", "muted": "#92929A", "cyan": "#79BCFF",
-         "green": "#22D27A", "red": "#FF4757", "amber": "#E8A64A", **theme}
+    t = ui_palette(THEMES[DEFAULT_THEME_NAME], theme)
     return f"""
         QWidget#responsiveOrderTicket,
         QWidget#accountActivityPanel,
