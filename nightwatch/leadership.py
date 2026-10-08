@@ -480,6 +480,12 @@ class LeadershipTimelineWidget(QtWidgets.QWidget):
     def _build_ui(self):
         build_leaders(self)
 
+    def eventFilter(self, watched, event):
+        if (hasattr(self, "table") and watched is self.table.viewport()
+                and event.type() in (QtCore.QEvent.Type.Resize, QtCore.QEvent.Type.FontChange)):
+            _layout_leader_columns(self)
+        return super().eventFilter(watched, event)
+
 
     @staticmethod
     def chart_icon() -> QtGui.QIcon:
@@ -965,18 +971,6 @@ class LeadershipTimelineWidget(QtWidgets.QWidget):
             if self.table.columnCount() != len(headers):
                 self.table.setColumnCount(len(headers))
                 self.table.setHorizontalHeaderLabels(headers)
-            if not getattr(self, "_leader_headers_configured", False):
-                header = self.table.horizontalHeader()
-                header.setMinimumSectionSize(42)
-                fixed_widths = {0: 34, 1: 108, 3: 92, 4: 70, 5: 70, 6: 74, 7: 76, 8: 100}
-                for column in range(len(headers)):
-                    if column in fixed_widths or column >= 11:
-                        header.setSectionResizeMode(column, QtWidgets.QHeaderView.ResizeMode.Fixed)
-                        self.table.setColumnWidth(column, fixed_widths.get(column, 116 if column in (14, 15) else 98))
-                    else:
-                        header.setSectionResizeMode(column, QtWidgets.QHeaderView.ResizeMode.Stretch)
-                self._leader_headers_configured = True
-
             # Keep each symbol's items and delegate data across rankings. Qt's
             # native row sort moves the complete row, including its selection.
             wanted = set(ordered)
@@ -1747,18 +1741,58 @@ class LeadersPairCard(QtWidgets.QFrame):
 
 
 class _WorkspaceContent(QtWidgets.QWidget):
-    """An optional inspector overlays the view without shrinking its canvas."""
+    """Reserve space for an inspector beside or below the trading view."""
 
     def set_drawer(self, drawer):
         self.drawer = drawer
+        layout = self.layout()
+        view = layout.takeAt(0).widget()
+        self.drawer_splitter = QtWidgets.QSplitter(Qt.Orientation.Horizontal, self)
+        self.drawer_splitter.setObjectName("leadersDetailSplit")
+        self.drawer_splitter.setChildrenCollapsible(False)
+        self.drawer_splitter.setHandleWidth(6)
+        self.drawer_splitter.addWidget(view)
+        self.drawer_splitter.addWidget(drawer)
+        self.drawer_splitter.setStretchFactor(0, 1)
+        self.drawer_splitter.setStretchFactor(1, 0)
+        layout.addWidget(self.drawer_splitter, 1)
+        self._drawer_columns = None
         self._place_drawer()
 
     def _place_drawer(self):
         drawer = getattr(self, "drawer", None)
-        if drawer is not None:
-            width = min(360, self.width())
-            drawer.setGeometry(self.width() - width, 0, width, self.height())
-            drawer.raise_()
+        if drawer is None:
+            return
+        horizontal = self.width() >= 1240
+        columns = 1 if horizontal else 4 if self.width() >= 940 else 2
+        changed = columns != self._drawer_columns
+        panel = drawer.widget()
+        if changed:
+            grid = panel.layout()
+            for section in panel.sections:
+                grid.removeWidget(section)
+            for column in range(4):
+                grid.setColumnStretch(column, 1 if column < columns else 0)
+            for index, section in enumerate(panel.sections):
+                grid.addWidget(section, index // columns, index % columns, Qt.AlignmentFlag.AlignTop)
+            self._drawer_columns = columns
+            grid.activate()
+        drawer.setMinimumSize(300 if horizontal else 0, 0)
+        drawer.setMaximumWidth(360 if horizontal else 16_777_215)
+        height = panel.sizeHint().height() + 2
+        if not horizontal:
+            height = min(height, max(150, int(self.height() * .4)))
+        panel.setMaximumHeight(16_777_215)
+        if horizontal:
+            panel.setMaximumHeight(max(0, height))
+        drawer.setMaximumHeight(16_777_215 if horizontal else max(0, height))
+        orientation = Qt.Orientation.Horizontal if horizontal else Qt.Orientation.Vertical
+        if self.drawer_splitter.orientation() != orientation:
+            self.drawer_splitter.setOrientation(orientation)
+        if changed:
+            extent = self.width() if horizontal else self.height()
+            size = 320 if horizontal else height
+            self.drawer_splitter.setSizes([max(0, extent - size - 6), size])
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
@@ -1771,13 +1805,16 @@ def _workspace_drawer(owner, detail):
     drawer.setWidgetResizable(True)
     drawer.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
     drawer.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+    drawer.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+    drawer.setMinimumSize(0, 0)
     drawer.setWidget(detail)
+    drawer.hide()
+    detail.hide()
     owner.detail_drawer = drawer
     owner.main_content.set_drawer(drawer)
     owner.context_button.toggled.connect(drawer.setVisible)
     owner.context_button.toggled.connect(detail.setVisible)
-    drawer.hide()
-    detail.hide()
+    owner.context_button.toggled.connect(lambda _visible: owner.main_content._place_drawer())
 
 
 def _workspace_shell(owner, name: str):
@@ -1895,6 +1932,9 @@ def _workspace_stylesheet(name: str) -> str:
     scope = f"QWidget#{name}"
     return f"""
         {scope} QWidget[workspaceTransparent="true"] {{ background: transparent; border: 0; }}
+        {scope} QScrollArea#workspaceDrawer, {scope} QScrollArea#workspaceDrawer > QWidget {{ background: {p['panel']}; border: 0; }}
+        {scope} QSplitter#leadersDetailSplit::handle {{ background: {p['separator']}; }}
+        {scope} QSplitter#leadersDetailSplit::handle:hover {{ background: {p['control_border']}; }}
         {scope} QLabel {{ background: transparent; color: {p['text']}; }}
         {scope} QLabel[workspaceMuted="true"] {{ color: {p['muted']}; }}
         {scope} QFrame[workspacePanel="true"] {{ background: {p['panel']}; border: 1px solid {p['border']}; border-radius: 8px; }}
@@ -2082,6 +2122,35 @@ _HEADER_SORT = {1: "pair", 2: "name", 3: "price", 4: "usd1", 5: "usd4", 6: "usd2
                 **{column: item[1] for column, item in _LEADER_CONTEXT_COLUMNS.items()}}
 
 
+def _layout_leader_columns(owner):
+    """Distribute spare width across visible fields without crushing the trend."""
+    if not hasattr(owner, "column_actions") or getattr(owner, "_fitting_leader_columns", False):
+        return
+    table, header = owner.table, owner.table.horizontalHeader()
+    defaults = {0: 38, 1: 112, 2: 164, 3: 92, 4: 70, 5: 70, 6: 74,
+                7: 76, 8: 100, 9: 124, 10: 148, 14: 112, 15: 116}
+    metrics = QtGui.QFontMetrics(header.font())
+    columns = [header.logicalIndex(i) for i in range(header.count())
+               if not table.isColumnHidden(header.logicalIndex(i))]
+    widths = {column: max(defaults.get(column, 98), metrics.horizontalAdvance(_LEADER_HEADERS[column]) + 26)
+              for column in columns}
+    spare = max(0, table.viewport().width() - sum(widths.values()))
+    weight = sum(width for column, width in widths.items() if column != 0)
+    owner._fitting_leader_columns = True
+    try:
+        remaining = spare
+        flexible = [column for column in columns if column != 0]
+        for index, column in enumerate(flexible):
+            extra = remaining if index == len(flexible) - 1 else int(spare * widths[column] / weight)
+            widths[column] += extra
+            remaining -= extra
+        for column, width in widths.items():
+            if table.columnWidth(column) != width:
+                table.setColumnWidth(column, width)
+    finally:
+        owner._fitting_leader_columns = False
+
+
 def _leader_context_text(value, unit, digits=2):
     if not isinstance(value, (int, float)) or not math.isfinite(value):
         return "—"
@@ -2099,6 +2168,7 @@ def _leader_column_changed(owner, column, checked):
     blocker = QtCore.QSignalBlocker(owner.view_selector)
     owner.view_selector.setCurrentIndex(owner.view_selector.findData("custom"))
     del blocker
+    _layout_leader_columns(owner)
 
 
 def _apply_leader_view(owner):
@@ -2116,6 +2186,7 @@ def _apply_leader_view(owner):
     order = (*columns, *(column for column in range(header.count()) if column not in columns))
     for position, column in enumerate(order):
         header.moveSection(header.visualIndex(column), position)
+    _layout_leader_columns(owner)
 
 def _sort_changed(owner):
     owner.sort_descending = owner.sort.currentData() not in ("pair", "name", "sector")
@@ -2172,9 +2243,22 @@ def _build_columns_menu(owner) -> None:
 def _build_leader_context(owner):
     panel = QtWidgets.QFrame()
     panel.setProperty("workspacePanel", True)
-    layout = QtWidgets.QVBoxLayout(panel)
-    layout.setContentsMargins(14, 14, 14, 14)
-    layout.setSpacing(12)
+    grid = QtWidgets.QGridLayout(panel)
+    grid.setContentsMargins(12, 12, 12, 12)
+    grid.setHorizontalSpacing(18)
+    grid.setVerticalSpacing(12)
+    panel.sections = []
+
+    def section_layout():
+        section = QtWidgets.QWidget(panel)
+        section.setSizePolicy(QtWidgets.QSizePolicy.Policy.Ignored, QtWidgets.QSizePolicy.Policy.Preferred)
+        layout = QtWidgets.QVBoxLayout(section)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(8)
+        panel.sections.append(section)
+        return layout
+
+    layout = section_layout()
     instrument = QtWidgets.QHBoxLayout()
     owner.context_symbol = QtWidgets.QLabel("Select a coin")
     set_text_role(owner.context_symbol, TextRole.INSTRUMENT_SYMBOL)
@@ -2192,7 +2276,7 @@ def _build_leader_context(owner):
     layout.addWidget(owner.context_price)
     owner.context_spark = LeadershipSparkline()
     owner.context_spark.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Fixed)
-    owner.context_spark.setFixedHeight(76)
+    owner.context_spark.setFixedHeight(64)
     owner.context_spark.setToolTip("Last 24 completed hourly closes")
     layout.addWidget(owner.context_spark)
     owner.trade_values = {}
@@ -2212,11 +2296,11 @@ def _build_leader_context(owner):
         ("To 4H high", "high_distance", "Distance below the preceding four-hour high. Negative values indicate a breakout."),
     ):
         if key in ("rs1", "volume_share", "funding"):
+            layout = section_layout()
             heading = QtWidgets.QLabel({"rs1": "RELATIVE STRENGTH", "volume_share": "PARTICIPATION",
                                        "funding": "MARKET CONDITIONS"}[key])
             heading.setProperty("workspaceMuted", True)
             set_text_role(heading, TextRole.UI_CAPTION)
-            layout.addSpacing(6)
             layout.addWidget(heading)
         row = QtWidgets.QHBoxLayout()
         label = QtWidgets.QLabel(caption)
@@ -2230,7 +2314,6 @@ def _build_leader_context(owner):
         row.addWidget(value)
         layout.addLayout(row)
         owner.trade_values[key] = value
-    layout.addStretch(1)
     _workspace_drawer(owner, panel)
     owner.context_expiry_timer = QtCore.QTimer(owner)
     owner.context_expiry_timer.setSingleShot(True)
@@ -2253,7 +2336,11 @@ def _render_leader_context(owner):
     path, color = owner.price_path(symbol), _leader_color(state, owner.theme)
     if owner.context_spark.values != path or owner.context_spark.color != QtGui.QColor(color):
         owner.context_spark.set_values(path, color)
-    owner.context_spark.setVisible(sum(value is not None and math.isfinite(value) for value in path) >= 2)
+    show_spark = sum(value is not None and math.isfinite(value) for value in path) >= 2
+    spark_changed = owner.context_spark.isHidden() == show_spark
+    owner.context_spark.setVisible(show_spark)
+    if spark_changed:
+        owner.main_content._place_drawer()
     price = safe_float(owner.tickers.get(symbol, {}).get("c")) or metrics.get("price")
     for label, text in ((owner.context_symbol, name), (owner.context_state, state),
                         (owner.context_price, _price(price))):
@@ -2370,7 +2457,7 @@ def build_leaders(owner) -> None:
     owner.table.verticalHeader().hide()
     owner.table.verticalHeader().setDefaultSectionSize(42)
     owner.table.horizontalHeader().setFixedHeight(38)
-    owner.table.setMinimumHeight(0)
+    owner.table.setMinimumSize(0, 0)
     owner.table.setEditTriggers(QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers)
     owner.table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectionBehavior.SelectRows)
     owner.table.setSelectionMode(QtWidgets.QAbstractItemView.SelectionMode.SingleSelection)
@@ -2378,12 +2465,15 @@ def build_leaders(owner) -> None:
     owner.table.setHorizontalScrollMode(QtWidgets.QAbstractItemView.ScrollMode.ScrollPerPixel)
     owner.table.setItemDelegate(LeadershipCellDelegate(owner))
     owner.table.horizontalHeader().setSectionsClickable(True)
+    owner.table.horizontalHeader().setMinimumSectionSize(32)
+    owner.table.horizontalHeader().setSectionResizeMode(QtWidgets.QHeaderView.ResizeMode.Fixed)
     owner.table.horizontalHeader().sectionClicked.connect(lambda column: _sort_header(owner, column))
     owner.table.itemSelectionChanged.connect(lambda: _table_selection(owner))
     owner.table.cellClicked.connect(owner._select_row)
     owner.table.cellDoubleClicked.connect(owner._open_row)
     content.addWidget(owner.table, 1)
     _build_columns_menu(owner)
+    owner.table.viewport().installEventFilter(owner)
     _apply_leader_view(owner)
     owner.view_selector.currentIndexChanged.connect(lambda _index: _apply_leader_view(owner))
     _build_leader_context(owner)
