@@ -6544,6 +6544,7 @@ class _DomRasterProcess:
         self.config = {}
         self.epoch = self.market_epoch = -1
         self.memory = None
+        self._slot_bytes = 0
         self.images = []
         self.shape = None
         self.previous_slot = None
@@ -6553,7 +6554,8 @@ class _DomRasterProcess:
         self._sync_stats = dict(raster_sync_bytes=0, raster_sync_avoided_bytes=0,
                                raster_sync_copies=0, raster_sync_full_copies=0,
                                raster_sync_skipped=0, raster_sync_last_bytes=0,
-                               raster_sync_last_ms=0.0, raster_sync_max_ms=0.0)
+                               raster_sync_last_ms=0.0, raster_sync_max_ms=0.0,
+                               raster_surface_allocations=0, raster_surface_reuses=0)
         self.pointer = None
         self.last_diagnostics = 0.0
         self._snapshot_decoder = SnapshotDecoder()
@@ -6604,6 +6606,7 @@ class _DomRasterProcess:
             self.memory.unlink()
             self.memory = None
         self.shape = None
+        self._slot_bytes = 0
         self.previous_slot = None
         self._slot_damage = [QtGui.QRegion(), QtGui.QRegion()]
         self._slot_revisions = [0, 0]
@@ -6615,11 +6618,20 @@ class _DomRasterProcess:
         width, height = max(1, math.ceil(canvas.width()*dpr)), max(1, math.ceil(canvas.height()*dpr))
         dpi = (canvas.logicalDpiX(), canvas.logicalDpiY())
         shape = (width, height, dpr, *dpi)
-        if shape != self.shape:
-            self._release_memory()
+        resized = shape != self.shape
+        if resized:
             size = width*height*4
-            self.memory = SharedMemory(create=True, size=size*2)
-            self.images = [QtGui.QImage(self.memory.buf[i*size:(i+1)*size], width, height,
+            if self.memory is None or size > self._slot_bytes:
+                self._release_memory()
+                # Grow geometrically, retaining capacity on shrink. A live
+                # splitter drag must not create/map an OS segment per pixel.
+                self._slot_bytes = max(256 * 1024, 1 << (size - 1).bit_length())
+                self.memory = SharedMemory(create=True, size=self._slot_bytes*2)
+                self._sync_stats['raster_surface_allocations'] += 1
+            else:
+                self.images.clear()
+                self._sync_stats['raster_surface_reuses'] += 1
+            self.images = [QtGui.QImage(self.memory.buf[i*self._slot_bytes:i*self._slot_bytes+size], width, height,
                                        width*4, QtGui.QImage.Format.Format_ARGB32_Premultiplied)
                            for i in range(2)]
             for image in self.images:
@@ -6627,10 +6639,15 @@ class _DomRasterProcess:
                 # Match point-sized text to the canvas's measured logical DPI.
                 image.setDotsPerMeterX(round(dpi[0] / 0.0254))
                 image.setDotsPerMeterY(round(dpi[1] / 0.0254))
-                image.fill(canvas._bg)
             self.shape, self.previous_slot = shape, None
+            self._slot_damage = [QtGui.QRegion(), QtGui.QRegion()]
+            self._slot_revisions = [0, 0]
             canvas._dirty_pixels = QtGui.QRegion(canvas.rect())
         slot = 1 - lease[1] if lease is not None and lease[0] == self.memory.name else 0
+        if resized:
+            # The other slot may still be displayed at its old dimensions.
+            # Only initialize the unleased slot; never overwrite visible pixels.
+            self.images[slot].fill(canvas._bg)
         return slot, self.images[slot]
 
     def _synchronize_surface(self, slot, dirty):
@@ -6683,6 +6700,7 @@ class _DomRasterProcess:
         base = tuple(lease) if self._lease_matches(lease) else None
         damage = self._slot_damage[lease[1]] if base is not None else QtGui.QRegion(self.canvas.rect())
         result['frame'] = (self.memory.name, slot, *self.shape[:3])
+        result['frame_slot_bytes'] = self._slot_bytes
         result['frame_revision'] = revision
         result['frame_base'] = base
         # QRegion stays process-local; only bounded integer rectangles cross IPC.
@@ -6779,25 +6797,22 @@ class _DomRasterProcess:
 
 
 class _DomSharedPixels:
-    def __init__(self, name, width, height, dpr):
+    def __init__(self, name, slot_bytes):
         from multiprocessing.shared_memory import SharedMemory
         import sys
         kwargs = {'track': False} if sys.version_info >= (3, 13) else {}
         self.memory = SharedMemory(name=name, **kwargs)
-        self.shape = (width, height, dpr)
-        size = width*height*4
-        self.images = [QtGui.QImage(self.memory.buf[i*size:(i+1)*size], width, height,
-                                   width*4, QtGui.QImage.Format.Format_ARGB32_Premultiplied)
-                       for i in range(2)]
-        for image in self.images:
-            image.setDevicePixelRatio(dpr)
+        self.slot_bytes = slot_bytes
+        self.images = [None, None]
 
-    def refresh(self, slot):
+    def refresh(self, slot, width, height, dpr):
         # External writes do not change QImage.cacheKey(). Give each completed
         # frame a fresh wrapper so a Qt paint engine cannot reuse stale pixels.
-        width, height, dpr = self.shape
         size = width*height*4
-        image = QtGui.QImage(self.memory.buf[slot*size:(slot+1)*size], width, height,
+        if size > self.slot_bytes or 2 * self.slot_bytes > self.memory.size:
+            raise ValueError('DOM frame exceeds its shared pixel capacity')
+        offset = slot*self.slot_bytes
+        image = QtGui.QImage(self.memory.buf[offset:offset+size], width, height,
                              width*4, QtGui.QImage.Format.Format_ARGB32_Premultiplied)
         image.setDevicePixelRatio(dpr)
         self.images[slot] = image
@@ -6815,11 +6830,14 @@ def _map_dom_frame(result):
     descriptor = result.get('frame')
     if descriptor is not None:
         name, slot, width, height, dpr = descriptor
+        slot_bytes = result['frame_slot_bytes']
         pixels = _DOM_PIXEL_MAPPINGS.get(name)
         if pixels is None:
-            pixels = _DomSharedPixels(name, width, height, dpr)
+            pixels = _DomSharedPixels(name, slot_bytes)
             _DOM_PIXEL_MAPPINGS[name] = pixels
-        pixels.refresh(slot)
+        # Geometry belongs to the individual slot. The opposite slot's wrapper
+        # and pixels remain valid until the GUI releases that displayed frame.
+        pixels.refresh(slot, width, height, dpr)
         result['pixels'] = pixels
     return result
 

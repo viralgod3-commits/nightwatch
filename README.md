@@ -43,6 +43,12 @@ analytics processes from oversubscribing the CPU. Set
 workload. Windows high process priority is opt-in through
 `NIGHTWATCH_HIGH_PRIORITY=1`.
 
+Chart preparation workers build an immutable multiresolution candle index for
+wide zooms and live aggregate updates (about 2 MB for 250,000 contiguous candles).
+Older history is fetched and adopted during held pans. The order-book rendering
+process retains shared pixel-buffer capacity across panel resizes, growing it
+only when necessary while keeping the displayed buffer leased until painting.
+
 Measure chart pan/zoom and watchlist resizing with all four panels, ten pairs,
 and no indicators using `python tools/benchmark_interactions.py`. The offline
 benchmark records actual paint/composition cadence, slowest 1% frame intervals,
