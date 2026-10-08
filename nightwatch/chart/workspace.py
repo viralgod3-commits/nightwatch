@@ -26,7 +26,10 @@ from .preparation import (
     prepare_study,
 )
 from .analysis import LatestJob, analysis_worker_count, run_analysis, indicator_analysis, profile_analysis, major_level_analysis, fibonacci_analysis
-from .rendering import ChartGraphicsView, CandlestickItem, VolumeOverlayItem, NativeBarCompositeItem
+from .rendering import (
+    ChartGraphicsView, CandlestickItem, VolumeOverlayItem, NativeBarCompositeItem,
+    NativeAreaItem, NativeBandItem,
+)
 from ..utilities import alpha_color, TextRole, set_text_role, typography_controller, typography_font
 from ..utilities import hide_hover_tooltip, show_hover_tooltip
 from ..presentation import (
@@ -412,13 +415,13 @@ class StudyViewBox(pg.ViewBox):
         super().mouseDoubleClickEvent(event)
 
 
-class ProfileItem(pg.GraphicsObject):
+class ProfileItem(NativeAreaItem):
     def __init__(self, background: str):
-        super().__init__()
+        super().__init__("volume_profile")
         self.background = background
-        self.picture = QtGui.QPicture()
-        self.bounds = QtCore.QRectF()
         self.poc: float | None = None
+        self._poc_line = None
+        self._poc_color = QtGui.QColor()
         self._profile_key: tuple[Any, ...] | None = None
         self.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
 
@@ -461,12 +464,10 @@ class ProfileItem(pg.GraphicsObject):
             return
         self._profile_key = profile_key
 
-        self.prepareGeometryChange()
-        self.picture = QtGui.QPicture()
         self.poc = None
+        self._poc_line = None
         if len(centers) == 0 or len(volumes) == 0 or not np.any(volumes > 0):
-            self.bounds = QtCore.QRectF()
-            self.update()
+            self._set_geometry(np.empty((0, 6)), QtCore.QRectF(), (0.0, 0.0))
             return
 
         width = maximum_width
@@ -481,36 +482,20 @@ class ProfileItem(pg.GraphicsObject):
         brush_color = opaque_overlay_color(self.background, color, opacity)
         outline = QtGui.QColor(color)
         outline.setAlpha(min(180, opacity + 70))
-        painter = QtGui.QPainter(self.picture)
-        pen = QtGui.QPen(outline)
-        pen.setCosmetic(True)
-        painter.setPen(pen)
-        painter.setBrush(QtGui.QBrush(brush_color))
-        for center, volume in zip(shown_centers, volumes):
-            bar_width = width * float(volume) / max(scale, 1e-12)
-            painter.drawRect(
-                QtCore.QRectF(
-                    anchor - bar_width,
-                    float(center) - bin_height * 0.46,
-                    bar_width,
-                    bin_height * 0.92,
-                )
-            )
+        bar_widths = width * volumes / max(scale, 1e-12)
+        rectangles = np.column_stack((anchor - bar_widths, shown_centers - bin_height * 0.46,
+                                      bar_widths, np.full(len(centers), bin_height * 0.92)))
         self.poc = float(centers[int(np.argmax(volumes))])
-        poc_pen = QtGui.QPen(QtGui.QColor(color))
-        poc_pen.setWidthF(1.4)
-        poc_pen.setCosmetic(True)
-        painter.setPen(poc_pen)
         poc_y = chart_y(self.poc, logarithmic)
-        painter.drawLine(QtCore.QPointF(anchor - width, poc_y), QtCore.QPointF(anchor, poc_y))
-        painter.end()
-        self.bounds = QtCore.QRectF(
+        self._poc_line = QtCore.QLineF(anchor - width, poc_y, anchor, poc_y)
+        self._poc_color = QtGui.QColor(color)
+        bounds = QtCore.QRectF(
             anchor - width,
             float(shown_centers.min() - bin_height),
             width,
             float(shown_centers.max() - shown_centers.min() + bin_height * 2),
         )
-        self.update()
+        self.set_rectangles(rectangles, bounds, brush_color, outline)
 
     def paint(
         self,
@@ -518,10 +503,13 @@ class ProfileItem(pg.GraphicsObject):
         option: QtWidgets.QStyleOptionGraphicsItem,
         widget: QtWidgets.QWidget | None = None,
     ) -> None:
-        painter.drawPicture(0, 0, self.picture)
-
-    def boundingRect(self) -> QtCore.QRectF:
-        return self.bounds
+        super().paint(painter, option, widget)
+        if self._poc_line is not None:
+            pen = QtGui.QPen(self._poc_color)
+            pen.setWidthF(1.4)
+            pen.setCosmetic(True)
+            painter.setPen(pen)
+            painter.drawLine(self._poc_line)
 
 
 def _prepare_price_extrema(closed):
@@ -1528,7 +1516,7 @@ class ChartWorkspace(QtWidgets.QWidget):
         self.bb_lower = self.price_plot.plot(pen=bb_pen, antialias=True)
         for curve in (self.bb_mid, self.bb_upper, self.bb_lower):
             curve.setZValue(4)
-        self.bb_fill = pg.FillBetweenItem(
+        self.bb_fill = NativeBandItem(
             self.bb_upper,
             self.bb_lower,
             brush=pg.mkBrush(opaque_overlay_color(theme["bg"], theme["cyan"], 24)),
@@ -3791,6 +3779,14 @@ class ChartWorkspace(QtWidgets.QWidget):
         valid = bool(is_valid())
         context = context_getter()
         if valid and context is not None and context.isValid():
+            # Warm persistent area shaders before the first indicator toggle.
+            # This runs outside painting while the surface is being initialized.
+            viewport.makeCurrent()
+            try:
+                for area in (self.bb_fill, self.visible_profile, self.session_profile):
+                    area.prime_gpu(context)
+            finally:
+                viewport.doneCurrent()
             return
 
         self._opengl_verify_attempts += 1
@@ -7587,6 +7583,8 @@ class ChartWorkspace(QtWidgets.QWidget):
                     method="peak",
                 )
                 curve.setData(display_times, display_values, connect="finite")
+            if name == "Bollinger Bands":
+                self.bb_fill.prepare_geometry()
             scale_data = payload.get("scale_data")
             if name == "ATR" and scale_data is not None:
                 self._atr_scale_data = scale_data

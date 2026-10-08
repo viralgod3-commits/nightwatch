@@ -1958,6 +1958,380 @@ class PixelBarBatch:
         )
 
 
+class _AreaGLResources(QtCore.QObject):
+    """One retained area buffer, owned and released with its GL context."""
+
+    VERTEX = """
+layout(location = 0) in vec2 a_position;
+layout(location = 1) in vec4 a_edge;
+uniform vec4 u_map;
+uniform vec2 u_screen;
+uniform float u_stroke;
+out vec2 v_edge;
+out vec2 v_size;
+void main() {
+    vec2 size = abs(a_edge.zw * u_map.xy) + u_stroke;
+    vec2 pixel = a_position * u_map.xy + u_map.zw;
+    pixel += sign(u_map.xy) * (2.0 * a_edge.xy - 1.0) * u_stroke * 0.5;
+    gl_Position = vec4(pixel.x / u_screen.x * 2.0 - 1.0,
+                       1.0 - pixel.y / u_screen.y * 2.0, 0.0, 1.0);
+    v_edge = a_edge.xy * size;
+    v_size = size;
+}
+"""
+    FRAGMENT = """
+in vec2 v_edge;
+in vec2 v_size;
+uniform vec4 u_fill;
+uniform vec4 u_outline;
+uniform float u_stroke;
+out vec4 frag_color;
+void main() {
+    vec2 distance = min(v_edge, v_size - v_edge);
+    frag_color = u_fill;
+    if (u_stroke > 0.0 && min(distance.x, distance.y) < u_stroke) {
+        // Match a cosmetic QPainter outline drawn over the filled rectangle.
+        vec4 base = min(distance.x, distance.y) >= u_stroke * 0.5
+                  ? u_fill : vec4(0.0);
+        float alpha = u_outline.a + base.a * (1.0 - u_outline.a);
+        vec3 rgb = u_outline.rgb * u_outline.a
+                 + base.rgb * base.a * (1.0 - u_outline.a);
+        frag_color = vec4(rgb / max(alpha, 0.00001), alpha);
+    }
+}
+"""
+
+    def __init__(self, context):
+        super().__init__(context)
+        self.context = context
+        self.program = None
+        self.vbo = self.vao = None
+        self.revision = -1
+        self.capacity = 0
+        self.uniforms = {}
+        context.aboutToBeDestroyed.connect(self.cleanup, Qt.ConnectionType.DirectConnection)
+        try:
+            fmt = context.format()
+            if ((context.isOpenGLES() and fmt.majorVersion() < 3)
+                    or (not context.isOpenGLES()
+                        and (fmt.majorVersion(), fmt.minorVersion()) < (3, 3))):
+                raise RuntimeError("area rendering requires OpenGL 3.3 or ES 3")
+            prefix = "#version 300 es\nprecision highp float;\n" if context.isOpenGLES() else "#version 330 core\n"
+            self.program = QtOpenGL.QOpenGLShaderProgram()
+            for kind, source in ((QtOpenGL.QOpenGLShader.ShaderTypeBit.Vertex, self.VERTEX),
+                                 (QtOpenGL.QOpenGLShader.ShaderTypeBit.Fragment, self.FRAGMENT)):
+                if not self.program.addCacheableShaderFromSourceCode(kind, prefix + source):
+                    raise RuntimeError(self.program.log())
+            if not self.program.link():
+                raise RuntimeError(self.program.log())
+            self.vao = QtOpenGL.QOpenGLVertexArrayObject()
+            self.vbo = QtOpenGL.QOpenGLBuffer(QtOpenGL.QOpenGLBuffer.Type.VertexBuffer)
+            if not self.vao.create() or not self.vbo.create():
+                raise RuntimeError("area buffer creation failed")
+            self.vbo.setUsagePattern(QtOpenGL.QOpenGLBuffer.UsagePattern.DynamicDraw)
+            self.vao.bind()
+            self.vbo.bind()
+            self.vbo.allocate(32)
+            self.capacity = 32
+            self.program.bind()
+            self.program.enableAttributeArray(0)
+            self.program.setAttributeBuffer(0, _NativeBarGL.GL_FLOAT, 0, 2, 24)
+            self.program.enableAttributeArray(1)
+            self.program.setAttributeBuffer(1, _NativeBarGL.GL_FLOAT, 8, 4, 24)
+            self.uniforms = {name: self.program.uniformLocation(name) for name in
+                             ("u_map", "u_screen", "u_stroke", "u_fill", "u_outline")}
+        except Exception:
+            self.cleanup()
+            raise
+        finally:
+            if self.vbo is not None:
+                self.vbo.release()
+            if self.vao is not None:
+                self.vao.release()
+            if self.program is not None:
+                self.program.release()
+
+    @QtCore.Slot()
+    def cleanup(self):
+        previous = QtGui.QOpenGLContext.currentContext()
+        previous_surface = previous.surface() if previous is not None else None
+        switched = not same_gl_context(previous, self.context)
+        if switched:
+            surface = self.context.surface()
+            if surface is None or not self.context.makeCurrent(surface):
+                return  # The context owns these wrappers and will reclaim them.
+        try:
+            if self.vbo is not None:
+                self.vbo.destroy()
+            if self.vao is not None:
+                self.vao.destroy()
+            self.program = None
+            self.revision = -1
+        finally:
+            if switched:
+                self.context.doneCurrent()
+                if previous is not None and previous_surface is not None:
+                    previous.makeCurrent(previous_surface)
+
+    @QtCore.Slot()
+    def dispose(self):
+        self.cleanup()
+        self.deleteLater()
+
+
+class NativeAreaItem(pg.GraphicsObject):
+    """Retain filled chart geometry on the GPU; navigation changes only uniforms.
+
+    Six floats per vertex encode position and optional rectangle edge distances.
+    The latter let the fragment shader draw profile outlines at physical-pixel
+    width, without stroking every bar on the GUI thread. Image exports and
+    unsupported contexts use a lazily built QPainter path.
+    """
+
+    def __init__(self, profile_name="area"):
+        super().__init__()
+        self.profile_name = profile_name
+        self.bounds = QtCore.QRectF()
+        self._vertices = np.empty((0, 6), dtype=np.float32)
+        self._origin = (0.0, 0.0)
+        self._revision = 0
+        self._resources = {}
+        self._failed_contexts = set()
+        self._fallback_path = None
+        self._fill = QtGui.QColor()
+        self._outline = QtGui.QColor(0, 0, 0, 0)
+        self._stroke = 0.0
+        self.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
+
+    def setBrush(self, brush):
+        self._fill = pg.mkBrush(brush).color()
+        self.update()
+
+    def _set_geometry(self, vertices, bounds, origin):
+        if bounds != self.bounds:
+            self.prepareGeometryChange()
+            self.bounds = QtCore.QRectF(bounds)
+        self._vertices = np.ascontiguousarray(vertices, dtype=np.float32)
+        self._origin = origin
+        self._fallback_path = None
+        self._revision += 1
+        self.update()
+
+    def set_rectangles(self, rectangles, bounds, fill, outline):
+        """Publish x/y/width/height arrays once per profile revision."""
+        self._rectangles = np.ascontiguousarray(rectangles, dtype=np.float64)
+        self._fill, self._outline = QtGui.QColor(fill), QtGui.QColor(outline)
+        self._stroke = 1.0
+        origin = (float(bounds.center().x()), float(bounds.center().y()))
+        corners = np.array(((0, 0), (1, 0), (0, 1), (0, 1), (1, 0), (1, 1)))
+        vertices = np.empty((len(rectangles), 6, 6), dtype=np.float32)
+        vertices[:, :, :2] = (self._rectangles[:, None, :2] - origin
+                             + corners * self._rectangles[:, None, 2:])
+        vertices[:, :, 2:4] = corners
+        vertices[:, :, 4:] = self._rectangles[:, None, 2:]
+        self._set_geometry(vertices.reshape(-1, 6), bounds, origin)
+
+    def _cpu_path(self):
+        if self._fallback_path is None:
+            self._fallback_path = QtGui.QPainterPath()
+            for rect in self._rectangles:
+                self._fallback_path.addRect(QtCore.QRectF(*map(float, rect)))
+        return self._fallback_path
+
+    def boundingRect(self):
+        return self.bounds
+
+    def prime_gpu(self, context):
+        """Compile at surface startup, before an indicator is first opened."""
+        if QtOpenGL is None or context is None:
+            return None
+        key = gl_context_key(context)
+        if key in self._failed_contexts:
+            return None
+        resource = self._resources.get(key)
+        if resource is not None and resource.program is not None and same_gl_context(resource.context, context):
+            return resource
+        if not same_gl_context(QtGui.QOpenGLContext.currentContext(), context):
+            return None
+        try:
+            resource = _AreaGLResources(context)
+            self._resources[key] = resource
+            self.destroyed.connect(resource.dispose)
+            return resource
+        except (RuntimeError, TypeError, ValueError, AttributeError) as error:
+            self._failed_contexts.add(key)
+            logging.getLogger(__name__).warning("Native %s fallback: %s", self.profile_name, error)
+            return None
+
+    def _paint_gpu(self, painter):
+        if QtOpenGL is None or not PixelBarBatch._is_opengl_painter(painter):
+            return False
+        transform = painter.deviceTransform()
+        if (not transform.isAffine() or not transform.isInvertible()
+                or transform.m12() != 0.0 or transform.m21() != 0.0):
+            return False
+        context = QtGui.QOpenGLContext.currentContext()
+        if context is None:
+            return False
+        key = gl_context_key(context)
+        if key in self._failed_contexts:
+            return False
+        dpr = float(painter.device().devicePixelRatioF())
+        width, height = PixelBarBatch._framebuffer_size(painter, dpr)
+        clip = PixelBarBatch._clip_screen_rect(painter, transform, (width, height))
+        # QGraphicsView may enforce the ViewBox clip in its paint engine rather
+        # than in QPainter's user clip. Native drawing must enforce both.
+        view = self.getViewBox()
+        if view is not None:
+            clip = clip.intersected(transform.mapRect(self.mapRectFromItem(view, view.boundingRect())))
+        if clip.isEmpty():
+            return True
+        resource = None
+        painter.beginNativePainting()
+        try:
+            resource = self.prime_gpu(context)
+            if resource is None:
+                return False
+            functions = context.extraFunctions()
+            resource.vao.bind()
+            resource.program.bind()
+            if resource.revision != self._revision:
+                resource.vbo.bind()
+                required = self._vertices.nbytes
+                capacity = max(resource.capacity, 1 << max(5, (required - 1).bit_length()))
+                resource.vbo.allocate(capacity)
+                resource.vbo.write(0, self._vertices, required)
+                resource.vbo.release()
+                resource.capacity = capacity
+                resource.revision = self._revision
+                record_performance_count(f"gl.upload.{self.profile_name}_count")
+            functions.glViewport(0, 0, width, height)
+            functions.glDisable(_NativeBarGL.GL_DEPTH_TEST)
+            functions.glDisable(_NativeBarGL.GL_CULL_FACE)
+            functions.glEnable(_NativeBarGL.GL_BLEND)
+            functions.glBlendFuncSeparate(0x0302, 0x0303, 1, 0x0303)
+            functions.glEnable(_NativeBarGL.GL_SCISSOR_TEST)
+            left, top = max(0, math.floor(clip.left())), max(0, math.floor(clip.top()))
+            right, bottom = min(width, math.ceil(clip.right())), min(height, math.ceil(clip.bottom()))
+            functions.glScissor(left, height - bottom, max(0, right-left), max(0, bottom-top))
+            origin = transform.map(QtCore.QPointF(*self._origin))
+            u = resource.uniforms
+            functions.glUniform4f(u["u_map"], transform.m11(), transform.m22(), origin.x(), origin.y())
+            functions.glUniform2f(u["u_screen"], width, height)
+            functions.glUniform1f(u["u_stroke"], self._stroke * dpr)
+            for name, color in (("u_fill", self._fill), ("u_outline", self._outline)):
+                functions.glUniform4f(u[name], color.redF(), color.greenF(), color.blueF(), color.alphaF())
+            functions.glDrawArrays(_NativeBarGL.GL_TRIANGLES, 0, len(self._vertices))
+            record_performance_count(f"gl.draw.{self.profile_name}_count")
+            return True
+        except (RuntimeError, TypeError, ValueError, AttributeError) as error:
+            self._failed_contexts.add(key)
+            logging.getLogger(__name__).warning("Native %s fallback: %s", self.profile_name, error)
+            return False
+        finally:
+            if resource is not None:
+                resource.program.release()
+                resource.vao.release()
+            painter.endNativePainting()
+
+    def paint(self, painter, option, widget=None):
+        if not len(self._vertices):
+            return
+        if self._paint_gpu(painter):
+            return
+        painter.setBrush(self._fill)
+        pen = QtGui.QPen(self._outline) if self._stroke else QtGui.QPen(Qt.PenStyle.NoPen)
+        pen.setCosmetic(True)
+        painter.setPen(pen)
+        painter.drawPath(self._cpu_path())
+
+
+class NativeBandItem(NativeAreaItem):
+    """Triangulate a pair of monotonic indicator curves once per data change."""
+
+    def __init__(self, upper, lower, brush):
+        super().__init__("indicator_band")
+        self.curves = (upper, lower)
+        self._band_pending = True
+        self._band_x = self._band_upper = self._band_lower = np.empty(0)
+        self.setBrush(brush)
+        for curve in self.curves:
+            curve.sigPlotChanged.connect(self._curve_changed)
+        self._curve_changed()
+
+    def _curve_changed(self, *_args):
+        self._band_pending = True
+        bounds = self.curves[0].curve.boundingRect().united(self.curves[1].curve.boundingRect())
+        if bounds != self.bounds:
+            self.prepareGeometryChange()
+            self.bounds = bounds
+        self.update()
+
+    def prepare_geometry(self):
+        if not self._band_pending:
+            return
+        self._band_pending = False
+        x1, y1 = self.curves[0].getData()
+        x2, y2 = self.curves[1].getData()
+        if x1 is None or x2 is None or len(x1) < 2 or len(x2) < 2:
+            self._set_geometry(np.empty((0, 6)), QtCore.QRectF(), (0.0, 0.0))
+            return
+        # Each outline preserves its own extrema during decimation. Merge the
+        # sample positions so the filled region still follows BOTH exact lines.
+        if np.array_equal(x1, x2):
+            x, upper, lower = x1, y1, y2
+        else:
+            x = np.union1d(x1, x2)
+            x = x[(x >= max(x1[0], x2[0])) & (x <= min(x1[-1], x2[-1]))]
+            upper, lower = np.interp(x, x1, y1), np.interp(x, x2, y2)
+        # A crossing makes a bow-tie quad. Split at the intersection to retain
+        # odd-even fill semantics, including independently decimated outlines.
+        difference = upper - lower
+        crossing = np.flatnonzero(np.isfinite(difference[:-1]) & np.isfinite(difference[1:])
+                                  & (np.signbit(difference[:-1]) != np.signbit(difference[1:]))
+                                  & (difference[:-1] != 0) & (difference[1:] != 0))
+        if len(crossing):
+            fraction = difference[crossing] / (difference[crossing] - difference[crossing+1])
+            cx = x[crossing] + fraction * (x[crossing+1] - x[crossing])
+            cy = upper[crossing] + fraction * (upper[crossing+1] - upper[crossing])
+            x = np.insert(x, crossing+1, cx)
+            upper, lower = np.insert(upper, crossing+1, cy), np.insert(lower, crossing+1, cy)
+        self._band_x, self._band_upper, self._band_lower = x, upper, lower
+        finite = np.isfinite(x) & np.isfinite(upper) & np.isfinite(lower)
+        segments = np.flatnonzero(finite[:-1] & finite[1:] & (np.diff(x) > 0))
+        if not len(segments):
+            self._set_geometry(np.empty((0, 6)), QtCore.QRectF(), (0.0, 0.0))
+            return
+        valid_y = np.r_[upper[finite], lower[finite]]
+        bounds = QtCore.QRectF(float(x[finite].min()), float(valid_y.min()),
+                              float(np.ptp(x[finite])), float(np.ptp(valid_y)))
+        origin = (bounds.center().x(), bounds.center().y())
+        vertices = np.zeros((len(segments), 6, 6), dtype=np.float32)
+        positions = vertices[:, :, :2]
+        positions[:, :, 0] = (x[segments[:, None] + np.array((0, 1, 0, 0, 1, 1))] - origin[0])
+        positions[:, :, 1] = np.column_stack((upper[segments], upper[segments+1], lower[segments],
+                                              lower[segments], upper[segments+1], lower[segments+1])) - origin[1]
+        self._set_geometry(vertices.reshape(-1, 6), bounds, origin)
+
+    def _cpu_path(self):
+        if self._fallback_path is None:
+            x, upper, lower = self._band_x, self._band_upper, self._band_lower
+            finite = np.isfinite(x) & np.isfinite(upper) & np.isfinite(lower)
+            breaks = np.flatnonzero(np.diff(np.r_[False, finite, False]))
+            path = QtGui.QPainterPath()
+            for start, end in breaks.reshape(-1, 2):
+                if end-start >= 2:
+                    px = np.r_[x[start:end], x[start:end][::-1], x[start]]
+                    py = np.r_[upper[start:end], lower[start:end][::-1], upper[start]]
+                    path.addPath(pg.arrayToQPath(px, py, connect="all", finiteCheck=False))
+            self._fallback_path = path
+        return self._fallback_path
+
+    def paint(self, painter, option, widget=None):
+        self.prepare_geometry()
+        super().paint(painter, option, widget)
+
+
 class CandlestickItem(pg.GraphicsObject):
     def __init__(
         self,
