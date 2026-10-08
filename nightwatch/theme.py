@@ -18,8 +18,8 @@ _ORDERBOOK_BASE = {
 ORDERBOOK_THEMES: Final[dict[str, dict[str, str]]] = {
     'Nightwatch': {**_ORDERBOOK_BASE},
     'TapeSurf': {
-        **_ORDERBOOK_BASE, 'bg': '#101012', 'surface_top': '#101012',
-        'surface_raised': '#151517', 'surface_center': '#101012', 'control': '#101012',
+        **_ORDERBOOK_BASE, 'bg': '#000000', 'surface_top': '#000000',
+        'surface_raised': '#000000', 'surface_center': '#000000', 'control': '#000000',
         'grid': '#252527', 'grid_strong': '#38383A', 'text': '#D6D8D5',
         'muted': '#929590', 'dim_price': '#70746F', 'bid': '#00E5B3', 'ask': '#B6A000',
         'bid_fill': '#133A35', 'ask_fill': '#3B2420',
