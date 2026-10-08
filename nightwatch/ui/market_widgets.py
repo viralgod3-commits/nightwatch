@@ -1947,11 +1947,11 @@ class MarketStatsWidget(QtWidgets.QWidget):
             card.metric_owner = self
         if compact:
             compact_titles = {
-                "volume": "24H VOLUME",
+                "volume": "24H VOL",
                 "taker": "Taker volume",
-                "oi": "OPEN INTEREST",
-                "long_short": "LONG/SHORT",
-                "funding": "FUNDING RATE",
+                "oi": "OI",
+                "long_short": "L/S",
+                "funding": "FUND.",
             }
             for name, title in compact_titles.items():
                 self.cards[name].title.setText(title)
@@ -2153,25 +2153,13 @@ class MarketStatsWidget(QtWidgets.QWidget):
                 details.append(("Status", "Last available sample"))
         self.long_short_series = cache
         card = self.cards["long_short"]
-        card.title.setText("LONG/SHORT" if self.compact else "LONG/SHORT RATIO")
+        card.title.setText("L/S" if self.compact else "LONG/SHORT RATIO")
 
 
         samples = cache.get("All accounts", [])
         ratio = safe_float(samples[-1].get("longShortRatio"), -1) if samples else -1
         ratio_text = f"{ratio:.2f}" if math.isfinite(ratio) and ratio >= 0 else "—"
-        shown = ratio_text
-        if self.compact and samples:
-            long_share = safe_float(samples[-1].get("longAccount"), float("nan"))
-            short_share = safe_float(samples[-1].get("shortAccount"), float("nan"))
-            if not (0 <= long_share <= 1 and 0 <= short_share <= 1
-                    and math.isclose(long_share + short_share, 1, abs_tol=0.001)):
-                long_share = ratio / (1 + ratio) if ratio >= 0 else float("nan")
-            if 0 <= long_share <= 1:
-                long_pct = round(long_share * 100, 1)
-                shown = f"{long_pct:.1f}% / {100 - long_pct:.1f}%"
-            else:
-                shown = "—"
-        card.set_value(shown, None)
+        card.set_value(ratio_text, None)
         card.set_detail(f"{perpetual_display_symbol(self.symbol)} · LONG / SHORT", details)
         card.set_histories(histories, ratio=True)
         if self.compact:
@@ -3127,7 +3115,7 @@ class WatchlistSidebarWidget(QtWidgets.QWidget):
             for column in range(1, 5):
                 item = self.table.item(row, column)
                 if item is not None:
-                    role = TextRole.INSTRUMENT_SYMBOL if column == 1 else TextRole.TABLE_VALUE
+                    role = TextRole.UI_BODY if column == 1 else TextRole.TABLE_VALUE
                     item.setFont(typography_font(role))
         self._pending_numeric_resizes.update((2, 3, 4))
         self.refresh()
@@ -3396,7 +3384,7 @@ class WatchlistSidebarWidget(QtWidgets.QWidget):
                 item = self.table.item(row, column)
                 if item is None:
                     item = QtWidgets.QTableWidgetItem()
-                    item.setFont(typography_font(TextRole.INSTRUMENT_SYMBOL if column == 1 else TextRole.TABLE_VALUE))
+                    item.setFont(typography_font(TextRole.UI_BODY if column == 1 else TextRole.TABLE_VALUE))
                     self.table.setItem(row, column, item)
                 if item.text() != value:
                     item.setText(value)
