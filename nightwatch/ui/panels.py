@@ -853,8 +853,12 @@ if QtWidgets is not None:
             target_before = max(lower, min(upper, sizes[before] + int(delta)))
             sizes[before] = target_before
             sizes[after] = max(0, pair_total - target_before)
+            rail_resize = False
+            if horizontal and self._commit_owner is not None:
+                overflow = max(0, minimum_before - (int(start_sizes[before]) + int(delta)))
+                rail_resize = self._commit_owner._expand_grab_sizes(self, after, sizes, overflow)
             current = [max(0, int(value)) for value in self.sizes()]
-            if sizes == current:
+            if sizes == current and not rail_resize:
                 self._pending_grab_resize = None
                 self._grab_resize_timer.stop()
                 return
@@ -877,9 +881,10 @@ if QtWidgets is not None:
             if index <= 0 or index >= count or len(sizes) != count:
                 return
             before_actual = [max(0, int(value)) for value in self.sizes()]
-            if before_actual == sizes:
-                return
-            self.setSizes(sizes)
+            if self._commit_owner is not None:
+                self._commit_owner._apply_grab_rail_width(self, sum(sizes))
+            if self.sizes() != sizes:
+                self.setSizes(sizes)
             after_actual = [max(0, int(value)) for value in self.sizes()]
             if after_actual == before_actual:
                 return
@@ -1210,6 +1215,14 @@ if QtWidgets is not None:
                 layout.setContentsMargins(margin, margin, margin, margin)
 
 
+    @dataclass(frozen=True, slots=True)
+    class _RailWidthDrag:
+        splitter: PanelSplitter
+        rail_width: int
+        splitter_width: int
+        ancestors: tuple[tuple[PanelSplitter, int, tuple[int, ...]], ...]
+
+
     class RightRailController(QtCore.QObject):
         """Registry, layout transaction, activity and geometry boundary for the rail."""
         state_changed = Signal(object)
@@ -1230,6 +1243,7 @@ if QtWidgets is not None:
             self._rendering, self._host_active, self._future_schema = False, True, False
             self._revision, self._active_ids = 0, set()
             self._main_splitter = self._chart_widget = None
+            self._rail_width_drag: _RailWidthDrag | None = None
             self._chart_minimum_width = RIGHT_RAIL_CHART_MIN_WIDTH
             self._clock = clock
             self._dirty_splitters, self._dirty_surfaces = set(), set()
@@ -1375,11 +1389,65 @@ if QtWidgets is not None:
         def _configure_splitter(self, splitter):
             if isinstance(splitter, PanelSplitter):
                 splitter._commit_owner = self
-                splitter.drag_started.connect(self.drag_started.emit)
+                splitter.drag_started.connect(lambda splitter=splitter: self._begin_drag(splitter))
                 splitter.drag_ended.connect(self._finish_drag)
+
+        def _begin_drag(self, splitter):
+            self._rail_width_drag = None
+            if (splitter is not self._main_splitter
+                    and splitter.orientation() == Qt.Orientation.Horizontal
+                    and self._main_splitter is not None and not self.rail.isHidden()):
+                outer_sizes = self._main_splitter.sizes()
+                if len(outer_sizes) == 2:
+                    ancestors = []
+                    child = splitter
+                    parent = child.parentWidget()
+                    while parent is not None and parent is not self.rail:
+                        if isinstance(parent, PanelSplitter) and parent.orientation() == Qt.Orientation.Horizontal:
+                            ancestors.append((parent, parent.indexOf(child), tuple(parent.sizes())))
+                        child, parent = parent, parent.parentWidget()
+                    if parent is self.rail:
+                        self._rail_width_drag = _RailWidthDrag(
+                            splitter, outer_sizes[1], sum(splitter.sizes()), tuple(reversed(ancestors)),
+                        )
+            self.drag_started.emit()
+
+        def _expand_grab_sizes(self, splitter, after, sizes, overflow):
+            drag = self._rail_width_drag
+            if drag is None or drag.splitter is not splitter:
+                return False
+            available = self._available_rail_width()
+            maximum = max(0, (available or 0) - drag.rail_width)
+            maximum = min(maximum, splitter.widget(after).maximumWidth() - sizes[after])
+            for ancestor, index, start_sizes in drag.ancestors:
+                maximum = min(maximum, ancestor.widget(index).maximumWidth() - start_sizes[index])
+            growth = max(0, min(int(overflow), maximum))
+            sizes[after] += growth
+            return self._main_splitter.sizes()[1] != drag.rail_width + growth
+
+        def _apply_grab_rail_width(self, splitter, width):
+            drag = self._rail_width_drag
+            if drag is None or drag.splitter is not splitter:
+                return
+            growth = max(0, int(width) - drag.splitter_width)
+            outer_sizes = self._main_splitter.sizes()
+            target = drag.rail_width + growth
+            if outer_sizes[1] == target:
+                return
+            # The rail stays anchored to the window's right edge. Once the
+            # left column reaches its minimum, the chart supplies the remaining
+            # leftward pointer movement. Keep unrelated horizontal branches at
+            # their press-time widths, including when the pointer reverses.
+            self._main_splitter.setSizes([sum(outer_sizes) - target, target])
+            actual_growth = self._main_splitter.sizes()[1] - drag.rail_width
+            for ancestor, index, start_sizes in drag.ancestors:
+                sizes = list(start_sizes)
+                sizes[index] += actual_growth
+                ancestor.setSizes(sizes)
 
         def _finish_drag(self):
             self.capture_geometry()
+            self._rail_width_drag = None
             self._geometry_persist_timer.start()
             self.drag_ended.emit()
 
@@ -1638,7 +1706,10 @@ if QtWidgets is not None:
 
         def _splitter_moved(self, key):
             if not self._rendering:
-                self._capture_split(key)
+                if self._rail_width_drag is not None and self._rail_width_drag.splitter is self._containers.get(key):
+                    self.capture_geometry()
+                else:
+                    self._capture_split(key)
                 self._geometry_persist_timer.start()
                 self._queue_geometry()
 
@@ -1705,6 +1776,10 @@ if QtWidgets is not None:
                 minimum = QtCore.QSize(RIGHT_PANEL_TWO_COLUMN_CELL_MIN_WIDTH + 2*self._margin, self._panel_minimum_height(spec.title))
                 if shell.minimumSize() != minimum:
                     shell.setMinimumSize(minimum)
+            for splitter in self._containers.values():
+                minimum = self._tree_minimum(splitter._layout_node)
+                if splitter.minimumSize() != minimum:
+                    splitter.setMinimumSize(minimum)
             minimum = self._tree_minimum(self._resolved_tree(self.model.state.root))
             if self._canvas.minimumSize() != minimum:
                 self._canvas.setMinimumSize(minimum)
