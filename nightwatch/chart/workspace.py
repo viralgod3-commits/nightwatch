@@ -2235,8 +2235,6 @@ class ChartWorkspace(QtWidgets.QWidget):
             deadline = time.perf_counter() + min(0.003, 0.25 / display_refresh_rate(self))
         changed = False
         for flag, callback in (
-            ("_navigation_deferred_history_page", self._commit_prepared_history_page),
-            ("_navigation_deferred_history", self._maybe_request_older_history),
             ("_navigation_deferred_indicators", self._render_indicators),
             ("_navigation_deferred_profiles", self._update_profiles),
             ("_navigation_pending_oi", self._render_oi),
@@ -2356,6 +2354,22 @@ class ChartWorkspace(QtWidgets.QWidget):
             if self._snapshot_mailbox is not None:
                 payload, self._snapshot_mailbox = self._snapshot_mailbox, None
                 self._commit_snapshot(payload)
+            # History is part of navigation, not idle-only analytics. Fetch and
+            # preparation already run in workers; adoption only swaps prepared
+            # storage/indexes and remaps the resident window. Waiting for mouse
+            # release here leaves a held pan looking at empty history forever.
+            if not self._resize_expensive_deferred and not self._snapshot_inflight and not self._matrix_waiting:
+                if self._navigation_deferred_history_page:
+                    self._navigation_deferred_history_page = False
+                    history_started = time.perf_counter()
+                    self._commit_prepared_history_page()
+                    record_performance_timing(
+                        "commit.deferred_history_page_ms",
+                        (time.perf_counter() - history_started) * 1000,
+                    )
+                if self._navigation_deferred_history:
+                    self._navigation_deferred_history = False
+                    self._maybe_request_older_history()
             if self._navigation_pending_viewport or self._bar_mailbox is not None:
                 self._navigation_pending_viewport = False
                 self._render_viewport()
