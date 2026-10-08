@@ -1763,7 +1763,7 @@ class _WorkspaceContent(QtWidgets.QWidget):
         drawer = getattr(self, "drawer", None)
         if drawer is None:
             return
-        horizontal = self.width() >= 1240
+        horizontal = self.width() >= 1420
         columns = 1 if horizontal else 4 if self.width() >= 940 else 2
         changed = columns != self._drawer_columns
         panel = drawer.widget()
@@ -1777,8 +1777,8 @@ class _WorkspaceContent(QtWidgets.QWidget):
                 grid.addWidget(section, index // columns, index % columns, Qt.AlignmentFlag.AlignTop)
             self._drawer_columns = columns
             grid.activate()
-        drawer.setMinimumSize(300 if horizontal else 0, 0)
-        drawer.setMaximumWidth(360 if horizontal else 16_777_215)
+        drawer.setMinimumSize(320 if horizontal else 0, 0)
+        drawer.setMaximumWidth(420 if horizontal else 16_777_215)
         height = panel.sizeHint().height() + 2
         if not horizontal:
             height = min(height, max(150, int(self.height() * .4)))
@@ -1791,7 +1791,7 @@ class _WorkspaceContent(QtWidgets.QWidget):
             self.drawer_splitter.setOrientation(orientation)
         if changed:
             extent = self.width() if horizontal else self.height()
-            size = 320 if horizontal else height
+            size = 360 if horizontal else height
             self.drawer_splitter.setSizes([max(0, extent - size - 6), size])
 
     def resizeEvent(self, event):
@@ -2254,7 +2254,7 @@ def _build_leader_context(owner):
         section.setSizePolicy(QtWidgets.QSizePolicy.Policy.Ignored, QtWidgets.QSizePolicy.Policy.Preferred)
         layout = QtWidgets.QVBoxLayout(section)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(8)
+        layout.setSpacing(10)
         panel.sections.append(section)
         return layout
 
@@ -2263,20 +2263,20 @@ def _build_leader_context(owner):
     owner.context_symbol = QtWidgets.QLabel("Select a coin")
     set_text_role(owner.context_symbol, TextRole.INSTRUMENT_SYMBOL)
     owner.context_state = QtWidgets.QLabel()
-    set_text_role(owner.context_state, TextRole.UI_LABEL)
+    set_text_role(owner.context_state, TextRole.INSTRUMENT_SYMBOL)
     instrument.addWidget(owner.context_symbol, 1)
     instrument.addWidget(owner.context_state)
     layout.addLayout(instrument)
     owner.context_name = ElidedLabel("")
     owner.context_name.setProperty("workspaceMuted", True)
-    set_text_role(owner.context_name, TextRole.UI_LABEL)
+    set_text_role(owner.context_name, TextRole.UI_BODY)
     layout.addWidget(owner.context_name)
     owner.context_price = QtWidgets.QLabel("—")
-    set_text_role(owner.context_price, TextRole.MARKET_VALUE_LARGE)
+    set_text_role(owner.context_price, TextRole.MARKET_VALUE_HERO)
     layout.addWidget(owner.context_price)
     owner.context_spark = LeadershipSparkline()
     owner.context_spark.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Fixed)
-    owner.context_spark.setFixedHeight(64)
+    owner.context_spark.setFixedHeight(128)
     owner.context_spark.setToolTip("Last 24 completed hourly closes")
     layout.addWidget(owner.context_spark)
     owner.trade_values = {}
@@ -2300,15 +2300,16 @@ def _build_leader_context(owner):
             heading = QtWidgets.QLabel({"rs1": "RELATIVE STRENGTH", "volume_share": "PARTICIPATION",
                                        "funding": "MARKET CONDITIONS"}[key])
             heading.setProperty("workspaceMuted", True)
-            set_text_role(heading, TextRole.UI_CAPTION)
+            set_text_role(heading, TextRole.UI_LABEL)
             layout.addWidget(heading)
         row = QtWidgets.QHBoxLayout()
         label = QtWidgets.QLabel(caption)
         label.setProperty("workspaceMuted", True)
-        set_text_role(label, TextRole.UI_LABEL)
+        set_text_role(label, TextRole.UI_BODY)
+        label.setMinimumHeight(28)
         value = QtWidgets.QLabel("—")
         value.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-        set_text_role(value, TextRole.TABLE_VALUE)
+        set_text_role(value, TextRole.MARKET_VALUE_LARGE)
         value.setToolTip(tooltip)
         row.addWidget(label, 1)
         row.addWidget(value)
