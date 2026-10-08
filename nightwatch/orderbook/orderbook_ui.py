@@ -5322,11 +5322,8 @@ class _DomRasterCanvas(QtWidgets.QWidget):
                     painter.drawPath(outline)
             return
 
-        for side in ('bid', 'ask'):
-            if side in columns:
-                lane = self._column_rect(side, top, height)
-                painter.fillRect(lane, self._directional_brush(
-                    side, 'background', lane.left(), lane.right(), reverse=side == 'bid'))
+        # Directional gradients belong to the heatmap's cumulative-depth shape.
+        # The ladder keeps a black canvas behind its individual size bars.
         if 'price' in columns:
             price_rect = self._column_rect('price', top, height)
             painter.fillRect(price_rect, self._price_axis_fill)
@@ -5522,11 +5519,11 @@ class _DomRasterCanvas(QtWidgets.QWidget):
                 inner_top = top + (row_height - inner_h) * 0.5
                 if level.side == 'bid':
                     bar = QtCore.QRectF(resting_rect.right() - width - 1.0, inner_top, width, inner_h)
+                    fill = self._bid_fill
                 else:
                     bar = QtCore.QRectF(resting_rect.left() + 1.0, inner_top, width, inner_h)
-                painter.fillRect(bar, self._directional_brush(
-                    level.side, 'bar', resting_rect.left(), resting_rect.right(),
-                    reverse=level.side == 'bid'))
+                    fill = self._ask_fill
+                painter.fillRect(bar, fill)
             self._draw_numeric_text(
                 painter, resting_rect, str(row.notional_text), side_color,
                 Qt.AlignmentFlag.AlignRight if level.side == 'bid' else Qt.AlignmentFlag.AlignLeft,

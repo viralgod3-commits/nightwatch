@@ -56,7 +56,7 @@ ORDERBOOK_THEMES: Final[dict[str, dict[str, str]]] = {
 }
 for _name, _palette in ORDERBOOK_THEMES.items():
     _palette['orderbook_style'] = _name
-    # Every palette supplies the same directional gradients, in both views.
+    # Every palette supplies directional gradients for the heatmap/depth view.
     for _side in ('bid', 'ask'):
         for _kind, _start, _end in (
             ('bar', f'{_side}_fill_strong', _side),
