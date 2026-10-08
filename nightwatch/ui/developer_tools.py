@@ -959,7 +959,11 @@ class DeveloperDialog(QtWidgets.QWidget):
         frame_layout = QtWidgets.QHBoxLayout(frame_box)
         frame_layout.setContentsMargins(10, 8, 10, 8)
         self.frame_profile_button = QtWidgets.QPushButton('START 30S CAPTURE')
-        self.frame_profile_button.setToolTip('Capture presentation-frame timing while you continuously pan/zoom the chart')
+        self.frame_profile_button.setToolTip(
+            'Pan/zoom continuously during capture. Measures the chart receiving input; '
+            'Qt swap cadence when available, otherwise chart paints. '
+            'Neither source proves physical display scanout. 1% low uses the mean of the slowest 1% of intervals.'
+        )
         self.frame_profile_button.clicked.connect(self._start_frame_profile)
         frame_layout.addWidget(self.frame_profile_button)
         self.frame_profile_label = QtWidgets.QLabel('Not captured yet.')
@@ -1044,16 +1048,23 @@ class DeveloperDialog(QtWidgets.QWidget):
             self.frame_profile_button.setText(f"CAPTURING · {float(profile.get('remaining_s', 0.0)):.0f}S")
         else:
             self.frame_profile_button.setText('START 30S CAPTURE')
+        source_label = {
+            'chart_swap': 'Qt swap cadence',
+            'chart_paint': 'chart paint cadence',
+            'no_render_samples': 'no rendered frame samples',
+        }.get(profile.get('sample_source'), 'no rendered frame samples')
         self.frame_profile_label.setText(
-            f"{float(profile.get('avg_fps', 0.0)):.1f} avg FPS / {float(profile.get('target_fps', 0.0)):.0f} Hz target · "
+            f"{profile.get('sample_surface', 'Chart')}: {source_label} · "
+            f"{float(profile.get('avg_fps', 0.0)):.1f} capture avg FPS / {float(profile.get('target_fps', 0.0)):.0f} Hz target · "
             f"frame {float(profile.get('frame_avg_ms', 0.0)):.2f} avg · "
             f"p50 {float(profile.get('frame_p50_ms', 0.0)):.2f} · "
             f"p95 {float(profile.get('frame_p95_ms', 0.0)):.2f} · "
             f"p99 {float(profile.get('frame_p99_ms', 0.0)):.2f} · "
             f"max {float(profile.get('frame_max_ms', 0.0)):.2f} ms · "
             f"1% low {float(profile.get('one_percent_low_fps', 0.0)):.1f} FPS · "
-            f"{int(profile.get('frame_count', 0))} frames"
-            + "".join(f"\n{surface['name']}: {surface['paint_rate_fps']:.1f} FPS · p99 {surface['frame_p99_ms']:.2f} ms · max {surface['frame_max_ms']:.2f} ms"
+            f"{int(profile.get('frame_count', 0))} frames · "
+            f"{int(profile.get('estimated_missed_refresh_slots', 0))} estimated missed refresh slots"
+            + "".join(f"\n{surface['name']}: {surface['paint_rate_fps']:.1f} paints/s · {surface['swap_rate_fps']:.1f} swaps/s · p99 {surface['frame_p99_ms']:.2f} ms · max {surface['frame_max_ms']:.2f} ms"
                       for surface in profile.get('surfaces', []))
         )
 

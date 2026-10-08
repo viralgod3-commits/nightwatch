@@ -224,10 +224,19 @@ class PresentationClock(QtCore.QObject):
         self._paint_completed_at = 0.0
         self._compose_started_at = 0.0
         self._paint_timestamps: dict[int, deque[float]] = {}
+        self._last_input_source_key: int | None = None
         self._profile_started_at = 0.0
         self._profile_duration_s = 0.0
+        self._profile_collecting = False
         self._profile_frame_timestamps: list[float] = []
         self._profile_paint_timestamps: dict[int, list[float]] = {}
+        self._profile_swap_timestamps: dict[int, list[float]] = {}
+        self._profile_unswapped_paints: set[int] = set()
+        self._profile_swap_sources: set[int] = set()
+        self._profile_input_counts: dict[int, int] = {}
+        self._profile_default_source_key: int | None = None
+        self._profile_last_input_source_key: int | None = None
+        self._profile_source_names: dict[int, str] = {}
         self._profile_probe_intervals_ms: list[float] = []
         self._profile_probe_last = 0.0
         self._profile_dispatcher = None
@@ -325,10 +334,25 @@ class PresentationClock(QtCore.QObject):
             if hasattr(widget, "frameSwapped"):
                 widget.frameSwapped.connect(lambda source=widget: self._frame_swapped(source))
                 widget.aboutToCompose.connect(lambda source=widget: self._about_to_compose(source))
+            # Viewport setup can install a consuming wheel/gesture filter after
+            # registration. Observe input first once that setup turn completes;
+            # this filter always returns False for input and leaves handling intact.
+            QtCore.QTimer.singleShot(0, self, lambda source_key=key: self._prioritize_source_observation(source_key))
         if pace:
             self._observe_pacing_window(widget)
             if self._continuous or self._requested:
                 self._schedule_frame(immediate=True)
+
+    def _prioritize_source_observation(self, key: int) -> None:
+        source = self._frame_sources.get(key)
+        if source is not None:
+            try:
+                # Reinstalling an existing filter moves it to the front of Qt's
+                # dispatch order without adding a second filter instance.
+                source.installEventFilter(self)
+            except RuntimeError:
+                # The source may have been destroyed during deferred setup.
+                pass
 
     def _source_destroyed(self, key: int) -> None:
         source = self._frame_sources.pop(key, None)
@@ -356,8 +380,17 @@ class PresentationClock(QtCore.QObject):
         window.installEventFilter(self)
 
     def eventFilter(self, watched: QtCore.QObject, event: QtCore.QEvent) -> bool:
-        if id(watched) in self._frame_sources and event.type() == QtCore.QEvent.Type.Paint:
-            self.record_chart_paint(watched)
+        key = id(watched)
+        if key in self._frame_sources:
+            if event.type() == QtCore.QEvent.Type.Paint:
+                self.record_chart_paint(watched)
+            elif event.type() in (QtCore.QEvent.Type.MouseMove, QtCore.QEvent.Type.Wheel, QtCore.QEvent.Type.NativeGesture):
+                self._last_input_source_key = key
+                if self._profile_collecting:
+                    now = time.monotonic()
+                    if self._profile_started_at <= now <= self._profile_started_at + self._profile_duration_s:
+                        self._profile_input_counts[key] = self._profile_input_counts.get(key, 0) + 1
+                        self._profile_last_input_source_key = key
         if watched is self._pacing_source or watched is self._pacing_window:
             if event.type() in (QtCore.QEvent.Type.Hide, QtCore.QEvent.Type.Destroy):
                 self._awaiting_paint = self._awaiting_swap = False
@@ -433,6 +466,9 @@ class PresentationClock(QtCore.QObject):
             self._compose_started_at = time.monotonic()
 
     def _frame_swapped(self, source) -> None:
+        # A passive observer has no pacing source. It must still capture the
+        # chart's real composition feedback, independently of frame scheduling.
+        self.record_chart_swap(source)
         if source is not self._pacing_source or not self._awaiting_swap or self._awaiting_paint or self._painting:
             return
         now = time.monotonic()
@@ -509,22 +545,49 @@ class PresentationClock(QtCore.QObject):
         now = time.monotonic()
         window = max(0.25, float(window_seconds))
         cutoff = now - window
-        streams = list(self._paint_timestamps.values()) if self._frame_sources else [self._frame_timestamps]
-        for frames in streams:
-            while frames and frames[0] < cutoff:
-                frames.popleft()
-        count = max((len(frames) for frames in streams), default=0)
+        target_widget = self._owner
+        if self._frame_sources:
+            key = self._last_input_source_key
+            if key not in self._frame_sources:
+                key = id(self._pacing_source) if self._pacing_source is not None else next(iter(self._frame_sources))
+            frames = self._paint_timestamps.get(key, deque())
+            target_widget = self._frame_sources.get(key, self._owner)
+        else:
+            frames = self._frame_timestamps
+        while frames and frames[0] < cutoff:
+            frames.popleft()
+        count = len(frames)
         active = count > 0
         actual = count / window
-        return actual, display_refresh_rate(self._owner), active
+        return actual, display_refresh_rate(target_widget), active
 
     def start_frame_profile(self, duration_seconds: float = 30.0) -> None:
-        """Capture paint cadence, request latency and GUI event-loop stalls."""
+        """Capture chart paint/swap cadence, request latency and GUI stalls.
+
+        The manipulated chart is selected by viewport input, never by its FPS.
+        Capture averages cover the entire window; lows use consecutive rendered
+        frames, so users should pan/zoom continuously when comparing captures.
+        """
         self._stop_profile_probes()
         self._profile_started_at = time.monotonic()
         self._profile_duration_s = max(1.0, float(duration_seconds))
+        self._profile_collecting = True
         self._profile_frame_timestamps.clear()
         self._profile_paint_timestamps.clear()
+        self._profile_swap_timestamps.clear()
+        self._profile_unswapped_paints.clear()
+        self._profile_swap_sources.clear()
+        self._profile_input_counts.clear()
+        self._profile_last_input_source_key = None
+        self._profile_default_source_key = (
+            id(self._pacing_source) if self._pacing_source is not None
+            else self._last_input_source_key if self._last_input_source_key in self._frame_sources
+            else next(iter(self._frame_sources), None)
+        )
+        self._profile_source_names = {
+            key: widget.objectName() or type(widget).__name__
+            for key, widget in self._frame_sources.items()
+        }
         self._profile_probe_intervals_ms.clear()
         self._profile_probe_last = self._profile_started_at
         _reset_performance_diagnostics(self._profile_started_at, self._profile_duration_s)
@@ -544,6 +607,7 @@ class PresentationClock(QtCore.QObject):
             application.aboutToQuit.connect(self._stop_profile_probes)
 
     def _stop_profile_probes(self) -> None:
+        self._profile_collecting = False
         self._profile_probe_timer.stop()
         had_probe = self._profile_gc in gc.callbacks
         if self._profile_dispatcher is not None:
@@ -620,6 +684,11 @@ class PresentationClock(QtCore.QObject):
             return
         key = id(source)
         self._profile_paint_timestamps.setdefault(key, []).append(stamp)
+        self._profile_unswapped_paints.add(key)
+        if isinstance(source, QtWidgets.QWidget):
+            self._profile_source_names[key] = source.objectName() or type(source).__name__
+            if hasattr(source, "frameSwapped") and source.isValid():
+                self._profile_swap_sources.add(key)
         requested_at = _PROFILE_PENDING_PAINT_REQUESTS.pop(key, None)
         if requested_at is not None and stamp >= requested_at:
             latency_ms = (stamp - requested_at) * 1000.0
@@ -630,6 +699,25 @@ class PresentationClock(QtCore.QObject):
         else:
             record_performance_count("qt.unsolicited_paints")
 
+    def record_chart_swap(self, source: object, timestamp: float | None = None) -> None:
+        """Record Qt composition completion for a freshly painted chart.
+
+        QOpenGLWidget can emit frameSwapped when another widget dirties the
+        window. Those swaps do not contain a new chart frame and are excluded.
+        Qt swap feedback measures composition cadence, not physical scanout.
+        """
+        if not self._profile_collecting:
+            return
+        key = id(source)
+        if key not in self._profile_unswapped_paints:
+            return
+        stamp = time.monotonic() if timestamp is None else float(timestamp)
+        if not self._profile_started_at <= stamp <= self._profile_started_at + self._profile_duration_s:
+            return
+        self._profile_unswapped_paints.discard(key)
+        self._profile_swap_sources.add(key)
+        self._profile_swap_timestamps.setdefault(key, []).append(stamp)
+
     @staticmethod
     def _percentile(values: list[float], fraction: float) -> float:
         if not values:
@@ -637,6 +725,44 @@ class PresentationClock(QtCore.QObject):
         ordered = sorted(values)
         index = int(round((len(ordered) - 1) * fraction))
         return ordered[max(0, min(len(ordered) - 1, index))]
+
+    @staticmethod
+    def _cadence_summary(frames: list[float], refresh_hz: float) -> dict[str, float | int]:
+        intervals = sorted(
+            (current - previous) * 1000.0
+            for previous, current in zip(frames, frames[1:])
+            if current > previous
+        )
+        def percentile(fraction: float) -> float:
+            if not intervals:
+                return 0.0
+            index = int(round((len(intervals) - 1) * fraction))
+            return intervals[max(0, min(len(intervals) - 1, index))]
+        average_ms = sum(intervals) / len(intervals) if intervals else 0.0
+        slow_count = max(1, math.ceil(len(intervals) * 0.01)) if intervals else 0
+        slow_average_ms = sum(intervals[-slow_count:]) / slow_count if slow_count else 0.0
+        budget_ms = 1000.0 / refresh_hz
+        return {
+            "frame_interval_count": len(intervals),
+            "frame_avg_ms": average_ms,
+            "frame_p50_ms": percentile(0.50),
+            "frame_p95_ms": percentile(0.95),
+            "frame_p99_ms": percentile(0.99),
+            "frame_max_ms": max(intervals, default=0.0),
+            "interval_rate_fps": 1000.0 / average_ms if average_ms else 0.0,
+            "one_percent_low_fps": 1000.0 / slow_average_ms if slow_average_ms else 0.0,
+            "one_percent_low_frame_ms": slow_average_ms,
+            "one_percent_low_sample_count": slow_count,
+            "refresh_budget_ms": budget_ms,
+            "over_budget_interval_count": sum(interval > budget_ms for interval in intervals),
+            # Nearest-refresh-period rounding tolerates small timestamp jitter.
+            # Gaps can include user pauses, so this is an estimate, not scanout
+            # telemetry or proof that the display missed a physical refresh.
+            "estimated_missed_refresh_slots": sum(
+                max(0, math.floor(interval / budget_ms + 0.5) - 1)
+                for interval in intervals
+            ),
+        }
 
     def frame_profile(self) -> dict[str, Any]:
         """Return the active/completed capture without changing presentation behavior."""
@@ -649,18 +775,19 @@ class PresentationClock(QtCore.QObject):
         active = now - started < duration
 
 
-        paint_items = list(self._profile_paint_timestamps.items())
-        if paint_items:
-            source_key, frames = max(paint_items, key=lambda item: len(item[1]))
+        if self._profile_input_counts:
+            source_key = max(
+                self._profile_input_counts,
+                key=lambda key: (self._profile_input_counts[key], key == self._profile_last_input_source_key),
+            )
         else:
-            source_key, frames = 0, self._profile_frame_timestamps
-        frame_ms = [
-            (current - previous) * 1000.0
-            for previous, current in zip(frames, frames[1:])
-            if current > previous
-        ]
-        average_frame_ms = sum(frame_ms) / len(frame_ms) if frame_ms else 0.0
-        p99_ms = self._percentile(frame_ms, 0.99)
+            source_key = self._profile_default_source_key
+        refresh_hz = display_refresh_rate(self._frame_sources.get(source_key, self._owner))
+        paints = self._profile_paint_timestamps.get(source_key, [])
+        swaps = self._profile_swap_timestamps.get(source_key, [])
+        cadence_source = "chart_swap" if source_key in self._profile_swap_sources else "chart_paint"
+        frames = swaps if cadence_source == "chart_swap" else paints
+        cadence = self._cadence_summary(frames, refresh_hz)
         event_loop_ms = list(self._profile_probe_intervals_ms)
         event_loop_avg_ms = (
             sum(event_loop_ms) / len(event_loop_ms) if event_loop_ms else 0.0
@@ -668,15 +795,29 @@ class PresentationClock(QtCore.QObject):
         request_latency_ms = list(_PROFILE_PAINT_REQUEST_LATENCIES.get(source_key, ()))
         requested_paints = list(_PROFILE_REQUESTED_PAINT_TIMESTAMPS.get(source_key, ()))
         surfaces = []
-        for key, samples in paint_items:
-            intervals = [(current - previous) * 1000 for previous, current in zip(samples, samples[1:]) if current > previous]
-            widget = self._frame_sources.get(key)
+        source_keys = dict.fromkeys((*self._frame_sources, *self._profile_paint_timestamps))
+        for key in source_keys:
+            surface_paints = self._profile_paint_timestamps.get(key, [])
+            surface_swaps = self._profile_swap_timestamps.get(key, [])
+            surface_source = "chart_swap" if key in self._profile_swap_sources else "chart_paint"
+            samples = surface_swaps if surface_source == "chart_swap" else surface_paints
+            surface_refresh_hz = display_refresh_rate(self._frame_sources.get(key, self._owner))
+            surface_cadence = self._cadence_summary(samples, surface_refresh_hz)
             surfaces.append({
-                'name': widget.objectName() or type(widget).__name__ if widget is not None else str(key),
-                'frame_count': len(samples), 'paint_rate_fps': len(samples) / elapsed if elapsed else 0.0,
-                'frame_p95_ms': self._percentile(intervals, .95), 'frame_p99_ms': self._percentile(intervals, .99),
-                'frame_max_ms': max(intervals, default=0.0),
+                'name': self._profile_source_names.get(key, str(key)),
+                'selected': key == source_key,
+                'sample_source': surface_source if samples else "no_render_samples",
+                'cadence_source': surface_source,
+                'frame_count': len(samples),
+                'avg_fps': len(samples) / elapsed if elapsed else 0.0,
+                'paint_count': len(surface_paints),
+                'paint_rate_fps': len(surface_paints) / elapsed if elapsed else 0.0,
+                'swap_count': len(surface_swaps),
+                'swap_rate_fps': len(surface_swaps) / elapsed if elapsed else 0.0,
+                'input_event_count': self._profile_input_counts.get(key, 0),
+                'target_fps': surface_refresh_hz,
                 'request_latency_p99_ms': self._percentile(list(_PROFILE_PAINT_REQUEST_LATENCIES.get(key, ())), .99),
+                **surface_cadence,
             })
         if not active:
             self._stop_profile_probes()
@@ -687,21 +828,24 @@ class PresentationClock(QtCore.QObject):
             "elapsed_s": elapsed,
             "remaining_s": max(0.0, duration - elapsed),
             "frame_count": len(frames),
-            "sample_source": "chart_paint" if paint_items else "presentation_clock",
-            "chart_streams": len(paint_items),
+            "sample_source": cadence_source if frames else "no_render_samples",
+            "cadence_source": cadence_source,
+            "sample_surface": self._profile_source_names.get(source_key, "No chart surface"),
+            "input_event_count": self._profile_input_counts.get(source_key, 0),
+            "chart_streams": len(self._profile_paint_timestamps),
             "surfaces": surfaces,
 
 
             "avg_fps": len(frames) / elapsed if elapsed > 0.0 else 0.0,
-            "paint_rate_fps": len(frames) / elapsed if elapsed > 0.0 else 0.0,
+            "paint_count": len(paints),
+            "paint_rate_fps": len(paints) / elapsed if elapsed > 0.0 else 0.0,
+            "swap_count": len(swaps),
+            "swap_rate_fps": len(swaps) / elapsed if elapsed > 0.0 else 0.0,
+            "scheduler_frame_count": len(self._profile_frame_timestamps),
+            "scheduler_rate_fps": len(self._profile_frame_timestamps) / elapsed if elapsed > 0.0 else 0.0,
             "requested_paint_count": len(requested_paints),
-            "target_fps": display_refresh_rate(self._owner),
-            "frame_avg_ms": average_frame_ms,
-            "frame_p50_ms": self._percentile(frame_ms, 0.50),
-            "frame_p95_ms": self._percentile(frame_ms, 0.95),
-            "frame_p99_ms": p99_ms,
-            "frame_max_ms": max(frame_ms, default=0.0),
-            "one_percent_low_fps": 1000.0 / p99_ms if p99_ms > 0.0 else 0.0,
+            "target_fps": refresh_hz,
+            **cadence,
             "event_loop_probe_count": len(event_loop_ms),
             "event_loop_avg_ms": event_loop_avg_ms,
             "event_loop_p95_ms": self._percentile(event_loop_ms, 0.95),

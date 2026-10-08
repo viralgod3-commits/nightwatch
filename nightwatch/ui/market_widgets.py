@@ -3002,6 +3002,11 @@ class WatchlistSidebarWidget(QtWidgets.QWidget):
         self._theme_revision = 0
         self._last_size_style_key = None
         self._pending_numeric_resizes: set[int] = set()
+        self._width_environment_refresh_pending = False
+        self._numeric_cell_advances: dict[tuple[int, int], float] = {}
+        self._numeric_column_advances: dict[int, float] = {}
+        self._numeric_text_advances: dict[tuple[str, str], float] = {}
+        self._numeric_font_metrics: dict[str, QtGui.QFontMetricsF] = {}
         layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(3, 3, 3, 3)
         layout.setSpacing(0)
@@ -3106,8 +3111,56 @@ class WatchlistSidebarWidget(QtWidgets.QWidget):
         self.refresh()
 
     def _width_environment_changed(self) -> None:
+        self._invalidate_numeric_widths()
         self._pending_numeric_resizes.update((2, 3, 4))
-        self.refresh()
+        if not self._width_environment_refresh_pending:
+            self._width_environment_refresh_pending = True
+            QtCore.QTimer.singleShot(0, self, self._flush_width_environment_refresh)
+
+    def _flush_width_environment_refresh(self) -> None:
+        self._width_environment_refresh_pending = False
+        if self._pending_numeric_resizes:
+            self.refresh()
+
+    def _invalidate_numeric_widths(self) -> None:
+        self._numeric_cell_advances.clear()
+        self._numeric_column_advances.clear()
+        self._numeric_text_advances.clear()
+        self._numeric_font_metrics.clear()
+
+    def _sync_numeric_column_width(self, column: int) -> None:
+        """Keep Qt's exact contents sizing without rescanning unchanged widths."""
+        maximum = 0.0
+        for row in range(self.table.rowCount()):
+            cell_key = (row, column)
+            advance = self._numeric_cell_advances.get(cell_key)
+            if advance is None:
+                item = self.table.item(row, column)
+                if item is None:
+                    continue
+                font = item.font()
+                font_key = font.key()
+                text_key = (font_key, item.text())
+                advance = self._numeric_text_advances.get(text_key)
+                if advance is None:
+                    metrics = self._numeric_font_metrics.get(font_key)
+                    if metrics is None:
+                        metrics = QtGui.QFontMetricsF(font, self.table)
+                        if len(self._numeric_font_metrics) >= 32:
+                            self._numeric_font_metrics.clear()
+                        self._numeric_font_metrics[font_key] = metrics
+                    advance = metrics.horizontalAdvance(text_key[1])
+                    # Live prices are unbounded; retain only a small hot set.
+                    if len(self._numeric_text_advances) >= 512:
+                        self._numeric_text_advances.clear()
+                    self._numeric_text_advances[text_key] = advance
+                self._numeric_cell_advances[cell_key] = advance
+            maximum = max(maximum, advance)
+        if self._numeric_column_advances.get(column) != maximum:
+            # Delegate padding and header widths remain owned by Qt. Fixed-pitch
+            # digit changes usually leave the maximum text advance unchanged.
+            self.table.resizeColumnToContents(column)
+            self._numeric_column_advances[column] = maximum
 
     def _typography_changed(self) -> None:
         for row in range(self.table.rowCount()):
@@ -3116,6 +3169,7 @@ class WatchlistSidebarWidget(QtWidgets.QWidget):
                 if item is not None:
                     role = TextRole.UI_BODY if column == 1 else TextRole.TABLE_VALUE
                     item.setFont(typography_font(role))
+        self._invalidate_numeric_widths()
         self._pending_numeric_resizes.update((2, 3, 4))
         self.refresh()
 
@@ -3319,10 +3373,15 @@ class WatchlistSidebarWidget(QtWidgets.QWidget):
         if self.table.rowCount() != len(symbols):
             dirty_columns.update((2, 3, 4))
             self.table.setRowCount(len(symbols))
+            self._numeric_cell_advances = {
+                key: value for key, value in self._numeric_cell_advances.items()
+                if key[0] < len(symbols)
+            }
         now = time.monotonic()
         signatures = {}
         style_key = (self._theme_revision, self.devicePixelRatioF())
         if style_key != self._last_size_style_key:
+            self._invalidate_numeric_widths()
             dirty_columns.update((2, 3, 4))
             self._last_size_style_key = style_key
         selected_row = -1
@@ -3340,7 +3399,20 @@ class WatchlistSidebarWidget(QtWidgets.QWidget):
             price = safe_float(ticker.get("c"))
             change_1h = self.source.hour_changes.get(symbol)
             change_24h = safe_float(ticker.get("P"))
-            signature = (symbol, price, change_1h, change_24h, bool(ticker),
+            quote = "USDC" if symbol.endswith("USDC") else "USDT"
+            base = symbol.removesuffix(quote)
+            display = f"{base}{quote}.P"
+            values = (
+                display,
+                format_price(price) if price else "—",
+                f"{change_1h:+.2f}%" if change_1h is not None else "—",
+                f"{change_24h:+.2f}%" if ticker else "—",
+            )
+            # A rounded "-0.00%" can keep its text while its color changes
+            # between negative zero and a small negative value.
+            change_colors = (change_1h >= 0 if change_1h is not None else None,
+                             change_24h >= 0)
+            signature = (symbol, values, change_colors, bool(ticker),
                          move_direction, symbol == active_symbol, style_key)
             previous = self._row_display_signatures.get(row)
             signatures[row] = signature
@@ -3364,15 +3436,6 @@ class WatchlistSidebarWidget(QtWidgets.QWidget):
                 current_bg if symbol == active_symbol else QtGui.QBrush()
             )
 
-            quote = "USDC" if symbol.endswith("USDC") else "USDT"
-            base = symbol.removesuffix(quote)
-            display = f"{base}{quote}.P"
-            values = (
-                display,
-                format_price(price) if price else "—",
-                f"{change_1h:+.2f}%" if change_1h is not None else "—",
-                f"{change_24h:+.2f}%" if ticker else "—",
-            )
             tooltip = (
                 f"{display} · Last {format_price(price) if price else '—'} · "
                 f"1h {change_1h:+.2f}% · 24h {change_24h:+.2f}%"
@@ -3389,6 +3452,7 @@ class WatchlistSidebarWidget(QtWidgets.QWidget):
                     item.setText(value)
                     if column in (2, 3, 4):
                         dirty_columns.add(column)
+                        self._numeric_cell_advances.pop((row, column), None)
                 if item.toolTip() != tooltip:
                     item.setToolTip(tooltip)
                 item.setBackground(
@@ -3449,10 +3513,11 @@ class WatchlistSidebarWidget(QtWidgets.QWidget):
             self.table.setCurrentCell(-1, -1)
             self.table.clearSelection()
         for column in sorted(dirty_columns):
-            self.table.resizeColumnToContents(column)
+            self._sync_numeric_column_width(column)
 
     def apply_theme(self, theme: dict[str, str]) -> None:
         self._theme_revision += 1
+        self._invalidate_numeric_widths()
         self.watchlist_header.apply_theme(theme)
         self._pending_numeric_resizes.update((2, 3, 4))
         self.refresh()

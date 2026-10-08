@@ -1043,6 +1043,7 @@ class ChartWorkspace(QtWidgets.QWidget):
         self._bar_mailbox = None
         self._committed_closed_time = None
         self._committed_history_stride = 1
+        self._committed_history_owns_tail = False
         self._bar_request_window = None
         self._bar_request_key = None
         self._lod_stride_hint = 1
@@ -2455,6 +2456,7 @@ class ChartWorkspace(QtWidgets.QWidget):
         self._snapshot_mailbox = self._bar_mailbox = None
         self._committed_closed_time = None
         self._committed_history_stride = 1
+        self._committed_history_owns_tail = False
         self._snapshot_inflight = False
         self._snapshot_live_updates.clear()
         self._matrix_waiting = False
@@ -3269,11 +3271,16 @@ class ChartWorkspace(QtWidgets.QWidget):
         return candle.close, closed
 
     def _live_matrix_for_render(self):
-        """Return raw rows owned by the live VBO after the committed history edge."""
+        """Retain the mutable tail without materializing off-screen history.
+
+        Only a resident window that reached the newest closed row can leave
+        pending closed rows for the live VBO to bridge. A historical resident
+        window has no ownership over the unrelated suffix after its right edge.
+        """
         if not len(self.candle_matrix):
             return self.candle_matrix
         stride = max(1, int(self._committed_history_stride))
-        if self._committed_closed_time is not None:
+        if self._committed_history_owns_tail and self._committed_closed_time is not None:
             first = bisect_right(self.candle_times, self._committed_closed_time)
         elif stride > 1:
 
@@ -3288,12 +3295,20 @@ class ChartWorkspace(QtWidgets.QWidget):
 
     def _prepare_live_render_batches(self) -> tuple[PreparedBars, PreparedBars]:
         """Build candle/volume tail geometry on the resident history LOD grid."""
-        return prepare_live_tail(
-            self._live_matrix_for_render(),
+        profile_started = time.perf_counter() if performance_profile_active() else 0.0
+        source = self._live_matrix_for_render()
+        batches = prepare_live_tail(
+            source,
             max(1, int(self._committed_history_stride)),
             INTERVAL_SECONDS[self.interval],
             self.logarithmic,
         )
+        if profile_started:
+            record_performance_timing("live.prepare_ms", (time.perf_counter() - profile_started) * 1000.0)
+            record_performance_count("live.prepare_count")
+            record_performance_sum("live.source_rows", len(source))
+            record_performance_sum("live.candle_instances", len(batches[0].data))
+        return batches
 
     def _render_live(self) -> None:
         if self._matrix_waiting:
@@ -7289,6 +7304,7 @@ class ChartWorkspace(QtWidgets.QWidget):
                 self.rendered_window = prepared.window
                 self._committed_closed_time = prepared.closed_time
                 self._committed_history_stride = max(1, int(prepared.window[2]))
+                self._committed_history_owns_tail = end >= history_count
                 self._invalidate_live_render_commits()
                 self._render_live()
                 self.graphics.request_redraw()
@@ -7313,7 +7329,13 @@ class ChartWorkspace(QtWidgets.QWidget):
                 max(4096, visible_instances * 16),
             )
             resident_span = resident_instances * history_stride
-            guard = max(1024 * history_stride, visible_count * 4)
+            # The GPU budget caps residency at 8192 instances. A four-view
+            # margin can exceed that entire window, causing a worker rebuild
+            # on every camera frame. Reserve only available resident headroom.
+            guard = min(
+                max(1024 * history_stride, visible_count * 4),
+                max(0, (resident_span - visible_count) // 4),
+            )
             if not force and self.rendered_window is not None:
                 cached_start, cached_end, cached_stride = self.rendered_window
                 if (
@@ -7323,7 +7345,7 @@ class ChartWorkspace(QtWidgets.QWidget):
                 ):
 
 
-                    safe_guard = max(1024 * history_stride, (visible_slots + 1) * 4)
+                    safe_guard = guard
                     low_index = cached_start + safe_guard
                     high_index = cached_end - safe_guard - 1
                     low = float("-inf") if cached_start == 0 else self.candle_times[min(low_index, history_count - 1)]

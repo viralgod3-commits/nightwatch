@@ -2525,8 +2525,13 @@ class NightwatchSettingsDialog(QtWidgets.QDialog):
         if not completed:
             label.setText("Not captured yet.")
             return
+        source_label = {
+            'chart_swap': 'Qt swap cadence',
+            'chart_paint': 'Chart paint cadence',
+            'no_render_samples': 'No rendered frame samples',
+        }.get(profile.get('sample_source'), 'No rendered frame samples')
         label.setText(
-            f"AVG {float(profile.get('avg_fps', 0.0)):.1f} FPS · "
+            f"{source_label} · CAPTURE AVG {float(profile.get('avg_fps', 0.0)):.1f} FPS · "
             f"1% LOW {float(profile.get('one_percent_low_fps', 0.0)):.1f} FPS · "
             f"FRAME AVG {float(profile.get('frame_avg_ms', 0.0)):.2f} ms · "
             f"P50 {float(profile.get('frame_p50_ms', 0.0)):.2f} · "
@@ -2534,7 +2539,9 @@ class NightwatchSettingsDialog(QtWidgets.QDialog):
             f"P99 {float(profile.get('frame_p99_ms', 0.0)):.2f} · "
             f"MAX {float(profile.get('frame_max_ms', 0.0)):.2f} ms · "
             f"{int(profile.get('frame_count', 0))} frames · "
-            f"{float(profile.get('target_fps', 0.0)):.0f} Hz display"
+            f"{float(profile.get('target_fps', 0.0)):.0f} Hz display · "
+            f"{int(profile.get('estimated_missed_refresh_slots', 0))} estimated missed refresh slots. "
+            "1% low uses the mean of the slowest 1% of frame intervals."
         )
 
     def _build_workspace_page(self) -> QtWidgets.QWidget:

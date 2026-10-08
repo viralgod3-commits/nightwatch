@@ -43,6 +43,12 @@ analytics processes from oversubscribing the CPU. Set
 workload. Windows high process priority is opt-in through
 `NIGHTWATCH_HIGH_PRIORITY=1`.
 
+Measure chart pan/zoom and watchlist resizing with all four panels, ten pairs,
+and no indicators using `python tools/benchmark_interactions.py`. The offline
+benchmark records actual paint/composition cadence, slowest 1% frame intervals,
+and input latency. See [benchmark instructions](tools/benchmark_interactions.md)
+for matching before/after runs and target GPU/display validation.
+
 ## Local state and recovery
 
 Application data uses Qt's platform-specific application data directory.
