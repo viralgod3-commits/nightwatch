@@ -1310,13 +1310,11 @@ class MainWindow(QtWidgets.QMainWindow):
             # Settings pages are built only on request. Hidden configuration
             # widgets must not compete with market data or chart presentation.
 
-    def _fit_normal_window_to_available_height(self) -> None:
-        """Keep restored normal mode inside the current monitor work area.
+    def _fit_normal_window_to_work_area(self) -> None:
+        """Fill the current monitor's work area in restored windowed mode.
 
-        Nightwatch is vertically dense; a stale short normal-window geometry can
-        hide useful terminal space even though the monitor has room. Preserve
-        the user's horizontal width/placement while making the normal window use
-        the monitor's available vertical work area (excluding the taskbar/dock).
+        Exclude the taskbar/dock and account for the native window frame so both
+        dimensions fill the available desktop without retaining a stale offset.
         """
         if self.isFullScreen() or self.isMaximized() or self._effective_fullscreen():
             return
@@ -1325,25 +1323,16 @@ class MainWindow(QtWidgets.QMainWindow):
         if screen is None:
             return
         available = screen.availableGeometry()
+        if not available.isValid():
+            return
         margins = handle.frameMargins() if handle is not None else QtCore.QMargins()
         current = self.geometry()
-        max_client_width = max(1, available.width() - margins.left() - margins.right())
-        width = min(max(self.minimumWidth(), current.width()), max_client_width)
-        height = max(
-            self.minimumHeight(),
-            available.height() - margins.top() - margins.bottom(),
+        target = QtCore.QRect(
+            available.left() + margins.left(),
+            available.top() + margins.top(),
+            max(1, available.width() - margins.left() - margins.right()),
+            max(1, available.height() - margins.top() - margins.bottom()),
         )
-        height = min(height, max(1, available.height()))
-        frame_width = width + margins.left() + margins.right()
-        frame_left = current.left() - margins.left()
-        min_frame_left = available.left()
-        max_frame_left = max(
-            min_frame_left, available.right() - frame_width + 1
-        )
-        frame_left = max(min_frame_left, min(frame_left, max_frame_left))
-        client_left = frame_left + margins.left()
-        client_top = available.top() + margins.top()
-        target = QtCore.QRect(client_left, client_top, width, height)
         if current != target:
             self.setGeometry(target)
 
@@ -1370,7 +1359,7 @@ class MainWindow(QtWidgets.QMainWindow):
     def showEvent(self, event: QtGui.QShowEvent) -> None:
         super().showEvent(event)
         if not self.start_fullscreen and not self.start_maximized:
-            QTimer.singleShot(0, self._fit_normal_window_to_available_height)
+            QTimer.singleShot(0, self._fit_normal_window_to_work_area)
         if not self._startup_show_seen:
             self._startup_show_seen = True
             self._startup_mark("first show")
@@ -6310,7 +6299,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 self.setGeometry(QtCore.QRect(normal_rect))
             elif self._restore_geometry_after_fullscreen is not None:
                 self.restoreGeometry(self._restore_geometry_after_fullscreen)
-            QTimer.singleShot(0, self._fit_normal_window_to_available_height)
+            QTimer.singleShot(0, self._fit_normal_window_to_work_area)
             return
 
         self.showNormal()
@@ -6321,7 +6310,7 @@ class MainWindow(QtWidgets.QMainWindow):
         if self._restore_maximized_after_fullscreen:
             QTimer.singleShot(0, self._restore_maximized_window_after_fullscreen)
         else:
-            QTimer.singleShot(0, self._fit_normal_window_to_available_height)
+            QTimer.singleShot(0, self._fit_normal_window_to_work_area)
 
     def _restore_maximized_window_after_fullscreen(self) -> None:
         self.showMaximized()
