@@ -1774,7 +1774,7 @@ class _WorkspaceContent(QtWidgets.QWidget):
             for column in range(4):
                 grid.setColumnStretch(column, 1 if column < columns else 0)
             for index, section in enumerate(panel.sections):
-                grid.addWidget(section, index // columns, index % columns, Qt.AlignmentFlag.AlignTop)
+                grid.addWidget(section, index // columns, index % columns)
             self._drawer_columns = columns
             grid.activate()
         drawer.setMinimumSize(320 if horizontal else 0, 0)
@@ -1938,6 +1938,7 @@ def _workspace_stylesheet(name: str) -> str:
         {scope} QLabel {{ background: transparent; color: {p['text']}; }}
         {scope} QLabel[workspaceMuted="true"] {{ color: {p['muted']}; }}
         {scope} QFrame[workspacePanel="true"] {{ background: {p['panel']}; border: 1px solid {p['border']}; border-radius: 8px; }}
+        {scope} QFrame[leadersDetailGroup="true"] {{ background: {p['panel']}; border: 1px solid {p['separator']}; border-radius: 6px; }}
         {scope} QPushButton[workspaceControl="true"], {scope} QToolButton[workspaceControl="true"],
         {scope} QComboBox[workspaceControl="true"], {scope} QLineEdit[workspaceControl="true"] {{
             background: {p['control']}; color: {p['text']}; border: 1px solid {p['control_border']};
@@ -2242,20 +2243,32 @@ def _build_columns_menu(owner) -> None:
 
 def _build_leader_context(owner):
     panel = QtWidgets.QFrame()
-    panel.setProperty("workspacePanel", True)
+    panel.setProperty("workspaceTransparent", True)
     grid = QtWidgets.QGridLayout(panel)
     grid.setContentsMargins(12, 12, 12, 12)
-    grid.setHorizontalSpacing(18)
-    grid.setVerticalSpacing(12)
+    grid.setHorizontalSpacing(14)
+    grid.setVerticalSpacing(18)
     panel.sections = []
+    section_layouts = []
 
-    def section_layout():
-        section = QtWidgets.QWidget(panel)
+    def section_layout(title=""):
+        section = QtWidgets.QFrame(panel)
+        section.setProperty("leadersDetailGroup", bool(title))
+        if not title:
+            section.setProperty("workspaceTransparent", True)
         section.setSizePolicy(QtWidgets.QSizePolicy.Policy.Ignored, QtWidgets.QSizePolicy.Policy.Preferred)
         layout = QtWidgets.QVBoxLayout(section)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(10)
+        padding = 12 if title else 0
+        layout.setContentsMargins(padding, padding, padding, padding)
+        layout.setSpacing(4)
+        if title:
+            heading = QtWidgets.QLabel(title)
+            heading.setProperty("workspaceMuted", True)
+            set_text_role(heading, TextRole.UI_CAPTION)
+            layout.addWidget(heading)
+            layout.addSpacing(6)
         panel.sections.append(section)
+        section_layouts.append(layout)
         return layout
 
     layout = section_layout()
@@ -2263,7 +2276,8 @@ def _build_leader_context(owner):
     owner.context_symbol = QtWidgets.QLabel("Select a coin")
     set_text_role(owner.context_symbol, TextRole.INSTRUMENT_SYMBOL)
     owner.context_state = QtWidgets.QLabel()
-    set_text_role(owner.context_state, TextRole.INSTRUMENT_SYMBOL)
+    set_text_role(owner.context_state, TextRole.UI_LABEL)
+    owner.context_state.setMinimumHeight(22)
     instrument.addWidget(owner.context_symbol, 1)
     instrument.addWidget(owner.context_state)
     layout.addLayout(instrument)
@@ -2272,11 +2286,11 @@ def _build_leader_context(owner):
     set_text_role(owner.context_name, TextRole.UI_BODY)
     layout.addWidget(owner.context_name)
     owner.context_price = QtWidgets.QLabel("—")
-    set_text_role(owner.context_price, TextRole.MARKET_VALUE_HERO)
+    set_text_role(owner.context_price, TextRole.MARKET_VALUE_LARGE)
     layout.addWidget(owner.context_price)
     owner.context_spark = LeadershipSparkline()
     owner.context_spark.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Fixed)
-    owner.context_spark.setFixedHeight(128)
+    owner.context_spark.setFixedHeight(92)
     owner.context_spark.setToolTip("Last 24 completed hourly closes")
     layout.addWidget(owner.context_spark)
     owner.trade_values = {}
@@ -2295,26 +2309,24 @@ def _build_leader_context(owner):
         ("Live spread", "spread", "Observed best bid/ask spread. Expires after 90 seconds; never substituted for historical data."),
         ("To 4H high", "high_distance", "Distance below the preceding four-hour high. Negative values indicate a breakout."),
     ):
-        if key in ("rs1", "volume_share", "funding"):
-            layout = section_layout()
-            heading = QtWidgets.QLabel({"rs1": "RELATIVE STRENGTH", "volume_share": "PARTICIPATION",
-                                       "funding": "MARKET CONDITIONS"}[key])
-            heading.setProperty("workspaceMuted", True)
-            set_text_role(heading, TextRole.UI_LABEL)
-            layout.addWidget(heading)
+        if key in ("rs1", "rvol", "funding"):
+            layout = section_layout({"rs1": "RELATIVE STRENGTH", "rvol": "PARTICIPATION",
+                                     "funding": "MARKET CONDITIONS"}[key])
         row = QtWidgets.QHBoxLayout()
         label = QtWidgets.QLabel(caption)
         label.setProperty("workspaceMuted", True)
         set_text_role(label, TextRole.UI_BODY)
-        label.setMinimumHeight(28)
+        label.setMinimumHeight(20)
         value = QtWidgets.QLabel("—")
         value.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-        set_text_role(value, TextRole.MARKET_VALUE_LARGE)
+        set_text_role(value, TextRole.TOP_MARKET_VALUE)
         value.setToolTip(tooltip)
         row.addWidget(label, 1)
         row.addWidget(value)
         layout.addLayout(row)
         owner.trade_values[key] = value
+    for layout in section_layouts:
+        layout.addStretch(1)
     _workspace_drawer(owner, panel)
     owner.context_expiry_timer = QtCore.QTimer(owner)
     owner.context_expiry_timer.setSingleShot(True)
@@ -2347,7 +2359,9 @@ def _render_leader_context(owner):
                         (owner.context_price, _price(price))):
         if label.text() != text:
             label.setText(text)
-    style = f"color: {_leader_color(state, owner.theme)};"
+    state_color = _leader_color(state, owner.theme)
+    style = (f"color: {state_color}; background: {_blend_hex(owner.theme['panel'], state_color, .12)}; "
+             f"border: 1px solid {state_color}; border-radius: 10px; padding: 2px 8px;")
     if owner.context_state.styleSheet() != style:
         owner.context_state.setStyleSheet(style)
     units = {"rs1": "percent", "rs4": "percent", "rs24": "percent", "delta": "pp",
