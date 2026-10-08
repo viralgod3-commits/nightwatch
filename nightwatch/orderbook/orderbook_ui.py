@@ -2225,6 +2225,7 @@ class _DomRasterCanvas(QtWidgets.QWidget):
         self._profile_annotation_font = typography_font(TextRole.ORDERBOOK_FOOTER_VALUE)
         self._center_price_metrics = QtGui.QFontMetricsF(self._center_price_font)
         self._row_metrics = QtGui.QFontMetricsF(self._row_font)
+        self._profile_amount_zero_width = self._row_metrics.horizontalAdvance('0')
         self._price_metrics = QtGui.QFontMetricsF(self._price_font)
         self._effective_price_font = QtGui.QFont(self._price_font)
         self._effective_price_metrics = QtGui.QFontMetricsF(self._effective_price_font)
@@ -2970,6 +2971,8 @@ class _DomRasterCanvas(QtWidgets.QWidget):
             return ''
         decimals = max(1, min(16, 1 - int(math.floor(math.log10(value)))))
         text = f'{value:.{decimals}f}'.rstrip('0').rstrip('.')
+        if '.' not in text:
+            text += '.0'
         return text[1:] if text.startswith('0.') else text
 
     @staticmethod
@@ -4899,30 +4902,24 @@ class _DomRasterCanvas(QtWidgets.QWidget):
         )
         if self.snapshot is None or not self.snapshot.ready:
             self._profile_footer_text = ('BID —', 'ASK —')
-        # Align both sides at one decimal position, including compact values
-        # such as .01 and integers with an implicit decimal point. Measure only
-        # new text runs during preparation; painting needs no font metrics.
-        amount_layouts = []
+        # Whole numbers start at the lane's left edge. Sub-unit values keep
+        # the omitted zero's space, so .01 lines up with 1.01 without shifting
+        # 12.3 or 123.4. Cache measurements outside the paint path.
+        measured_amount = 0.0
         for rows in sides.values():
             for row in rows:
-                whole, separator, fraction = row.notional_text.partition('.')
-                widths = []
-                for run in (whole, separator + fraction):
-                    width = self._profile_amount_text_widths.get(run)
-                    if width is None:
-                        width = self._row_metrics.horizontalAdvance(run)
-                        if len(self._profile_amount_text_widths) >= self.TEXT_LAYOUT_CACHE_CAPACITY:
-                            self._profile_amount_text_widths.popitem(last=False)
-                        self._profile_amount_text_widths[run] = width
-                    else:
-                        self._profile_amount_text_widths.move_to_end(run)
-                    widths.append(width)
-                amount_layouts.append((row, *widths))
-        decimal_offset = max((whole for _, whole, _ in amount_layouts), default=0.0)
-        fraction_width = max((fraction for _, _, fraction in amount_layouts), default=0.0)
-        self._profile_amount_width = max(32.0, decimal_offset + fraction_width + 8.0)
-        for row, whole_width, _ in amount_layouts:
-            row.profile_amount_text_offset = decimal_offset - whole_width
+                text = row.notional_text
+                row.profile_amount_text_offset = self._profile_amount_zero_width if text.startswith('.') else 0.0
+                width = self._profile_amount_text_widths.get(text)
+                if width is None:
+                    width = self._row_metrics.horizontalAdvance(text)
+                    if len(self._profile_amount_text_widths) >= self.TEXT_LAYOUT_CACHE_CAPACITY:
+                        self._profile_amount_text_widths.popitem(last=False)
+                    self._profile_amount_text_widths[text] = width
+                else:
+                    self._profile_amount_text_widths.move_to_end(text)
+                measured_amount = max(measured_amount, width + row.profile_amount_text_offset)
+        self._profile_amount_width = max(32.0, measured_amount + 8.0)
         self._profile_scale_text = (
             f'Depth ruler range · {unit}\n'
             f'Solid bars: size at price; full width = {self._compact_scalar(largest)} {unit}\n'
