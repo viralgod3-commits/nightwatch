@@ -790,6 +790,7 @@ if QtWidgets is not None:
             self._grab_surface_sync_pending = False
             self._pending_grab_resize: tuple[int, list[int]] | None = None
             self._grab_drag_active = False
+            self._grab_previews: list[QtWidgets.QRubberBand] = []
             super().__init__(orientation, parent)
             self._grab_resize_timer = QTimer(self)
             self._grab_resize_timer.setSingleShot(True)
@@ -826,11 +827,11 @@ if QtWidgets is not None:
         def end_grab_drag(self) -> None:
             if self._grab_resize_timer.isActive():
                 self._grab_resize_timer.stop()
+            active, self._grab_drag_active = self._grab_drag_active, False
             self._flush_pending_grab_resize()
-            if not self._grab_drag_active:
-                return
-            self._grab_drag_active = False
-            self.drag_ended.emit()
+            self._hide_grab_previews()
+            if active:
+                self.drag_ended.emit()
 
         def resize_from_grab(self, index: int, start_sizes: list[int], delta: int) -> None:
             before = int(index) - 1
@@ -861,6 +862,7 @@ if QtWidgets is not None:
             if sizes == current and not rail_resize:
                 self._pending_grab_resize = None
                 self._grab_resize_timer.stop()
+                self._hide_grab_previews()
                 return
             pending = self._pending_grab_resize
             if pending is not None and pending == (int(index), sizes):
@@ -873,13 +875,21 @@ if QtWidgets is not None:
 
         def _flush_pending_grab_resize(self) -> None:
             pending = self._pending_grab_resize
-            self._pending_grab_resize = None
             if pending is None:
                 return
             index, sizes = pending
             count = self.count()
             if index <= 0 or index >= count or len(sizes) != count:
+                self._pending_grab_resize = None
                 return
+            if self._grab_drag_active and not self.opaqueResize():
+                # Extended grips must honor QSplitter's deferred-resize policy:
+                # repainting a divider is cheap; relaying out every child and
+                # rebuilding the chart on each pointer step is not.
+                self._show_grab_previews(index, sizes)
+                return
+            self._pending_grab_resize = None
+            self._hide_grab_previews()
             before_actual = [max(0, int(value)) for value in self.sizes()]
             if self._commit_owner is not None:
                 self._commit_owner._apply_grab_rail_width(self, sum(sizes))
@@ -895,9 +905,53 @@ if QtWidgets is not None:
             position = handle.geometry().x() if horizontal else handle.geometry().y()
             self.splitterMoved.emit(int(position), int(index))
 
+        def _show_grab_previews(self, index, sizes):
+            window = self.window()
+            horizontal = self.orientation() == Qt.Orientation.Horizontal
+            origin = self.mapTo(window, QtCore.QPoint())
+            handle = self.handle(index).geometry()
+            position = (handle.x() if horizontal else handle.y()) + sum(sizes[:index]) - sum(self.sizes()[:index])
+            shift, outer_rect = (self._commit_owner._grab_rail_preview(self, sum(sizes))
+                                 if self._commit_owner is not None else (0, None))
+            width = RIGHT_PANEL_SPLITTER_VISUAL_WIDTH
+            offset = (self.handleWidth() - width) // 2
+            if horizontal:
+                rect = QtCore.QRect(origin.x() + position - shift + offset, origin.y(), width, self.height())
+            else:
+                rect = QtCore.QRect(origin.x(), origin.y() + position + offset, self.width(), width)
+            rects = [rect]
+            if outer_rect is not None:
+                rects.append(outer_rect)
+            # Window-owned bands can follow a column past its current left edge
+            # while the proposed rail width grows into chart space. They never
+            # intercept pointer input or cover the panel's rendered data.
+            for i, rect in enumerate(rects):
+                if i == len(self._grab_previews):
+                    preview = QtWidgets.QRubberBand(QtWidgets.QRubberBand.Shape.Rectangle, window)
+                    preview.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+                    preview.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
+                    palette = preview.palette()
+                    palette.setColor(QtGui.QPalette.ColorRole.Highlight, QtGui.QColor("#858585"))
+                    preview.setPalette(palette)
+                    self.destroyed.connect(preview.deleteLater)
+                    self._grab_previews.append(preview)
+                preview = self._grab_previews[i]
+                if preview.parentWidget() is not window:
+                    preview.setParent(window)
+                preview.setGeometry(rect.intersected(window.rect()))
+                preview.show()
+                preview.raise_()
+            for preview in self._grab_previews[len(rects):]:
+                preview.hide()
+
+        def _hide_grab_previews(self):
+            for preview in self._grab_previews:
+                preview.hide()
+
         def cancel_grab_drag(self) -> None:
             self._grab_resize_timer.stop()
             self._pending_grab_resize = None
+            self._hide_grab_previews()
             if not self._grab_drag_active:
                 return
             self._grab_drag_active = False
@@ -1445,6 +1499,21 @@ if QtWidgets is not None:
                 sizes[index] += actual_growth
                 ancestor.setSizes(sizes)
 
+        def _grab_rail_preview(self, splitter, width):
+            drag = self._rail_width_drag
+            if drag is None or drag.splitter is not splitter:
+                return 0, None
+            growth = max(0, int(width) - drag.splitter_width)
+            sizes = self._main_splitter.sizes()
+            target = drag.rail_width + growth
+            shift = target - sizes[1]
+            if not shift:
+                return 0, None
+            origin = self._main_splitter.mapTo(splitter.window(), QtCore.QPoint())
+            rect = QtCore.QRect(origin.x() + sum(sizes) - target - RIGHT_PANEL_SPLITTER_VISUAL_WIDTH // 2,
+                               origin.y(), RIGHT_PANEL_SPLITTER_VISUAL_WIDTH, self._main_splitter.height())
+            return shift, rect
+
         def _finish_drag(self):
             self.capture_geometry()
             self._rail_width_drag = None
@@ -1452,7 +1521,10 @@ if QtWidgets is not None:
             self.drag_ended.emit()
 
         def _cancel_interactions(self):
-            for splitter in self.interaction_splitters():
+            splitters = list(self.interaction_splitters())
+            if isinstance(self._main_splitter, PanelSplitter):
+                splitters.append(self._main_splitter)
+            for splitter in splitters:
                 splitter.cancel_grab_drag()
             self._dirty_splitters.clear()
 
