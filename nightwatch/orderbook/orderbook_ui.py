@@ -1241,7 +1241,6 @@ class _OrderBookSurfaceButton(QtWidgets.QPushButton):
 class OrderBookControlBar(QtWidgets.QFrame):
     """Visible controls that keep price grouping and heatmap range within reach."""
     aggregation_selected = Signal(int)
-    density_selected = Signal(str)
     value_mode_selected = Signal(str)
     book_depth_toggled = Signal(bool)
     depth_range_selected = Signal(float)
@@ -1249,14 +1248,12 @@ class OrderBookControlBar(QtWidgets.QFrame):
     reset_requested = Signal()
     display_option_toggled = Signal(str, bool)
     CONTROL_BAR_HEIGHT = 60
-    _DENSITIES = ('compact', 'normal', 'relaxed')
-    _DENSITY_NAMES = {'compact': 'Compact', 'normal': 'Balanced', 'relaxed': 'Spacious'}
 
     def __init__(self, theme, parent=None):
         super().__init__(parent)
         self.theme = orderbook_palette(theme)
         self._tick_size, self._aggregation = 0.0, 1
-        self._book_depth, self._density, self._value_mode = True, 'normal', 'base'
+        self._book_depth, self._value_mode = True, 'base'
         self._auto_grouping, self._depth_range = True, 0.72
         self._tape_enabled, self._tape_mode = False, 'LARGE'
         self._responsive_layout_state = None
@@ -1324,17 +1321,6 @@ class OrderBookControlBar(QtWidgets.QFrame):
         self._top_layout.addStretch(1)
         self._top_layout.addWidget(self.value_mode_button)
         self._top_layout.addWidget(self.settings_button)
-        self._density_menu = QtWidgets.QMenu('Row spacing', self)
-        self._density_actions = {}
-        self._density_action_group = QtGui.QActionGroup(self)
-        self._density_action_group.setExclusive(True)
-        for density in self._DENSITIES:
-            action = self._density_menu.addAction(self._DENSITY_NAMES[density])
-            action.setCheckable(True)
-            self._density_action_group.addAction(action)
-            action.triggered.connect(lambda checked=False, selected=density: self.density_selected.emit(selected) if checked else None)
-            self._density_actions[density] = action
-
         self._range_container = QtWidgets.QWidget(self)
         range_layout = QtWidgets.QHBoxLayout(self._range_container)
         range_layout.setContentsMargins(0, 0, 0, 0)
@@ -1364,7 +1350,6 @@ class OrderBookControlBar(QtWidgets.QFrame):
         self._display_menu.addSection('Display')
         self._display_menu.addMenu(self._view_menu).setText('View')
         self._display_menu.addMenu(self._aggregation_menu)
-        self._display_menu.addMenu(self._density_menu)
         self.units_action = self._display_menu.addAction('Show base-asset quantities')
         self.units_action.setCheckable(True)
         self.units_action.triggered.connect(lambda checked: self.value_mode_selected.emit('base' if checked else 'quote'))
@@ -1494,11 +1479,11 @@ class OrderBookControlBar(QtWidgets.QFrame):
         button.setChecked(bool(checked))
         del blocker
 
-    def set_state(self, *, aggregation, tick_size, preset, density, value_mode, tape_enabled, tape_mode,
+    def set_state(self, *, aggregation, tick_size, preset, value_mode, tape_enabled, tape_mode,
                   book_depth=False, overlays=None, depth_range=0.72, auto_grouping=True, range_available=True):
         self._aggregation = max(1, int(aggregation))
         self._tick_size = max(0.0, float(tick_size))
-        self._density, self._value_mode = str(density or 'normal'), 'base' if value_mode == 'base' else 'quote'
+        self._value_mode = 'base' if value_mode == 'base' else 'quote'
         self._tape_enabled, self._tape_mode, self._book_depth = bool(tape_enabled), str(tape_mode), bool(book_depth)
         self._depth_range = max(0.05, min(1.0, float(depth_range)))
         self._auto_grouping = bool(auto_grouping)
@@ -1541,9 +1526,6 @@ class OrderBookControlBar(QtWidgets.QFrame):
         with QtCore.QSignalBlocker(self.range_slider):
             self.range_slider.setValue(round(self._depth_range * 100))
         self.range_value.setText(f'{round(self._depth_range * 100)}%')
-        for key, action in self._density_actions.items():
-            self._set_checked_without_signal(action, key == self._density)
-        self._density_menu.setTitle(f'Row spacing · {self._DENSITY_NAMES.get(self._density, "Balanced")}')
 from collections import Counter, OrderedDict, deque
 from dataclasses import dataclass, replace
 from typing import ClassVar
@@ -1633,7 +1615,7 @@ class PreparedDomRow:
     profile_cumulative: float = 0.0
     profile_in_range: bool = True
 
-def _compute_order_flow_dom_geometry(width: float, height: float, font_height: float=13.0, price_font_height: float | None=None, label_font_height: float | None=None, *, column_preferences: dict[str, object] | None=None, row_density: str='normal', presentation_preset: str='execution', essential_only: bool=False, previous_mode: str | None=None, previous_bbo_only: bool | None=None, price_min_width: float=90.0, amount_min_width: float=36.0, state_expanded_width: float | None=None, column_width_overrides: dict[str, float] | None=None, book_depth: bool=False) -> dict[str, object]:
+def _compute_order_flow_dom_geometry(width: float, height: float, font_height: float=13.0, price_font_height: float | None=None, label_font_height: float | None=None, *, column_preferences: dict[str, object] | None=None, presentation_preset: str='execution', essential_only: bool=False, previous_mode: str | None=None, previous_bbo_only: bool | None=None, price_min_width: float=90.0, amount_min_width: float=36.0, state_expanded_width: float | None=None, column_width_overrides: dict[str, float] | None=None, book_depth: bool=False) -> dict[str, object]:
     """Compute a deterministic width-driven DOM composition.
 
     BID / PRICE / ASK are always present. Analytical lanes are introduced only
@@ -1648,13 +1630,9 @@ def _compute_order_flow_dom_geometry(width: float, height: float, font_height: f
     minimum_reference = 180.0 <= height < 250.0 and width >= 260.0
     margin = 6.0 if minimum_reference else 8.0
     inner_width = max(1.0, width - margin * 2.0)
-    density = str(row_density or 'normal').lower()
-    if density not in {'compact', 'normal', 'relaxed'}:
-        density = 'normal'
-
     if book_depth:
         # Keep market context and the midpoint out of the price/quantity rows.
-        row_height = max({'compact': 20.0, 'normal': 24.0, 'relaxed': 30.0}[density],
+        row_height = max(24.0,
                          float(math.ceil(max(font_height, price_font_height or font_height) + 4.0)))
         price_width = min(width, max(42.0, float(price_min_width)))
         heat_width = min(8.0, max(0.0, width - price_width))
@@ -1676,7 +1654,7 @@ def _compute_order_flow_dom_geometry(width: float, height: float, font_height: f
         return {
             'width': width, 'height': height, 'margin': 0.0, 'inner_width': width,
             'mode': 'profile', 'compact': width < 315.0, 'narrow': width < 236.0,
-            'wide': width >= 674.0, 'row_density': density, 'shallow': height < 120.0,
+            'wide': width >= 674.0, 'shallow': height < 120.0,
             'bbo_only': False, 'price_only_due_width': len(columns) == 1,
             'depth_mode': 'profile', 'book_depth': True,
             'top_height': header_height, 'title_height': header_height, 'metric_height': 0.0,
@@ -1709,19 +1687,12 @@ def _compute_order_flow_dom_geometry(width: float, height: float, font_height: f
     mode = 'compact' if compact else 'standard'
     narrow = inner_width < 236.0
     wide = inner_width >= 674.0
-    if minimum_reference:
-        base_row_height = {'compact': 18.0, 'normal': 22.0, 'relaxed': 26.0}[density]
-    elif ultra_narrow:
-        base_row_height = {'compact': 18.0, 'normal': 22.0, 'relaxed': 26.0}[density]
-    else:
-        base_row_height = {'compact': 20.0, 'normal': 24.0, 'relaxed': 30.0}[density]
-    # Density chooses spacing, but typography owns the clipping floor.  The DOM
-    # fonts are pixel-sized, so use their measured logical-pixel heights directly.
+    base_row_height = 22.0 if minimum_reference or ultra_narrow else 24.0
+    # Typography owns the clipping floor; use measured logical-pixel heights.
     font_h = max(1.0, float(font_height))
     price_h = max(font_h, float(price_font_height if price_font_height is not None else font_h))
     label_h = max(1.0, float(label_font_height if label_font_height is not None else font_h))
-    density_pad = {'compact': 3.0, 'normal': 6.0, 'relaxed': 10.0}[density]
-    nominal_row_height = max(base_row_height, float(math.ceil(font_h + density_pad)))
+    nominal_row_height = max(base_row_height, float(math.ceil(font_h + 6.0)))
     row_height = nominal_row_height
 
     # Column composition respects visibility preferences and available width.
@@ -1888,7 +1859,7 @@ def _compute_order_flow_dom_geometry(width: float, height: float, font_height: f
     return {
         'width': width, 'height': height, 'margin': margin, 'inner_width': inner_width,
         'mode': mode, 'compact': compact, 'narrow': narrow, 'wide': wide,
-        'row_density': density, 'shallow': bbo_only or height < 220.0,
+        'shallow': bbo_only or height < 220.0,
         'bbo_only': bbo_only, 'price_only_due_width': len(columns) == 1 and 'price' in columns,
         'depth_mode': 'none' if bbo_only else 'profile' if book_depth else 'integrated',
         'book_depth': bool(book_depth),
@@ -1963,7 +1934,6 @@ class _DomRasterCanvas(QtWidgets.QWidget):
         self._trade_stream_known = False
         self._trade_stream_active = False
         self._trade_stream_reason = ''
-        self._row_density = 'normal'
         self._presentation_preset = 'execution'
         self._book_depth = True
         self._profile_auto_grouping = True
@@ -2607,9 +2577,6 @@ class _DomRasterCanvas(QtWidgets.QWidget):
         preferences[name] = True
         self.set_column_preferences(preferences, emit=emit)
 
-    def row_density(self) -> str:
-        return self._row_density
-
     def visible_rows_per_side(self) -> int:
         return max(0, int(self._geometry.get('rows_per_side', 0)))
 
@@ -2619,51 +2586,6 @@ class _DomRasterCanvas(QtWidgets.QWidget):
             return
         self._last_visible_depth_rows = rows
         self.visible_depth_rows_changed.emit(rows)
-
-    def height_for_rows(self, rows_per_side: int) -> int:
-        """Return the canvas height required for an exact symmetric row count."""
-        geometry = self._geometry
-        # Profile capacity includes one extra row for a clipped edge. It must
-        # not turn into another visible row each time density is changed.
-        rows = max(0, int(rows_per_side) - int(self._book_depth))
-        fixed_height = (
-            float(geometry.get('margin', 0.0))
-            + float(geometry.get('top_height', 0.0))
-            + float(geometry.get('column_height', 0.0))
-            + float(geometry.get('center_height', 0.0))
-            + float(geometry.get('footer_height', 0.0))
-        )
-        # Manual splitter resizing may stretch the effective row height to absorb
-        # a pixel remainder. Density-driven panel resizing must use the nominal
-        # spacing or repeated density changes would compound that stretch.
-        row_height = max(1.0, float(geometry.get('nominal_row_height', geometry.get('row_height', 1.0))))
-        height = fixed_height + rows * row_height * 2.0
-        if self._book_depth and not fixed_height.is_integer():
-            height = math.floor(height) - 1
-        return max(1, int(math.ceil(height)))
-
-    def set_row_density(self, density: str, *, emit: bool=True) -> None:
-        normalized = str(density or 'normal').lower()
-        if normalized not in {'compact', 'normal', 'relaxed'}:
-            normalized = 'normal'
-        if normalized == self._row_density:
-            return
-        self._row_density = normalized
-        self._geometry_cache_key = None
-        self._prepared_sequence = -1
-        self._prepare_display()
-        self.update()
-        self._publish_layout_state()
-        if emit:
-            self.presentation_changed.emit(self.presentation_state())
-
-    def cycle_row_density(self, step: int) -> None:
-        values = ('compact', 'normal', 'relaxed')
-        try:
-            index = values.index(self._row_density)
-        except ValueError:
-            index = 1
-        self.set_row_density(values[max(0, min(len(values) - 1, index + int(step)))])
 
     def set_presentation_preset(self, name: str, *, emit: bool=True) -> None:
         # FULL / LIQ / FLOW are retired. Keep the public method for persisted and
@@ -2698,7 +2620,7 @@ class _DomRasterCanvas(QtWidgets.QWidget):
             self.presentation_changed.emit(self.presentation_state())
 
     def presentation_state(self) -> dict[str, object]:
-        return {'profile_version': 1, 'preset': self._presentation_preset, 'book_depth': self._book_depth, 'density': self._row_density, 'values': self._value_mode, 'depth_range': self._profile_ruler_fraction, 'auto_grouping': self._profile_auto_grouping, 'aggregation': self.aggregation_multiplier, 'column_widths': self.column_width_state(), 'columns': self.column_preferences()}
+        return {'profile_version': 1, 'preset': self._presentation_preset, 'book_depth': self._book_depth, 'values': self._value_mode, 'depth_range': self._profile_ruler_fraction, 'auto_grouping': self._profile_auto_grouping, 'aggregation': self.aggregation_multiplier, 'column_widths': self.column_width_state(), 'columns': self.column_preferences()}
 
     def set_book_depth_enabled(self, enabled: bool, *, emit: bool=True) -> None:
         enabled = bool(enabled)
@@ -2777,7 +2699,7 @@ class _DomRasterCanvas(QtWidgets.QWidget):
             semantic_columns.add('state')
         if bool(self._column_preferences.get('memory', False)) and 'memory' in columns and {'bid', 'ask'} & semantic_columns:
             semantic_columns.add('memory')
-        return {'mode': str(self._geometry.get('mode', 'unknown')), 'columns': tuple(columns), 'semantic_columns': tuple(sorted(semantic_columns)), 'primary': str(self._geometry.get('primary_analytic', self._column_preferences.get('primary', 'flow'))), 'visible_analytics': tuple((name for name in ('flow', 'delta', 'memory') if name in semantic_columns)), 'bbo_only': bool(self._geometry.get('bbo_only', False)), 'density': self._row_density, 'preset': self._presentation_preset, 'values': self._value_mode, 'range_adjustable': bool(self._geometry.get('profile_range_adjustable', False))}
+        return {'mode': str(self._geometry.get('mode', 'unknown')), 'columns': tuple(columns), 'semantic_columns': tuple(sorted(semantic_columns)), 'primary': str(self._geometry.get('primary_analytic', self._column_preferences.get('primary', 'flow'))), 'visible_analytics': tuple((name for name in ('flow', 'delta', 'memory') if name in semantic_columns)), 'bbo_only': bool(self._geometry.get('bbo_only', False)), 'preset': self._presentation_preset, 'values': self._value_mode, 'range_adjustable': bool(self._geometry.get('profile_range_adjustable', False))}
 
     def _publish_layout_state(self) -> None:
         state = self.layout_state()
@@ -4349,7 +4271,7 @@ class _DomRasterCanvas(QtWidgets.QWidget):
             round(max(8.0, self._price_metrics.height()), 3),
             round(max(8.0, self._label_metrics.height()), 3),
             tuple(sorted((str(k), str(v)) for k, v in self._column_preferences.items())),
-            self._row_density, self._presentation_preset, self._book_depth, override_signature,
+            self._presentation_preset, self._book_depth, override_signature,
             round(required_price_width, 2), round(required_amount_width, 2),
             round(required_state_width, 2),
         )
@@ -4361,7 +4283,6 @@ class _DomRasterCanvas(QtWidgets.QWidget):
                 max(8.0, self._price_metrics.height()),
                 max(8.0, self._label_metrics.height()),
                 column_preferences=self._column_preferences,
-                row_density=self._row_density,
                 presentation_preset=self._presentation_preset,
                 previous_mode=str(self._geometry.get('mode', '')) or None,
                 previous_bbo_only=bool(self._geometry.get('bbo_only', False)),
@@ -4389,7 +4310,6 @@ class _DomRasterCanvas(QtWidgets.QWidget):
                 max(8.0, self._price_metrics.height()),
                 max(8.0, self._label_metrics.height()),
                 column_preferences=fallback_preferences,
-                row_density=self._row_density,
                 presentation_preset=self._presentation_preset,
                 essential_only=True,
                 previous_mode=str(self._geometry.get('mode', '')) or None,
@@ -6495,19 +6415,6 @@ class _DomRasterCanvas(QtWidgets.QWidget):
             self._request_repaint_region('hover', QtGui.QRegion(old_rect.adjusted(-1, -1, 1, 1)))
         super().leaveEvent(event)
 
-    def wheelEvent(self, event: QtGui.QWheelEvent) -> None:
-        angle = event.angleDelta()
-        dx = int(angle.x())
-        dy = int(angle.y())
-        if dy == 0 or abs(dx) > abs(dy):
-            super().wheelEvent(event)
-            return
-        if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
-            self.cycle_row_density(1 if dy > 0 else -1)
-            event.accept()
-            return
-        super().wheelEvent(event)
-
     def mousePressEvent(self, event: QtGui.QMouseEvent) -> None:
         if event.button() == Qt.MouseButton.LeftButton:
             if self._book_depth:
@@ -6670,7 +6577,6 @@ class _DomRasterProcess:
         setters = (
             ('tick', canvas.set_price_tick_size),
             ('aggregation', canvas.set_aggregation_multiplier),
-            ('density', canvas.set_row_density),
             ('values', canvas.set_value_mode),
             ('depth', canvas.set_book_depth_enabled),
             ('depth_range', canvas.set_depth_range),
@@ -6963,7 +6869,7 @@ class OrderFlowDomCanvas(_DomRasterCanvas):
             return
         config = dict(symbol=self.symbol, market_epoch=self._market_epoch,
                       tick=self.price_tick_size, aggregation=self.aggregation_multiplier,
-                      density=self._row_density, values=self._value_mode, depth=self._book_depth,
+                      values=self._value_mode, depth=self._book_depth,
                       depth_range=self._profile_ruler_fraction,
                       columns=self.column_preferences(), widths=self.column_width_state(),
                       size=(max(1,self.width()), max(1,self.height())), dpr=self.devicePixelRatioF(),
@@ -6989,22 +6895,6 @@ class OrderFlowDomCanvas(_DomRasterCanvas):
         self._remote_typography = ({role:controller.profile(role) for role in TYPOGRAPHY_DEFAULTS},
                                    controller.globals())
         self._queue_configuration()
-
-    def height_for_rows(self, rows_per_side):
-        # A density button must resize its host immediately, before the worker
-        # returns. This rare control-layout calculation does not examine data.
-        g = _compute_order_flow_dom_geometry(
-            self.width(), self.height(), self._row_metrics.height(),
-            self._price_metrics.height(), self._label_metrics.height(),
-            row_density=self._row_density,
-            book_depth=self._book_depth)
-        fixed = sum(float(g[key]) for key in ('margin', 'top_height',
-                                              'column_height', 'center_height', 'footer_height'))
-        rows = max(0, int(rows_per_side) - int(self._book_depth))
-        height = fixed + rows*g['nominal_row_height']*2
-        if self._book_depth and not fixed.is_integer():
-            height = math.floor(height) - 1
-        return max(1, int(math.ceil(height)))
 
     def update(self, *args):
         # Setters invalidate remote state; only a completed image dirties Qt.
@@ -7338,7 +7228,6 @@ class OrderBookWidget(QtWidgets.QWidget):
     column_preferences_changed = Signal(object)
     layout_state_changed = Signal(object)
     presentation_changed = Signal(object)
-    right_rail_height_requested = Signal(int)
     snapshot_activity_requested = Signal(bool)
     depth_capacity_requested = Signal(int)
     DEPTH_CAPACITY_TIERS = (80, 120, 256, 512, 1000)
@@ -7364,7 +7253,6 @@ class OrderBookWidget(QtWidgets.QWidget):
         self._last_depth_capacity = 0
         self._context_menu = None
         self.canvas = OrderFlowDomCanvas(theme, self)
-        self._last_row_density = self.canvas.row_density()
         self.canvas.price_selected.connect(self.price_selected.emit)
         self.canvas.aggregation_changed.connect(self._on_canvas_aggregation_changed)
         self.canvas.column_preferences_changed.connect(self._on_canvas_column_preferences_changed)
@@ -7378,7 +7266,6 @@ class OrderBookWidget(QtWidgets.QWidget):
         self.controls = OrderBookControlBar(theme, self)
         self.canvas.layout_state_changed.connect(lambda _state: self._sync_controls())
         self.controls.aggregation_selected.connect(lambda value: self.set_aggregation_multiplier(value, emit=True))
-        self.controls.density_selected.connect(lambda value: self.set_row_density(value, emit=True))
         self.controls.value_mode_selected.connect(lambda value: self.set_value_mode(value, emit=True))
         self.controls.book_depth_toggled.connect(self.set_book_depth_enabled)
         self.controls.depth_range_selected.connect(self.canvas.set_depth_range)
@@ -7404,7 +7291,6 @@ class OrderBookWidget(QtWidgets.QWidget):
         self.setObjectName('orderBookWorkspace')
         self.setProperty('suppressNonessentialTooltips', True)
         self.setStyleSheet(f"QWidget#orderBookWorkspace {{ background: {ORDERBOOK_REFERENCE['bg']}; }}")
-        self.setMinimumSize(0, 0)
         self.set_symbol(self.symbol)
         self.apply_theme(self.theme)
         self._sync_controls()
@@ -7450,14 +7336,7 @@ class OrderBookWidget(QtWidgets.QWidget):
         self.column_preferences_changed.emit(preferences)
 
     def _on_canvas_presentation_changed(self, _state: object) -> None:
-        density = self.canvas.row_density()
-        density_changed = density != self._last_row_density
-        self._last_row_density = density
         self._sync_controls()
-        rows = self.canvas.visible_rows_per_side()
-        if density_changed and rows > 0:
-            target = self.controls.height() + self.canvas.height_for_rows(rows)
-            self.right_rail_height_requested.emit(max(1, int(target)))
         self._emit_presentation_changed()
 
 
@@ -7468,7 +7347,6 @@ class OrderBookWidget(QtWidgets.QWidget):
             aggregation=int(self.canvas.aggregation_multiplier),
             tick_size=float(self.price_tick_size),
             preset=str(state.get('preset', 'execution')),
-            density=str(state.get('density', 'normal')),
             value_mode=str(state.get('values', 'base')),
             tape_enabled=self._tape_enabled, tape_mode=self._tape_mode,
             book_depth=bool(state.get('book_depth', True)),
@@ -7490,8 +7368,6 @@ class OrderBookWidget(QtWidgets.QWidget):
     def _reset_display_options(self) -> None:
         self.canvas.set_book_depth_enabled(True, emit=False)
         self.canvas.set_presentation_preset('execution', emit=False)
-        self.canvas.set_row_density('normal', emit=False)
-        self._last_row_density = self.canvas.row_density()
         self.canvas.set_value_mode('base', emit=False)
         self.canvas.set_depth_range(0.72, emit=False)
         self.canvas._profile_auto_grouping = True
@@ -7755,23 +7631,6 @@ class OrderBookWidget(QtWidgets.QWidget):
         self.canvas.set_primary_analytic(name, emit=emit)
         self._sync_controls()
 
-    def set_row_density(self, density: str, *, emit: bool=True) -> None:
-        normalized = str(density or 'normal').lower()
-        if normalized not in {'compact', 'normal', 'relaxed'}:
-            normalized = 'normal'
-        if normalized == self.canvas.row_density():
-            self._sync_controls()
-            return
-
-        # Row spacing is a panel-geometry control, not merely an internal paint
-        # density toggle. Preserve the currently visible depth and ask the right
-        # rail to resize this panel to the exact height required by the new row
-        # height. This also removes any black remainder left below a capped DOM.
-        self.canvas.set_row_density(normalized, emit=emit)
-        self._last_row_density = self.canvas.row_density()
-        self._sync_controls()
-        self._publish_depth_capacity()
-
     def set_presentation_preset(self, name: str, *, emit: bool=True) -> None:
         # Compatibility entry point for old saved state/callers. Analytical lanes
         # are automatic now, so every legacy preset resolves to the same layout.
@@ -7801,8 +7660,6 @@ class OrderBookWidget(QtWidgets.QWidget):
         values = state if isinstance(state, dict) else {}
         migrated = values.get('profile_version') != 1
         self.canvas.set_presentation_preset('execution', emit=False)
-        self.canvas.set_row_density('normal' if migrated else str(values.get('density', 'normal')), emit=False)
-        self._last_row_density = self.canvas.row_density()
         self.canvas.set_value_mode('base' if migrated else str(values.get('values', 'base')), emit=False)
         self.canvas.restore_column_width_state(values.get('column_widths', {}))
         if isinstance(values.get('columns'), dict):
@@ -7883,7 +7740,6 @@ class OrderBookWidget(QtWidgets.QWidget):
             state['tape_view_corrected_rows'] = self._tape.model.corrected_rows
             state['tape_view_model_resets'] = self._tape.model.resets
         state['presentation_preset'] = str(self.canvas.presentation_state().get('preset', 'execution'))
-        state['row_density'] = self.canvas.row_density()
         state['value_mode'] = self.canvas.value_mode()
         state['book_depth'] = int(bool(self.canvas.presentation_state().get('book_depth', False)))
         return state

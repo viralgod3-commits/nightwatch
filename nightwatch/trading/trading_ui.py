@@ -155,11 +155,14 @@ def _trading_stylesheet(theme: dict[str, str]) -> str:
 def _paint_trade_arrow(widget: QtWidgets.QWidget, painter: QtGui.QPainter,
                        rect: QtCore.QRect, *, up: bool = False) -> None:
     """Use Qt's native arrow primitive even when the shell's SVG is absent."""
-    native = getattr(widget, "_native_arrow_style", None)
+    application = QtWidgets.QApplication.instance()
+    native = getattr(application, "_nightwatch_trade_arrow_style", None)
     if native is None:
         native = QtWidgets.QStyleFactory.create("Fusion")
-        native.setParent(widget)
-        widget._native_arrow_style = native
+        # Rail moves can dispose widget-owned styles while repolishing controls.
+        # One application-owned primitive style survives every panel placement.
+        native.setParent(application)
+        application._nightwatch_trade_arrow_style = native
     option = QtWidgets.QStyleOption()
     option.initFrom(widget)
     option.rect = rect
@@ -2035,12 +2038,7 @@ class OrderPanel(QtWidgets.QWidget):
 
 
     def compact_required_height(self) -> int:
-        """Return the ticket's current unsqueezed content height.
-
-        The right rail owns splitter geometry; this value is only a feature
-        usability floor so an adjacent panel cannot compress the ticket until
-        its fixed row rhythm or equal top/bottom inset is lost.
-        """
+        """Measure ticket content to decide whether an internal activity card fits."""
         if not self.compact:
             return max(0, self.minimumSizeHint().height())
         if hasattr(self, "ticket_scroll"):
@@ -4867,7 +4865,6 @@ class TradingWorkspace(QtWidgets.QWidget):
     position_selection_changed = Signal(object)
     close_presets_changed = Signal(object)
     view_changed = Signal(int)
-    rail_minimum_height_changed = Signal()
 
     def __init__(
         self,
@@ -4899,7 +4896,6 @@ class TradingWorkspace(QtWidgets.QWidget):
         self.account_age_timer.setInterval(5_000)
         self.account_age_timer.timeout.connect(self._refresh_account_freshness)
         self.close_percentages = [25, 50, 100]
-        self.setMinimumSize(0, 0)
         layout = QtWidgets.QVBoxLayout(self)
 
 
@@ -4935,7 +4931,7 @@ class TradingWorkspace(QtWidgets.QWidget):
         )
         self.ticket.order_requested.connect(self.order_requested)
         self.ticket.minimum_content_height_changed.connect(
-            self._sync_rail_minimum_height
+            self._ticket_content_height_changed
         )
         self.pages.addWidget(self.ticket)
 
@@ -4957,7 +4953,6 @@ class TradingWorkspace(QtWidgets.QWidget):
         self._adaptive_activity_key: tuple[Any, ...] | None = None
         self.adaptive_activity_frame.hide()
         layout.addWidget(self.adaptive_activity_frame, 0)
-        self._sync_rail_minimum_height(self.ticket.compact_required_height())
 
         self.account_frame = PositionDeskView(self._position_card, self._order_card)
         self.account_frame.symbol_rules = self.symbol_rules
@@ -5009,14 +5004,7 @@ class TradingWorkspace(QtWidgets.QWidget):
         self.view_tabs.ensurePolished()
         self.view_tabs.setFixedSize(self.view_tabs.sizeHint())
 
-    def _sync_rail_minimum_height(self, height: int) -> None:
-        # Short panels scroll their fields; the header and actions stay visible.
-        del height
-        required = 240
-        if int(self.property("rightRailMinimumHeight") or 0) != required:
-            self.setProperty("rightRailMinimumHeight", required)
-            self.updateGeometry()
-            self.rail_minimum_height_changed.emit()
+    def _ticket_content_height_changed(self, _height: int) -> None:
         QTimer.singleShot(0, self, self._refresh_adaptive_activity)
 
     def set_bottom_panel(self, bottom: bool) -> None:

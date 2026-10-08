@@ -114,6 +114,37 @@ def _diagnostics_checks() -> list[str]:
     return errors
 
 
+def _panel_geometry_checks() -> list[str]:
+    """Feature content must not own the shared rail's outer geometry."""
+    errors: list[str] = []
+    panel_classes = {
+        "orderbook/orderbook_ui.py": {"OrderBookWidget", "TradesTapeWidget"},
+        "trading/trading_ui.py": {"TradingWorkspace"},
+        "ui/market_widgets.py": {"WatchlistSidebarWidget"},
+    }
+    setters = {
+        "setMinimumSize", "setMinimumWidth", "setMinimumHeight",
+        "setMaximumSize", "setMaximumWidth", "setMaximumHeight",
+        "setFixedSize", "setFixedWidth", "setFixedHeight", "setSizePolicy",
+        "setGeometry", "setContentsMargins", "resize", "move", "adjustSize",
+    }
+    for rel, names in panel_classes.items():
+        for cls in ast.walk(_tree(PACKAGE_ROOT / rel)):
+            if not isinstance(cls, ast.ClassDef) or cls.name not in names:
+                continue
+            for node in ast.walk(cls):
+                violation = isinstance(node, ast.FunctionDef) and node.name in {"sizeHint", "minimumSizeHint"}
+                if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                        and isinstance(node.func.value, ast.Name) and node.func.value.id == "self"):
+                    violation = node.func.attr in setters
+                    if node.func.attr == "setProperty" and node.args:
+                        key = node.args[0]
+                        violation = isinstance(key, ast.Constant) and isinstance(key.value, str) and key.value.startswith("rightRail")
+                if violation:
+                    errors.append(f"{rel}:{node.lineno}: {cls.name} outer geometry belongs to ui/panels.py")
+    return errors
+
+
 def check() -> list[str]:
     errors: list[str] = []
 
@@ -131,6 +162,7 @@ def check() -> list[str]:
     errors += _retired_feature_checks()
     errors += _leadership_checks()
     errors += _diagnostics_checks()
+    errors += _panel_geometry_checks()
 
     contracts = PACKAGE_ROOT / "models.py"
     errors += _forbid(

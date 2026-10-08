@@ -1779,15 +1779,11 @@ class MainWindow(QtWidgets.QMainWindow):
             self.settings,
             [
                 PanelSpec("depth", "Market depth", lambda: self.orderbook,
-                          300, 110, RIGHT_PANEL_DEFAULT_SIZES["Market depth"],
-                          self.orderbook.set_panel_active),
-                PanelSpec("trading", "Trading / positions", lambda: self.trading_workspace,
-                          300, 240, RIGHT_PANEL_DEFAULT_SIZES["Trading / positions"]),
+                          activity_changed=self.orderbook.set_panel_active),
+                PanelSpec("trading", "Trading / positions", lambda: self.trading_workspace),
                 PanelSpec("trades", "Large trades", lambda: self.large_trades,
-                          300, 130, RIGHT_PANEL_DEFAULT_SIZES["Large trades"],
-                          self.large_trades.set_panel_active),
-                PanelSpec("watchlist", "Watchlist", lambda: self.watchlist_sidebar,
-                          300, 90, RIGHT_PANEL_DEFAULT_SIZES["Watchlist"]),
+                          activity_changed=self.large_trades.set_panel_active),
+                PanelSpec("watchlist", "Watchlist", lambda: self.watchlist_sidebar),
             ],
             self.right_layout_presets,
             initial_preset=self.right_layout_preset,
@@ -1803,14 +1799,6 @@ class MainWindow(QtWidgets.QMainWindow):
         self.right_rail_controller.state_changed.connect(self._right_rail_state_changed)
         self.right_rail_controller.composition_changed.connect(self._right_rail_composition_changed)
         self.right_rail_controller.geometry_changed.connect(self._right_rail_geometry_changed)
-        self.orderbook.right_rail_height_requested.connect(
-            lambda height: self.right_rail_controller.request_panel_height(
-                "Market depth", height
-            )
-        )
-        self.trading_workspace.rail_minimum_height_changed.connect(
-            self.right_rail_controller.refresh_geometry_constraints
-        )
         self.right_rail_controller.refresh_geometry_constraints()
         self.right_rail_controller.operation_rejected.connect(
             lambda message: self.statusBar().showMessage(message, 3500)

@@ -2993,7 +2993,6 @@ class WatchlistSidebarWidget(QtWidgets.QWidget):
         parent: QtWidgets.QWidget | None = None,
     ):
         super().__init__(parent)
-        self.setMinimumSize(0, 0)
         self.source = source
         self._sort_column: int | None = None
         self._sort_descending = False

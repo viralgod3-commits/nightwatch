@@ -294,14 +294,12 @@ RIGHT_PANEL_TWO_COLUMN_SECONDARY_ORDER = (
 RIGHT_RAIL_CHART_MIN_WIDTH = 520
 RIGHT_PANEL_SINGLE_MIN_WIDTH = 360
 RIGHT_PANEL_TWO_COLUMN_CELL_MIN_WIDTH = 300
-# Execution and account controls share one responsive rail surface.
-RIGHT_PANEL_TRADING_TWO_COLUMN_WIDTH = 300
 
 # Shell-owned usability floors. Enabled panels can never become zero-height
 # slivers, but their internal feature widgets remain geometry-neutral.
 RIGHT_PANEL_MIN_HEIGHTS = {
     "Market depth": 110,
-    "Trading / positions": 150,
+    "Trading / positions": 240,
     "Large trades": 130,
     "Watchlist": 90,
 }

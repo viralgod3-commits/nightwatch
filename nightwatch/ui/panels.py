@@ -18,7 +18,6 @@ from ..constants import (
     RIGHT_PANEL_SPLITTER_HIT_WIDTH,
     RIGHT_PANEL_SPLITTER_VISUAL_WIDTH,
     RIGHT_PANEL_TWO_COLUMN_CELL_MIN_WIDTH,
-    RIGHT_PANEL_TRADING_TWO_COLUMN_WIDTH,
     RIGHT_PANEL_TWO_COLUMN_FULL_WIDTH,
     RIGHT_PANEL_TWO_COLUMN_SECONDARY_ORDER,
     RIGHT_RAIL_CHART_MIN_WIDTH,
@@ -65,55 +64,6 @@ def _bounded_pair_ratio(value: float) -> float:
     return min(_MAX_PAIR_RATIO, max(_MIN_PAIR_RATIO, float(value)))
 
 
-def _resize_splitter_item(
-    sizes: Iterable[int],
-    minimums: Iterable[int],
-    index: int,
-    target: int,
-) -> list[int]:
-    """Resize one splitter pane while preserving total size and peer minima."""
-    current = [max(0, int(value)) for value in sizes]
-    floors = [max(0, int(value)) for value in minimums]
-    if len(current) != len(floors) or not 0 <= int(index) < len(current):
-        return current
-    if len(current) < 2:
-        return current
-
-    total = sum(current)
-    floor_total = sum(floors)
-    if total <= 0 or floor_total > total:
-        return current
-
-    index = int(index)
-    peer_floor = floor_total - floors[index]
-    desired = max(floors[index], min(int(target), total - peer_floor))
-    peer_budget = total - desired
-    peer_extra = peer_budget - peer_floor
-
-    peers = [position for position in range(len(current)) if position != index]
-    slack = [max(0, current[position] - floors[position]) for position in peers]
-    slack_total = sum(slack)
-    if slack_total <= 0:
-        slack = [max(1, current[position]) for position in peers]
-        slack_total = sum(slack)
-
-    result = list(floors)
-    result[index] = desired
-    assigned = 0
-    fractions: list[tuple[float, int]] = []
-    for position, weight in zip(peers, slack):
-        exact = peer_extra * weight / max(1, slack_total)
-        whole = int(exact)
-        result[position] += whole
-        assigned += whole
-        fractions.append((exact - whole, position))
-
-    remainder = peer_extra - assigned
-    for _fraction, position in sorted(fractions, reverse=True)[:remainder]:
-        result[position] += 1
-    return result
-
-
 def row_key(row: Iterable[str]) -> str:
     return "|".join(str(name) for name in row)
 
@@ -139,12 +89,11 @@ PANEL_IDS = {"Market depth": "depth", "Trading / positions": "trading",
 
 @dataclass(frozen=True, slots=True)
 class PanelSpec:
+    """Feature registration; outer geometry belongs to the shared rail rules."""
+
     panel_id: str
     title: str
     factory: Any
-    minimum_width: int = RIGHT_PANEL_TWO_COLUMN_CELL_MIN_WIDTH
-    minimum_height: int = 56
-    preferred_height: int = 160
     activity_changed: Any = None
 
 
@@ -1208,6 +1157,7 @@ if QtWidgets is not None:
             layout.setSpacing(0)
             layout.setSizeConstraint(QtWidgets.QLayout.SizeConstraint.SetNoConstraint)
             content.setMinimumSize(0, 0)
+            content.setMaximumSize(16777215, 16777215)
             content.setSizePolicy(
                 QtWidgets.QSizePolicy.Policy.Ignored,
                 QtWidgets.QSizePolicy.Policy.Ignored,
@@ -1249,7 +1199,7 @@ if QtWidgets is not None:
                 0,
                 max(
                     self.minimumHeight(),
-                    int(RIGHT_PANEL_DEFAULT_SIZES.get(self.panel_name, 100)),
+                    int(RIGHT_PANEL_DEFAULT_SIZES.get(self.panel_name, 160)),
                 ),
             )
 
@@ -1318,15 +1268,13 @@ if QtWidgets is not None:
             if clock is not None:
                 clock.interaction_frame.connect(self._commit_frame)
             specs = contents if not isinstance(contents, Mapping) else [
-                PanelSpec(PANEL_IDS.get(name, name), name, lambda widget=widget: widget,
-                          RIGHT_PANEL_TRADING_TWO_COLUMN_WIDTH if name == "Trading / positions" else RIGHT_PANEL_TWO_COLUMN_CELL_MIN_WIDTH,
-                          RIGHT_PANEL_MIN_HEIGHTS.get(name, 56), RIGHT_PANEL_DEFAULT_SIZES.get(name, 160))
+                PanelSpec(PANEL_IDS.get(name, name), name, lambda widget=widget: widget)
                 for name, widget in contents.items()]
             for spec in specs:
                 self._register_spec(spec)
             names = tuple(s.title for s in self.registry.values())
             aliases = {s.title: s.panel_id for s in self.registry.values()}
-            sizes = {s.title: s.preferred_height for s in self.registry.values()}
+            sizes = {s.title: RIGHT_PANEL_DEFAULT_SIZES.get(s.title, 160) for s in self.registry.values()}
             state = self._load_state(names, sizes, aliases)
             self.model = RightRailModel(state, names, sizes)
             self._render()
@@ -1348,8 +1296,7 @@ if QtWidgets is not None:
         def _register_spec(self, spec):
             if not isinstance(spec, PanelSpec) or not spec.panel_id or len(spec.panel_id) > 128 or spec.panel_id.startswith("split-"):
                 raise ValueError("Invalid panel registration")
-            if (not isinstance(spec.title, str) or not spec.title
-                    or min(spec.minimum_width, spec.minimum_height, spec.preferred_height) < 0):
+            if not isinstance(spec.title, str) or not spec.title:
                 raise ValueError("Invalid panel metadata")
             if spec.panel_id in self.registry or spec.title in self.sections:
                 raise ValueError("Duplicate panel registration")
@@ -1740,17 +1687,14 @@ if QtWidgets is not None:
                 self._main_splitter.setSizes(sizes)
 
         def _panel_minimum_height(self, name):
-            shell = self.sections[name]
-            spec = self.registry[shell.panel_id]
-            hint = max(0, _safe_int(shell.content.property("rightRailMinimumHeight"), 0))
-            return max(spec.minimum_height, hint) + 2 * self._margin
+            return max(0, int(RIGHT_PANEL_MIN_HEIGHTS.get(name, 56))) + 2 * self._margin
 
         def _tree_minimum(self, node):
             if node is None:
                 return QtCore.QSize(0, 0)
             if isinstance(node, PanelNode):
                 spec = self.registry[node.id]
-                return QtCore.QSize(spec.minimum_width + 2 * self._margin, self._panel_minimum_height(spec.title))
+                return QtCore.QSize(RIGHT_PANEL_TWO_COLUMN_CELL_MIN_WIDTH + 2 * self._margin, self._panel_minimum_height(spec.title))
             sizes = [self._tree_minimum(c) for c in node.children]
             gap = RIGHT_PANEL_SPLITTER_VISUAL_WIDTH * (len(sizes)-1)
             return QtCore.QSize(sum(s.width() for s in sizes) + gap, max(s.height() for s in sizes)) if node.axis == "h" else QtCore.QSize(max(s.width() for s in sizes), sum(s.height() for s in sizes)+gap)
@@ -1758,7 +1702,7 @@ if QtWidgets is not None:
         def _apply_minimum_constraints(self):
             for pid, spec in self.registry.items():
                 shell = self.sections[spec.title]
-                minimum = QtCore.QSize(spec.minimum_width + 2*self._margin, self._panel_minimum_height(spec.title))
+                minimum = QtCore.QSize(RIGHT_PANEL_TWO_COLUMN_CELL_MIN_WIDTH + 2*self._margin, self._panel_minimum_height(spec.title))
                 if shell.minimumSize() != minimum:
                     shell.setMinimumSize(minimum)
             minimum = self._tree_minimum(self._resolved_tree(self.model.state.root))
@@ -1775,23 +1719,6 @@ if QtWidgets is not None:
             if before_canvas != self._canvas.minimumSize() or before_rail != self.rail.minimumWidth():
                 self._outer_pending = True
                 self._queue_geometry()
-
-        def request_panel_height(self, name, height):
-            name = self.model.name_for_id(self.model.resolve(name))
-            child = self.sections.get(name)
-            if child is None or not self.panel_enabled(name):
-                return
-            parent = child.parentWidget()
-            while isinstance(parent, PanelSplitter):
-                if parent.orientation() == Qt.Orientation.Vertical:
-                    sizes = parent.sizes()
-                    minimums = [parent.widget(i).minimumSizeHint().height() for i in range(parent.count())]
-                    updated = _resize_splitter_item(sizes, minimums, parent.indexOf(child), max(self._panel_minimum_height(name), int(height)))
-                    if updated != sizes:
-                        parent.setSizes(updated)
-                        self.capture_geometry(); self._queue_geometry(); self._geometry_persist_timer.start()
-                    return
-                child, parent = parent, parent.parentWidget()
 
         def set_panel_margin(self, margin):
             self._margin = max(0, int(margin))
