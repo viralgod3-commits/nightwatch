@@ -1008,7 +1008,7 @@ class PixelBarBatch:
             self._cpu_disjoint = all(a.right() <= b.left() for a, b in zip(ordered, ordered[1:]))
 
         # The cache uses physical pixels, exactly like the bar geometry. Limit
-        # its memory, retain pan margins, and never resample candles on resize.
+        # its memory and retain pan margins for subsequent draws.
         bounds = self._cpu_bounds
         target = screen.intersected(bounds).toAlignedRect()
         use_image = (sum(len(rects) for _brush, rects in self.batches) > 64
@@ -1044,6 +1044,57 @@ class PixelBarBatch:
                 painter.drawImage(QtCore.QPointF(self._cpu_image_rect.topLeft()), self._cpu_image)
                 return
         self._paint_cpu_rectangles(painter)
+
+    def _paint_resize_cache(self, painter, transform, clip_screen, key, overlay_screen=None):
+        """Map retained bar pixels while the viewport is being resized live.
+
+        Data and style changes still rebuild the cache. The normal paint after
+        release restores physical-pixel snapping at the final viewport size.
+        """
+        if (not self.interactive_resize or self._cpu_image.isNull()
+                or self.cache_key is None or self.cache_screen.isEmpty()
+                or painter.opacity() != 1.0
+                or painter.compositionMode() != QtGui.QPainter.CompositionMode.CompositionMode_SourceOver):
+            return False
+        volume_overlay = overlay_screen is not None
+        if ((self.cache_key[0] == "volume-overlay") != volume_overlay
+                or self.cache_key[2] != key[2] or self.cache_key[4:] != key[4:]):
+            return False
+        previous = self._cpu_geometry_transform
+        if (previous.m11() == 0.0 or previous.m22() == 0.0
+                or previous.m12() != 0.0 or previous.m21() != 0.0
+                or transform.m12() != 0.0 or transform.m21() != 0.0):
+            return False
+        scale_x = transform.m11() / previous.m11()
+        reference = QtCore.QPointF(float(self.data[0, 0]), float(self.data[0, 1]))
+        old_reference, new_reference = previous.map(reference), transform.map(reference)
+        offset_x = new_reference.x() - scale_x * old_reference.x()
+        if volume_overlay:
+            old_overlay = QtCore.QRectF(*self.cache_key[3])
+            if old_overlay.height() <= 0.0:
+                return False
+            scale_y = overlay_screen.height() / old_overlay.height()
+            offset_y = math.floor(overlay_screen.bottom()) - scale_y * math.floor(old_overlay.bottom())
+        else:
+            scale_y = transform.m22() / previous.m22()
+            offset_y = new_reference.y() - scale_y * old_reference.y()
+        if (scale_x <= 0.0 or scale_y <= 0.0
+                or not all(math.isfinite(value) for value in (scale_x, scale_y, offset_x, offset_y))):
+            return False
+        mapping = QtGui.QTransform(scale_x, 0.0, 0.0, scale_y, offset_x, offset_y)
+        source_view = mapping.inverted()[0].mapRect(clip_screen)
+        target = source_view.intersected(self._cpu_bounds).toAlignedRect()
+        if (not self.cache_screen.contains(source_view.adjusted(.01, .01, -.01, -.01))
+                or not self._cpu_image_rect.contains(target)):
+            return False
+        painter.save()
+        painter.resetTransform()
+        painter.setWorldTransform(painter.deviceTransform().inverted()[0])
+        painter.setWorldTransform(mapping, True)
+        painter.setRenderHint(QtGui.QPainter.RenderHint.SmoothPixmapTransform, False)
+        painter.drawImage(QtCore.QPointF(self._cpu_image_rect.topLeft()), self._cpu_image)
+        painter.restore()
+        return True
 
     def _paint_cpu_rectangles(self, painter):
         for brush, rects, disjoint, path in self._rect_batches:
@@ -1429,6 +1480,8 @@ class PixelBarBatch:
             round(float(volume_max), 12),
             round(fraction, 6),
         )
+        if self._paint_resize_cache(painter, transform, clip_screen.intersected(overlay_screen), key, overlay_screen):
+            return
         dx = transform.dx() - self.cache_origin[0]
         pan_dx = round(dx)
 
@@ -1438,6 +1491,7 @@ class PixelBarBatch:
         ):
             self.cache_key = key
             self.cache_origin = (transform.dx(), 0.0)
+            self._cpu_geometry_transform = QtGui.QTransform(transform)
             dx = 0.0
             self.cache_screen = QtCore.QRectF(overlay_screen) if self.interactive_resize else overlay_screen.adjusted(
                 -overlay_screen.width() * .5,
@@ -1631,6 +1685,12 @@ class PixelBarBatch:
             volume,
             painter.opacity(),
         )
+        if self._paint_resize_cache(painter, transform, gl_screen, key):
+            self._gpu_diagnostics.cpu_paint(
+                self.gpu_enabled,
+                offline_target=self._is_offline_image_target(painter),
+            )
+            return
         dx = transform.dx() - self.cache_origin[0]
         dy = transform.dy() - self.cache_origin[1]
         pan_dx, pan_dy = round(dx), round(dy)

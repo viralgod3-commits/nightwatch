@@ -2094,6 +2094,8 @@ class OrderPanel(QtWidgets.QWidget):
                 and event.type() == QtCore.QEvent.Type.Resize
                 and event.size().width() != event.oldSize().width()):
             self._reflow_order_fields(self._active_order_fields)
+            self._sync_position_desk()
+            self._update_submit_text()
         if (watched is getattr(self, "_ticket_body", None)
                 and event.type() == QtCore.QEvent.Type.LayoutRequest
                 and hasattr(self, "_layout_sync_timer")):
@@ -2152,12 +2154,15 @@ class OrderPanel(QtWidgets.QWidget):
         price_width = number_width + self.price_edit.textMargins().right() + self.price_mark_button.width() + 4
         amount_width = number_width + min(140, max(76, desired)) + 6
         stacked = width + 6 + max(price_width, amount_width) > available
-        for name, caption in self._field_labels.items():
-            row = self._field_rows[name].layout()
-            row.setDirection(QtWidgets.QBoxLayout.Direction.TopToBottom if stacked
-                             else QtWidgets.QBoxLayout.Direction.LeftToRight)
-            caption.setMinimumWidth(0 if stacked else width)
-            caption.setMaximumWidth(16777215 if stacked else width)
+        label_geometry = (stacked, width)
+        if label_geometry != getattr(self, "_field_label_geometry", None):
+            self._field_label_geometry = label_geometry
+            for name, caption in self._field_labels.items():
+                row = self._field_rows[name].layout()
+                row.setDirection(QtWidgets.QBoxLayout.Direction.TopToBottom if stacked
+                                 else QtWidgets.QBoxLayout.Direction.LeftToRight)
+                caption.setMinimumWidth(0 if stacked else width)
+                caption.setMaximumWidth(16777215 if stacked else width)
         self.size_mode.setFixedWidth(max(76, min(140, desired, available - (0 if stacked else width) - 92)))
 
     def _typography_changed(self) -> None:
@@ -2178,6 +2183,7 @@ class OrderPanel(QtWidgets.QWidget):
     def resizeEvent(self, event: QtGui.QResizeEvent) -> None:
         super().resizeEvent(event)
         if (hasattr(self, "_active_order_fields")
+                and not hasattr(self, "ticket_scroll")
                 and event.size().width() != event.oldSize().width()):
             self._reflow_order_fields(self._active_order_fields)
             self._sync_position_desk()
