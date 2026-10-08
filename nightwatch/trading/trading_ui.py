@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import time
+from collections import OrderedDict
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 from typing import Any, ClassVar
@@ -106,12 +107,9 @@ def _trading_stylesheet(theme: dict[str, str]) -> str:
         }}
         QTabBar#ticketOrderTypes::tab:hover, QTabWidget#tradingAccountTabs QTabBar::tab:hover {{ color: {t['text']}; }}
         QTabWidget#tradingAccountTabs::pane {{ border: 0; background: {t['panel']}; top: 0; }}
-        QListWidget#tradingCardList {{ border: 0; background: {t['panel']}; padding: 0; }}
-        QListWidget#tradingCardList::item {{ border: 0; padding: 0; background: transparent; }}
-        QListWidget#tradingCardList::item:selected {{ background: transparent; }}
-        QFrame#fillAccountCard {{
-            background: {t['panel2']}; border: 1px solid {t['border']}; border-radius: 4px;
-        }}
+        QListWidget#tradingCardList, QListView#tradingFillList {{ border: 0; background: {t['panel']}; padding: 0; }}
+        QListWidget#tradingCardList::item, QListView#tradingFillList::item {{ border: 0; padding: 0; background: transparent; }}
+        QListWidget#tradingCardList::item:selected, QListView#tradingFillList::item:selected {{ background: transparent; }}
 
 
         QLabel#accountCardSide[direction="long"], QLabel[pnl="positive"] {{ color: {t['green']}; }}
@@ -125,7 +123,7 @@ def _trading_stylesheet(theme: dict[str, str]) -> str:
         QFrame#ticketEstimates {{ border: 0; border-top: 1px solid {t['border']}; background: transparent; }}
         QProgressBar#orderFillProgress {{ border: 0; background: {t['border']}; max-height: 3px; min-height: 3px; }}
         QProgressBar#orderFillProgress::chunk {{ background: {t['cyan']}; }}
-        QFrame#positionDeskRow, QFrame#workingOrderRow, QFrame#fillAccountCard {{
+        QFrame#positionDeskRow, QFrame#workingOrderRow {{
             background: transparent; border: 0; border-bottom: 1px solid {t['border']}; border-radius: 0;
         }}
         QFrame#positionDeskRow[selected="true"] {{ background: {t['control']}; border-left: 3px solid {t['cyan']}; }}
@@ -3551,80 +3549,211 @@ class CloseLimitDialog(QtWidgets.QDialog):
             self.accept()
 
 
-class FillAccountCard(QtWidgets.QFrame):
-    selected_requested = Signal()
+class _FillAccountModel(QtCore.QAbstractListModel):
+    """Keep exchange fills as data; format only rows requested by the view."""
 
-    def __init__(self, payload: dict[str, Any], parent: QtWidgets.QWidget | None = None):
+    CardRole = int(Qt.ItemDataRole.UserRole) + 1
+
+    def __init__(self, parent):
         super().__init__(parent)
-        self.setObjectName("fillAccountCard")
-        layout = QtWidgets.QVBoxLayout(self)
-        layout.setContentsMargins(10, 9, 10, 9)
-        layout.setSpacing(6)
-        header = QtWidgets.QHBoxLayout()
-        self.symbol_label = ElidedLabel("—")
-        self.symbol_label.setObjectName("accountCardSymbol")
-        set_text_role(self.symbol_label, TextRole.INSTRUMENT_SYMBOL)
-        self.side_label = QtWidgets.QLabel("—")
-        self.side_label.setObjectName("accountCardSide")
-        set_text_role(self.side_label, TextRole.UI_LABEL)
-        header.addWidget(self.symbol_label, 1)
-        header.addWidget(self.side_label)
-        layout.addLayout(header)
-        grid = QtWidgets.QGridLayout()
-        grid.setHorizontalSpacing(8)
-        grid.setVerticalSpacing(2)
-        self.values: dict[str, ElidedLabel] = {}
-        self.captions: dict[str, QtWidgets.QLabel] = {}
-        for index, (key, caption) in enumerate((("price", "PRICE"), ("qty", "SIZE"),
-                                                ("pnl", "REALIZED PNL"), ("fee", "FEE"))):
-            row, column = divmod(index, 2)
-            label = QtWidgets.QLabel(caption)
-            label.setObjectName("accountCardDetail")
-            set_text_role(label, TextRole.UI_CAPTION)
-            self.captions[key] = label
-            value = ElidedLabel("—")
-            value.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-            set_text_role(value, TextRole.MARKET_VALUE)
-            grid.addWidget(label, row * 2, column)
-            grid.addWidget(value, row * 2 + 1, column)
-            grid.setColumnStretch(column, 1)
-            self.values[key] = value
-        layout.addLayout(grid)
-        self.time_label = ElidedLabel("—")
-        self.time_label.setObjectName("accountCardDetail")
-        set_text_role(self.time_label, TextRole.UI_CAPTION)
-        layout.addWidget(self.time_label)
-        for label in self.findChildren(QtWidgets.QLabel):
-            label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
-        self.update_payload(payload)
+        self.rows = []
+        self._row_by_key = {}
+        self._display_cache = OrderedDict()
 
-    def update_payload(self, payload: dict[str, Any]) -> None:
-        self.payload = dict(payload)
-        side = str(payload.get("side") or "—").upper()
-        _set_text_if_changed(self.symbol_label, str(payload.get("symbol") or "—"))
-        _set_text_if_changed(self.side_label, side)
-        _set_repolished_property(self.side_label, "direction", "long" if side == "BUY" else "short")
-        pnl = safe_float(payload.get("realizedPnl"))
-        values = {"price": _quantity_text(payload.get("price")),
-                  "qty": _quantity_text(payload.get("qty")), "pnl": _signed_money(pnl),
-                  "fee": _quantity_text(payload.get("commission"))}
-        asset = str(payload.get("commissionAsset") or "").strip()
-        _set_text_if_changed(self.captions["fee"], f"FEE · {asset}" if asset else "FEE")
-        self.values["fee"].setToolTip(f"{values['fee']} {asset}".strip())
-        for key, text in values.items():
-            _set_text_if_changed(self.values[key], text)
-        _set_repolished_property(self.values["pnl"], "pnl", _pnl_state(pnl))
+    def rowCount(self, parent=QtCore.QModelIndex()):
+        return 0 if parent.isValid() else len(self.rows)
+
+    def index_for_key(self, key):
+        row = self._row_by_key.get(key)
+        return self.index(row, 0) if row is not None else QtCore.QModelIndex()
+
+    def set_rows(self, rows):
+        if rows == self.rows:
+            return False
+        # Own each snapshot; callers may reuse/update their exchange payloads.
+        rows = [dict(row) for row in rows]
+        keys = [_account_key(row) for row in rows]
+        old_keys = [_account_key(row) for row in self.rows]
+        if keys == old_keys:
+            changed = [i for i, (old, new) in enumerate(zip(self.rows, rows)) if old != new]
+            self.rows = rows
+            if changed:
+                self.dataChanged.emit(self.index(changed[0], 0), self.index(changed[-1], 0))
+        else:
+            self.beginResetModel()
+            self.rows = rows
+            self._row_by_key = {key: i for i, key in enumerate(keys)}
+            self.endResetModel()
+        return True
+
+    def _card(self, row):
+        payload = self.rows[row]
+        key = _account_key(payload)
+        cached = self._display_cache.get(key)
+        if cached is not None and cached[0] == payload:
+            self._display_cache.move_to_end(key)
+            return cached[1]
         timestamp = safe_float(payload.get("time")) / 1000.0
         try:
             stamp = datetime.fromtimestamp(timestamp, timezone.utc).strftime("%d %b %Y · %H:%M:%S UTC") if timestamp > 0 else "—"
         except (OverflowError, OSError, ValueError):
             stamp = "—"
-        _set_text_if_changed(self.time_label, stamp)
+        pnl = safe_float(payload.get("realizedPnl"))
+        asset = str(payload.get("commissionAsset") or "").strip()
+        card = (
+            str(payload.get("symbol") or "—"), str(payload.get("side") or "—").upper(),
+            _quantity_text(payload.get("price")), _quantity_text(payload.get("qty")),
+            _signed_money(pnl), _quantity_text(payload.get("commission")),
+            f"FEE · {asset}" if asset else "FEE", stamp, pnl,
+        )
+        self._display_cache[key] = (payload, card)
+        self._display_cache.move_to_end(key)
+        while len(self._display_cache) > 128:
+            self._display_cache.popitem(last=False)
+        return card
 
-    def mousePressEvent(self, event: QtGui.QMouseEvent) -> None:
-        if event.button() == Qt.MouseButton.LeftButton:
-            self.selected_requested.emit()
-        super().mousePressEvent(event)
+    def data(self, index, role=Qt.ItemDataRole.DisplayRole):
+        if not index.isValid() or not 0 <= index.row() < len(self.rows):
+            return None
+        if role == Qt.ItemDataRole.UserRole:
+            return dict(self.rows[index.row()])
+        if role not in (self.CardRole, Qt.ItemDataRole.DisplayRole,
+                        Qt.ItemDataRole.ToolTipRole, Qt.ItemDataRole.AccessibleTextRole):
+            return None
+        card = self._card(index.row())
+        if role == self.CardRole:
+            return card
+        symbol, side, price, qty, pnl, fee, fee_caption, stamp, _ = card
+        return f"{symbol} · {side}\nPRICE {price}\nSIZE {qty}\nREALIZED PNL {pnl}\n{fee_caption}: {fee}\n{stamp}"
+
+
+class _FillAccountDelegate(QtWidgets.QStyledItemDelegate):
+    """Draw the existing label grid without a widget/layout tree per fill."""
+
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.theme = ui_palette(THEMES[DEFAULT_THEME_NAME])
+        self.refresh_typography()
+
+    def refresh_typography(self):
+        self.fonts = {name: typography_font(role) for name, role in (
+            ("symbol", TextRole.INSTRUMENT_SYMBOL), ("side", TextRole.UI_LABEL),
+            ("caption", TextRole.UI_CAPTION), ("value", TextRole.MARKET_VALUE),
+        )}
+        self.metrics = {name: QtGui.QFontMetrics(font) for name, font in self.fonts.items()}
+        self.header_height = max(self.metrics["symbol"].height(), self.metrics["side"].height())
+        self.caption_height = self.metrics["caption"].height()
+        self.value_height = self.metrics["value"].height()
+        self.row_height = 40 + self.header_height + 3*self.caption_height + 2*self.value_height
+
+    def sizeHint(self, option, index):
+        return QtCore.QSize(0, self.row_height)
+
+    def paint(self, painter, option, index):
+        card = index.data(_FillAccountModel.CardRole)
+        if card is None:
+            return
+        symbol, side, price, qty, pnl_text, fee, fee_caption, stamp, pnl = card
+        theme = self.theme
+        painter.save()
+        painter.setClipRect(option.rect, Qt.ClipOperation.IntersectClip)
+        rect = option.rect.adjusted(10, 9, -10, -9)
+        width = max(0, rect.width())
+
+        def text(value, font, color, box, right=False):
+            if box.width() <= 0:
+                return
+            painter.setFont(self.fonts[font])
+            painter.setPen(QtGui.QColor(color))
+            value = self.metrics[font].elidedText(value, Qt.TextElideMode.ElideRight, box.width())
+            align = Qt.AlignmentFlag.AlignRight if right else Qt.AlignmentFlag.AlignLeft
+            painter.drawText(box, align | Qt.AlignmentFlag.AlignVCenter, value)
+
+        side_width = min(self.metrics["side"].horizontalAdvance(side) + 2, width // 2)
+        y = rect.top()
+        text(symbol, "symbol", theme["text"], QtCore.QRect(rect.left(), y, max(0,width-side_width-8), self.header_height))
+        text(side, "side", theme["green"] if side == "BUY" else theme["red"],
+             QtCore.QRect(rect.right()-side_width+1, y, side_width, self.header_height), True)
+        y += self.header_height + 6
+        column_width = max(0, (width-8)//2)
+        pnl_color = theme["green"] if pnl > 0 else theme["red"] if pnl < 0 else theme["text"]
+        fields = (("PRICE", price, theme["text"]), ("SIZE", qty, theme["text"]),
+                  ("REALIZED PNL", pnl_text, pnl_color), (fee_caption, fee, theme["text"]))
+        for i, (caption, value, color) in enumerate(fields):
+            row, column = divmod(i, 2)
+            left = rect.left() + column*(column_width+8)
+            top = y + row*(self.caption_height+self.value_height+4)
+            text(caption, "caption", theme["muted"], QtCore.QRect(left, top, column_width, self.caption_height))
+            text(value, "value", color, QtCore.QRect(left, top+self.caption_height+2, column_width, self.value_height), True)
+        y += 2*self.caption_height + 2*self.value_height + 12
+        text(stamp, "caption", theme["muted"], QtCore.QRect(rect.left(), y, width, self.caption_height))
+        painter.setPen(QtGui.QColor(theme["border"]))
+        painter.drawLine(option.rect.bottomLeft(), option.rect.bottomRight())
+        painter.restore()
+
+
+class FillAccountView(QtWidgets.QListView):
+    """Virtualized fill cards with stable selection and scroll anchoring."""
+
+    def __init__(self):
+        super().__init__()
+        self.setObjectName("tradingFillList")
+        self.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
+        self.setSelectionMode(QtWidgets.QAbstractItemView.SelectionMode.SingleSelection)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.setVerticalScrollMode(QtWidgets.QAbstractItemView.ScrollMode.ScrollPerPixel)
+        self.setUniformItemSizes(True)
+        self.setWrapping(False)
+        self.setResizeMode(QtWidgets.QListView.ResizeMode.Adjust)
+        self._fill_model = _FillAccountModel(self)
+        self.setModel(self._fill_model)
+        self._fill_delegate = _FillAccountDelegate(self)
+        self.setItemDelegate(self._fill_delegate)
+        self._empty = QtWidgets.QLabel(self.viewport())
+        self._empty.setObjectName("accountCardDetail")
+        self._empty.setWordWrap(True)
+        self._empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._empty.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        set_text_role(self._empty, TextRole.UI_LABEL)
+        typography_controller().changed.connect(self._refresh_typography)
+
+    def _refresh_typography(self):
+        self._fill_delegate.refresh_typography()
+        self.doItemsLayout()
+        self.viewport().update()
+
+    def apply_theme(self, theme):
+        self._fill_delegate.theme = ui_palette(THEMES[DEFAULT_THEME_NAME], theme)
+        self.viewport().update()
+
+    def set_payloads(self, payloads, empty_text):
+        current = self.currentIndex().data(Qt.ItemDataRole.UserRole)
+        selected_key = _account_key(current) if isinstance(current, dict) else None
+        bar = self.verticalScrollBar()
+        at_top = bar.value() == bar.minimum()
+        top = self.indexAt(QtCore.QPoint(1, 1))
+        top_payload = top.data(Qt.ItemDataRole.UserRole)
+        anchor = _account_key(top_payload) if isinstance(top_payload, dict) else None
+        offset = self.visualRect(top).top() if top.isValid() else 0
+        self._empty.setText(empty_text)
+        self._empty.setVisible(not payloads)
+        if not self._fill_model.set_rows(payloads):
+            return
+        index = self._fill_model.index_for_key(selected_key)
+        if not index.isValid() and payloads:
+            index = self._fill_model.index(0, 0)
+        self.selectionModel().setCurrentIndex(index, QtCore.QItemSelectionModel.SelectionFlag.ClearAndSelect)
+        if at_top:
+            bar.setValue(bar.minimum())
+        else:
+            top = self._fill_model.index_for_key(anchor)
+            if top.isValid():
+                self.scrollTo(top, QtWidgets.QAbstractItemView.ScrollHint.PositionAtTop)
+                bar.setValue(bar.value()-offset)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._empty.setGeometry(12, 16, max(0,self.viewport().width()-24), 80)
 
 
 class CompactPositionActivityCard(QtWidgets.QFrame):
@@ -4332,17 +4461,15 @@ def _populate_account_cards(
         view.setUpdatesEnabled(updates_enabled)
 
 
-def _populate_fill_cards(view: QtWidgets.QListWidget, snapshot: dict[str, Any],
+def _populate_fill_cards(view: FillAccountView, snapshot: dict[str, Any],
                          symbol: str, *, connected: bool) -> None:
     payloads = [{**row, "_source": "FILL"}
                 for row in sorted(snapshot.get("fills", []),
                                   key=lambda item: safe_float(item.get("time")), reverse=True)
                 if str(row.get("symbol", "")) == symbol]
-    _populate_account_cards(
-        view, payloads, FillAccountCard,
+    view.set_payloads(
+        payloads,
         f"No fills for {symbol}" if connected else "Connect API credentials to view fills",
-        update_existing=lambda card, payload: card.update_payload(payload),
-        update_context=None,
     )
 
 
@@ -4723,7 +4850,7 @@ class PositionDeskView(QtWidgets.QFrame):
         self.tabs.addTab(self.scroll, "Positions")
         self.orders = _new_account_card_list()
         self.orders.setSpacing(0)
-        self.fills = _new_account_card_list()
+        self.fills = FillAccountView()
         self.fills.setSpacing(0)
         order_page = QtWidgets.QWidget()
         order_layout = QtWidgets.QVBoxLayout(order_page)
@@ -5140,7 +5267,7 @@ class TradingWorkspace(QtWidgets.QWidget):
         self.account_frame.set_orders(self._open_orders, symbol, self.gateway.has_credentials())
         self._sync_account_actions(self.tabs.currentIndex())
         if changed:
-            _populate_account_cards(self.fills, [], None, f"Loading fills for {symbol}…"
+            self.fills.set_payloads([], f"Loading fills for {symbol}…"
                                     if self.gateway.has_credentials() else "Connect API credentials to view fills")
         self.status.setText(f"{symbol} · ACCOUNT DATA")
         self._refresh_adaptive_activity()
@@ -5449,11 +5576,10 @@ class TradingWorkspace(QtWidgets.QWidget):
 
     def _selected_payload(
         self,
-        view: QtWidgets.QTableWidget | QtWidgets.QListWidget,
+        view: QtWidgets.QTableWidget | QtWidgets.QListView,
     ) -> dict[str, Any] | None:
-        if isinstance(view, QtWidgets.QListWidget):
-            item = view.currentItem()
-            payload = item.data(Qt.ItemDataRole.UserRole) if item is not None else None
+        if isinstance(view, QtWidgets.QListView):
+            payload = view.currentIndex().data(Qt.ItemDataRole.UserRole)
         else:
             row = view.currentRow()
             item = view.item(row, 0) if row >= 0 else None
@@ -5666,4 +5792,5 @@ class TradingWorkspace(QtWidgets.QWidget):
         self.theme = theme
         self.setStyleSheet(_trading_stylesheet(theme))
         self.ticket.apply_theme(theme)
+        self.fills.apply_theme(theme)
         QTimer.singleShot(0, self, self._sync_view_tabs_geometry)
