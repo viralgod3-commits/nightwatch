@@ -2025,14 +2025,23 @@ class OrderPanel(QtWidgets.QWidget):
                 kind = self.current_order_type()
                 text = f"Close {size_text} at market" if kind == "MARKET" else f"Close {size_text} with limit" if kind == "LIMIT" else f"Place {size_text} {dict((v, k) for k, v in self.ORDER_TYPES).get(kind, 'conditional').lower()}"
                 self.reduce_submit.setAccessibleName(text)
-                available_width = self.width() - self.layout().contentsMargins().left() - self.layout().contentsMargins().right()
-                if self.reduce_submit.fontMetrics().horizontalAdvance(text) + 16 > available_width:
-                    text = ("Close at market" if kind == "MARKET" else "Close with limit" if kind == "LIMIT"
-                            else f"Place {dict((v, k) for k, v in self.ORDER_TYPES).get(kind, 'conditional').lower()}")
-                _set_text_if_changed(self.reduce_submit, text)
+                self._fit_reduce_submit_text()
                 self.reduce_submit.setEnabled(has_position)
         finally:
             self._desk_syncing = False
+
+    def _fit_reduce_submit_text(self) -> None:
+        """Fit the current action without recalculating account state on resize."""
+        if not self.reduce_only.isChecked():
+            return
+        text = self.reduce_submit.accessibleName()
+        margins = self.layout().contentsMargins()
+        available = self.width() - margins.left() - margins.right()
+        if self.reduce_submit.fontMetrics().horizontalAdvance(text) + 16 > available:
+            kind = self.current_order_type()
+            text = ("Close at market" if kind == "MARKET" else "Close with limit" if kind == "LIMIT"
+                    else f"Place {dict((v, k) for k, v in self.ORDER_TYPES).get(kind, 'conditional').lower()}")
+        _set_text_if_changed(self.reduce_submit, text)
 
 
     def compact_required_height(self) -> int:
@@ -2092,6 +2101,8 @@ class OrderPanel(QtWidgets.QWidget):
                 and event.type() == QtCore.QEvent.Type.Resize
                 and event.size().width() != event.oldSize().width()):
             self._reflow_order_fields(self._active_order_fields)
+            self._fit_reduce_submit_text()
+            self._update_submit_text()
         if (watched is getattr(self, "_ticket_body", None)
                 and event.type() == QtCore.QEvent.Type.LayoutRequest
                 and hasattr(self, "_layout_sync_timer")):
@@ -2150,12 +2161,15 @@ class OrderPanel(QtWidgets.QWidget):
         price_width = number_width + self.price_edit.textMargins().right() + self.price_mark_button.width() + 4
         amount_width = number_width + min(140, max(76, desired)) + 6
         stacked = width + 6 + max(price_width, amount_width) > available
-        for name, caption in self._field_labels.items():
-            row = self._field_rows[name].layout()
-            row.setDirection(QtWidgets.QBoxLayout.Direction.TopToBottom if stacked
-                             else QtWidgets.QBoxLayout.Direction.LeftToRight)
-            caption.setMinimumWidth(0 if stacked else width)
-            caption.setMaximumWidth(16777215 if stacked else width)
+        label_geometry = (stacked, width)
+        if label_geometry != getattr(self, "_field_label_geometry", None):
+            self._field_label_geometry = label_geometry
+            for name, caption in self._field_labels.items():
+                row = self._field_rows[name].layout()
+                row.setDirection(QtWidgets.QBoxLayout.Direction.TopToBottom if stacked
+                                 else QtWidgets.QBoxLayout.Direction.LeftToRight)
+                caption.setMinimumWidth(0 if stacked else width)
+                caption.setMaximumWidth(16777215 if stacked else width)
         self.size_mode.setFixedWidth(max(76, min(140, desired, available - (0 if stacked else width) - 92)))
 
     def _typography_changed(self) -> None:
@@ -2176,9 +2190,10 @@ class OrderPanel(QtWidgets.QWidget):
     def resizeEvent(self, event: QtGui.QResizeEvent) -> None:
         super().resizeEvent(event)
         if (hasattr(self, "_active_order_fields")
+                and not hasattr(self, "ticket_scroll")
                 and event.size().width() != event.oldSize().width()):
             self._reflow_order_fields(self._active_order_fields)
-            self._sync_position_desk()
+            self._fit_reduce_submit_text()
             self._update_submit_text()
 
     def set_symbol(self, symbol: str, rules: SymbolRules) -> None:

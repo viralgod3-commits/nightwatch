@@ -2105,6 +2105,7 @@ class ChartWorkspace(QtWidgets.QWidget):
         self._presentation_clock.set_continuous(bool(
             self._presentation_active and self.isVisible() and (
                 self._interaction_render_active
+                or self._resize_expensive_deferred
                 or self._pending_zoom_range is not None
                 or self._navigation_pending_rail
             )
@@ -3836,9 +3837,9 @@ class ChartWorkspace(QtWidgets.QWidget):
         ):
             self._clear_chart_pointer_locator()
         if watched is viewport and event.type() == QtCore.QEvent.Type.Resize:
-
-
-            self._position_interaction_overlays()
+            # The ViewBox receives its final geometry after this event. Move
+            # overlays once at the frame boundary, using that settled geometry.
+            self._schedule_overlay_frame()
         if watched is viewport:
             event_type = event.type()
             if event_type in (
@@ -8744,6 +8745,7 @@ class ChartWorkspace(QtWidgets.QWidget):
         self._resize_expensive_deferred = True
         self._set_bar_resize_active(True)
         self._interaction_gc.set_active(self._resize_gc_token, True)
+        self._sync_frame_activity()
         self.detail_timer.stop()
 
 
@@ -8755,6 +8757,7 @@ class ChartWorkspace(QtWidgets.QWidget):
         self._resize_expensive_deferred = False
         self._set_bar_resize_active(False)
         self._interaction_gc.set_active(self._resize_gc_token, False)
+        self._sync_frame_activity()
         self._position_overlay_labels()
         self._schedule_render_work(
             viewport=True,
