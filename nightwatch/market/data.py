@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import math
+import multiprocessing
 from bisect import bisect_left, bisect_right, insort
 import time
 import threading
@@ -194,23 +195,11 @@ def _decode_socket_payload(
 
 
 class _SocketParserWorker(QtCore.QObject):
-    """Parse non-depth websocket frames behind one bounded worker wakeup.
-
-    Raw websocket delivery must be bounded *before* Qt's queued worker-event
-    stream.  The GUI/socket thread therefore appends to a lock-protected ingress
-    deque and schedules at most one ``drain()`` invocation.  If that queue
-    overflows or ages beyond the safety boundary, old work is discarded and the
-    owning transport leg is told to reconnect rather than replay stale trades
-    into current order-flow analytics.
-    """
+    """Resident non-depth decoder and trade coalescer in the feed process."""
 
     parsed = Signal(str, int, object)
     backpressure = Signal(str, int, str)
 
-    MAX_INGRESS_EVENTS = 512
-    MAX_INGRESS_BYTES = 8 * 1024 * 1024
-    DRAIN_BATCH_SIZE = 32
-    DRAIN_BUDGET_MS = 4.0
     MAX_PARSER_QUEUE_AGE_MS = 1_500.0
     MAX_TRADE_BUFFER_EVENTS = 1_024
 
@@ -232,66 +221,6 @@ class _SocketParserWorker(QtCore.QObject):
         self._book_ticker_timer.timeout.connect(self._flush_book_ticker)
 
 
-        self._ingress_lock = threading.Lock()
-        self._ingress: deque[
-            tuple[str, int, str, str, str, object, frozenset[str], float]
-        ] = deque()
-        self._ingress_scheduled = False
-        self._ingress_bytes = 0
-        self._overflow_contexts: set[tuple[str, int]] = set()
-
-    def enqueue(
-        self,
-        kind: str,
-        generation: int,
-        message: str,
-        symbol: str,
-        interval: str,
-        ticker_symbols: object,
-        valid_ticker_symbols: object,
-        arrival_mono_ms: float,
-    ) -> bool:
-        """Thread-safe bounded raw ingress.
-
-        Returns ``True`` only when the caller must queue one worker ``drain``
-        wakeup.  On overflow, already-stale raw work is dropped wholesale.  The
-        worker later emits ``backpressure`` for every affected transport token so
-        the hub can establish a clean inference boundary.
-        """
-        valid_snapshot = (
-            valid_ticker_symbols
-            if isinstance(valid_ticker_symbols, frozenset)
-            else frozenset(str(value) for value in (valid_ticker_symbols or ()))
-        )
-        item = (
-            str(kind),
-            int(generation),
-            str(message),
-            str(symbol),
-            str(interval),
-            tuple(ticker_symbols or ()),
-            valid_snapshot,
-            float(arrival_mono_ms or 0.0),
-        )
-        with self._ingress_lock:
-            size = len(message) * 4
-            if len(self._ingress) >= self.MAX_INGRESS_EVENTS or self._ingress_bytes + size > self.MAX_INGRESS_BYTES:
-                self._overflow_contexts.update(
-                    (queued[0], queued[1]) for queued in self._ingress
-                )
-                self._overflow_contexts.add((item[0], item[1]))
-                self._ingress.clear()
-                self._ingress_bytes = 0
-            if size <= self.MAX_INGRESS_BYTES:
-                self._ingress.append(item)
-                self._ingress_bytes += size
-            else:
-                self._overflow_contexts.add((item[0], item[1]))
-            if self._ingress_scheduled:
-                return False
-            self._ingress_scheduled = True
-            return True
-
     def _discard_coalesced_state(self) -> None:
         """Drop data derived from a parser interval known to contain a gap."""
         self._trade_buffer.clear()
@@ -300,36 +229,6 @@ class _SocketParserWorker(QtCore.QObject):
             self._trade_timer.stop()
         if self._book_ticker_timer.isActive():
             self._book_ticker_timer.stop()
-
-    @QtCore.Slot()
-    def drain(self) -> None:
-        """Yield to timers, seed/reset slots and shutdown even during a flood."""
-        started = time.perf_counter()
-        count = 0
-        while count < self.DRAIN_BATCH_SIZE and (time.perf_counter() - started) * 1000 < self.DRAIN_BUDGET_MS:
-            with self._ingress_lock:
-                affected = set(self._overflow_contexts)
-                self._overflow_contexts.clear()
-                item = self._ingress.popleft() if self._ingress else None
-                if item is not None:
-                    self._ingress_bytes -= len(item[2]) * 4
-            if item is not None and item[7] > 0 and time.perf_counter() * 1000 - item[7] > self.MAX_PARSER_QUEUE_AGE_MS:
-                affected.add((item[0], item[1]))
-            if affected:
-                self._discard_coalesced_state()
-                for kind, generation in sorted(affected):
-                    self.backpressure.emit(kind, generation, "SOCKET PARSER BACKPRESSURE")
-            if item is None:
-                break
-            if (item[0], item[1]) not in affected:
-                self.parse(*item[:7])
-            count += 1
-        with self._ingress_lock:
-            more = bool(self._ingress or self._overflow_contexts)
-            if not more:
-                self._ingress_scheduled = False
-        if more:
-            QtCore.QTimer.singleShot(0, self, self.drain)
 
     def _signal_trade_backpressure(self, kind: str, generation: int) -> None:
         self._discard_coalesced_state()
@@ -448,17 +347,13 @@ class _SocketParserWorker(QtCore.QObject):
 
 
 class _DepthParserWorker(QtCore.QObject):
-    """Maintain one validated, synchronized USD-M local book off the GUI thread."""
+    """Maintain one validated, synchronized USD-M book in the feed process."""
 
     parsed = Signal(int, int, object)
     resync_required = Signal(int, int)
     invalidated = Signal(int, int, str)
 
     MAX_BUFFERED_EVENTS = 512
-    MAX_INGRESS_EVENTS = 512
-    MAX_INGRESS_BYTES = 8 * 1024 * 1024
-    DRAIN_BATCH_SIZE = 32
-    DRAIN_BUDGET_MS = 4.0
 
 
     PUBLISH_LEVELS = 120
@@ -498,54 +393,6 @@ class _DepthParserWorker(QtCore.QObject):
         self._monitor_ask_coverage = False
         self._buffer: deque[dict[str, Any]] = deque()
 
-
-        self._ingress_lock = threading.Lock()
-        self._ingress: deque[tuple[int, str, str, object]] = deque()
-        self._ingress_scheduled = False
-        self._ingress_bytes = 0
-        self._ingress_overflow = False
-
-    def enqueue(self, epoch: int, message: str, symbol: str, timing: object) -> bool:
-        """Bound raw memory before parsing and retain one scheduled wakeup."""
-        size = len(message) * 4
-        with self._ingress_lock:
-            if len(self._ingress) >= self.MAX_INGRESS_EVENTS or self._ingress_bytes + size > self.MAX_INGRESS_BYTES:
-                self._ingress.clear()
-                self._ingress_bytes = 0
-                self._ingress_overflow = True
-            if size <= self.MAX_INGRESS_BYTES:
-                self._ingress.append((int(epoch), str(message), str(symbol), timing))
-                self._ingress_bytes += size
-            else:
-                self._ingress_overflow = True
-            if self._ingress_scheduled:
-                return False
-            self._ingress_scheduled = True
-            return True
-
-    @QtCore.Slot()
-    def drain(self) -> None:
-        started = time.perf_counter()
-        count = 0
-        while count < self.DRAIN_BATCH_SIZE and (time.perf_counter() - started) * 1000 < self.DRAIN_BUDGET_MS:
-            with self._ingress_lock:
-                overflow = self._ingress_overflow
-                self._ingress_overflow = False
-                item = self._ingress.popleft() if self._ingress else None
-                if item is not None:
-                    self._ingress_bytes -= len(item[1]) * 4
-            if overflow:
-                self._request_resync("DEPTH INGRESS OVERFLOW", force=True)
-            if item is None:
-                break
-            self.parse(*item)
-            count += 1
-        with self._ingress_lock:
-            more = bool(self._ingress or self._ingress_overflow)
-            if not more:
-                self._ingress_scheduled = False
-        if more:
-            QtCore.QTimer.singleShot(0, self, self.drain)
 
     def _reset_state(
         self,
@@ -1227,17 +1074,324 @@ def _prepare_chart_cache(base, incoming, live, requested_at):
 
 
 def _prepare_chart_cache_job(base, incoming, live, requested_at):
+    """Keep incremental cache changes page-local, including their transport.
+
+    Sending a 250K-Candle cache to a process and unpickling it again held the GUI
+    interpreter lock even for a 1K-row history page. Share the immutable resident
+    pages for prepends, appends and corrections of known timestamps. Arbitrary
+    historical insertion/full replacement still uses the general merge worker.
+    """
+    current = base.get('candles')
+    incoming_rows = incoming.get('candles', ())
+    if isinstance(current, CandlePages) and current and len(incoming_rows) <= 4096:
+        rows = {c.time: c for c in incoming_rows}
+        latest = max(current[-1].time, max(rows, default=0))
+        rows.update((c.time, c) for stamp, c in live if stamp >= requested_at or c.time > latest)
+        prefix, suffix, replacements = [], [], {}
+        for stamp in sorted(rows):
+            candle = rows[stamp]
+            if stamp < current[0].time:
+                prefix.append(candle)
+            elif stamp > current[-1].time:
+                suffix.append(candle)
+            else:
+                index = bisect_left(current, stamp, key=lambda c: c.time)
+                if current[index].time != stamp:
+                    break  # A missing interior bar needs the general merge.
+                replacements[index] = candle
+        else:
+            candles = current.updated(replacements).prepended(prefix).extended(suffix)
+            if len(candles) > MAX_CHART_CANDLES:
+                candles = candles.snapshot(len(candles) - MAX_CHART_CANDLES)
+            result = {**base, **incoming, 'candles': candles}
+            result.pop('candle_matrix', None)
+            result.pop('_rolling_matrix', None)
+            result.pop('_rolling_start', None)
+            return result
+    # Full loads also use numeric page transport. Pickling a raw list of Candle
+    # dataclasses would reintroduce a long interpreter-wide serialization pause.
+    if len(incoming_rows) >= 4096 and not isinstance(incoming_rows, CandlePages):
+        incoming = {**incoming, 'candles': CandlePages(incoming_rows)}
+    if current is not None and len(current) >= 4096 and not isinstance(current, CandlePages):
+        base = {**base, 'candles': CandlePages(current)}
     return run_analysis(_prepare_chart_cache, base, incoming, live, requested_at)
 
 
-class MarketDataHub(QtCore.QObject):
-    _socket_drain_request = Signal()
-    _depth_drain_request = Signal()
-    _depth_reset_request = Signal(int, int, str)
-    _depth_seed_request = Signal(int, int, object)
-    _depth_invalidate_request = Signal(int, int, str)
-    _depth_capacity_request = Signal(int)
+def _market_parser_main(connection, chart_only):
+    """Own JSON decoding, depth reconstruction and coalescer timers in one process.
 
+    The pipe is driven by a relay thread in the parent, never by the GUI. Commands
+    (including reset/seed barriers) are FIFO. Only the existing BBO presentation
+    coalescer is lossy; depth deltas and trade prints retain their order.
+    """
+    import signal
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
+    application = QtCore.QCoreApplication([])
+    socket = _SocketParserWorker()
+    depth = None if chart_only else _DepthParserWorker()
+    events = []
+    socket.parsed.connect(lambda *args: events.append(('socket', args)))
+    socket.backpressure.connect(lambda *args: events.append(('backpressure', args)))
+    if depth is not None:
+        depth.parsed.connect(lambda *args: events.append(('depth', args)))
+        depth.invalidated.connect(lambda *args: events.append(('invalidated', args)))
+        depth.resync_required.connect(lambda *args: events.append(('resync', args)))
+    try:
+        connection.send(('started',))
+        while True:
+            commands = connection.recv()
+            if commands is None:
+                break
+            for name, args in commands:
+                if name == 'socket':
+                    if args[-1] > 0 and time.perf_counter() * 1000 - args[-1] > socket.MAX_PARSER_QUEUE_AGE_MS:
+                        # Never resume after a hole in the ordered input stream.
+                        raise RuntimeError('MARKET PARSER BACKPRESSURE')
+                    socket.parse(*args[:-1])
+                elif depth is not None:
+                    getattr(depth, name)(*args)
+            application.processEvents()
+            due = [timer.remainingTime() for timer in
+                   (socket._trade_timer, socket._book_ticker_timer) if timer.isActive()]
+            connection.send((events, min(due, default=-1)))
+            events.clear()
+    except (EOFError, BrokenPipeError):
+        pass
+    except Exception as exc:
+        try:
+            connection.send(('error', f'{type(exc).__name__}: {exc}'))
+        except (OSError, EOFError):
+            pass
+    finally:
+        socket._discard_coalesced_state()
+        connection.close()
+
+
+_MARKET_DELIVERY_EVENT = QtCore.QEvent.Type(QtCore.QEvent.registerEventType())
+
+
+class _MarketParserBridge(QtCore.QObject):
+    """Bounded process transport with one outstanding GUI delivery.
+
+    Producers only enqueue references. Spawn, pickle, pipe I/O and teardown all
+    happen on the relay. Acknowledging each delivery bounds decoded output, and
+    short GUI turns leave room for input and painting even after a feed burst.
+    An exceeded age/memory budget fails the entire stream closed; it never drops
+    a depth delta or trade silently and then continues from a corrupted base.
+    """
+    socket_ready = Signal(str, int, object)
+    depth_ready = Signal(int, int, object)
+    backpressure = Signal(str, int, str)
+    invalidated = Signal(int, int, str)
+    resync = Signal(int, int)
+    failed = Signal(str)
+    MAX_PENDING_EVENTS = 1024
+    MAX_PENDING_BYTES = 16 * 1024 * 1024
+    MAX_AGE_SECONDS = 1.5
+    BATCH_EVENTS = 128
+    BATCH_DEPTH_EVENTS = 2
+    BATCH_BYTES = 512 * 1024
+    DELIVERY_BUDGET_SECONDS = 0.001
+
+    def __init__(self, parent=None, *, chart_only=False):
+        super().__init__(parent)
+        self._chart_only = chart_only
+        self._condition = threading.Condition()
+        self._pending = deque()
+        self._pending_input_times = deque()
+        self._pending_bytes = 0
+        self._delivery = deque()
+        self._delivery_started = 0.0
+        self._event_pending = False
+        self._closed = False
+        self._failure = ''
+        self._ready = False
+        self.worker_pid = None
+        self._thread = threading.Thread(target=self._run, name='nightwatch-feed-ipc', daemon=True)
+        self.destroyed.connect(lambda *_: self.close())
+        self._thread.start()
+
+    def _wake_gui(self):
+        # Caller holds the condition; only one event may wait in Qt's queue.
+        if not self._event_pending:
+            self._event_pending = True
+            QtCore.QCoreApplication.postEvent(self, QtCore.QEvent(_MARKET_DELIVERY_EVENT))
+
+    def _fail(self, reason):
+        with self._condition:
+            if self._closed:
+                return
+            self._closed = True
+            self._ready = False
+            self._failure = str(reason)
+            self._pending.clear()
+            self._pending_input_times.clear()
+            self._pending_bytes = 0
+            self._delivery.clear()
+            self._wake_gui()
+            self._condition.notify_all()
+
+    def submit(self, name, args, *, size=256):
+        now = time.monotonic()
+        with self._condition:
+            if self._closed:
+                return
+            stale = bool(self._pending_input_times
+                         and now - self._pending_input_times[0] > self.MAX_AGE_SECONDS)
+            if (stale or len(self._pending) >= self.MAX_PENDING_EVENTS
+                    or self._pending_bytes + size > self.MAX_PENDING_BYTES):
+                self._fail('MARKET PARSER INGRESS BACKPRESSURE')
+                return
+            # Initialization barriers can wait for a cold Windows spawn. Only
+            # received market frames have a freshness deadline; allowing old
+            # control commands must never extend the age of queued live data.
+            stamp = now if name in ('parse', 'socket') else 0.0
+            self._pending.append((name, args, size, stamp))
+            if stamp:
+                self._pending_input_times.append(stamp)
+            self._pending_bytes += size
+            self._condition.notify_all()
+
+    def close(self, *_args):
+        with self._condition:
+            self._closed = True
+            self._ready = False
+            self._failure = ''
+            self._pending.clear()
+            self._pending_input_times.clear()
+            self._pending_bytes = 0
+            self._delivery.clear()
+            self._condition.notify_all()
+
+    def event(self, event):
+        if event.type() != _MARKET_DELIVERY_EVENT:
+            return super().event(event)
+        deadline = time.perf_counter() + self.DELIVERY_BUDGET_SECONDS
+        while True:
+            with self._condition:
+                if (self._delivery and not self._closed
+                        and time.monotonic() - self._delivery_started > self.MAX_AGE_SECONDS):
+                    # The GUI can resume before the relay's watchdog wakes.
+                    # Check here too so a stale delivery cannot win that race.
+                    self._fail('MARKET PARSER GUI BACKPRESSURE')
+                failure, self._failure = self._failure, ''
+                item = self._delivery.popleft() if self._delivery and not self._closed else None
+                if failure or item is None:
+                    self._event_pending = False
+                    self._condition.notify_all()
+            if failure:
+                self.failed.emit(failure)
+                break
+            if item is None:
+                break
+            name, args = item
+            getattr(self, {'socket': 'socket_ready', 'depth': 'depth_ready'}.get(name, name)).emit(*args)
+            if time.perf_counter() >= deadline:
+                # Repost instead of recursively draining a market burst in the
+                # same event-loop turn as a chart pan or splitter move.
+                QtCore.QCoreApplication.postEvent(self, QtCore.QEvent(_MARKET_DELIVERY_EVENT))
+                break
+        return True
+
+    def _receive(self, connection, process, timeout):
+        deadline = time.monotonic() + timeout
+        while not connection.poll(0.025):
+            if self._closed:
+                return None
+            if not process.is_alive():
+                raise RuntimeError(f'Market parser exited ({process.exitcode})')
+            if time.monotonic() >= deadline:
+                raise RuntimeError('MARKET PARSER RESPONSE TIMEOUT')
+        result = connection.recv()
+        if result[0] == 'error':
+            raise RuntimeError(result[1])
+        return result
+
+    def _run(self):
+        process = connection = child = None
+        try:
+            context = multiprocessing.get_context('spawn')
+            connection, child = context.Pipe()
+            process = context.Process(target=_market_parser_main,
+                                      args=(child, self._chart_only),
+                                      name='nightwatch-feed-process', daemon=True)
+            process.start()
+            child.close()
+            self.worker_pid = process.pid
+            if self._receive(connection, process, 15.0) is None:
+                return
+            with self._condition:
+                if self._closed:
+                    return
+                self._ready = True
+            due = float('inf')
+            while True:
+                with self._condition:
+                    while not self._closed:
+                        now = time.monotonic()
+                        if self._event_pending:
+                            if now - self._delivery_started > self.MAX_AGE_SECONDS:
+                                raise RuntimeError('MARKET PARSER GUI BACKPRESSURE')
+                            self._condition.wait(0.05)
+                        elif self._pending or now >= due:
+                            break
+                        else:
+                            # Also notice an unexpectedly dead idle worker.
+                            self._condition.wait(min(0.25, max(0.001, due - now)))
+                            if not process.is_alive():
+                                raise RuntimeError(f'Market parser exited ({process.exitcode})')
+                    if self._closed:
+                        break
+                    if (self._pending_input_times
+                            and now - self._pending_input_times[0] > self.MAX_AGE_SECONDS):
+                        raise RuntimeError('MARKET PARSER INGRESS BACKPRESSURE')
+                    commands, total, depth_count = [], 0, 0
+                    while self._pending and len(commands) < self.BATCH_EVENTS and total < self.BATCH_BYTES:
+                        # A tiny raw delta can expand into two thousand book
+                        # rows. Bound decoded output as well as raw input so
+                        # unpickling never becomes another long GIL burst.
+                        if self._pending[0][0] == 'parse' and depth_count >= self.BATCH_DEPTH_EVENTS:
+                            break
+                        name, args, size, stamp = self._pending.popleft()
+                        if stamp:
+                            self._pending_input_times.popleft()
+                        commands.append((name, args))
+                        depth_count += name == 'parse'
+                        total += size
+                        self._pending_bytes -= size
+                connection.send(commands)
+                result = self._receive(connection, process, self.MAX_AGE_SECONDS)
+                if result is None:
+                    break
+                events, delay_ms = result
+                due = time.monotonic() + max(0, delay_ms) / 1000 if delay_ms >= 0 else float('inf')
+                if events:
+                    with self._condition:
+                        if self._closed:
+                            break
+                        self._delivery.extend(events)
+                        self._delivery_started = time.monotonic()
+                        self._wake_gui()
+        except Exception as exc:
+            self._fail(f'Market parser stopped: {exc}')
+        finally:
+            if child is not None:
+                child.close()
+            if connection is not None:
+                try:
+                    connection.send(None)
+                except (OSError, EOFError):
+                    pass
+                connection.close()
+            if process is not None and process.pid is not None:
+                process.join(0.25)
+                if process.is_alive():
+                    process.terminate()
+                    process.join(0.25)
+                process.close()
+
+
+class MarketDataHub(QtCore.QObject):
     universe_ready = Signal(object)
     bootstrap_ready = Signal(object)
     analysis_ready = Signal(object)
@@ -1345,11 +1499,7 @@ class MarketDataHub(QtCore.QObject):
         self._background_pool = QtCore.QThreadPool(self)
         self._background_pool.setMaxThreadCount(2)
         self._background_pool.setExpiryTimeout(30_000)
-        self._parser_thread: QtCore.QThread | None = None
-        self._parser_worker: _SocketParserWorker | None = None
-        self._depth_parser_thread: QtCore.QThread | None = None
-        self._depth_parser_worker: _DepthParserWorker | None = None
-        self._retiring_threads: list[QtCore.QThread] = []
+        self._parser: _MarketParserBridge | None = None
         self.chart_cache: OrderedDict[tuple[str, str], tuple[float, dict[str, Any]]] = OrderedDict()
         self.analysis_cache: OrderedDict[str, tuple[float, dict[str, Any]]] = OrderedDict()
         self._cache_prepare_queue = deque()
@@ -1407,187 +1557,39 @@ class MarketDataHub(QtCore.QObject):
         self.universe_retry_timer.setInterval(5000)
         self.universe_retry_timer.timeout.connect(self._load_universe)
 
-    def _ensure_parser_thread(self) -> None:
-        if self._parser_thread is None:
-            thread = QtCore.QThread()
-            thread.setObjectName("nightwatch-market-parser")
-            worker = _SocketParserWorker()
-            worker.moveToThread(thread)
-
-            self._socket_drain_request.connect(
-                worker.drain,
-                QtCore.Qt.ConnectionType.QueuedConnection,
-            )
-            worker.parsed.connect(
-                self._handle_parsed_socket_message,
-                QtCore.Qt.ConnectionType.QueuedConnection,
-            )
-            worker.backpressure.connect(
-                self._handle_parser_backpressure,
-                QtCore.Qt.ConnectionType.QueuedConnection,
-            )
-            thread.finished.connect(worker.deleteLater)
-            thread.start()
-
-            self._parser_thread = thread
-            self._parser_worker = worker
-
-        if not self.chart_only and self._depth_parser_thread is None:
-            depth_thread = QtCore.QThread()
-            depth_thread.setObjectName("nightwatch-depth-parser")
-            depth_worker = _DepthParserWorker()
-            depth_worker.moveToThread(depth_thread)
-
-            self._depth_drain_request.connect(
-                depth_worker.drain,
-                QtCore.Qt.ConnectionType.QueuedConnection,
-            )
-            self._depth_reset_request.connect(
-                depth_worker.reset_epoch,
-                QtCore.Qt.ConnectionType.QueuedConnection,
-            )
-            self._depth_seed_request.connect(
-                depth_worker.seed_snapshot,
-                QtCore.Qt.ConnectionType.QueuedConnection,
-            )
-            self._depth_invalidate_request.connect(
-                depth_worker.invalidate,
-                QtCore.Qt.ConnectionType.QueuedConnection,
-            )
-            self._depth_capacity_request.connect(
-                depth_worker.set_analysis_publish_levels,
-                QtCore.Qt.ConnectionType.QueuedConnection,
-            )
-            depth_worker.parsed.connect(
-                self._handle_parsed_depth,
-                QtCore.Qt.ConnectionType.QueuedConnection,
-            )
-            depth_worker.invalidated.connect(
-                self._handle_depth_invalidated,
-                QtCore.Qt.ConnectionType.QueuedConnection,
-            )
-            depth_worker.resync_required.connect(
-                self._handle_depth_resync,
-                QtCore.Qt.ConnectionType.QueuedConnection,
-            )
-            depth_thread.finished.connect(depth_worker.deleteLater)
-            depth_thread.start()
-
-            self._depth_parser_thread = depth_thread
-            self._depth_parser_worker = depth_worker
-            self._depth_capacity_request.emit(self._orderbook_depth_capacity)
-
-    @QtCore.Slot()
-    def _release_retiring_thread(self) -> None:
-        """Delete a worker QThread only after Qt confirms it has stopped."""
-        thread = self.sender()
-        if not isinstance(thread, QtCore.QThread):
+    def _ensure_parser(self) -> None:
+        if self._parser is not None or self.stopping:
             return
-        if thread not in self._retiring_threads:
+        parser = _MarketParserBridge(self, chart_only=self.chart_only)
+        self._parser = parser
+        parser.socket_ready.connect(self._handle_parsed_socket_message)
+        parser.depth_ready.connect(self._handle_parsed_depth)
+        parser.backpressure.connect(self._handle_parser_backpressure)
+        parser.invalidated.connect(self._handle_depth_invalidated)
+        parser.resync.connect(self._handle_depth_resync)
+        parser.failed.connect(lambda reason, source=parser: self._handle_parser_failure(source, reason))
+        if not self.chart_only:
+            parser.submit('reset_epoch', (self.depth_epoch, self.depth_revision, self.symbol))
+            parser.submit('set_analysis_publish_levels', (self._orderbook_depth_capacity,))
+
+    def _stop_parser(self) -> None:
+        parser, self._parser = self._parser, None
+        if parser is not None:
+            parser.close()
+            parser.deleteLater()
+
+    def _handle_parser_failure(self, parser, reason: str) -> None:
+        if parser is not self._parser or self.stopping:
             return
-        self._retiring_threads.remove(thread)
-        thread.deleteLater()
-
-    def _stop_worker_thread(
-        self,
-        signal: QtCore.SignalInstance,
-        worker_slot: Callable[..., Any] | None,
-        worker_signal: QtCore.SignalInstance | None,
-        receiver: Callable[..., Any] | None,
-        thread: QtCore.QThread | None,
-    ) -> None:
-        if worker_slot is not None:
-            try:
-                signal.disconnect(worker_slot)
-            except (RuntimeError, TypeError):
-                pass
-        if worker_signal is not None and receiver is not None:
-            try:
-                worker_signal.disconnect(receiver)
-            except (RuntimeError, TypeError):
-                pass
-        if thread is None:
-            return
-
-
-        thread.requestInterruption()
-        thread.quit()
-        if thread.wait(1500):
-            thread.deleteLater()
-            return
-
-
-        if thread not in self._retiring_threads:
-            self._retiring_threads.append(thread)
-            thread.finished.connect(
-                self._release_retiring_thread,
-                QtCore.Qt.ConnectionType.QueuedConnection,
-            )
-
-
-            if not thread.isRunning() and thread in self._retiring_threads:
-                self._retiring_threads.remove(thread)
-                thread.deleteLater()
-
-    def _stop_parser_thread(self) -> None:
-        parser_thread = self._parser_thread
-        parser_worker = self._parser_worker
-        depth_thread = self._depth_parser_thread
-        depth_worker = self._depth_parser_worker
-
-        self._parser_thread = None
-        self._parser_worker = None
-        self._depth_parser_thread = None
-        self._depth_parser_worker = None
-
-        if parser_worker is not None:
-            try:
-                self._socket_drain_request.disconnect(parser_worker.drain)
-            except (RuntimeError, TypeError):
-                pass
-            try:
-                parser_worker.backpressure.disconnect(self._handle_parser_backpressure)
-            except (RuntimeError, TypeError):
-                pass
-        self._stop_worker_thread(
-            self._socket_drain_request,
-            None,
-            parser_worker.parsed if parser_worker is not None else None,
-            self._handle_parsed_socket_message,
-            parser_thread,
-        )
-        if depth_worker is not None:
-            for signal, slot in (
-                (self._depth_reset_request, depth_worker.reset_epoch),
-                (self._depth_seed_request, depth_worker.seed_snapshot),
-                (self._depth_invalidate_request, depth_worker.invalidate),
-            ):
-                try:
-                    signal.disconnect(slot)
-                except (RuntimeError, TypeError):
-                    pass
-            for worker_signal, receiver in (
-                (depth_worker.invalidated, self._handle_depth_invalidated),
-                (depth_worker.resync_required, self._handle_depth_resync),
-            ):
-                try:
-                    worker_signal.disconnect(receiver)
-                except (RuntimeError, TypeError):
-                    pass
-        if depth_worker is not None:
-            try:
-                self._depth_drain_request.disconnect(depth_worker.drain)
-            except (RuntimeError, TypeError):
-                pass
-
-
-        self._stop_worker_thread(
-            self._depth_reset_request,
-            None,
-            depth_worker.parsed if depth_worker is not None else None,
-            self._handle_parsed_depth,
-            depth_thread,
-        )
+        self._stop_parser()
+        self._publish_trade_stream_status(False, reason)
+        self._set_book_valid(False, reason)
+        self.problem.emit(reason)
+        # Existing reconnect backoff creates fresh socket/depth epochs. Never
+        # replay queued inputs or continue a book after losing the process.
+        for kind in ('public', 'market', 'ticker'):
+            if getattr(self, f'{kind}_socket') is not None:
+                self._socket_error(kind, self._socket_generations.get(kind, -1), reason)
 
 
     @QtCore.Slot(str, int, str)
@@ -1700,12 +1702,10 @@ class MarketDataHub(QtCore.QObject):
 
             self._depth_snapshot_retry_epoch = None
             self._depth_snapshot_retry_count = 0
-        if freeze_worker and self._depth_parser_worker is not None:
+        if freeze_worker and self._parser is not None:
 
 
-            self._depth_invalidate_request.emit(
-                self.depth_epoch, revision, reason
-            )
+            self._parser.submit('invalidate', (self.depth_epoch, revision, reason))
         elif request_snapshot and self.connected.get("public", False):
             self._load_depth_snapshot(
                 self.depth_epoch, revision=revision, force=True
@@ -1747,10 +1747,8 @@ class MarketDataHub(QtCore.QObject):
         self._depth_snapshot_retry_count = 0
         self._depth_resync_started_mono = 0.0
         self._set_book_valid(False, "SYNCING")
-        if self._depth_parser_worker is not None and not self.chart_only:
-            self._depth_reset_request.emit(
-                epoch, revision, str(symbol).upper()
-            )
+        if self._parser is not None and not self.chart_only:
+            self._parser.submit('reset_epoch', (epoch, revision, str(symbol).upper()))
         return epoch
 
     def _check_depth_progress_health(self, now: float | None = None) -> bool:
@@ -1817,124 +1815,35 @@ class MarketDataHub(QtCore.QObject):
         generation: int,
         message: str,
     ) -> None:
-        if generation != self._socket_generations.get(kind):
+        if self.stopping or generation != self._socket_generations.get(kind):
             return
-
-
         arrival_wall_ms = time.time() * 1000.0
         arrival_mono_ms = time.perf_counter() * 1000.0
-
-        now_mono = time.monotonic()
-        self._socket_activity[kind] = now_mono
-        self._socket_data_activity[kind] = now_mono
-
-        self._ensure_parser_thread()
-
-        if kind == "public":
-            if not self.orderbook_streaming_enabled:
-                return
-            epoch = self.depth_epoch
-            if epoch <= 0:
-                return
-
-
-            wrapper_end = min(len(message), 256)
-            if (
-                message.find("@bookTicker", 0, wrapper_end) >= 0
-                or message.find("@bookticker", 0, wrapper_end) >= 0
-            ):
-                if self._parser_worker is not None:
-                    schedule_drain = self._parser_worker.enqueue(
-                        kind,
-                        epoch,
-                        message,
-                        self.symbol,
-                        self.interval,
-                        self.ticker_symbols,
-                        self._valid_ticker_symbols,
-                        arrival_mono_ms,
-                    )
-                    if schedule_drain:
-                        self._socket_drain_request.emit()
-                else:
-                    packets = _decode_socket_payload(
-                        kind,
-                        message,
-                        self.symbol,
-                        self.interval,
-                        self.ticker_symbols,
-                        self._valid_ticker_symbols,
-                    )
-                    if packets:
-                        self._handle_parsed_socket_message(kind, epoch, packets)
-                return
-            if self._depth_parser_worker is not None:
-
-
-                server_received_ms = self._server_clock_now_ms()
-                enqueue_mono_ms = time.perf_counter() * 1000.0
-                schedule_drain = self._depth_parser_worker.enqueue(
-                    epoch,
-                    message,
-                    self.symbol,
-                    (
-                        arrival_wall_ms,
-                        arrival_mono_ms,
-                        server_received_ms,
-                        enqueue_mono_ms,
-                    ),
-                )
-                if schedule_drain:
-                    self._depth_drain_request.emit()
-                return
-
-
-        parser_generation = (
-            self.market_epoch
-            if kind == "market" and not self.chart_only
-            else self.generation if self.chart_only else generation
-        )
-        if self._parser_worker is not None:
-            schedule_drain = self._parser_worker.enqueue(
-                kind,
-                parser_generation,
-                message,
-                self.symbol,
-                self.interval,
-                self.ticker_symbols,
-                self._valid_ticker_symbols,
-                arrival_mono_ms,
-            )
-            if schedule_drain:
-                self._socket_drain_request.emit()
+        now = time.monotonic()
+        self._socket_activity[kind] = now
+        self._socket_data_activity[kind] = now
+        self._ensure_parser()
+        parser = self._parser
+        if parser is None:
             return
-
-        packets = _decode_socket_payload(
-            kind,
-            message,
-            self.symbol,
-            self.interval,
-            self.ticker_symbols,
-            self._valid_ticker_symbols,
-        )
-        if packets:
-
-
-            annotated = []
-            parser_done_mono_ms = time.perf_counter() * 1000.0
-            server_arrival_ms = self._server_clock_now_ms()
-            for packet_type, payload in packets:
-                if packet_type == "depth" and isinstance(payload, dict):
-                    payload["_socket_received_wall_ms"] = arrival_wall_ms
-                    payload["_socket_received_mono_ms"] = arrival_mono_ms
-                    payload["_server_received_ms"] = server_arrival_ms
-                    payload["_parser_done_mono_ms"] = parser_done_mono_ms
-                annotated.append((packet_type, payload))
-            self._handle_parsed_socket_message(
-                kind,
-                self.depth_epoch if kind == "public" else parser_generation,
-                tuple(annotated),
-            )
+        size = 256 + len(message) * 4
+        if kind == 'public':
+            if not self.orderbook_streaming_enabled or self.depth_epoch <= 0:
+                return
+            wrapper_end = min(len(message), 256)
+            if (message.find('@bookTicker', 0, wrapper_end) < 0
+                    and message.find('@bookticker', 0, wrapper_end) < 0):
+                timing = (arrival_wall_ms, arrival_mono_ms,
+                          self._server_clock_now_ms(), time.perf_counter() * 1000.0)
+                parser.submit('parse', (self.depth_epoch, message, self.symbol, timing), size=size)
+                return
+            parser_generation = self.depth_epoch
+        else:
+            parser_generation = (self.market_epoch if kind == 'market' and not self.chart_only
+                                 else self.generation if self.chart_only else generation)
+        parser.submit('socket', (kind, parser_generation, message, self.symbol,
+                                 self.interval, self.ticker_symbols,
+                                 self._valid_ticker_symbols, arrival_mono_ms), size=size)
 
     @QtCore.Slot(int, int)
     def _handle_depth_resync(self, epoch: int, revision: int) -> None:
@@ -2178,7 +2087,8 @@ class MarketDataHub(QtCore.QObject):
 
 
         candles = payload.get("candles", ())
-        return {**payload, "candles": candles.snapshot() if isinstance(candles, CandlePages) else candles}
+        return {**payload, "candles": candles.snapshot() if isinstance(candles, CandlePages) else candles,
+                "_canonical_candles": isinstance(candles, CandlePages)}
 
     def _queue_chart_cache(self, key, payload, *, requested_at=0.0,
                            publish=False, generation=None, callback=None,
@@ -2380,7 +2290,7 @@ class MarketDataHub(QtCore.QObject):
     def start(self, symbol: str, interval: str) -> None:
         self.stopping = False
         self.started = True
-        self._ensure_parser_thread()
+        self._ensure_parser()
         self.watchdog_timer.start()
         if self.chart_only:
             self.switch_market(symbol, interval)
@@ -2821,7 +2731,9 @@ class MarketDataHub(QtCore.QObject):
         interval: str,
         candles: list[Candle],
     ) -> None:
-        candles = list(candles)[-800:]
+        # Packed histories materialize Candle objects lazily. Slice first so
+        # this GUI callback never expands hundreds of thousands of unused rows.
+        candles = list(candles[-800:])
 
         def loaded(payload: dict[str, Any]) -> None:
             self._remember(self.analysis_cache, symbol, payload, ANALYSIS_CACHE_LIMIT)
@@ -3046,8 +2958,8 @@ class MarketDataHub(QtCore.QObject):
             if self._depth_snapshot_retry_epoch == epoch:
                 self._depth_snapshot_retry_epoch = None
                 self._depth_snapshot_retry_count = 0
-            if self._depth_parser_worker is not None:
-                self._depth_seed_request.emit(epoch, revision, payload)
+            if self._parser is not None:
+                self._parser.submit('seed_snapshot', (epoch, revision, payload), size=256 + 256 * (len(payload.get('b', ())) + len(payload.get('a', ()))))
                 return
 
 
@@ -3215,7 +3127,15 @@ class MarketDataHub(QtCore.QObject):
 
 
                 or self._socket_generations.get(kind) != generation
+                or self._disconnect_tokens.get(kind) == id(socket)
             ):
+                return
+            self._ensure_parser()
+            if self._parser is None or not self._parser._ready:
+                # A Windows spawn may take longer than a feed burst's ingress
+                # budget. Admit network data only after the parser is ready;
+                # never accumulate live trades behind process initialization.
+                QTimer.singleShot(25, open_when_allowed)
                 return
             delay = BINANCE_RATE_LIMITER.reserve_websocket_connection(api=False)
             if delay > 0:
@@ -3568,8 +3488,8 @@ class MarketDataHub(QtCore.QObject):
         if resolved == self._orderbook_depth_capacity:
             return
         self._orderbook_depth_capacity = resolved
-        if self._depth_parser_worker is not None:
-            self._depth_capacity_request.emit(resolved)
+        if self._parser is not None:
+            self._parser.submit('set_analysis_publish_levels', (resolved,))
 
     def set_orderbook_streaming_enabled(self, enabled: bool) -> None:
         """Start/stop every network stream used exclusively by Market Depth."""
@@ -3643,7 +3563,7 @@ class MarketDataHub(QtCore.QObject):
         self._chart_prefetch_active = None
         self._close_market_sockets()
         self._close_ticker_socket()
-        self._stop_parser_thread()
+        self._stop_parser()
 
 
     def set_market_data_api_key(self, api_key: str) -> None:

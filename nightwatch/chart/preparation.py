@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from collections import deque
+from bisect import bisect_left
 import math
 import numpy as np
 
@@ -200,17 +201,37 @@ def prepare_window(key, closed, window, seconds, logarithmic):
 
 
 def prepare_snapshot(payload, current=()):
-
-    rows = {c.time: c for c in payload.get("candles", ())}
-    rows.update((c.time, c) for c in current)
-    candles = sorted(rows.values(), key=lambda c: c.time)[-MAX_CHART_CANDLES:]
+    source = payload.get("candles", ())
+    candles = None
+    if (payload.get('_canonical_candles') or payload.get('_storage_roll')) and isinstance(source, CandlePages):
+        # Cached histories are already sorted/unique. Preserve their native
+        # pages and patch just the live tail instead of materializing all rows.
+        updates, suffix = {}, []
+        tail = {c.time: c for c in current}
+        current = tuple(tail[stamp] for stamp in sorted(tail))
+        for candle in current:
+            if not source or candle.time > source[-1].time:
+                suffix.append(candle)
+            else:
+                index = bisect_left(source, candle.time, key=lambda c: c.time)
+                if index >= len(source) or source[index].time != candle.time:
+                    break
+                updates[index] = candle
+        else:
+            candles = source.updated(updates).extended(suffix)
+            if len(candles) > MAX_CHART_CANDLES:
+                candles = candles.snapshot(len(candles) - MAX_CHART_CANDLES)
+    if candles is None:
+        rows = {c.time: c for c in source}
+        rows.update((c.time, c) for c in current)
+        candles = CandlePages(sorted(rows.values(), key=lambda c: c.time)[-MAX_CHART_CANDLES:])
     matrix = _candle_matrix_from_objects(candles)
     storage = np.empty((candle_matrix_capacity(len(matrix)), 7), dtype=np.float64)
     storage[:len(matrix)] = matrix
     result = dict(payload)
-    result["candles"] = CandlePages(candles)
+    result["candles"] = candles
     result["_storage"] = storage
-    result["_times"] = CandlePages(float(c.time) for c in candles)
+    result["_times"] = CandlePages.from_matrix(matrix[:, :1], column=0)
 
     result["_extrema"] = RangeExtrema(matrix[:-1, 3], matrix[:-1, 2])
     return result
@@ -301,7 +322,7 @@ def prepare_storage_recovery(payload):
     storage = np.empty((candle_matrix_capacity(len(matrix)), 7), dtype=np.float64)
     storage[:len(matrix)] = matrix
     return {**payload, "candles": candles, "_storage": storage,
-            "_times": CandlePages(c.time for c in candles),
+            "_times": CandlePages.from_matrix(matrix[:, :1], column=0),
             "_extrema": RangeExtrema(matrix[:-1, 3], matrix[:-1, 2])}
 
 

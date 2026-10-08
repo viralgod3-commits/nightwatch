@@ -217,6 +217,8 @@ import numpy as np
 
 def _candle_matrix_from_objects(candles: list[Candle]) -> np.ndarray:
     """Fallback for history/cache paths that still own Candle objects."""
+    if isinstance(candles, CandlePages):
+        return candles.to_matrix()
     count = len(candles)
     if not count:
         return np.empty((0, 7), dtype=np.float64)
@@ -245,6 +247,8 @@ def _coerce_candle_matrix(candles: Any) -> np.ndarray:
         if candles.ndim == 2 and candles.shape[1] >= 7:
             return np.ascontiguousarray(candles[:, :7], dtype=np.float64)
         return np.empty((0, 7), dtype=np.float64)
+    if isinstance(candles, CandlePages):
+        return candles.to_matrix()
     return _candle_matrix_from_objects(list(candles))
 
 
@@ -816,6 +820,42 @@ class SettingsHostPort(Protocol):
         ...
 
 
+class _CandleMatrixPage(Sequence):
+    """Immutable numeric page; materialize stable Candle identities on demand.
+
+    Large process results must not unpickle hundreds of thousands of Python
+    objects while holding the GUI's GIL. Native arrays carry the history; only
+    rows actually inspected by a consumer acquire a Python object.
+    """
+    def __init__(self, data, column=None):
+        self.data = data
+        self.column = column
+        self.data.flags.writeable = False
+        self._objects = {}
+
+    def __len__(self):
+        return len(self.data)
+
+    def __getitem__(self, index):
+        if isinstance(index, slice):
+            return tuple(self[i] for i in range(*index.indices(len(self))))
+        if index < 0:
+            index += len(self)
+        if not 0 <= index < len(self):
+            raise IndexError(index)
+        if self.column is not None:
+            return float(self.data[index, self.column])
+        value = self._objects.get(index)
+        if value is None:
+            # setdefault preserves identity if two snapshot readers materialize
+            # the same immutable row concurrently.
+            value = self._objects.setdefault(index, Candle(*map(float, self.data[index])))
+        return value
+
+    def __reduce__(self):
+        return type(self), (self.data, self.column)
+
+
 class CandlePages(Sequence):
     """Copy-on-write pages; snapshots and live replacement copy at most 512 refs.
 
@@ -825,10 +865,49 @@ class CandlePages(Sequence):
     PAGE = 512
 
     def __init__(self, values=()):
+        if isinstance(values, CandlePages):
+            self._pages, self._start, self._size = values._pages, values._start, values._size
+            return
         values = list(values)
         self._pages = tuple(tuple(values[i:i+self.PAGE]) for i in range(0, len(values), self.PAGE))
         self._start = 0
         self._size = len(values)
+
+    @classmethod
+    def from_matrix(cls, matrix, column=None):
+        """Own an immutable packed history, with optional scalar time pages."""
+        data = np.array(matrix, dtype=np.float64, order='C', copy=True)
+        if data.ndim != 2 or (column is None and data.shape[1] != 7):
+            raise ValueError('Candle history requires an N x 7 matrix')
+        if column is not None and not 0 <= column < data.shape[1]:
+            raise ValueError('History column is out of range')
+        data.flags.writeable = False
+        result = object.__new__(cls)
+        result._pages = tuple(_CandleMatrixPage(data[i:i+cls.PAGE], column)
+                              for i in range(0, len(data), cls.PAGE))
+        result._start, result._size = 0, len(data)
+        return result
+
+    def to_matrix(self):
+        """Copy native history directly; convert only edited object pages."""
+        result = np.empty((self._size, 7), dtype=np.float64)
+        offset, written = self._start, 0
+        for page in self._pages:
+            count = min(self._size - written, len(page) - offset)
+            if isinstance(page, _CandleMatrixPage) and page.column is None:
+                result[written:written+count] = page.data[offset:offset+count]
+            else:
+                result[written:written+count] = _candle_matrix_from_objects(page[offset:offset+count])
+            written += count
+            if written == self._size:
+                break
+            offset = 0
+        return result
+
+    def __reduce__(self):
+        if self._size >= 4096 and isinstance(self[0], Candle):
+            return type(self).from_matrix, (self.to_matrix(),)
+        return type(self), (), self.__dict__
 
     def __len__(self):
         return self._size
@@ -862,6 +941,60 @@ class CandlePages(Sequence):
         result._size = max(0, stop-start)
         count = (result._start + result._size + self.PAGE-1)//self.PAGE
         result._pages = self._pages[page:page+count]
+        return result
+
+    def prepended(self, values):
+        """Share resident pages, rebuilding only the incoming prefix and edge.
+
+        The leading offset keeps every interior page aligned for constant-time
+        indexing. Neither this sequence nor any previously published snapshot is
+        mutated. Work is proportional to the new rows plus the page directory,
+        not the number of retained candles.
+        """
+        prefix = tuple(values)
+        if not prefix:
+            return self.snapshot()
+        if not self._size:
+            return type(self)(prefix)
+        result = object.__new__(type(self))
+        result._start = (self._start - len(prefix)) % self.PAGE
+        edge = (None,) * result._start + prefix + self._pages[0][self._start:]
+        result._pages = tuple(edge[i:i+self.PAGE] for i in range(0, len(edge), self.PAGE)) + self._pages[1:]
+        result._size = len(prefix) + self._size
+        return result
+
+    def extended(self, values):
+        """Append a batch by copying the partial tail page once."""
+        suffix = tuple(values)
+        if not self._size:
+            return type(self)(suffix)
+        result = self.snapshot()
+        if not suffix:
+            return result
+        page, offset = divmod(self._start + self._size, self.PAGE)
+        edge = (self._pages[page][:offset] if offset else ()) + suffix
+        result._pages = self._pages[:page] + tuple(edge[i:i+self.PAGE] for i in range(0, len(edge), self.PAGE))
+        result._size += len(suffix)
+        return result
+
+    def updated(self, replacements):
+        """Replace indexed rows, copying each affected page at most once."""
+        result = self.snapshot()
+        changed = {}
+        for index, value in replacements.items():
+            if index < 0:
+                index += self._size
+            if not 0 <= index < self._size:
+                raise IndexError(index)
+            page, offset = divmod(self._start + index, self.PAGE)
+            if page not in changed:
+                changed[page] = list(self._pages[page])
+            changed[page][offset] = value
+        if changed:
+            pages = list(self._pages)
+            for page, values in changed.items():
+                pages[page] = tuple(values)
+            result._pages = tuple(pages)
         return result
 
     def __setitem__(self, index, value):

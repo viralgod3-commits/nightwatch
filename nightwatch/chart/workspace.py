@@ -747,20 +747,28 @@ class _HistoryPrepareWorkerSignals(QtCore.QObject):
 
 
 class _HistoryPrepareWorker(QtCore.QRunnable):
-    """Normalize and merge one history page without touching Qt/canonical GUI state."""
+    """Prepend new history while sharing published pages and copying numeric rows.
+
+    Closed matrix rows are immutable and the live row is captured by the caller.
+    Never walk all retained Candle objects to reconstruct an already-built array.
+    """
 
     def __init__(
         self,
         key: tuple[Any, ...],
         incoming: tuple[Candle, ...],
-        current: tuple[Candle, ...],
+        current: CandlePages,
         exhausted: bool,
+        current_times: CandlePages,
+        current_matrix: tuple[np.ndarray, np.ndarray],
     ) -> None:
         super().__init__()
         self.key = key
         self.incoming = incoming
         self.current = current
         self.exhausted = bool(exhausted)
+        self.current_times = current_times
+        self.current_matrix = current_matrix
         self.signals = _HistoryPrepareWorkerSignals()
 
     @QtCore.Slot()
@@ -780,24 +788,24 @@ class _HistoryPrepareWorker(QtCore.QRunnable):
                 else:
                     compact.append(candle)
                     previous_time = candle.time
-            combined = compact + list(self.current)
-            if len(combined) > MAX_CHART_CANDLES:
-                combined = combined[-MAX_CHART_CANDLES:]
-            matrix = _candle_matrix_from_objects(combined)
-
-
-            matrix_size = len(matrix)
+            added = min(len(compact), max(0, MAX_CHART_CANDLES - len(self.current)))
+            retained = compact[-added:] if added else []
+            combined = self.current.prepended(retained)
+            times = self.current_times.prepended(candle.time for candle in retained)
+            matrix_size = len(combined)
             storage = np.empty((candle_matrix_capacity(matrix_size), 7), dtype=np.float64)
-            if matrix_size:
-                storage[:matrix_size] = matrix
-            matrix = (storage, matrix_size)
-            times = CandlePages(float(candle.time) for candle in combined)
-            combined = CandlePages(combined)
+            if added:
+                storage[:added] = _candle_matrix_from_objects(retained)
+            closed, live = self.current_matrix
+            if len(closed) + len(live) != len(self.current):
+                raise ValueError("History pages and captured matrix must have equal length")
+            storage[added:added+len(closed)] = closed
+            storage[added+len(closed):matrix_size] = live
             extrema = RangeExtrema(storage[:max(0, matrix_size-1), 3], storage[:max(0, matrix_size-1), 2])
             matrix = (storage, matrix_size, extrema)
             error = None
         except Exception as exc:  # pragma: no cover
-            compact = []
+            added = 0
             combined = []
             matrix = (np.empty((2, 7), dtype=np.float64), 0)
             times = []
@@ -808,7 +816,8 @@ class _HistoryPrepareWorker(QtCore.QRunnable):
                 (time.perf_counter() - profile_started) * 1000.0,
             )
         self.signals.finished.emit(
-            self.key, combined, matrix, times, len(compact), self.exhausted, error
+            self.key, combined, matrix, times, added,
+            self.exhausted or (error is None and len(combined) >= MAX_CHART_CANDLES), error
         )
 
 
@@ -2894,6 +2903,8 @@ class ChartWorkspace(QtWidgets.QWidget):
             incoming,
             self.candles.snapshot(),
             exhausted,
+            self.candle_times.snapshot(),
+            self._matrix_snapshot()[:2],
         )
         self._history_prepare_worker = worker
         worker.signals.finished.connect(self._history_prepare_worker_finished)
