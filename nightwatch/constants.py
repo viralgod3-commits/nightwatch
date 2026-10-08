@@ -379,7 +379,6 @@ DIRECTIONAL_COLOR_MODE_OPTIONS = (
 
 DIRECTIONAL_COLOR_MODE_DEFAULTS = {
     "candles": "theme",
-    "orderbook": "theme",
 }
 
 

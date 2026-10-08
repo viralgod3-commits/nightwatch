@@ -2,43 +2,16 @@
 from __future__ import annotations
 
 
-# Order-book presentation contract. Background overrides live in this module;
-# analytical state vocabulary continues to come from the application's constants.
 from ..constants import (
     DEFAULT_SYMBOL,
-    ORDERBOOK_FIXED_PALETTE as _LEGACY_ORDERBOOK_PALETTE, ORDERBOOK_STATE_ACRONYMS,
+    ORDERBOOK_STATE_ACRONYMS,
     ORDERBOOK_STATE_FULL_LABEL_WIDTH, ORDERBOOK_STATE_LABELS,
     ORDERBOOK_STATE_MIN_WIDTH,
 )
 
-# The orderbook owns its presentation overrides: surrounding surfaces stay
-# pure black, while measured liquidity and semantic accents retain color.
-# Accent values follow the supplied constants palette.
-ORDERBOOK_REFERENCE = {
-    **_LEGACY_ORDERBOOK_PALETTE,
-    'bg': '#000000',
-    'surface_top': '#000000',
-    'surface_raised': '#000000',
-    'surface_center': '#000000',
-    'grid': '#1B1E22',
-    'grid_strong': '#2B3036',
-    'text': '#D5D8DC',
-    'muted': '#7C838C',
-    'bid': '#00C56A',
-    'ask': '#F0143E',
-    'bid_fill': '#062B19',
-    'ask_fill': '#3A0A15',
-    'bid_fill_strong': '#075B34',
-    'ask_fill_strong': '#7B1028',
-    'amber': '#C89A47',
-    'mid': '#C8CDD2',
-    'purple': '#9A87C8',
-    'control': '#000000',
-    'control_hover': '#111316',
-    'control_pressed': '#191C20',
-    'control_border': '#292D33',
-    'control_hover_line': '#59616B',
-}
+from ..theme import ORDERBOOK_THEMES, orderbook_palette
+
+ORDERBOOK_REFERENCE = ORDERBOOK_THEMES['Nightwatch']
 _ORDERBOOK_SIGNAL_COLORS = {'ABSORBING': '#35C4B2',
  'PULLING': '#D1A248',
  'STACKING': '#8F7AC8',
@@ -822,7 +795,7 @@ class _TradePriceDelegate(QtWidgets.QStyledItemDelegate):
         painter.save()
         try:
             painter.setClipRect(option.rect, Qt.ClipOperation.IntersectClip)
-            painter.fillRect(option.rect, QtGui.QColor(ORDERBOOK_REFERENCE['bg']))
+            painter.fillRect(option.rect, option.palette.color(QtGui.QPalette.ColorRole.Base))
             painter.setClipRect(rect, Qt.ClipOperation.IntersectClip)
             apply_text_render_hints(painter)
             painter.setPen(color)
@@ -843,7 +816,7 @@ class TradesTapeWidget(QtWidgets.QWidget):
 
     def __init__(self, theme: dict[str, str], parent: QtWidgets.QWidget | None = None):
         super().__init__(parent)
-        self.theme = {}
+        self.theme = orderbook_palette(theme)
         self.symbol = DEFAULT_SYMBOL
         self.quote_volume_24h = 0.0
         self.current_threshold = 1000.0
@@ -1192,8 +1165,20 @@ class TradesTapeWidget(QtWidgets.QWidget):
         self.status.setText(f'≥ {human_number(self.current_threshold, money=True)}' if self._mode == 'LARGE' else f'{len(self.model.rows)} trades')
 
     def apply_theme(self, theme):
-        self.theme = {}
-        p = ORDERBOOK_REFERENCE
+        self.theme = orderbook_palette(theme)
+        p = self.theme
+        self.model.buy = QtGui.QColor(p['bid'])
+        self.model.sell = QtGui.QColor(p['ask'])
+        self.model.muted = QtGui.QColor(p['muted'])
+        self.model.text_color = QtGui.QColor(p['text'])
+        palette = self.table.palette()
+        palette.setColor(QtGui.QPalette.ColorRole.Base, QtGui.QColor(p['bg']))
+        palette.setColor(QtGui.QPalette.ColorRole.Text, QtGui.QColor(p['text']))
+        self.table.setPalette(palette)
+        if self.model.rowCount():
+            self.model.dataChanged.emit(self.model.index(0, 0),
+                                        self.model.index(self.model.rowCount() - 1, 3),
+                                        [Qt.ItemDataRole.ForegroundRole])
         self.setStyleSheet(
             f"QWidget {{ background: {p['bg']}; color: {p['text']}; border: 0; }}"
             f"QTableView {{ background: {p['bg']}; color: {p['text']}; border: 0; }}"
@@ -1228,7 +1213,7 @@ class _OrderBookSurfaceButton(QtWidgets.QPushButton):
         self.set_theme(theme)
 
     def set_theme(self, theme):
-        p = ORDERBOOK_REFERENCE
+        p = orderbook_palette(theme)
         self.setStyleSheet(
             f"QPushButton {{ background: transparent; color: {p['muted']}; "
             f"border: 1px solid {p['control_border']}; border-radius: 5px; padding: 0 {self.HORIZONTAL_PADDING}px; }}"
@@ -1269,7 +1254,7 @@ class OrderBookControlBar(QtWidgets.QFrame):
 
     def __init__(self, theme, parent=None):
         super().__init__(parent)
-        self.theme = {}
+        self.theme = orderbook_palette(theme)
         self._tick_size, self._aggregation = 0.0, 1
         self._book_depth, self._density, self._value_mode = True, 'normal', 'base'
         self._auto_grouping, self._depth_range = True, 0.72
@@ -1358,7 +1343,7 @@ class OrderBookControlBar(QtWidgets.QFrame):
         set_text_role(self.range_label, TextRole.ORDERBOOK_LABEL)
         range_layout.addWidget(self.range_label)
         self.range_slider = QtWidgets.QSlider(Qt.Orientation.Horizontal, self)
-        self.range_slider.setRange(5, 95)
+        self.range_slider.setRange(5, 100)
         self.range_slider.setSingleStep(1)
         self.range_slider.setPageStep(8)
         self.range_slider.setFixedHeight(22)
@@ -1431,14 +1416,15 @@ class OrderBookControlBar(QtWidgets.QFrame):
             button.setFont(typography_font(TextRole.ORDERBOOK_CONTROL))
             button.setFixedHeight(max(button.BUTTON_HEIGHT, button.fontMetrics().height() + 6))
             button.updateGeometry()
-        self.range_value.setFixedWidth(max(32, self.range_value.fontMetrics().horizontalAdvance('95%') + 2))
+        self.range_value.setFixedWidth(max(32, self.range_value.fontMetrics().horizontalAdvance('100%') + 2))
         for menu in self.findChildren(QtWidgets.QMenu):
             menu.setFont(typography_font(TextRole.ORDERBOOK_CONTROL))
         self._responsive_layout_state = None
         self._refresh_responsive_layout(self.width())
 
     def apply_theme(self, theme):
-        p = ORDERBOOK_REFERENCE
+        self.theme = orderbook_palette(theme)
+        p = self.theme
         self.setStyleSheet(
             f"QFrame#orderBookControlBar {{ background: {p['bg']}; border: 0; border-bottom: 1px solid {p['grid']}; }}"
             f"QWidget#orderBookViewSegment {{ background: {p['bg']}; border: 1px solid {p['grid_strong']}; border-radius: 6px; }}"
@@ -1450,7 +1436,7 @@ class OrderBookControlBar(QtWidgets.QFrame):
             f"QSlider::handle:horizontal:hover, QSlider::handle:horizontal:focus {{ background: #FFFFFF; border-color: {p['control_hover_line']}; }}"
         )
         for button in self.findChildren(_OrderBookSurfaceButton):
-            button.set_theme({})
+            button.set_theme(p)
         self.settings_button.setIcon(line_icon('gear', p['muted'], self.devicePixelRatioF()))
         for menu in self.findChildren(QtWidgets.QMenu):
             menu.setStyleSheet(
@@ -1514,7 +1500,7 @@ class OrderBookControlBar(QtWidgets.QFrame):
         self._tick_size = max(0.0, float(tick_size))
         self._density, self._value_mode = str(density or 'normal'), 'base' if value_mode == 'base' else 'quote'
         self._tape_enabled, self._tape_mode, self._book_depth = bool(tape_enabled), str(tape_mode), bool(book_depth)
-        self._depth_range = max(0.05, min(0.95, float(depth_range)))
+        self._depth_range = max(0.05, min(1.0, float(depth_range)))
         self._auto_grouping = bool(auto_grouping)
         for key, action in self._lane_actions.items():
             self._set_checked_without_signal(action, bool((overlays or {}).get(key, True)))
@@ -1946,8 +1932,8 @@ class _DomRasterCanvas(QtWidgets.QWidget):
     def __init__(self, theme: dict[str, str], parent: QtWidgets.QWidget | None=None) -> None:
         super().__init__(parent)
         self.setAttribute(Qt.WidgetAttribute.WA_OpaquePaintEvent, True)
-        self.theme = {}
-        self._bar_theme = dict(theme or {})
+        self.theme = orderbook_palette(theme)
+        self._bar_theme = dict(self.theme)
         self.symbol = 'BTCUSDT'
         self.price_tick_size = 0.0
         self.price_decimals = 0
@@ -2219,12 +2205,11 @@ class _DomRasterCanvas(QtWidgets.QWidget):
             self._prepare_display()
             self.update()
 
-    def _refresh_profile_bar_palette(self, theme: dict[str, object] | None) -> None:
-        del theme
-        p = ORDERBOOK_REFERENCE
+    def _refresh_profile_bar_palette(self) -> None:
+        p = self.theme
         self._profile_bg = QtGui.QColor(p['bg'])
         self._profile_price = QtGui.QColor(p['text'])
-        self._profile_dim_price = QtGui.QColor('#515862')
+        self._profile_dim_price = QtGui.QColor(p['dim_price'])
         self._profile_last = QtGui.QColor(p['mid'])
         self._profile_colors = {
             'bid': QtGui.QColor(p['bid']),
@@ -2234,6 +2219,15 @@ class _DomRasterCanvas(QtWidgets.QWidget):
             'bid': QtGui.QColor(p['bid_fill_strong']),
             'ask': QtGui.QColor(p['ask_fill_strong']),
         }
+        # Build heat colors once per selection, outside the per-row paint path.
+        self._profile_heat_colors = {}
+        for side in ('bid', 'ask'):
+            low = QtGui.QColor(p[f'{side}_fill']).getRgb()[:3]
+            high = QtGui.QColor(p.get(f'{side}_heat_high', p[side])).getRgb()[:3]
+            self._profile_heat_colors[side] = tuple(
+                QtGui.QColor(*(round(a + (b - a) * i / 255.0) for a, b in zip(low, high)))
+                for i in range(256)
+            )
         # Keep DEPTH caps/outline crisp while pushing the large bar bodies one
         # visual step behind price and the cumulative-depth staircase.
         self._profile_brushes = {side: QtGui.QBrush(color) for side, color in self._profile_bar_colors.items()}
@@ -2270,13 +2264,13 @@ class _DomRasterCanvas(QtWidgets.QWidget):
             in_bar_pen.setWidthF(0.9)
             self._profile_caps[side] = cap
             self._profile_hovers[side] = hover
-            self._profile_bar_text[side] = QtGui.QColor('#C4EAD5' if side == 'bid' else '#EDC1CD')
+            self._profile_bar_text[side] = QtGui.QColor(p[f'{side}_text'])
             self._profile_fills[side] = area
             self._profile_pens[side] = pen
             self._profile_in_bar_pens[side] = in_bar_pen
 
     def _refresh_theme_cache(self) -> None:
-        p = ORDERBOOK_REFERENCE
+        p = self.theme
         self._bg = QtGui.QColor(p['bg'])
         self._text = QtGui.QColor(p['text'])
         self._muted = QtGui.QColor(p['muted'])
@@ -2352,7 +2346,7 @@ class _DomRasterCanvas(QtWidgets.QWidget):
         self._state_wall = QtGui.QColor(_ORDERBOOK_SIGNAL_COLORS['PERSISTENT'])
         self._bid_signal_fill = QtGui.QColor(p['bg'])
         self._ask_signal_fill = QtGui.QColor(p['bg'])
-        self._ltp_line_color = QtGui.QColor('#444444')
+        self._ltp_line_color = QtGui.QColor(p['last_price_line'])
         self._ltp_pen = QtGui.QPen(self._ltp_line_color)
         self._ltp_pen.setCosmetic(True)
         self._metric_center_pen = QtGui.QPen(QtGui.QColor(p['grid']))
@@ -2376,8 +2370,8 @@ class _DomRasterCanvas(QtWidgets.QWidget):
         self._native_bid_accent = self._bid
         self._native_ask_accent = self._ask
         self._cue_colors = {'add': self._bid, 'pull': self._amber, 'trade': self._ask}
-        self._refresh_profile_bar_palette(self._bar_theme)
-        self._profile_mid_pen = QtGui.QPen(self._amber)
+        self._refresh_profile_bar_palette()
+        self._profile_mid_pen = QtGui.QPen(QtGui.QColor(p['price_line']))
         self._profile_mid_pen.setCosmetic(True)
         self._profile_mid_pen.setWidthF(1.0)
         self._prepared_sequence = -1
@@ -2387,14 +2381,12 @@ class _DomRasterCanvas(QtWidgets.QWidget):
             self.update()
 
     def apply_theme(self, theme: dict[str, str]) -> None:
-        # The DOM chrome remains fixed. Only the reference depth-bar palette
-        # follows directional theme tokens, matching the legacy bar contract.
-        self.theme = {}
-        self._bar_theme = dict(theme or {})
-        self._refresh_profile_bar_palette(self._bar_theme)
-        if self._book_depth:
-            self._prepare_liquidity_profile()
-            self.update()
+        palette = orderbook_palette(theme)
+        if palette == self.theme:
+            return
+        self.theme = palette
+        self._bar_theme = dict(palette)
+        self._refresh_theme_cache()
 
 
     def set_symbol(self, symbol: str) -> None:
@@ -4794,7 +4786,7 @@ class _DomRasterCanvas(QtWidgets.QWidget):
             return
         if not math.isfinite(fraction):
             return
-        fraction = max(0.05, min(0.95, fraction))
+        fraction = max(0.05, min(1.0, fraction))
         if abs(fraction - self._profile_ruler_fraction) < 0.001:
             return
         self._profile_ruler_fraction = fraction
@@ -4849,8 +4841,15 @@ class _DomRasterCanvas(QtWidgets.QWidget):
                 cumulative += amount
                 row.profile_amount = amount
                 row.profile_cumulative = cumulative
-                midpoint = self._profile_row_top(row) + float(g['row_height']) * 0.5
-                row.profile_in_range = ruler_top <= midpoint <= ruler_bottom
+                row_top = self._profile_row_top(row)
+                midpoint = row_top + float(g['row_height']) * 0.5
+                # The last prepared row can be partly clipped by the viewport.
+                # At 100% its visible liquidity must still participate in the
+                # scale; entirely offscreen overscan levels remain excluded.
+                row.profile_in_range = (
+                    row_top < float(g['height'])
+                    and row_top + float(g['row_height']) > float(g.get('table_top', 0.0))
+                ) if self._profile_ruler_fraction == 1.0 else ruler_top <= midpoint <= ruler_bottom
                 if row.profile_in_range:
                     largest = max(largest, amount)
                     selected_total = cumulative
@@ -5206,7 +5205,7 @@ class _DomRasterCanvas(QtWidgets.QWidget):
         pill = QtCore.QRectF(rect.right() - status_w - 5.0, top + max(1.0, (height - 22.0) / 2), status_w, min(22.0, height - 2.0))
         painter.save()
         painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing, True)
-        fill = QtGui.QColor(ORDERBOOK_REFERENCE['bg'])
+        fill = QtGui.QColor(self.theme['bg'])
         painter.setPen(Qt.PenStyle.NoPen)
         painter.setBrush(fill)
         painter.drawRoundedRect(pill, 5.0, 5.0)
@@ -5438,7 +5437,7 @@ class _DomRasterCanvas(QtWidgets.QWidget):
         width = min(max(16.0, self._label_metrics.horizontalAdvance(text) + 10.0), max(1.0, rect.width() - 6.0))
         height = min(20.0, rect.height() - 4.0)
         badge = QtCore.QRectF(rect.left() + 3, rect.center().y() - height / 2, width, height)
-        badge_fill = QtGui.QColor(ORDERBOOK_REFERENCE['bg'])
+        badge_fill = QtGui.QColor(self.theme['bg'])
         painter.save()
         painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing, True)
         painter.setPen(Qt.PenStyle.NoPen)
@@ -5456,7 +5455,7 @@ class _DomRasterCanvas(QtWidgets.QWidget):
         values = history[-8:]
         count = len(values)
         segment = max(1.0, rect.width() / max(1, count))
-        neutral = QtGui.QColor(ORDERBOOK_REFERENCE['grid_strong'])
+        neutral = QtGui.QColor(self.theme['grid_strong'])
         side = QtGui.QColor(self._bid_fill_strong if level.side == 'bid' else self._ask_fill_strong)
         side.setAlpha(145)
         recent_start = max(0, count - max(2, count // 3))
@@ -5503,7 +5502,7 @@ class _DomRasterCanvas(QtWidgets.QWidget):
             color = self._mid
         else:
             color = self._state_color(display_state)
-        fill = QtGui.QColor(ORDERBOOK_REFERENCE['bg'])
+        fill = QtGui.QColor(self.theme['bg'])
         return (text, color, fill)
 
     def _draw_row(self, painter: QtGui.QPainter, row: PreparedDomRow, top: float, row_height: float) -> None:
@@ -5643,9 +5642,7 @@ class _DomRasterCanvas(QtWidgets.QWidget):
         bar_top, bar_height = top, max(1.0, height - 1.0)
         profile_key = (side, float(level.price))
         size = max(0.0, min(1.0, self._profile_size_current.get(profile_key, row.profile_size)))
-        low = QtGui.QColor(ORDERBOOK_REFERENCE[f'{side}_fill']).getRgb()[:3]
-        high = self._profile_colors[side].getRgb()[:3]
-        heat = QtGui.QColor(*(round(a + (b - a) * size) for a, b in zip(low, high)))
+        heat = QtGui.QColor(self._profile_heat_colors[side][round(size * 255)])
         if not row.profile_in_range:
             heat.setAlpha(110)
         if row.profile_amount > 0.0:
@@ -5720,7 +5717,7 @@ class _DomRasterCanvas(QtWidgets.QWidget):
             left, right = float(lane[0]), float(lane[1]) - 3.0
             for side, (area, outline) in self._profile_paths.items():
                 fill = QtGui.QLinearGradient(left, 0.0, right, 0.0)
-                start = QtGui.QColor(ORDERBOOK_REFERENCE[f'{side}_fill'])
+                start = QtGui.QColor(self.theme[f'{side}_fill'])
                 end = QtGui.QColor(start)
                 start.setAlpha(130)
                 end.setAlpha(75)
@@ -7361,7 +7358,7 @@ class OrderBookWidget(QtWidgets.QWidget):
 
     def __init__(self, theme: dict[str, str], parent: QtWidgets.QWidget | None=None) -> None:
         super().__init__(parent)
-        self.theme = {}
+        self.theme = orderbook_palette(theme)
         self.symbol = 'BTCUSDT'
         self.price_tick_size = 0.0
         self._tape: TradesTapeWidget | None = None
@@ -7416,6 +7413,7 @@ class OrderBookWidget(QtWidgets.QWidget):
         self.setStyleSheet(f"QWidget#orderBookWorkspace {{ background: {ORDERBOOK_REFERENCE['bg']}; }}")
         self.setMinimumSize(0, 0)
         self.set_symbol(self.symbol)
+        self.apply_theme(self.theme)
         self._sync_controls()
         QtCore.QTimer.singleShot(0, self, self._ensure_trades_tape)
 
@@ -7423,7 +7421,7 @@ class OrderBookWidget(QtWidgets.QWidget):
         # Some hosts provide their own tape during construction. Do not replace
         # it; standalone use gets the same fully functioning trade surface.
         if self._tape is None:
-            self._automatic_tape = TradesTapeWidget({}, self)
+            self._automatic_tape = TradesTapeWidget(self.theme, self)
             self.set_trades_tape(self._automatic_tape)
 
     def set_tape_source(self, source):
@@ -7593,6 +7591,7 @@ class OrderBookWidget(QtWidgets.QWidget):
         tape.set_presentation_clock(self.canvas._presentation_clock)
         tape.set_interaction_priority(self.canvas._interaction_priority_active)
         tape.setParent(self.splitter)
+        tape.apply_theme(self.theme)
         tape.set_market(self.symbol, 0.0, tick_size=self.price_tick_size)
         tape.set_panel_active(True)
         tape.setMinimumWidth(self.TAPE_MIN_WIDTH)
@@ -7703,6 +7702,7 @@ class OrderBookWidget(QtWidgets.QWidget):
         for enabled, action in self._context_view_actions.items():
             self.controls._set_checked_without_signal(action, self.canvas._book_depth == enabled)
         self._context_reset_widths.setEnabled(bool(self.canvas.column_width_state()))
+        self._context_menu.setStyleSheet(self.controls._display_menu.styleSheet())
         self._context_menu.exec(self.canvas.mapToGlobal(pos))
 
 
@@ -7870,16 +7870,16 @@ class OrderBookWidget(QtWidgets.QWidget):
             self._tape.reset(preserve_history=True)
 
     def apply_theme(self, theme: dict[str, str]) -> None:
-        # Order-book chrome remains fixed; only DEPTH bars consume directional
-        # theme tokens through the canvas' bar-only palette.
-        self.theme = {}
-        self.canvas.apply_theme(theme)
-        self.controls.apply_theme({})
+        self.theme = orderbook_palette(theme)
+        self.canvas.apply_theme(self.theme)
+        self.controls.apply_theme(self.theme)
+        p = self.theme
+        self.setStyleSheet(f"QWidget#orderBookWorkspace {{ background: {p['bg']}; }}")
         self.splitter.setStyleSheet(
-            f"QSplitter::handle:horizontal {{ background: {ORDERBOOK_REFERENCE['bg']}; border: 0; border-left: 1px solid {ORDERBOOK_REFERENCE['grid']}; }}"
+            f"QSplitter::handle:horizontal {{ background: {p['bg']}; border: 0; border-left: 1px solid {p['grid']}; }}"
         )
         if self._tape is not None:
-            self._tape.apply_theme({})
+            self._tape.apply_theme(self.theme)
 
     def performance_state(self) -> dict[str, float | int | str]:
         state = self.canvas.performance_state()

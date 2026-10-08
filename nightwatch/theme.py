@@ -2,6 +2,60 @@
 from __future__ import annotations
 
 from typing import Final
+from .constants import ORDERBOOK_FIXED_PALETTE
+
+DEFAULT_ORDERBOOK_THEME_NAME = 'Nightwatch'
+_ORDERBOOK_BASE = {
+    **ORDERBOOK_FIXED_PALETTE,
+    'bg': '#000000', 'surface_top': '#000000', 'surface_raised': '#000000',
+    'surface_center': '#000000', 'control': '#000000',
+    'control_hover': '#111316', 'control_pressed': '#191C20',
+    'dim_price': '#515862', 'bid_text': '#C4EAD5', 'ask_text': '#EDC1CD',
+    'price_line': '#C89A47', 'last_price_line': '#444444',
+}
+# These palettes belong only to the order book and its embedded tape. Resolve
+# once when a preference changes; the raster process receives the same palette.
+ORDERBOOK_THEMES: Final[dict[str, dict[str, str]]] = {
+    'Nightwatch': {**_ORDERBOOK_BASE},
+    'TapeSurf': {
+        **_ORDERBOOK_BASE, 'bg': '#101012', 'surface_top': '#101012',
+        'surface_raised': '#151517', 'surface_center': '#101012', 'control': '#101012',
+        'grid': '#252527', 'grid_strong': '#38383A', 'text': '#D6D8D5',
+        'muted': '#929590', 'dim_price': '#70746F', 'bid': '#00D68B', 'ask': '#E9A21B',
+        'bid_fill': '#053B32', 'ask_fill': '#3B1913',
+        'bid_fill_strong': '#008C71', 'ask_fill_strong': '#97420C',
+        'bid_heat_high': '#00DF88', 'ask_heat_high': '#FFD324',
+        'bid_text': '#C3EEE2', 'ask_text': '#F6D4B1', 'mid': '#00DDC4',
+        'amber': '#E9BB32', 'price_line': '#00DDC4', 'last_price_line': '#00DDC4',
+    },
+    'Classic': {
+        **_ORDERBOOK_BASE, 'bid': '#16C784', 'ask': '#EA3943',
+        'bid_fill': '#062F23', 'ask_fill': '#381416',
+        'bid_fill_strong': '#08744B', 'ask_fill_strong': '#8B2028',
+    },
+    'Iceberg': {
+        **_ORDERBOOK_BASE, 'bid': '#67C5F0', 'ask': '#F4B866',
+        'bid_fill': '#102C3B', 'ask_fill': '#382B18',
+        'bid_fill_strong': '#285F7B', 'ask_fill_strong': '#7D532A',
+        'bid_text': '#D0EDFA', 'ask_text': '#F5E1C9',
+        'mid': '#D8E5EC', 'price_line': '#D8E5EC',
+    },
+    'Monochrome': {
+        **_ORDERBOOK_BASE, 'bid': '#E0E2E5', 'ask': '#989EA6',
+        'bid_fill': '#272A2E', 'ask_fill': '#171B20',
+        'bid_fill_strong': '#626970', 'ask_fill_strong': '#3C434C',
+        'bid_text': '#E5E7EB', 'ask_text': '#E5E7EB', 'mid': '#FFFFFF',
+        'amber': '#B9BEC5', 'purple': '#9CA3AE', 'price_line': '#D5D8DC',
+    },
+}
+for _name, _palette in ORDERBOOK_THEMES.items():
+    _palette['orderbook_style'] = _name
+
+
+def orderbook_palette(source: object = None) -> dict[str, str]:
+    """Resolve a validated, independent order-book preference (also across IPC)."""
+    name = source.get('orderbook_style') if isinstance(source, dict) else source
+    return dict(ORDERBOOK_THEMES.get(str(name), ORDERBOOK_THEMES[DEFAULT_ORDERBOOK_THEME_NAME]))
 
 CANDLE_STYLES: Final[dict[str, dict[str, object]]] = {'Inked': {'width': 0.64, 'body_alpha': 248, 'outline': 0.9, 'wick': 0.85, 'close_tick': True, 'pixel_snap': False, 'antialias': True}, 'Hollow': {'width': 0.74, 'body_alpha': 255, 'outline': 1.0, 'wick': 1.0, 'hollow_up': True, 'hollow_down': False, 'pixel_snap': True, 'antialias': False}, 'Luminous': {'width': 0.6, 'body_alpha': 232, 'outline': 0.85, 'wick': 0.85, 'glow_alpha': 34, 'glow_width': 2.2, 'pixel_snap': False, 'antialias': True}}
 import colorsys
@@ -114,21 +168,6 @@ def candle_directional_palette(chart: dict[str, object], mode: str='theme') -> d
     background = output.get('bg', output.get('chart_bg', '#000000'))
     output['candle_up'] = (_ensure_directional_contrast(up_source, background, fallback=CLASSIC_DIRECTIONAL_GREEN) if use_classic else _normalize_hex_color(up_source, CLASSIC_DIRECTIONAL_GREEN))
     output['candle_down'] = (_ensure_directional_contrast(down_source, background, fallback=CLASSIC_DIRECTIONAL_RED) if use_classic else _normalize_hex_color(down_source, CLASSIC_DIRECTIONAL_RED))
-    return output
-
-def orderbook_directional_palette(resolved: dict[str, object], mode: str='theme') -> dict[str, object]:
-    """Return a DOM-local palette without changing global theme identity."""
-    output = dict(resolved)
-    use_classic = str(mode).casefold() == 'classic'
-    bid_source = CLASSIC_DIRECTIONAL_GREEN if use_classic else output.get('book_bid', output.get('green'))
-    ask_source = CLASSIC_DIRECTIONAL_RED if use_classic else output.get('book_ask', output.get('red'))
-    background = output.get('orderbook_bg', output.get('bg', '#000000'))
-    bid = (_ensure_directional_contrast(bid_source, background, fallback=CLASSIC_DIRECTIONAL_GREEN) if use_classic else _normalize_hex_color(bid_source, CLASSIC_DIRECTIONAL_GREEN))
-    ask = (_ensure_directional_contrast(ask_source, background, fallback=CLASSIC_DIRECTIONAL_RED) if use_classic else _normalize_hex_color(ask_source, CLASSIC_DIRECTIONAL_RED))
-    output['book_bid'] = bid
-    output['book_ask'] = ask
-    output['depth_green'] = bid
-    output['depth_red'] = ask
     return output
 
 def ui_palette(theme: dict[str, object], overrides: dict[str, object] | None=None) -> dict[str, object]:
@@ -1523,7 +1562,7 @@ def build_shell_stylesheet(theme_name: str, theme: dict[str, str], surfaces: dic
             QWidget#settingsHeaderText {{ background: transparent; border: 0; }}
             QLabel#settingsHeading {{ color: {t['text']}; }}
             QLineEdit#settingsSearch {{
-                min-width: 310px; max-width: 390px; min-height: 32px;
+                min-width: 210px; max-width: 320px; min-height: 28px;
                 background: {t['control']}; color: {t['text']};
                 border: 1px solid {t['control_border']}; border-radius: 5px;
                 padding: 3px 10px;
@@ -1537,7 +1576,7 @@ def build_shell_stylesheet(theme_name: str, theme: dict[str, str], surfaces: dic
                 padding: 8px 0; outline: 0;
             }}
             QListWidget#settingsCategories::item {{
-                min-height: 36px; padding: 4px 14px; color: {t['muted']}; border: 0;
+                min-height: 30px; padding: 4px 12px; color: {t['muted']}; border: 0;
             }}
             QListWidget#settingsCategories::item:hover {{
                 background: {control_hover}; color: {t['text']};
@@ -1553,12 +1592,13 @@ def build_shell_stylesheet(theme_name: str, theme: dict[str, str], surfaces: dic
                 background: {t['panel']}; border: 0;
             }}
             QLabel#settingsPageHeading {{ color: {t['text']}; }}
+            QDialog#nightwatchSettingsDialog QLabel {{ background: transparent; }}
             QLabel#settingsSubheading {{
                 color: {t['muted']}; padding-top: 5px;
             }}
             QGroupBox#settingsGroup {{
                 background: {t['panel2']}; border: 1px solid {separator};
-                border-radius: 6px; margin-top: 10px; padding: 13px 12px 12px 12px;
+                border-radius: 7px; margin-top: 9px; padding: 7px 0 0 0;
             }}
             QGroupBox#settingsGroup::title {{
                 subcontrol-origin: margin; left: 9px; padding: 0 6px;
@@ -1569,7 +1609,7 @@ def build_shell_stylesheet(theme_name: str, theme: dict[str, str], surfaces: dic
                 background: {separator}; border: 0; min-height: 1px; max-height: 1px;
             }}
             QDialog#nightwatchSettingsDialog QPushButton {{
-                min-height: 29px; padding: 3px 10px;
+                min-height: 25px; padding: 3px 10px;
             }}
             QDialog#nightwatchSettingsDialog QToolButton {{
                 min-height: 28px; min-width: 28px; padding: 3px 7px;
@@ -1578,11 +1618,11 @@ def build_shell_stylesheet(theme_name: str, theme: dict[str, str], surfaces: dic
             QDialog#nightwatchSettingsDialog QLineEdit,
             QDialog#nightwatchSettingsDialog QSpinBox,
             QDialog#nightwatchSettingsDialog QDoubleSpinBox {{
-                min-height: 29px; padding: 2px 8px;
+                min-height: 25px; padding: 2px 8px;
             }}
             QDialog#nightwatchSettingsDialog QCheckBox,
             QDialog#nightwatchSettingsDialog QRadioButton {{
-                min-height: 27px; spacing: 7px;
+                min-height: 23px; spacing: 7px; background: transparent;
             }}
             QDialog#nightwatchSettingsDialog QTabWidget#settingsDeveloperTabs::pane {{
                 border: 1px solid {separator}; background: {t['panel']};

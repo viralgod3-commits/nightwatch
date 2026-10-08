@@ -761,6 +761,8 @@ class DiagnosticsHostPort(Protocol):
 
 
 class SettingsHostPort(Protocol):
+    ui_theme: dict[str, Any]
+    orderbook_theme_name: str
     learning_mode: bool
     market_bar_timeframes: tuple[str, ...]
     theme_actions: Any
@@ -793,6 +795,9 @@ class SettingsHostPort(Protocol):
         ...
 
     def directional_color_mode(self, surface: str) -> str:
+        ...
+
+    def set_orderbook_theme(self, name: str) -> None:
         ...
 
     def set_market_bar_timeframes(self, intervals: object) -> None:

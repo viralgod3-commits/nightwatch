@@ -110,12 +110,14 @@ from ..orderbook.orderbook_ui import OrderBookWidget, TradesTapeWidget
 from ..theme import (
     CANDLE_STYLES,
     DEFAULT_THEME_NAME,
+    DEFAULT_ORDERBOOK_THEME_NAME,
+    ORDERBOOK_THEMES,
     RIGHT_LAYOUT_PRESETS,
     THEMES,
     build_shell_stylesheet,
     candle_directional_palette,
     chart_palette,
-    orderbook_directional_palette,
+    orderbook_palette,
     ui_palette,
 )
 from ..trading.orders import (
@@ -590,6 +592,15 @@ class MainWindow(QtWidgets.QMainWindow):
         # but ordinary presentation now uses semantic Theme / Classic modes.
         self.settings.remove("appearance/directional_colors_v1")
         self.directional_color_modes = self._load_directional_color_modes()
+        stored_book_theme = self.settings.value("appearance/orderbook_theme_v1", "", str)
+        if not stored_book_theme:
+            stored_book_theme = ("Classic" if self.settings.value(
+                "appearance/orderbook_directional_mode_v1", "theme", str
+            ) == "classic" else DEFAULT_ORDERBOOK_THEME_NAME)
+        self.orderbook_theme_name = (stored_book_theme if stored_book_theme in ORDERBOOK_THEMES
+                                    else DEFAULT_ORDERBOOK_THEME_NAME)
+        self.settings.setValue("appearance/orderbook_theme_v1", self.orderbook_theme_name)
+        self.settings.remove("appearance/orderbook_directional_mode_v1")
         self.developer_ui_colors = self._load_developer_ui_colors()
         self.developer_ui_layout = self._load_developer_ui_layout()
         self.developer_ui_surfaces = self._load_developer_ui_surfaces()
@@ -2346,6 +2357,7 @@ class MainWindow(QtWidgets.QMainWindow):
             "base_theme": self.theme_name,
             "color_contract": self._developer_ui_color_contract(self.theme_name),
             "directional_modes": dict(self.directional_color_modes),
+            "orderbook_theme": self.orderbook_theme_name,
             # Resolved colors are informational. Only explicit overrides are
             # imported back into the dependency-aware color resolver.
             "colors": {
@@ -2521,6 +2533,11 @@ class MainWindow(QtWidgets.QMainWindow):
             )
             self._save_directional_color_modes()
 
+        imported_book_theme = profile.get("orderbook_theme")
+        if isinstance(imported_book_theme, str) and imported_book_theme in ORDERBOOK_THEMES:
+            self.orderbook_theme_name = imported_book_theme
+            self.settings.setValue("appearance/orderbook_theme_v1", imported_book_theme)
+
         self.settings.setValue("theme", imported_theme)
         self.apply_theme(imported_theme)
         self._apply_developer_ui_layout()
@@ -2595,18 +2612,12 @@ class MainWindow(QtWidgets.QMainWindow):
                 DIRECTIONAL_COLOR_MODE_DEFAULTS["candles"],
                 str,
             ),
-            "orderbook": self.settings.value(
-                "appearance/orderbook_directional_mode_v1",
-                DIRECTIONAL_COLOR_MODE_DEFAULTS["orderbook"],
-                str,
-            ),
         }
         return self._normalize_directional_color_modes(values)
 
     def _save_directional_color_modes(self) -> None:
         keys = {
             "candles": "appearance/candle_directional_mode_v1",
-            "orderbook": "appearance/orderbook_directional_mode_v1",
         }
         for surface, default in DIRECTIONAL_COLOR_MODE_DEFAULTS.items():
             self.settings.setValue(
@@ -2638,9 +2649,16 @@ class MainWindow(QtWidgets.QMainWindow):
         self.chart_theme = candle_directional_palette(
             chart_base, self.directional_color_modes.get("candles", "theme")
         )
-        self.orderbook_theme = orderbook_directional_palette(
-            self.ui_theme, self.directional_color_modes.get("orderbook", "theme")
-        )
+        self.orderbook_theme = orderbook_palette(self.orderbook_theme_name)
+
+    def set_orderbook_theme(self, name: str) -> None:
+        if name not in ORDERBOOK_THEMES or name == self.orderbook_theme_name:
+            return
+        self.orderbook_theme_name = name
+        self.settings.setValue("appearance/orderbook_theme_v1", name)
+        self.orderbook_theme = orderbook_palette(name)
+        self.orderbook.apply_theme(self.orderbook_theme)
+        self._sync_settings_window()
 
 
     @staticmethod

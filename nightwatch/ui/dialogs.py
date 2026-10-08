@@ -238,7 +238,10 @@ class MicrostructureNewsCard(QtWidgets.QFrame):
 from typing import Any
 
 from ..constants import DEFAULT_INDICATOR_SHORTCUTS, INDICATOR_SETTING_DEFAULTS
-from ..theme import RIGHT_LAYOUT_PRESETS
+from ..theme import (
+    RIGHT_LAYOUT_PRESETS, THEMES, ORDERBOOK_THEMES,
+    candle_directional_palette, chart_palette,
+)
 from ..models import SettingsHostPort
 from .developer_tools import (
     UiTunerDialog, MagneticRailLabDialog, DeveloperDialog,
@@ -1543,6 +1546,164 @@ class WorkspacePresetEditor(QtWidgets.QWidget):
         self.status.setText(f"Saved · {active_name}")
 
 
+class _SettingsPreviewChoice(QtWidgets.QAbstractButton):
+    """A selectable, static preview. No timers, worker, or live market feed."""
+
+    def __init__(self, title, preview, chrome, *, kind="app", style="Inked", parent=None):
+        super().__init__(parent)
+        self.setText(title)
+        self.preview = dict(preview)
+        self.chrome = dict(chrome)
+        self.kind, self.candle_style = kind, style
+        self.setCheckable(True)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.setAccessibleName(f"{title} {kind} appearance")
+        self.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Fixed)
+        self._base_height = 94 if kind == "candles" else 108
+        self._refresh_metrics()
+        self.toggled.connect(lambda _checked: self.update())
+
+    def sizeHint(self):
+        return QtCore.QSize(max(164, self.minimumSizeHint().width()), self.height())
+
+    def minimumSizeHint(self):
+        return QtCore.QSize(max(130, self.fontMetrics().horizontalAdvance(self.text()) + 38), self.height())
+
+    def _refresh_metrics(self):
+        self.setFixedHeight(self._base_height + max(0, self.fontMetrics().height() - 16))
+        self.updateGeometry()
+        parent = self.parentWidget()
+        if isinstance(parent, _SettingsChoiceGrid):
+            parent._reflow(parent.width())
+
+    def changeEvent(self, event):
+        super().changeEvent(event)
+        if event.type() in (QtCore.QEvent.Type.FontChange, QtCore.QEvent.Type.ApplicationFontChange):
+            self._refresh_metrics()
+
+    def paintEvent(self, event):
+        painter = QtGui.QPainter(self)
+        apply_text_render_hints(painter)
+        painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing)
+        c = self.chrome
+        background = c["control_hover"] if self.underMouse() else c["panel2"]
+        border = c["text"] if self.isChecked() or self.hasFocus() else c["border"]
+        painter.setBrush(QtGui.QColor(background))
+        painter.setPen(QtGui.QPen(QtGui.QColor(border), 1.0))
+        painter.drawRoundedRect(QtCore.QRectF(self.rect()).adjusted(.5, .5, -.5, -.5), 7, 7)
+        painter.setPen(QtGui.QColor(c["text"] if self.isEnabled() else c["muted"]))
+        title = self.fontMetrics().elidedText(self.text(), Qt.TextElideMode.ElideRight, max(0, self.width() - 38))
+        title_height = max(20, self.fontMetrics().height())
+        painter.drawText(QtCore.QRectF(12, 9, self.width() - 38, title_height), Qt.AlignmentFlag.AlignVCenter, title)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QtGui.QColor(c["text"] if self.isChecked() else c["border"]))
+        painter.drawEllipse(QtCore.QPointF(self.width() - 16, 9 + title_height / 2), 3, 3)
+        preview_top = max(35, title_height + 21)
+        area = QtCore.QRectF(10, preview_top, max(1, self.width() - 20), self.height() - preview_top - 10)
+        p = self.preview
+        painter.fillRect(area, QtGui.QColor(p.get("bg", "#000000")))
+        painter.save()
+        painter.setClipRect(area)
+        if self.kind == "orderbook":
+            tiny = QtGui.QFont(self.font())
+            tiny.setPixelSize(9)
+            painter.setFont(tiny)
+            row_height = area.height() / 7
+            for index, strength in enumerate((.28, .8, .45, 0, .62, .92, .35)):
+                y = area.top() + index * row_height
+                if index == 3:
+                    painter.setPen(QtGui.QPen(QtGui.QColor(p["price_line"]), 1))
+                    painter.drawLine(QtCore.QPointF(area.left(), y + row_height / 2),
+                                     QtCore.QPointF(area.right(), y + row_height / 2))
+                    continue
+                side = "ask" if index < 3 else "bid"
+                bar_x = area.left() + area.width() * .37
+                painter.fillRect(QtCore.QRectF(bar_x, y, area.width() * .6 * strength, row_height - 1),
+                                 QtGui.QColor(p[f"{side}_fill_strong"]))
+                low = QtGui.QColor(p[f"{side}_fill"])
+                high = QtGui.QColor(p.get(f"{side}_heat_high", p[side]))
+                heat = QtGui.QColor(*(round(a + (b - a) * strength)
+                                     for a, b in zip(low.getRgb()[:3], high.getRgb()[:3])))
+                painter.fillRect(QtCore.QRectF(bar_x - 8, y, 5, row_height - 1), heat)
+                painter.setPen(QtGui.QColor(p["text"] if index in (1, 4) else p["dim_price"]))
+                painter.drawText(QtCore.QRectF(area.left() + 3, y, area.width() * .3, row_height),
+                                 Qt.AlignmentFlag.AlignVCenter, str(60520 - index * 10))
+        else:
+            plot = area.adjusted(5, 4, -5, -4)
+            if self.kind == "app":
+                plot.setRight(area.left() + area.width() * .71)
+                for index in range(3):
+                    tile = QtCore.QRectF(plot.right() + 5, area.top() + 4 + index * area.height() / 3,
+                                        max(1, area.right() - plot.right() - 9), area.height() / 3 - 6)
+                    painter.fillRect(tile, QtGui.QColor(p["panel2"]))
+            for index, (position, up) in enumerate(((.6, True), (.45, True), (.3, True),
+                                                    (.4, False), (.28, True), (.18, True), (.35, False))):
+                x = plot.left() + (index + .5) * plot.width() / 7
+                top = plot.top() + plot.height() * position
+                bottom = top + plot.height() * .23
+                color = QtGui.QColor(p.get("candle_up", p["green"]) if up else p.get("candle_down", p["red"]))
+                painter.setPen(QtGui.QPen(color, 1))
+                painter.drawLine(QtCore.QPointF(x, top - 4), QtCore.QPointF(x, bottom + 4))
+                body = QtCore.QRectF(x - 3, top, 6, max(2, bottom - top))
+                painter.setBrush(Qt.BrushStyle.NoBrush if up and self.candle_style == "Hollow" else color)
+                if self.candle_style == "Luminous":
+                    glow = QtGui.QColor(color)
+                    glow.setAlpha(35)
+                    painter.fillRect(body.adjusted(-2, -2, 2, 2), glow)
+                painter.drawRect(body)
+        painter.restore()
+
+    def enterEvent(self, event):
+        super().enterEvent(event)
+        self.update()
+
+    def leaveEvent(self, event):
+        super().leaveEvent(event)
+        self.update()
+
+
+class _SettingsChoiceGrid(QtWidgets.QWidget):
+    """Reflow a small preview gallery without imposing a wide dialog minimum."""
+
+    def __init__(self, buttons, parent=None):
+        super().__init__(parent)
+        self.buttons = tuple(buttons)
+        self.columns = 0
+        self.grid = QtWidgets.QGridLayout(self)
+        self.grid.setContentsMargins(0, 0, 0, 0)
+        self.grid.setSpacing(8)
+        self.grid.setSizeConstraint(QtWidgets.QLayout.SizeConstraint.SetNoConstraint)
+        self.group = QtWidgets.QButtonGroup(self)
+        for button in self.buttons:
+            self.group.addButton(button)
+        self.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Maximum)
+        self._reflow(640)
+
+    def minimumSizeHint(self):
+        # The old column count must never prevent the viewport from shrinking;
+        # the resize event will then choose a new count for the actual width.
+        width = max((button.minimumSizeHint().width() for button in self.buttons), default=130)
+        return QtCore.QSize(width, self.grid.minimumSize().height())
+
+    def _reflow(self, width):
+        required = max((button.minimumSizeHint().width() for button in self.buttons), default=150) + 8
+        columns = max(1, min(len(self.buttons), (max(0, width) + 8) // required))
+        if columns == self.columns:
+            return
+        for index in range(max(columns, self.columns)):
+            self.grid.setColumnStretch(index, 1 if index < columns else 0)
+        for index, button in enumerate(self.buttons):
+            self.grid.removeWidget(button)
+            self.grid.addWidget(button, index // columns, index % columns)
+        self.columns = columns
+        self.updateGeometry()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._reflow(event.size().width())
+
+
 class NightwatchSettingsDialog(QtWidgets.QDialog):
     """Single large settings surface for configuration and developer tooling.
 
@@ -1567,40 +1728,15 @@ class NightwatchSettingsDialog(QtWidgets.QDialog):
     # Index the controls on lazy pages without constructing their widgets.
     # Action labels/tooltips and option names are added from the live host below.
     PAGE_SEARCH_TERMS = (
-        "Theme Buy / sell colors Candle appearance Theme, directional trading colors, and candle rendering. "
-        "The common choices are kept on one screen. "
-        "Choose the base visual identity. Component colors continue to follow the selected theme unless "
-        "you explicitly choose classic trading colors below. "
-        "Use each theme's own BUY/SELL colors, or switch only the selected trading surface to familiar "
-        "high-contrast green and red. Theme colors preserve the selected theme. "
-        "Classic green / red changes this surface only. "
-        "Change candle geometry and rendering style without changing your selected BUY/SELL color mode. "
-        "Candles Order book",
-        "Market bar timeframes Choose 1–9 timeframes. Number shortcuts follow the selected buttons "
-        "from left to right. Your current chart interval stays unchanged; if omitted, it remains visible "
-        "until you switch. Chart behavior, visible layers, drawing tools, and studies are grouped here "
-        "so the complete chart setup is one click away. "
-        "30-second chart benchmark Click Start, then continuously pan/zoom the chart for 30 seconds. "
-        "The capture uses Nightwatch's existing presentation clock and reports FPS and frame-time percentiles. "
-        "START 30S BENCHMARK Record 30 seconds of chart presentation timing; click the chart and pan/zoom "
-        "while it runs. Not captured yet. Chart workspace Price scale Auto-scale price Logarithmic scale "
-        "Fit chart to visible data Visible chart layers Drawing tools Measure / ruler Fibonacci "
-        "Horizontal level Clear chart drawings Volume overlay Volume is drawn directly inside the price "
-        "pane with no background or separate scale. Bars stay anchored to the bottom and normalize to "
-        "the visible chart range. Maximum bar height Maximum volume-bar height as a percentage of the "
-        "main price viewport. Indicators Enable studies directly. Detailed parameters and shortcuts "
-        "remain available below. Indicator settings… Shortcuts… Auto Fibonacci",
+        "appearance application theme order book theme ladder heatmap embedded tape candle geometry buy sell colors",
+        "chart market bar timeframes shortcuts workspace price scale auto-scale logarithmic fit visible layers "
+        "drawing tools measure ruler fibonacci horizontal level clear drawings volume overlay maximum bar height "
+        "indicators parameters shortcuts auto fibonacci",
         WORKSPACE_SEARCH_TERMS,
-        "Execution model Execution controls Execution behavior and safeguards. Manual ticket orders submit "
-        "explicitly; quick-entry hotkeys require ARM; cancel/close remain risk-reduction controls; "
-        "magnetic-rail BUY/SELL is an explicit chart-side submit routed through the normal shell and "
-        "gateway safety path. Manual ticket — explicit submit Quick entry — ARM required "
-        "Cancel / close — risk reduction Magnetic rail — hover controls + explicit BUY/SELL submit",
-        "Alerts Market data Market-data behavior and trader notifications are kept together because "
-        "they both control what Nightwatch monitors and surfaces.",
-        "Guidance Application help Open order book guide… Guidance and advanced tools. Normal trading "
-        "configuration should rarely require this page. DEVELOPER TOOLS "
-        "UI TUNER · loads when selected MAGNETIC RAIL · loads when selected",
+        "trading connection order entry account actions execution live testnet credentials quick trading magnetic rail",
+        "alerts delivery notifications market data history download candles CSV research database",
+        "advanced guidance application help order book guide chart performance benchmark FPS frame timing capture "
+        "developer tools UI tuner diagnostics magnetic rail",
     )
 
     def __init__(
@@ -1616,16 +1752,16 @@ class NightwatchSettingsDialog(QtWidgets.QDialog):
         self.setObjectName("nightwatchSettingsDialog")
         self.setWindowTitle("Nightwatch settings")
         self.setModal(False)
-        self._preferred_size = QtCore.QSize(1240, 820)
-        self._preferred_minimum_size = QtCore.QSize(1040, 680)
+        self._preferred_size = QtCore.QSize(1120, 760)
+        self._preferred_minimum_size = QtCore.QSize(760, 540)
         self.resize(self._preferred_size)
         self.setMinimumSize(self._preferred_minimum_size)
         self._action_widgets: dict[QtGui.QAction, QtWidgets.QWidget] = {}
         self._action_widget_labels: dict[QtGui.QAction, str] = {}
-        self._panel_checks: dict[str, QtWidgets.QCheckBox] = {}
         self._settings_search: QtWidgets.QLineEdit | None = None
         self._directional_mode_combos: dict[str, QtWidgets.QComboBox] = {}
-        self._mode_buttons: dict[int, QtWidgets.QRadioButton] = {}
+        self._appearance_actions: dict[QtGui.QAction, _SettingsPreviewChoice] = {}
+        self._orderbook_theme_buttons: dict[str, _SettingsPreviewChoice] = {}
         self.volume_height_spin: QtWidgets.QSpinBox | None = None
         self._timeframe_buttons: dict[str, QtWidgets.QPushButton] = {}
         self._timeframe_presets: dict[str, QtWidgets.QPushButton] = {}
@@ -1656,7 +1792,7 @@ class NightwatchSettingsDialog(QtWidgets.QDialog):
         header = QtWidgets.QFrame()
         header.setObjectName("settingsHeader")
         header_layout = QtWidgets.QHBoxLayout(header)
-        header_layout.setContentsMargins(24, 16, 24, 16)
+        header_layout.setContentsMargins(18, 9, 18, 9)
         header_layout.setSpacing(18)
 
         heading_block = QtWidgets.QWidget()
@@ -1666,13 +1802,7 @@ class NightwatchSettingsDialog(QtWidgets.QDialog):
         heading_layout.setSpacing(3)
         title = QtWidgets.QLabel("SETTINGS")
         title.setObjectName("settingsHeading")
-        note = QtWidgets.QLabel(
-            "Configure Nightwatch. Changes apply immediately unless a control says otherwise."
-        )
-        note.setObjectName("subtleLabel")
-        note.setWordWrap(True)
         heading_layout.addWidget(title)
-        heading_layout.addWidget(note)
         header_layout.addWidget(heading_block, 1)
 
         self._settings_search = QtWidgets.QLineEdit()
@@ -1691,8 +1821,7 @@ class NightwatchSettingsDialog(QtWidgets.QDialog):
 
         self.categories = QtWidgets.QListWidget()
         self.categories.setObjectName("settingsCategories")
-        self.categories.setMinimumWidth(156)
-        self.categories.setMaximumWidth(196)
+        self.categories.setFixedWidth(158)
         self.categories.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.categories.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         for name in self.CATEGORIES:
@@ -1733,7 +1862,7 @@ class NightwatchSettingsDialog(QtWidgets.QDialog):
         footer_layout = QtWidgets.QHBoxLayout(footer)
         footer_layout.setContentsMargins(18, 8, 18, 8)
         footer_layout.setSpacing(8)
-        footer_hint = QtWidgets.QLabel("Ctrl+F · Search   Esc · Close")
+        footer_hint = QtWidgets.QLabel("Ctrl+F Search   ·   Esc Close")
         footer_hint.setObjectName("subtleLabel")
         footer_layout.addWidget(footer_hint)
         footer_layout.addStretch(1)
@@ -1849,12 +1978,13 @@ class NightwatchSettingsDialog(QtWidgets.QDialog):
         scroll = QtWidgets.QScrollArea()
         scroll.setObjectName("settingsScroll")
         scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         scroll.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
         content = QtWidgets.QWidget()
         content.setObjectName("settingsPage")
         layout = QtWidgets.QVBoxLayout(content)
-        layout.setContentsMargins(24, 20, 24, 24)
-        layout.setSpacing(16)
+        layout.setContentsMargins(18, 14, 18, 18)
+        layout.setSpacing(12)
         heading = QtWidgets.QLabel(title.upper())
         heading.setObjectName("settingsPageHeading")
         layout.addWidget(heading)
@@ -1872,8 +2002,8 @@ class NightwatchSettingsDialog(QtWidgets.QDialog):
         box.setObjectName("settingsGroup")
         box.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Maximum)
         layout = QtWidgets.QVBoxLayout(box)
-        layout.setContentsMargins(14, 14, 14, 14)
-        layout.setSpacing(10)
+        layout.setContentsMargins(12, 12, 12, 10)
+        layout.setSpacing(7)
         return box, layout
 
     @staticmethod
@@ -1882,8 +2012,9 @@ class NightwatchSettingsDialog(QtWidgets.QDialog):
         host.setObjectName("settingsGridHost")
         grid = QtWidgets.QGridLayout(host)
         grid.setContentsMargins(0, 0, 0, 0)
-        grid.setHorizontalSpacing(14)
-        grid.setVerticalSpacing(14)
+        grid.setHorizontalSpacing(12)
+        grid.setVerticalSpacing(12)
+        grid.setAlignment(Qt.AlignmentFlag.AlignTop)
         grid.setColumnStretch(0, 1)
         grid.setColumnStretch(1, 1)
         layout.addWidget(host)
@@ -1936,6 +2067,7 @@ class NightwatchSettingsDialog(QtWidgets.QDialog):
             actions.extend(self.host.theme_actions.values())
             actions.extend(self.host.candle_style_actions.values())
             parts.extend(label for _mode, label in DIRECTIONAL_COLOR_MODE_OPTIONS)
+            parts.extend(ORDERBOOK_THEMES)
         elif index == 1:
             for mapping in (self.host.chart_layout_actions, self.host.chart_visibility_actions,
                             self.host.indicator_actions):
@@ -1956,6 +2088,7 @@ class NightwatchSettingsDialog(QtWidgets.QDialog):
             actions.extend(self.host.alert_menu.actions())
             actions.extend(self.host.data_menu.actions())
         elif index == 5:
+            parts.append("chart performance benchmark 30 seconds FPS frame timing capture")
             actions.extend(self.host.help_menu.actions())
             app = QtWidgets.QApplication.instance()
             if app is not None and app.property("nightwatchDiagnosticsEnabled"):
@@ -2040,6 +2173,7 @@ class NightwatchSettingsDialog(QtWidgets.QDialog):
             )
         else:
             widget = QtWidgets.QPushButton(label)
+            widget.setSizePolicy(QtWidgets.QSizePolicy.Policy.Maximum, QtWidgets.QSizePolicy.Policy.Fixed)
             widget.setAutoDefault(False)
             widget.setEnabled(action.isEnabled())
             widget.setToolTip(action.toolTip())
@@ -2068,95 +2202,92 @@ class NightwatchSettingsDialog(QtWidgets.QDialog):
         elif isinstance(widget, QtWidgets.QPushButton):
             widget.setText(text)
 
-    def _radio_group(
+    def _action_selector(
         self,
         layout: QtWidgets.QVBoxLayout,
         actions: dict[Any, QtGui.QAction],
     ) -> None:
-        group = QtWidgets.QButtonGroup(self)
-        group.setExclusive(True)
-        for _key, action in actions.items():
-            radio = QtWidgets.QRadioButton(str(action.text()).replace("&", ""))
-            radio.setChecked(action.isChecked())
-            radio.setEnabled(action.isEnabled())
-            radio.setToolTip(action.toolTip())
-            radio.toggled.connect(
-                lambda checked, a=action: (
-                    a.trigger() if checked and not a.isChecked() else None
-                )
-            )
-            action.changed.connect(
-                lambda a=action, r=radio: self._sync_radio(a, r)
-            )
-            group.addButton(radio)
-            layout.addWidget(radio)
-
-    @staticmethod
-    def _sync_radio(action: QtGui.QAction, radio: QtWidgets.QRadioButton) -> None:
-        blocker = QtCore.QSignalBlocker(radio)
-        radio.setText(str(action.text()).replace("&", ""))
-        radio.setChecked(action.isChecked())
-        radio.setEnabled(action.isEnabled())
-        radio.setVisible(action.isVisible())
-        radio.setToolTip(action.toolTip())
-        del blocker
+        choices = tuple(actions.values())
+        combo = QtWidgets.QComboBox()
+        combo.setAccessibleName(layout.parentWidget().title())
+        combo.setSizePolicy(QtWidgets.QSizePolicy.Policy.Maximum, QtWidgets.QSizePolicy.Policy.Fixed)
+        for action in choices:
+            combo.addItem(action.text().replace("&", ""))
+        def sync():
+            with QtCore.QSignalBlocker(combo):
+                for index, action in enumerate(choices):
+                    combo.setItemText(index, action.text().replace("&", ""))
+                    item = combo.model().item(index)
+                    item.setEnabled(action.isEnabled() and action.isVisible())
+                    item.setToolTip(action.toolTip())
+                    if action.isChecked():
+                        combo.setCurrentIndex(index)
+        for action in choices:
+            action.changed.connect(sync)
+        combo.activated.connect(lambda index: choices[index].trigger() if not choices[index].isChecked() else None)
+        sync()
+        layout.addWidget(combo, 0, Qt.AlignmentFlag.AlignLeft)
 
     def _build_appearance_page(self) -> QtWidgets.QWidget:
-        page, layout = self._scroll_page(
-            "Appearance",
-            "Theme, directional trading colors, and candle rendering. The common choices are kept on one screen.",
-        )
-        grid = self._settings_grid(layout)
+        page, layout = self._scroll_page("Appearance")
+        theme_box, theme_layout = self._group("Application theme")
+        buttons = []
+        for name, action in self.host.theme_actions.items():
+            button = _SettingsPreviewChoice(name, THEMES[name], self.host.ui_theme)
+            self._bind_appearance_action(action, button)
+            buttons.append(button)
+        theme_layout.addWidget(_SettingsChoiceGrid(buttons))
+        layout.addWidget(theme_box)
 
-        theme_box, theme_layout = self._group("Theme")
-        theme_note = QtWidgets.QLabel(
-            "Choose the base visual identity. Component colors continue to follow the selected theme unless you explicitly choose classic trading colors below."
-        )
-        theme_note.setObjectName("subtleLabel")
-        theme_note.setWordWrap(True)
-        theme_layout.addWidget(theme_note)
-        self._radio_group(theme_layout, self.host.theme_actions)
-        grid.addWidget(theme_box, 0, 0)
+        book_box, book_layout = self._group("Order book theme")
+        note = QtWidgets.QLabel("Independent colors for the ladder, heatmap, and embedded tape.")
+        note.setObjectName("subtleLabel")
+        note.setWordWrap(True)
+        book_layout.addWidget(note)
+        buttons = []
+        for name, palette in ORDERBOOK_THEMES.items():
+            button = _SettingsPreviewChoice(name, palette, self.host.ui_theme, kind="orderbook")
+            button.clicked.connect(lambda _checked=False, value=name: self.host.set_orderbook_theme(value))
+            self._orderbook_theme_buttons[name] = button
+            buttons.append(button)
+        book_layout.addWidget(_SettingsChoiceGrid(buttons))
+        layout.addWidget(book_box)
 
-        directional_box, directional_layout = self._group("Buy / sell colors")
-        directional_note = QtWidgets.QLabel(
-            "Use each theme's own BUY/SELL colors, or switch only the selected trading surface to familiar high-contrast green and red."
-        )
-        directional_note.setObjectName("subtleLabel")
-        directional_note.setWordWrap(True)
-        directional_layout.addWidget(directional_note)
-        directional_form_host = QtWidgets.QWidget()
-        directional_form = QtWidgets.QFormLayout(directional_form_host)
-        directional_form.setContentsMargins(0, 0, 0, 0)
-        directional_form.setHorizontalSpacing(14)
-        directional_form.setVerticalSpacing(9)
-        for surface, label in (("candles", "Candles"), ("orderbook", "Order book")):
-            combo = QtWidgets.QComboBox()
-            for mode, mode_label in DIRECTIONAL_COLOR_MODE_OPTIONS:
-                combo.addItem(mode_label, mode)
-            combo.setToolTip(
-                "Theme colors preserve the selected theme. Classic green / red changes this surface only."
-            )
-            combo.activated.connect(
-                lambda index, target=surface, field=combo: self._directional_mode_selected(
-                    target, field.itemData(index)
-                )
-            )
-            directional_form.addRow(label, combo)
-            self._directional_mode_combos[surface] = combo
-        directional_layout.addWidget(directional_form_host)
-        grid.addWidget(directional_box, 0, 1)
-
-        candle_box, candle_layout = self._group("Candle appearance")
-        candle_note = QtWidgets.QLabel(
-            "Change candle geometry and rendering style without changing your selected BUY/SELL color mode."
-        )
-        candle_note.setObjectName("subtleLabel")
-        candle_note.setWordWrap(True)
-        candle_layout.addWidget(candle_note)
-        self._radio_group(candle_layout, self.host.candle_style_actions)
-        grid.addWidget(candle_box, 1, 0, 1, 2)
+        candle_box, candle_layout = self._group("Candles")
+        color_row = QtWidgets.QHBoxLayout()
+        color_row.addWidget(QtWidgets.QLabel("Buy / sell colors"))
+        combo = QtWidgets.QComboBox()
+        combo.setAccessibleName("Candle buy and sell colors")
+        for mode, label in DIRECTIONAL_COLOR_MODE_OPTIONS:
+            combo.addItem(label, mode)
+        combo.activated.connect(lambda index: self._directional_mode_selected("candles", combo.itemData(index)))
+        self._directional_mode_combos["candles"] = combo
+        color_row.addWidget(combo)
+        color_row.addStretch(1)
+        candle_layout.addLayout(color_row)
+        buttons = []
+        palette = candle_directional_palette(chart_palette(self.host.ui_theme), self.host.directional_color_mode("candles"))
+        for name, action in self.host.candle_style_actions.items():
+            button = _SettingsPreviewChoice(name, palette, self.host.ui_theme, kind="candles", style=name)
+            self._bind_appearance_action(action, button)
+            buttons.append(button)
+        candle_layout.addWidget(_SettingsChoiceGrid(buttons))
+        layout.addWidget(candle_box)
+        layout.addStretch(1)
         return page
+
+    def _bind_appearance_action(self, action, button) -> None:
+        self._appearance_actions[action] = button
+        button.clicked.connect(lambda _checked=False: action.trigger() if not action.isChecked() else None)
+        action.changed.connect(lambda: self._sync_appearance_action(action, button))
+        self._sync_appearance_action(action, button)
+
+    @staticmethod
+    def _sync_appearance_action(action, button) -> None:
+        with QtCore.QSignalBlocker(button):
+            button.setChecked(action.isChecked())
+        button.setEnabled(action.isEnabled())
+        button.setVisible(action.isVisible())
 
     def _directional_mode_selected(self, surface: str, mode: object) -> None:
         if self._syncing:
@@ -2177,14 +2308,10 @@ class NightwatchSettingsDialog(QtWidgets.QDialog):
             del blocker
 
     def _build_chart_indicators_page(self) -> QtWidgets.QWidget:
-        page, layout = self._scroll_page(
-            "Chart & Indicators",
-            "Chart behavior, visible layers, drawing tools, and studies are grouped here so the complete chart setup is one click away.",
-        )
+        page, layout = self._scroll_page("Chart & Indicators")
         timeframe_box, timeframe_layout = self._group("Market bar timeframes")
         timeframe_note = QtWidgets.QLabel(
-            "Choose 1–9 timeframes. Number shortcuts follow the selected buttons from left to right. "
-            "Your current chart interval stays unchanged; if omitted, it remains visible until you switch."
+            "Choose up to nine buttons. Number shortcuts follow their order; your current interval stays available."
         )
         timeframe_note.setObjectName("subtleLabel")
         timeframe_note.setWordWrap(True)
@@ -2224,44 +2351,19 @@ class NightwatchSettingsDialog(QtWidgets.QDialog):
         layout.addWidget(timeframe_box)
         grid = self._settings_grid(layout)
 
-        benchmark_box, benchmark_layout = self._group("30-second chart benchmark")
-        benchmark_note = QtWidgets.QLabel(
-            "Click Start, then continuously pan/zoom the chart for 30 seconds. "
-            "The capture uses Nightwatch's existing presentation clock and reports FPS and frame-time percentiles."
-        )
-        benchmark_note.setObjectName("subtleLabel")
-        benchmark_note.setWordWrap(True)
-        benchmark_layout.addWidget(benchmark_note)
-        benchmark_row = QtWidgets.QHBoxLayout()
-        benchmark_row.setContentsMargins(0, 0, 0, 0)
-        benchmark_row.setSpacing(12)
-        self.frame_benchmark_button = QtWidgets.QPushButton("START 30S BENCHMARK")
-        self.frame_benchmark_button.setAutoDefault(False)
-        self.frame_benchmark_button.setToolTip(
-            "Record 30 seconds of chart presentation timing; click the chart and pan/zoom while it runs."
-        )
-        self.frame_benchmark_button.clicked.connect(self._start_frame_benchmark)
-        benchmark_row.addWidget(self.frame_benchmark_button, 0, Qt.AlignmentFlag.AlignTop)
-        self.frame_benchmark_label = QtWidgets.QLabel("Not captured yet.")
-        self.frame_benchmark_label.setWordWrap(True)
-        self.frame_benchmark_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        benchmark_row.addWidget(self.frame_benchmark_label, 1)
-        benchmark_layout.addLayout(benchmark_row)
-        grid.addWidget(benchmark_box, 0, 0, 1, 2)
-
         workspace_box, workspace_layout = self._group("Chart workspace")
-        self._radio_group(workspace_layout, self.host.chart_layout_actions)
-        grid.addWidget(workspace_box, 1, 0)
+        self._action_selector(workspace_layout, self.host.chart_layout_actions)
+        grid.addWidget(workspace_box, 1, 0, alignment=Qt.AlignmentFlag.AlignTop)
 
         scale_box, scale_layout = self._group("Price scale")
         self._bind_action(scale_layout, self.host.auto_scale_action, text="Auto-scale price")
         self._bind_action(scale_layout, self.host.logarithmic_action, text="Logarithmic scale")
         self._bind_action(scale_layout, self.host.fit_chart_action, text="Fit chart to visible data")
-        grid.addWidget(scale_box, 1, 1)
+        grid.addWidget(scale_box, 1, 1, alignment=Qt.AlignmentFlag.AlignTop)
 
         layers_box, layers_layout = self._group("Visible chart layers")
-        self._radio_group(layers_layout, self.host.chart_visibility_actions)
-        grid.addWidget(layers_box, 2, 0)
+        self._action_selector(layers_layout, self.host.chart_visibility_actions)
+        grid.addWidget(layers_box, 2, 0, alignment=Qt.AlignmentFlag.AlignTop)
 
         drawing_box, drawing_layout = self._group("Drawing tools")
         for action, label in (
@@ -2271,12 +2373,11 @@ class NightwatchSettingsDialog(QtWidgets.QDialog):
         ):
             self._bind_action(drawing_layout, action, text=label)
         self._bind_action(drawing_layout, self.host.clear_drawings_action, text="Clear chart drawings")
-        grid.addWidget(drawing_box, 2, 1)
+        grid.addWidget(drawing_box, 2, 1, alignment=Qt.AlignmentFlag.AlignTop)
 
         volume_box, volume_layout = self._group("Volume overlay")
         volume_note = QtWidgets.QLabel(
-            "Volume is drawn directly inside the price pane with no background or separate scale. "
-            "Bars stay anchored to the bottom and normalize to the visible chart range."
+            "Volume bars scale to visible data and stay at the bottom of the chart."
         )
         volume_note.setObjectName("subtleLabel")
         volume_note.setWordWrap(True)
@@ -2296,11 +2397,11 @@ class NightwatchSettingsDialog(QtWidgets.QDialog):
         volume_row.addWidget(self.volume_height_spin)
         volume_row.addStretch(1)
         volume_layout.addLayout(volume_row)
-        grid.addWidget(volume_box, 3, 0, 1, 2)
+        grid.addWidget(volume_box, 3, 0, 1, 2, alignment=Qt.AlignmentFlag.AlignTop)
 
         indicators_box, indicators_layout = self._group("Indicators")
         indicators_note = QtWidgets.QLabel(
-            "Enable studies directly. Detailed parameters and shortcuts remain available below."
+            "Enable studies here; use Parameters for detailed configuration."
         )
         indicators_note.setObjectName("subtleLabel")
         indicators_note.setWordWrap(True)
@@ -2323,7 +2424,7 @@ class NightwatchSettingsDialog(QtWidgets.QDialog):
         config_row = QtWidgets.QHBoxLayout()
         config_row.setContentsMargins(0, 6, 0, 0)
         for action, label in (
-            (self.host.indicator_settings_action, "Indicator settings…"),
+            (self.host.indicator_settings_action, "Parameters…"),
             (self.host.indicator_shortcuts_action, "Shortcuts…"),
             (self.host.auto_fibonacci_action, "Auto Fibonacci"),
         ):
@@ -2339,7 +2440,7 @@ class NightwatchSettingsDialog(QtWidgets.QDialog):
         config_row.addStretch(1)
         indicators_layout.addWidget(indicator_grid_host)
         indicators_layout.addLayout(config_row)
-        grid.addWidget(indicators_box, 4, 0, 1, 2)
+        grid.addWidget(indicators_box, 4, 0, 1, 2, alignment=Qt.AlignmentFlag.AlignTop)
         self._refresh_frame_benchmark()
         return page
 
@@ -2406,7 +2507,7 @@ class NightwatchSettingsDialog(QtWidgets.QDialog):
         active = bool(profile.get("active"))
         completed = bool(profile.get("completed"))
         button.setEnabled(not active)
-        button.setText("BENCHMARK RUNNING…" if active else "START 30S BENCHMARK")
+        button.setText("Capture running…" if active else "Start 30s capture")
         if active:
             label.setText(
                 f"Capturing… {float(profile.get('remaining_s', 0.0)):.0f}s remaining. "
@@ -2428,31 +2529,16 @@ class NightwatchSettingsDialog(QtWidgets.QDialog):
             f"{float(profile.get('target_fps', 0.0)):.0f} Hz display"
         )
 
-    def _refresh_panel_choices(self) -> None:
-        grid = getattr(self, "_panel_grid", None)
-        if grid is None:
-            return
-        names = tuple(self.host.panel_sections)
-        for name in set(self._panel_checks) - set(names):
-            check = self._panel_checks.pop(name)
-            grid.removeWidget(check)
-            check.deleteLater()
-        for index, name in enumerate(names):
-            check = self._panel_checks.get(name)
-            if check is None:
-                check = QtWidgets.QCheckBox(RIGHT_PANEL_LABELS.get(name, name).title())
-                check.toggled.connect(
-                    lambda checked, panel=name: self.host.right_rail_controller.set_panel_enabled(panel, checked)
-                )
-                self._panel_checks[name] = check
-            if grid.indexOf(check) != index:
-                grid.removeWidget(check)
-                grid.addWidget(check, index // 2, index % 2)
-
     def _build_workspace_page(self) -> QtWidgets.QWidget:
+        scroll = QtWidgets.QScrollArea()
+        scroll.setObjectName("settingsScroll")
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
         page = QtWidgets.QWidget()
         page.setObjectName("settingsPage")
         layout = QtWidgets.QVBoxLayout(page)
+        layout.setSizeConstraint(QtWidgets.QLayout.SizeConstraint.SetMinimumSize)
         layout.setContentsMargins(20, 16, 20, 16)
         layout.setSpacing(12)
         active_row = QtWidgets.QHBoxLayout()
@@ -2474,7 +2560,8 @@ class NightwatchSettingsDialog(QtWidgets.QDialog):
         )
         self.workspace_editor.apply_requested.connect(self._save_workspace_presets)
         layout.addWidget(self.workspace_editor, 1)
-        return page
+        scroll.setWidget(page)
+        return scroll
 
     def _save_workspace_presets(self, definitions, active_name) -> None:
         try:
@@ -2486,44 +2573,30 @@ class NightwatchSettingsDialog(QtWidgets.QDialog):
         self.sync_from_owner()
 
     def _build_trading_page(self) -> QtWidgets.QWidget:
-        page, layout = self._scroll_page(
-            "Trading",
-            "Execution behavior and safeguards. Manual ticket orders submit explicitly; quick-entry hotkeys require ARM; cancel/close remain risk-reduction controls; magnetic-rail BUY/SELL is an explicit chart-side submit routed through the normal shell and gateway safety path."
-        )
+        page, layout = self._scroll_page("Trading")
         grid = self._settings_grid(layout)
-
-        model_box, model_layout = self._group("Execution model")
-        model_box.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Preferred)
-        model = QtWidgets.QLabel(
-            "Manual ticket — explicit submit\n"
-            "Quick entry — ARM required\n"
-            "Cancel / close — risk reduction\n"
-            "Magnetic rail — hover controls + explicit BUY/SELL submit"
-        )
-        model.setObjectName("subtleLabel")
-        model.setWordWrap(True)
-        model_layout.addWidget(model)
-        grid.addWidget(model_box, 0, 0, alignment=Qt.AlignmentFlag.AlignTop)
-
-        tools_box, tools_layout = self._group("Execution controls")
+        groups = {}
+        for title, row, column in (("Connection", 0, 0), ("Order entry", 0, 1), ("Account actions", 1, 0)):
+            box, section = self._group(title)
+            grid.addWidget(box, row, column, alignment=Qt.AlignmentFlag.AlignTop)
+            groups[title] = section
         for action in self.host.trading_menu.actions():
-            submenu = action.menu()
-            if submenu is not None:
-                sublabel = QtWidgets.QLabel(str(action.text()).replace("&", ""))
-                sublabel.setObjectName("settingsSubheading")
-                tools_layout.addWidget(sublabel)
-                for child in submenu.actions():
-                    self._bind_action(tools_layout, child)
-            else:
-                self._bind_action(tools_layout, action)
-        grid.addWidget(tools_box, 0, 1)
+            if action.isSeparator():
+                continue
+            label = action.text().replace("&", "")
+            if label in {"Testnet mode", "Live Binance mode"}:
+                mode = QtWidgets.QLabel(label)
+                mode.setObjectName("subtleLabel")
+                groups["Connection"].insertWidget(0, mode)
+                continue
+            title = ("Connection" if label in {"API credentials", "Test API connection"}
+                     else "Order entry" if any(word in label.casefold() for word in ("quick trading", "rail", "open trading"))
+                     else "Account actions")
+            self._bind_action(groups[title], action)
         return page
 
     def _build_data_alerts_page(self) -> QtWidgets.QWidget:
-        page, layout = self._scroll_page(
-            "Data & Alerts",
-            "Market-data behavior and trader notifications are kept together because they both control what Nightwatch monitors and surfaces.",
-        )
+        page, layout = self._scroll_page("Data & Alerts")
         grid = self._settings_grid(layout)
 
         alerts_box, alerts_layout = self._group("Alerts")
@@ -2537,7 +2610,7 @@ class NightwatchSettingsDialog(QtWidgets.QDialog):
                     self._bind_action(alerts_layout, child)
             else:
                 self._bind_action(alerts_layout, action)
-        grid.addWidget(alerts_box, 0, 0)
+        grid.addWidget(alerts_box, 0, 0, alignment=Qt.AlignmentFlag.AlignTop)
 
         data_box, data_layout = self._group("Market data")
         for action in self.host.data_menu.actions():
@@ -2550,7 +2623,7 @@ class NightwatchSettingsDialog(QtWidgets.QDialog):
                     self._bind_action(data_layout, child)
             else:
                 self._bind_action(data_layout, action)
-        grid.addWidget(data_box, 0, 1)
+        grid.addWidget(data_box, 0, 1, alignment=Qt.AlignmentFlag.AlignTop)
         return page
 
     def _build_advanced_page(self) -> QtWidgets.QWidget:
@@ -2579,12 +2652,6 @@ class NightwatchSettingsDialog(QtWidgets.QDialog):
         heading = QtWidgets.QLabel("ADVANCED")
         heading.setObjectName("settingsPageHeading")
         root.addWidget(heading)
-        note = QtWidgets.QLabel(
-            "Guidance and advanced tools. Normal trading configuration should rarely require this page."
-        )
-        note.setObjectName("subtleLabel")
-        note.setWordWrap(True)
-        root.addWidget(note)
 
         top_host = QtWidgets.QWidget()
         top_host.setObjectName("settingsGridHost")
@@ -2600,7 +2667,7 @@ class NightwatchSettingsDialog(QtWidgets.QDialog):
         guide.setAutoDefault(False)
         guide.clicked.connect(self._open_orderbook_guide)
         guidance_layout.addWidget(guide)
-        top_grid.addWidget(guidance_box, 0, 0)
+        top_grid.addWidget(guidance_box, 0, 0, alignment=Qt.AlignmentFlag.AlignTop)
 
         help_box, help_layout = self._group("Application help")
         for action in self.host.help_menu.actions():
@@ -2610,8 +2677,26 @@ class NightwatchSettingsDialog(QtWidgets.QDialog):
                     self._bind_action(help_layout, child)
             else:
                 self._bind_action(help_layout, action)
-        top_grid.addWidget(help_box, 0, 1)
+        top_grid.addWidget(help_box, 0, 1, alignment=Qt.AlignmentFlag.AlignTop)
         root.addWidget(top_host)
+
+        benchmark_box, benchmark_layout = self._group("Chart performance")
+        note = QtWidgets.QLabel("Pan or zoom for 30 seconds to capture FPS and frame timing.")
+        note.setObjectName("subtleLabel")
+        note.setWordWrap(True)
+        benchmark_layout.addWidget(note)
+        row = QtWidgets.QHBoxLayout()
+        self.frame_benchmark_button = QtWidgets.QPushButton("Start 30s capture")
+        self.frame_benchmark_button.setAutoDefault(False)
+        self.frame_benchmark_button.clicked.connect(self._start_frame_benchmark)
+        row.addWidget(self.frame_benchmark_button)
+        self.frame_benchmark_label = QtWidgets.QLabel("Not captured yet.")
+        self.frame_benchmark_label.setWordWrap(True)
+        self.frame_benchmark_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        row.addWidget(self.frame_benchmark_label, 1)
+        benchmark_layout.addLayout(row)
+        root.addWidget(benchmark_box)
+        self._refresh_frame_benchmark()
 
         developer_label = QtWidgets.QLabel("DEVELOPER TOOLS")
         developer_label.setObjectName("settingsSubheading")
@@ -2727,11 +2812,12 @@ class NightwatchSettingsDialog(QtWidgets.QDialog):
                 <h2>Order book controls</h2>
                 <p><b>Heatmap / Ladder</b> changes the depth view. <b>Qty / Value</b>
                 switches between base quantity and quote value.</p>
-                <p><b>Step − / +</b> changes price grouping. The step menu selects a
-                multiplier; <b>Auto</b> adapts grouping to the visible range.
-                <b>Rows</b> controls row density and <b>Range</b> controls the depth range.</p>
-                <p>The <b>Display menu</b> controls depth overlays and the embedded trade tape.
+                <p>The <b>Grouping menu</b> selects a price step; <b>Auto</b> adapts
+                grouping to the visible range. <b>Range</b> scales liquidity within
+                the rulers; 100% includes the full visible depth.</p>
+                <p>The <b>Display menu</b> controls row spacing, depth overlays, and the embedded trade tape.
                 Use <b>Reset orderbook display</b> to restore the display defaults.</p>
+                <p>Choose a visual theme in <b>Settings → Appearance → Order book theme</b>.</p>
                 <h3>Prices and gestures</h3>
                 <p>Click a price to prefill the current ticket. An existing unfocused
                 price is preserved; focus that field to replace it. Drag the
@@ -2766,6 +2852,20 @@ class NightwatchSettingsDialog(QtWidgets.QDialog):
             for action in tuple(self._action_widgets):
                 self._sync_action_widget(action)
             self._sync_directional_modes()
+            candle_palette = candle_directional_palette(
+                chart_palette(self.host.ui_theme), self.host.directional_color_mode("candles")
+            )
+            for action, button in self._appearance_actions.items():
+                self._sync_appearance_action(action, button)
+                button.chrome = dict(self.host.ui_theme)
+                if button.kind == "candles":
+                    button.preview = dict(candle_palette)
+                button.update()
+            for name, button in self._orderbook_theme_buttons.items():
+                with QtCore.QSignalBlocker(button):
+                    button.setChecked(name == self.host.orderbook_theme_name)
+                button.chrome = dict(self.host.ui_theme)
+                button.update()
             self._sync_timeframes()
 
             if self.volume_height_spin is not None:
@@ -2777,16 +2877,6 @@ class NightwatchSettingsDialog(QtWidgets.QDialog):
 
             if self.pages.currentIndex() == self.CATEGORIES.index("Workspace"):
                 controller = self.host.right_rail_controller
-                self._refresh_panel_choices()
-                for name, check in self._panel_checks.items():
-                    blocker = QtCore.QSignalBlocker(check)
-                    check.setChecked(controller.panel_enabled(name))
-                    del blocker
-                for mode, radio in self._mode_buttons.items():
-                    blocker = QtCore.QSignalBlocker(radio)
-                    radio.setChecked(controller.column_mode == mode)
-                    del blocker
-
                 panel_preset = getattr(self, "panel_preset", None)
                 if panel_preset is not None:
                     names = list(self.host.right_layout_presets)
