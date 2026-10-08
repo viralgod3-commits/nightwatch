@@ -14,7 +14,7 @@ import math
 import numpy as np
 
 from ..models import CandlePages, chart_y_array, _coerce_candle_matrix, _candle_matrix_from_objects, safe_float
-from ..constants import MAX_CHART_CANDLES
+from ..constants import INTERVAL_SECONDS, MAX_CHART_CANDLES
 
 
 def candle_matrix_capacity(size: int) -> int:
@@ -116,7 +116,67 @@ class PreparedWindow:
     closed_time: float | None
 
 
-def _aggregate_lod_rows(source, stride, seconds, *, full_slot_width=False):
+def _aggregate_components(source, ends, stride, seconds):
+    """Reduce raw rows or earlier aggregates, retaining actual edge timestamps."""
+    buckets = np.floor(source[:, 0] / (stride * seconds))
+    starts = np.r_[0, np.flatnonzero(np.diff(buckets)) + 1]
+    stops = np.r_[starts[1:] - 1, len(source) - 1]
+    matrix = np.empty((len(starts), 7), dtype=np.float64)
+    matrix[:, 0:2] = source[starts, 0:2]
+    matrix[:, 2] = np.maximum.reduceat(source[:, 2], starts)
+    matrix[:, 3] = np.minimum.reduceat(source[:, 3], starts)
+    matrix[:, 4] = source[stops, 4]
+    matrix[:, 5] = np.add.reduceat(source[:, 5], starts)
+    matrix[:, 6] = np.add.reduceat(source[:, 6], starts)
+    return matrix, ends[stops]
+
+
+class CandleLodIndex:
+    """Immutable multiresolution OHLCV index, built on a preparation worker.
+
+    Start at 16 candles: a contiguous 250K-row history needs about 2 MB for
+    all levels together. Zoom/pan preparation reads aggregated rows; live
+    updates combine cached closed buckets with just the unpublished tail.
+    Actual first/last times preserve gaps and incomplete exchange-time buckets.
+    """
+    def __init__(self, closed, seconds):
+        self.seconds = float(seconds)
+        self.levels = {}
+        rows = closed
+        ends = closed[:, 0]
+        stride = 16
+        while len(rows) and stride <= 2 * MAX_CHART_CANDLES:
+            # Sparse histories can have no merges at this scale. Share the
+            # previous immutable level instead of retaining redundant copies.
+            reduced, last_times = _aggregate_components(rows, ends, stride, self.seconds)
+            if len(reduced) < len(rows) or not self.levels:
+                rows, ends = reduced, last_times
+                rows.flags.writeable = ends.flags.writeable = False
+            self.levels[stride] = rows, ends
+            stride *= 2
+
+    def components(self, source, stride, seconds):
+        level = self.levels.get(int(stride)) if seconds == self.seconds else None
+        if level is None or not len(source):
+            return source, source[:, 0]
+        rows, ends = level
+        first = int(np.searchsorted(rows[:, 0], source[0, 0], side="left"))
+        last = int(np.searchsorted(ends, source[-1, 0], side="right"))
+        if last <= first:
+            return source, source[:, 0]
+        # Edge rows may have been evicted, newly prepended, or appended since
+        # publication. Never include a cached bucket outside the requested data.
+        left = int(np.searchsorted(source[:, 0], rows[first, 0], side="left"))
+        right = int(np.searchsorted(source[:, 0], ends[last - 1], side="right"))
+        if left == 0 and right == len(source):
+            return rows[first:last], ends[first:last]
+        return (
+            np.concatenate((source[:left], rows[first:last], source[right:])),
+            np.concatenate((source[:left, 0], ends[first:last], source[right:, 0])),
+        )
+
+
+def _aggregate_lod_rows(source, stride, seconds, *, full_slot_width=False, lod_index=None):
     """Aggregate rows on the exchange-time LOD grid shared by history and live.
 
     ``full_slot_width`` is used by the mutable live tail: an incomplete current
@@ -131,34 +191,27 @@ def _aggregate_lod_rows(source, stride, seconds, *, full_slot_width=False):
         return source, seconds
 
     bucket_seconds = stride * seconds
-    buckets = np.floor(source[:, 0] / bucket_seconds)
-    starts = np.r_[0, np.flatnonzero(np.diff(buckets)) + 1]
-    ends = np.r_[starts[1:] - 1, len(source) - 1]
-    matrix = np.empty((len(starts), 7), dtype=np.float64)
+    ends = source[:, 0]
+    if lod_index is not None:
+        source, ends = lod_index.components(source, stride, seconds)
+    matrix, last_times = _aggregate_components(source, ends, stride, seconds)
     if full_slot_width:
-
-
-        matrix[:, 0] = buckets[starts] * bucket_seconds + (stride - 1) * seconds * 0.5
-        widths = np.full(len(starts), bucket_seconds, dtype=np.float64)
+        matrix[:, 0] = np.floor(matrix[:, 0] / bucket_seconds) * bucket_seconds + (stride - 1) * seconds * 0.5
+        widths = np.full(len(matrix), bucket_seconds, dtype=np.float64)
     else:
-        matrix[:, 0] = (source[starts, 0] + source[ends, 0]) * 0.5
-        widths = source[ends, 0] - source[starts, 0] + seconds
-    matrix[:, 1] = source[starts, 1]
-    matrix[:, 2] = np.maximum.reduceat(source[:, 2], starts)
-    matrix[:, 3] = np.minimum.reduceat(source[:, 3], starts)
-    matrix[:, 4] = source[ends, 4]
-    matrix[:, 5] = np.add.reduceat(source[:, 5], starts)
-    matrix[:, 6] = np.add.reduceat(source[:, 6], starts)
+        widths = last_times - matrix[:, 0] + seconds
+        matrix[:, 0] = (matrix[:, 0] + last_times) * 0.5
     return matrix, widths
 
 
-def prepare_live_tail(candles, stride, seconds, logarithmic):
+def prepare_live_tail(candles, stride, seconds, logarithmic, lod_index=None):
     """Prepare the uncommitted trailing LOD buckets for candle + volume VBOs."""
     matrix, widths = _aggregate_lod_rows(
         candles,
         stride,
         seconds,
         full_slot_width=int(stride) > 1,
+        lod_index=lod_index,
     )
     return (
         prepare_bars(matrix, widths, logarithmic),
@@ -166,7 +219,7 @@ def prepare_live_tail(candles, stride, seconds, logarithmic):
     )
 
 
-def prepare_window(key, closed, window, seconds, logarithmic):
+def prepare_window(key, closed, window, seconds, logarithmic, lod_index=None):
     first, last, stride = window
     first, last = max(0, first), min(len(closed), last)
     if stride > 1 and first < last:
@@ -192,7 +245,7 @@ def prepare_window(key, closed, window, seconds, logarithmic):
             trailing_start = int(np.searchsorted(source[:, 0], final_bucket_start, side="left"))
             history_source = source[:trailing_start]
 
-    matrix, widths = _aggregate_lod_rows(history_source, stride, seconds)
+    matrix, widths = _aggregate_lod_rows(history_source, stride, seconds, lod_index=lod_index)
 
 
     committed_closed_time = float(history_source[-1, 0]) if len(history_source) else None
@@ -234,6 +287,7 @@ def prepare_snapshot(payload, current=()):
     result["_times"] = CandlePages.from_matrix(matrix[:, :1], column=0)
 
     result["_extrema"] = RangeExtrema(matrix[:-1, 3], matrix[:-1, 2])
+    result["_lod_index"] = CandleLodIndex(matrix[:-1], INTERVAL_SECONDS[payload["interval"]])
     return result
 
 
@@ -323,7 +377,8 @@ def prepare_storage_recovery(payload):
     storage[:len(matrix)] = matrix
     return {**payload, "candles": candles, "_storage": storage,
             "_times": CandlePages.from_matrix(matrix[:, :1], column=0),
-            "_extrema": RangeExtrema(matrix[:-1, 3], matrix[:-1, 2])}
+            "_extrema": RangeExtrema(matrix[:-1, 3], matrix[:-1, 2]),
+            "_lod_index": CandleLodIndex(matrix[:-1], INTERVAL_SECONDS[payload["interval"]])}
 
 
 def parse_liquidation(event, fallback_time_ms=0):

@@ -15,6 +15,7 @@ from ..theme import CANDLE_STYLES
 from .preparation import (
     candle_matrix_capacity,
     CandlePages,
+    CandleLodIndex,
     PreparedBars,
     RangeExtrema,
     prepare_window,
@@ -512,8 +513,8 @@ class ProfileItem(NativeAreaItem):
             painter.drawLine(self._poc_line)
 
 
-def _prepare_price_extrema(closed):
-    return RangeExtrema(closed[:, 3], closed[:, 2]), closed[:, 0]
+def _prepare_price_extrema(closed, seconds):
+    return RangeExtrema(closed[:, 3], closed[:, 2]), closed[:, 0], CandleLodIndex(closed, seconds)
 
 
 class _IndicatorAnalysisState:
@@ -790,7 +791,8 @@ class _HistoryPrepareWorker(QtCore.QRunnable):
             storage[added:added+len(closed)] = closed
             storage[added+len(closed):matrix_size] = live
             extrema = RangeExtrema(storage[:max(0, matrix_size-1), 3], storage[:max(0, matrix_size-1), 2])
-            matrix = (storage, matrix_size, extrema)
+            lod_index = CandleLodIndex(storage[:max(0, matrix_size-1)], INTERVAL_SECONDS[self.key[1]])
+            matrix = (storage, matrix_size, extrema, lod_index)
             error = None
         except Exception as exc:  # pragma: no cover
             added = 0
@@ -1048,6 +1050,7 @@ class ChartWorkspace(QtWidgets.QWidget):
         self._bar_request_key = None
         self._lod_stride_hint = 1
         self._price_extrema = None
+        self._candle_lod_index = None
         self._price_extrema_times = np.empty(0)
         self._snapshot_job = LatestJob(self._preparation_pool, self)
         self._snapshot_job.ready.connect(self._snapshot_prepared)
@@ -2475,6 +2478,7 @@ class ChartWorkspace(QtWidgets.QWidget):
         self._snapshot_live_updates.clear()
         self._matrix_waiting = False
         self._price_extrema = None
+        self._candle_lod_index = None
         self._price_extrema_times = np.empty(0)
         previous_interval = self.interval
         if reset_analysis:
@@ -2761,6 +2765,7 @@ class ChartWorkspace(QtWidgets.QWidget):
         self._adopt_prepared_candle_matrix(payload["_storage"], len(self.candles))
         self.candle_times = payload["_times"]
         self._price_extrema = payload["_extrema"]
+        self._candle_lod_index = payload["_lod_index"]
         self._price_extrema_times = self.candle_matrix[:-1, 0]
         self._invalidate_indicator_transport()
         self._snapshot_inflight = False
@@ -2947,7 +2952,7 @@ class ChartWorkspace(QtWidgets.QWidget):
         if finished_key == self._history_merge_key():
             prepared_combined = combined if isinstance(combined, CandlePages) else CandlePages(combined or ())
             prepared_times = times if isinstance(times, CandlePages) else CandlePages(times or ())
-            prepared_storage, prepared_size, extrema = matrix
+            prepared_storage, prepared_size, extrema, lod_index = matrix
             self._history_prepared_mailbox = (
                 finished_key,
                 prepared_combined,
@@ -2957,6 +2962,7 @@ class ChartWorkspace(QtWidgets.QWidget):
                 int(added),
                 bool(exhausted),
                 extrema,
+                lod_index,
             )
             self._navigation_deferred_history_page = True
             self._start_navigation_scheduler()
@@ -2978,7 +2984,7 @@ class ChartWorkspace(QtWidgets.QWidget):
         prepared = self._history_prepared_mailbox
         if prepared is None:
             return 0
-        key, combined, storage, matrix_size, times, added, exhausted, extrema = prepared
+        key, combined, storage, matrix_size, times, added, exhausted, extrema, lod_index = prepared
         if key != self._history_merge_key():
             self._history_prepared_mailbox = None
             requested = self._history_prepare_requested
@@ -3005,6 +3011,7 @@ class ChartWorkspace(QtWidgets.QWidget):
             self._adopt_prepared_candle_matrix(storage, matrix_size)
             self.candle_times = times
             self._price_extrema = extrema
+            self._candle_lod_index = lod_index
             self._price_extrema_times = self.candle_matrix[:-1, 0]
             self._invalidate_lod_cache()
             self._invalidate_indicator_transport()
@@ -3316,6 +3323,7 @@ class ChartWorkspace(QtWidgets.QWidget):
             max(1, int(self._committed_history_stride)),
             INTERVAL_SECONDS[self.interval],
             self.logarithmic,
+            self._candle_lod_index,
         )
         if profile_started:
             record_performance_timing("live.prepare_ms", (time.perf_counter() - profile_started) * 1000.0)
@@ -7217,11 +7225,11 @@ class ChartWorkspace(QtWidgets.QWidget):
     def _request_price_extrema(self) -> None:
         closed = self.candle_matrix[:-1]
         key = (self._market_generation, self._history_generation)
-        self._index_job.submit(key, _prepare_price_extrema, closed)
+        self._index_job.submit(key, _prepare_price_extrema, closed, INTERVAL_SECONDS[self.interval])
 
     def _extrema_prepared(self, key, result) -> None:
         if key == (self._market_generation, self._history_generation):
-            self._price_extrema, self._price_extrema_times = result
+            self._price_extrema, self._price_extrema_times, self._candle_lod_index = result
             self._navigation_pending_fit = self.auto_scale
             self._start_navigation_scheduler()
 
@@ -7427,7 +7435,7 @@ class ChartWorkspace(QtWidgets.QWidget):
         self._bar_request_window = window
         self._bar_request_key = key
         self._bar_job.submit(request_key, prepare_window, key, self.candle_matrix[:-1], window,
-                             INTERVAL_SECONDS[self.interval], self.logarithmic)
+                             INTERVAL_SECONDS[self.interval], self.logarithmic, self._candle_lod_index)
         self._render_live()
         if self._has_active_rendered_indicators():
             self._navigation_deferred_indicators = True
