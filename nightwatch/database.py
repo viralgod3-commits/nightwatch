@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
+import tempfile
 import time
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -645,3 +646,48 @@ class AppDatabase:
             connection.execute("PRAGMA optimize")
         with self._connect() as connection:
             connection.execute("VACUUM")
+
+
+def _recorder_spool_path(database: AppDatabase) -> str:
+    return database.path + ".recorder-spool.json"
+
+
+def _read_recorder_spool(database: AppDatabase) -> list[tuple]:
+    path = _recorder_spool_path(database)
+    if not os.path.exists(path):
+        return []
+    with open(path, encoding="utf-8") as source:
+        rows = json.load(source)
+    if not isinstance(rows, list) or any(
+        not isinstance(row, list) or len(row) != 4 for row in rows
+    ):
+        raise ValueError(
+            "The local recorder recovery file is malformed; it has been preserved."
+        )
+    return [tuple(row) for row in rows]
+
+
+def commit_market_events(database: AppDatabase, events: list[tuple]) -> None:
+    """Commit a worker batch together with any batch recovered after a failed exit."""
+    recovered = _read_recorder_spool(database)
+    database.insert_market_events([*recovered, *events])
+    if recovered:
+        os.unlink(_recorder_spool_path(database))
+
+
+def spool_market_events(database: AppDatabase, events: list[tuple]) -> None:
+    """Preserve a failed worker batch with atomic replacement and fsync."""
+    path = _recorder_spool_path(database)
+    recovered = _read_recorder_spool(database)
+    handle, temporary = tempfile.mkstemp(
+        prefix="recorder-", suffix=".tmp", dir=os.path.dirname(path)
+    )
+    try:
+        with os.fdopen(handle, "w", encoding="utf-8") as output:
+            json.dump([*recovered, *events], output, separators=(",", ":"))
+            output.flush()
+            os.fsync(output.fileno())
+        os.replace(temporary, path)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)

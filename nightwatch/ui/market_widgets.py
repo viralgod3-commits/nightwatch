@@ -18,9 +18,16 @@ from ..constants import (
     DEFAULT_MARKET_BAR_TIMEFRAMES, DEFAULT_SYMBOL, MARKET_SORT_MODES,
     normalized_market_bar_timeframes,
 )
-from ..coin_catalog import coin_base_symbol, coin_icon_bytes, coin_icon_exists
 from ..networking.binance import launch_task
-from ..utilities import ElidedLabel, alpha_color, device_pixel_rect, line_icon
+from ..utilities import (
+    ElidedLabel,
+    alpha_color,
+    coin_base_symbol,
+    coin_icon_bytes,
+    coin_icon_exists,
+    device_pixel_rect,
+    line_icon,
+)
 from ..utilities import (
     TextRole,
     apply_text_render_hints,

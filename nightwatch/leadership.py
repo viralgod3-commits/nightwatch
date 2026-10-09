@@ -24,13 +24,16 @@ from .utilities import (
     ElidedLabel,
     TextRole,
     apply_text_render_hints,
+    coin_base_symbol,
+    coin_icon_bytes,
+    coin_name,
+    coin_remote_symbol,
     device_pixel_rect,
     set_text_role,
     hide_hover_tooltip,
     show_hover_tooltip,
     typography_font,
 )
-from .coin_catalog import coin_base_symbol, coin_remote_symbol, coin_icon_bytes, coin_name
 from .presentation import display_frame_interval_ms, profile_callback
 
 

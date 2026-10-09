@@ -19,13 +19,6 @@ from PySide6 import QtCore, QtGui, QtWidgets
 from PySide6.QtCore import QSettings, QTimer, Qt
 
 from ..entrypoint import AppComposition
-from ..coin_catalog import (
-    COIN_ICON_MAX_BYTES,
-    coin_base_symbol,
-    coin_icon_exists,
-    coin_remote_symbol,
-    write_coin_icon,
-)
 from ..models import DiagnosticsPort
 from ..presentation import (
     profile_callback,
@@ -156,6 +149,7 @@ from ..ui.market_widgets import (
 from ..ui.panels import (PanelSplitter, PanelSpec, RightRailController, valid_panel_names,
                          decode_tree, encode_tree, panel_ids, detach_panel, insert_panel, PanelNode, validate_tree)
 from ..utilities import (
+    COIN_ICON_MAX_BYTES,
     DEV_UI_STATUS_FONT_DEFAULTS,
     TYPOGRAPHY_DEFAULTS,
     TYPOGRAPHY_GLOBAL_DEFAULTS,
@@ -164,11 +158,15 @@ from ..utilities import (
     MainToolbar,
     TerminalStatusBar,
     apply_typography,
+    coin_base_symbol,
+    coin_icon_exists,
+    coin_remote_symbol,
     configure_typography,
     line_icon,
     set_tooltip_theme,
     tooltips_allowed,
     typography_controller,
+    write_coin_icon,
 )
 
 COIN_ICON_REFRESH_MS = 7 * 24 * 60 * 60 * 1000
@@ -7978,7 +7976,7 @@ class MainWindow(QtWidgets.QMainWindow):
             return
         db = self._ensure_app_database()
         pending, self.market_event_buffer = self.market_event_buffer, []
-        from ..market.recording import commit_market_events, spool_market_events
+        from ..database import commit_market_events, spool_market_events
         spooling = bool(self._close_waiting_for_recorder and self._market_event_error)
         task: ApiTask
 

@@ -81,6 +81,7 @@ def _retired_feature_checks() -> list[str]:
         "orderbook/runtime.py", "trading/controller.py",
         "trading/rail_execution.py", "networking/core.py",
         "sound_system.py", "ui/data_tools.py", "market/microstructure.py",
+        "coin_catalog.py", "market/recording.py",
     )
     for rel in retired_paths:
         if (PACKAGE_ROOT / rel).exists():
