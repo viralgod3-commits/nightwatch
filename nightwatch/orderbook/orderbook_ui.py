@@ -27,7 +27,7 @@ _STATE_COLUMN_MAX_WIDTH = 120.0
 _PAIRED_ANALYTIC_WIDTH = 70.0
 # Responsive layouts introduce analytical lanes as width becomes available.
 from ..models import (
-    ORDER_FLOW_AGGREGATION_MULTIPLIERS, DomPositionOverlay,
+    ORDER_FLOW_AGGREGATION_MULTIPLIERS,
     OrderFlowDisplayLevel, OrderFlowPresentationFrame,
     OrderFlowSnapshot, OrderFlowTradePrint, order_flow_semantic_event,
 )
@@ -447,9 +447,8 @@ def _decimal_places_from_step(value: object) -> int:
 import time
 from collections import OrderedDict, deque
 from datetime import datetime, timezone
-from PySide6 import QtCore, QtGui, QtWidgets
+from PySide6 import QtCore, QtWidgets
 from PySide6.QtCore import Qt, Signal
-from ..models import OrderFlowSnapshot, OrderFlowTradePrint
 from .ipc import SnapshotDecoder, SnapshotSeedRequired
 from ..models import human_number
 from ..utilities import (
@@ -1192,8 +1191,7 @@ class TradesTapeWidget(QtWidgets.QWidget):
             f"QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{ background: transparent; }}"
         )
 
-from ..models import ORDER_FLOW_AGGREGATION_MULTIPLIERS
-from ..utilities import TextRole, line_icon, typography_controller, typography_font, typography_font_at_pixel_size, typography_min_pixel_size
+from ..utilities import line_icon, typography_controller
 
 class _OrderBookSurfaceButton(QtWidgets.QPushButton):
     """Keyboard-accessible control with a clear selected state."""
@@ -1526,14 +1524,11 @@ class OrderBookControlBar(QtWidgets.QFrame):
         with QtCore.QSignalBlocker(self.range_slider):
             self.range_slider.setValue(round(self._depth_range * 100))
         self.range_value.setText(f'{round(self._depth_range * 100)}%')
-from collections import Counter, OrderedDict, deque
+from collections import Counter
 from dataclasses import dataclass, replace
 from typing import ClassVar
-from PySide6.QtCore import QTimer, Qt, Signal
-from ..models import DomPositionOverlay, OrderFlowPresentationFrame
-from ..models import ORDER_FLOW_AGGREGATION_MULTIPLIERS, OrderFlowDisplayLevel, OrderFlowSnapshot
-from ..models import human_number, safe_float
-from ..utilities import TextRole, apply_text_render_hints, device_pixel_rect, device_pixel_value, typography_controller, typography_font
+from PySide6.QtCore import QTimer
+from ..utilities import device_pixel_rect
 
 # Keep the depth-profile motion contract identical to the visual reference.
 # Only rendered profile values are interpolated; market state remains immediate.
@@ -6487,10 +6482,6 @@ class _DomRasterCanvas(QtWidgets.QWidget):
             event.accept()
             return
         super().keyPressEvent(event)
-from ..models import OrderFlowPresentationFrame
-from ..models import ORDER_FLOW_AGGREGATION_MULTIPLIERS, OrderFlowSnapshot
-
-
 class _DomRasterWorkerCanvas(_DomRasterCanvas):
     """The unchanged ladder renderer, confined to the child process's Qt thread."""
 

@@ -996,8 +996,8 @@ from collections import OrderedDict
 from collections.abc import Callable
 
 import numpy as np
-from PySide6 import QtCore, QtNetwork
-from PySide6.QtCore import QTimer, QUrl, Signal
+from PySide6 import QtNetwork
+from PySide6.QtCore import QUrl
 from PySide6.QtWebSockets import QWebSocket
 
 from ..models import CandlePages, _candle_matrix_from_objects

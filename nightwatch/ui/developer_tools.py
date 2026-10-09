@@ -566,7 +566,6 @@ class UiTunerDialog(QtWidgets.QWidget):
         report = self.host.chart.developer_geometry_report()
         QtWidgets.QApplication.clipboard().setText(report)
         self.host.statusBar().showMessage('CHART GEOMETRY COPIED', 1800)
-from PySide6 import QtWidgets
 from ..models import MagneticRailLabHostPort
 from ..chart.magnetic_rail import ORDER_RAIL_LAB_DEFAULTS, ORDER_RAIL_STYLE_PRESETS, ORDER_RAIL_ORDER_PRESET_DEFAULTS, normalized_order_rail_order_preset
 from ..constants import LEVERAGE_PRESETS
@@ -894,7 +893,7 @@ class MagneticRailPresetsDialog(QtWidgets.QDialog):
         active = active if active in self._presets else next(iter(self._presets))
         return ({k: normalized_order_rail_order_preset(v) for k, v in self._presets.items()}, active)
 import time
-from PySide6.QtCore import QTimer, Qt
+from PySide6.QtCore import QTimer
 from ..models import DiagnosticsHostPort
 from ..constants import TESTING_ENTRIES
 from ..networking.binance import BINANCE_RATE_LIMITER
@@ -1344,7 +1343,7 @@ import os
 import threading
 from datetime import datetime, timezone
 
-from PySide6.QtCore import QTimer, QUrl, Qt, Signal
+from PySide6.QtCore import QUrl, Signal
 
 from ..constants import HISTORY_PAGE_LIMIT, INTERVAL_SECONDS, MAX_CHART_CANDLES
 from ..database import AppDatabase

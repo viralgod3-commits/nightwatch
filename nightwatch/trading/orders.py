@@ -539,8 +539,7 @@ def build_smart_exit_orders(
 
 
 import logging
-from decimal import Decimal, ROUND_HALF_UP
-from typing import Any
+from decimal import ROUND_HALF_UP
 
 from PySide6 import QtCore, QtWidgets
 

@@ -251,8 +251,8 @@ def chart_y_array(values: np.ndarray, logarithmic: bool) -> np.ndarray:
     return output
 
 
-from dataclasses import dataclass, field
-from typing import Any, Callable, Protocol
+from dataclasses import field
+from typing import Callable, Protocol
 
 class DiagnosticsPort(Protocol):
     """Optional instrumentation supplied by bootstrap, never a runtime import."""
@@ -498,17 +498,6 @@ class OrderFlowSnapshot:
     # None keeps legacy/direct snapshot producers compatible. Such consumers
     # compare contents instead of assuming that a missing version means zero.
     component_revisions: OrderFlowComponentRevisions | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class DomPositionOverlay:
-    side: str
-    quantity: float
-    entry_price: float
-    mark_price: float
-    unrealized_pnl: float
-    leverage: int = 0
-    liquidation_price: float = 0.0
 
 
 @dataclass(frozen=True, slots=True)

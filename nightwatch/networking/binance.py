@@ -319,7 +319,6 @@ def http_bytes(
     return run_async(
         http_bytes_async(url, headers=headers, timeout=timeout, max_bytes=max_bytes)
     )
-from typing import Any
 from PySide6 import QtCore
 from PySide6.QtCore import Signal
 class TaskSignals(QtCore.QObject):
@@ -1031,11 +1030,10 @@ class BinanceVisionArchive:
         return (imported_files, imported_rows)
 import hashlib
 import hmac
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable
 import numpy as np
 from ..constants import CONDITIONAL_ORDER_TYPES, HISTORY_PAGE_LIMIT, MAIN_REST, MAX_CHART_CANDLES, TEST_REST
 from ..models import Candle, shift_candle_time
-from ..models import safe_float
 
 
 def api_period(interval: str) -> str:

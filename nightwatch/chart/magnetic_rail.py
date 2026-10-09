@@ -2,7 +2,35 @@
 from __future__ import annotations
 
 from typing import Any
-ORDER_RAIL_STYLE_PRESETS: dict[str, dict[str, Any]] = {'Flux Arc / Photon Sweep': {'body_animation': 'ray', 'animation_enabled': True, 'frame_cap': 0, 'animation_speed': 1.1, 'glow_strength': 22, 'line_opacity': 92, 'line_width': 1.05, 'line_pattern': 'solid', 'canvas_bloom': 10, 'spark_count': 0, 'spark_size': 1.0, 'spark_spread': 8}, 'Flux Arc / Pulse Lance': {'body_animation': 'ray', 'animation_enabled': True, 'frame_cap': 0, 'animation_speed': 1.1, 'glow_strength': 22, 'line_opacity': 92, 'line_width': 1.05, 'line_pattern': 'solid', 'canvas_bloom': 10, 'spark_count': 0, 'spark_size': 1.0, 'spark_spread': 8}, 'Flux Arc / Vector Stream': {'body_animation': 'ray', 'animation_enabled': True, 'frame_cap': 0, 'animation_speed': 1.1, 'glow_strength': 22, 'line_opacity': 92, 'line_width': 1.05, 'line_pattern': 'solid', 'canvas_bloom': 10, 'spark_count': 0, 'spark_size': 1.0, 'spark_spread': 8}, 'Flux Arc / Reactor Wave': {'body_animation': 'ray', 'animation_enabled': True, 'frame_cap': 0, 'animation_speed': 1.1, 'glow_strength': 22, 'line_opacity': 92, 'line_width': 1.05, 'line_pattern': 'solid', 'canvas_bloom': 10, 'spark_count': 0, 'spark_size': 1.0, 'spark_spread': 8}, 'Flux Arc / Prism Packets': {'body_animation': 'ray', 'animation_enabled': True, 'frame_cap': 0, 'animation_speed': 1.1, 'glow_strength': 22, 'line_opacity': 92, 'line_width': 1.05, 'line_pattern': 'solid', 'canvas_bloom': 10, 'spark_count': 0, 'spark_size': 1.0, 'spark_spread': 8}, 'Flux Arc / Scanline': {'body_animation': 'ray', 'animation_enabled': True, 'frame_cap': 0, 'animation_speed': 1.1, 'glow_strength': 22, 'line_opacity': 92, 'line_width': 1.05, 'line_pattern': 'solid', 'canvas_bloom': 10, 'spark_count': 0, 'spark_size': 1.0, 'spark_spread': 8}, 'Flux Arc / Quantum Dash': {'body_animation': 'ray', 'animation_enabled': True, 'frame_cap': 0, 'animation_speed': 1.1, 'glow_strength': 22, 'line_opacity': 92, 'line_width': 1.05, 'line_pattern': 'solid', 'canvas_bloom': 10, 'spark_count': 0, 'spark_size': 1.0, 'spark_spread': 8}, 'Flux Arc / Comet Trail': {'body_animation': 'ray', 'animation_enabled': True, 'frame_cap': 0, 'animation_speed': 1.1, 'glow_strength': 22, 'line_opacity': 92, 'line_width': 1.05, 'line_pattern': 'solid', 'canvas_bloom': 10, 'spark_count': 0, 'spark_size': 1.0, 'spark_spread': 8}, 'Flux Arc / Interference': {'body_animation': 'ray', 'animation_enabled': True, 'frame_cap': 0, 'animation_speed': 1.1, 'glow_strength': 22, 'line_opacity': 92, 'line_width': 1.05, 'line_pattern': 'solid', 'canvas_bloom': 10, 'spark_count': 0, 'spark_size': 1.0, 'spark_spread': 8}, 'Flux Arc / Charge Relay': {'body_animation': 'ray', 'animation_enabled': True, 'frame_cap': 0, 'animation_speed': 1.1, 'glow_strength': 22, 'line_opacity': 92, 'line_width': 1.05, 'line_pattern': 'solid', 'canvas_bloom': 10, 'spark_count': 0, 'spark_size': 1.0, 'spark_spread': 8}}
+_ORDER_RAIL_STYLE_DEFAULTS: dict[str, Any] = {
+    'body_animation': 'ray',
+    'animation_enabled': True,
+    'frame_cap': 0,
+    'animation_speed': 1.1,
+    'glow_strength': 22,
+    'line_opacity': 92,
+    'line_width': 1.05,
+    'line_pattern': 'solid',
+    'canvas_bloom': 10,
+    'spark_count': 0,
+    'spark_size': 1.0,
+    'spark_spread': 8,
+}
+ORDER_RAIL_STYLE_PRESETS: dict[str, dict[str, Any]] = {
+    name: dict(_ORDER_RAIL_STYLE_DEFAULTS)
+    for name in (
+        'Flux Arc / Photon Sweep',
+        'Flux Arc / Pulse Lance',
+        'Flux Arc / Vector Stream',
+        'Flux Arc / Reactor Wave',
+        'Flux Arc / Prism Packets',
+        'Flux Arc / Scanline',
+        'Flux Arc / Quantum Dash',
+        'Flux Arc / Comet Trail',
+        'Flux Arc / Interference',
+        'Flux Arc / Charge Relay',
+    )
+}
 _LEGACY_RAIL_STYLE_ALIASES = {'Photon Ray': 'Flux Arc / Photon Sweep', 'Pulse Lance': 'Flux Arc / Pulse Lance', 'Vector Stream': 'Flux Arc / Vector Stream', 'Reactor Wave': 'Flux Arc / Reactor Wave', 'Flux Arc': 'Flux Arc / Photon Sweep', 'Prism Surge': 'Flux Arc / Prism Packets', 'Scanline': 'Flux Arc / Scanline', 'Quantum Dash': 'Flux Arc / Quantum Dash', 'Neon Edge': 'Flux Arc / Photon Sweep', 'Glass Dock': 'Flux Arc / Scanline', 'Reactor': 'Flux Arc / Reactor Wave', 'Pulse Beam': 'Flux Arc / Pulse Lance', 'Stealth': 'Flux Arc / Scanline', 'Vector': 'Flux Arc / Vector Stream', 'Ion Storm': 'Flux Arc / Pulse Lance', 'Starforge': 'Flux Arc / Reactor Wave'}
 ORDER_RAIL_USER_KEYS = ('style', 'armed_transition_enabled', 'cancel_implosion_enabled', 'active_line_style', 'active_animation', 'active_opacity', 'active_width')
 _ORDER_RAIL_BASE_DEFAULTS: dict[str, Any] = {
@@ -133,7 +161,7 @@ def normalized_order_rail_config(source: dict[str, Any] | None=None) -> dict[str
     return values
 
 from enum import Enum
-from typing import Any, Mapping
+from typing import Mapping
 
 class RailIntent(str, Enum):
     CYCLE_SIZE = 'cycle_size'

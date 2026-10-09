@@ -28,10 +28,7 @@ from .utilities import (
     coin_icon_bytes,
     coin_name,
     coin_remote_symbol,
-    device_pixel_rect,
     set_text_role,
-    hide_hover_tooltip,
-    show_hover_tooltip,
     typography_font,
 )
 from .presentation import display_frame_interval_ms, profile_callback

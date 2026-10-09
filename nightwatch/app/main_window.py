@@ -147,7 +147,7 @@ from ..ui.market_widgets import (
     WatchlistWidget,
 )
 from ..ui.panels import (PanelSplitter, PanelSpec, RightRailController, valid_panel_names,
-                         decode_tree, encode_tree, panel_ids, detach_panel, insert_panel, PanelNode, validate_tree)
+                         decode_tree, encode_tree, panel_ids, validate_tree)
 from ..utilities import (
     COIN_ICON_MAX_BYTES,
     DEV_UI_STATUS_FONT_DEFAULTS,

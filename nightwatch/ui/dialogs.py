@@ -251,7 +251,6 @@ from ..constants import (
     RIGHT_PANEL_LABELS,
     DIRECTIONAL_COLOR_MODE_OPTIONS,
 )
-from ..utilities import TextRole
 from .panels import (
     PANEL_IDS, PanelNode, SplitNode, decode_tree, detach_panel, encode_tree,
     insert_panel, panel_ids, replace_split_weights, split_node, validate_tree,

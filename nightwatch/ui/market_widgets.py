@@ -20,7 +20,6 @@ from ..constants import (
 )
 from ..networking.binance import launch_task
 from ..utilities import (
-    ElidedLabel,
     alpha_color,
     coin_base_symbol,
     coin_icon_bytes,
