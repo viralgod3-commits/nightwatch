@@ -68,6 +68,27 @@ class PreparedBars:
     payload: bytes
     origin: tuple[float, float]
     extrema: RangeExtrema
+    times: np.ndarray
+    max_slot_width: float
+    times_sorted: bool
+
+    def screen_slice(self, left, right, scale, offset, pixel_margin=2.0):
+        """Conservatively select X-visible rows without scanning resident history.
+
+        Keep a full slot on either edge (including irregular LOD slots), plus
+        pixel-space wick/glow padding. Unordered input retains the full batch.
+        The contiguous timestamp index is built with the immutable payload;
+        searching a strided data column can otherwise copy it on every frame.
+        """
+        count = len(self.data)
+        if (not self.times_sorted or not count or abs(scale) < 1e-18
+                or not all(math.isfinite(v) for v in (left, right, scale, offset, pixel_margin))):
+            return 0, count
+        x0, x1 = sorted(((left - offset) / scale, (right - offset) / scale))
+        margin = self.max_slot_width + max(0.0, pixel_margin) / abs(scale)
+        first = int(np.searchsorted(self.times, x0 - margin, side="left"))
+        last = int(np.searchsorted(self.times, x1 + margin, side="right"))
+        return first, last
 
 
 def prepare_bars(candles, slots=None, logarithmic=False, volume=False):
@@ -104,7 +125,13 @@ def prepare_bars(candles, slots=None, logarithmic=False, volume=False):
         packed[:, 1:5] = data[:, 1:5]-origin[1]
         packed[:, 5:7] = data[:, 5:7]
     data.flags.writeable = False
-    return PreparedBars(data, bounds, packed.tobytes(), origin, RangeExtrema(data[:, 3], data[:, 4]))
+    times = np.array(data[:, 0], copy=True)
+    times.flags.writeable = False
+    return PreparedBars(
+        data, bounds, packed.tobytes(), origin, RangeExtrema(data[:, 3], data[:, 4]),
+        times, float(np.max(widths)) if len(widths) else 0.0,
+        bool(np.all(times[1:] >= times[:-1])),
+    )
 
 
 @dataclass(frozen=True)

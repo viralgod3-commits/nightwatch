@@ -505,9 +505,10 @@ class PresentationClock(QtCore.QObject):
         if self._awaiting_swap:
             self._arm_completion_watchdog()
         elif self._continuous or self._requested:
-
-
-            self._timer.start(0)
+            # Queue preparation directly, just as swap completion does. A
+            # zero-delay timer adds an event-loop turn before the same queued
+            # preparation. Posting still prevents reentrant painting.
+            self._schedule_frame()
 
     def _about_to_compose(self, source) -> None:
         if source is self._pacing_source and self._awaiting_swap and not self._awaiting_paint:

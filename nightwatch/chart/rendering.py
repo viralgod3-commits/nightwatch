@@ -532,6 +532,7 @@ void main() {
                 "uniforms": uniforms,
                 "revision": -1,
                 "count": 0,
+                "first_instance": 0,
             }
         except (AttributeError, RuntimeError, TypeError, ValueError):
             return None
@@ -748,6 +749,15 @@ void main() {
             if right <= left or bottom <= top:
                 return True
 
+            state = cls._style_state(resources, style, style_key, background, up, down)
+            first, last = resources["prepared"].screen_slice(
+                left, right, sx, tx,
+                pixel_margin=2.0 + state["wick_width"] * .5 + state["glow_expand"],
+            )
+            count = last - first
+            if not count:
+                return True
+
             overlay_enabled = bool(
                 volume
                 and math.isfinite(float(volume_overlay_max))
@@ -776,6 +786,21 @@ void main() {
 
             vao.bind()
             program.bind()
+
+            # Scissoring discards fragments, not offscreen vertex work. Point
+            # the instance attributes into the retained VBO so every style
+            # pass submits only the visible window; panning uploads no data.
+            if resources.get("first_instance") != first:
+                vbo = resources["instance_vbo"]
+                if not vbo.bind():
+                    program.release()
+                    vao.release()
+                    functions.glDisable(cls.GL_SCISSOR_TEST)
+                    return False
+                program.setAttributeBuffer(1, cls.GL_FLOAT, first * 32, 4, 32)
+                program.setAttributeBuffer(2, cls.GL_FLOAT, first * 32 + 16, 4, 32)
+                vbo.release()
+                resources["first_instance"] = first
 
             x_origin = float(resources.get("x_origin", 0.0))
             y_origin = float(resources.get("y_origin", 0.0))
@@ -817,14 +842,6 @@ void main() {
                 int(uniforms["u_clip_bottom"]),
                 float(overlay_screen.bottom()) if overlay_enabled else float(bottom),
             )
-            state = cls._style_state(
-                resources,
-                style,
-                style_key,
-                background,
-                up,
-                down,
-            )
             functions.glUniform1f(
                 int(uniforms["u_body_width"]),
                 float(state["body_width"]),
@@ -844,7 +861,10 @@ void main() {
 
             up_body = state["up_body"]
             down_body = state["down_body"]
-            count = int(resources.get("count", 0))
+            if performance_profile_active():
+                profile_name = str(resources.get("profile_name") or "bars")
+                record_performance_sum(f"gl.draw.{profile_name}_visible_rows", count)
+                record_performance_sum(f"gl.draw.{profile_name}_resident_rows", len(data))
 
             def draw_pass(
                 geometry: int,
@@ -983,14 +1003,13 @@ class PixelBarBatch:
 
     def _draw_cpu_batches(self, painter, screen):
         """Retain rectangle geometry and a bounded physical-pixel pan cache."""
-        if self._rect_batch_source is not self.batches:
+        reused_geometry = self._rect_batch_source is self.batches
+        if not reused_geometry:
             self._rect_batch_source = self.batches
             self._rect_batches = []
             self._cpu_image = QtGui.QImage()
             self._cpu_bounds = QtCore.QRectF()
             for brush, rects in self.batches:
-                for rect in rects:
-                    self._cpu_bounds = self._cpu_bounds.united(rect)
                 # Overlapping translucent rectangles must blend once, as a
                 # winding-fill union. Opaque batches need no polygon roundtrip.
                 ordered = sorted(rects, key=lambda rect: rect.left())
@@ -1003,17 +1022,24 @@ class PixelBarBatch:
                         for rect in rects:
                             path.addRect(rect)
                 self._rect_batches.append((brush, rects, disjoint, path))
-            ordered = sorted((rect for _brush, rects in self.batches for rect in rects),
-                             key=lambda rect: rect.left())
-            self._cpu_disjoint = all(a.right() <= b.left() for a, b in zip(ordered, ordered[1:]))
 
         # The cache uses physical pixels, exactly like the bar geometry. Limit
         # its memory, retain pan margins, and never resample candles on resize.
-        bounds = self._cpu_bounds
-        target = screen.intersected(bounds).toAlignedRect()
-        use_image = (sum(len(rects) for _brush, rects in self.batches) > 64
+        # Build it only after geometry is reused. Zoom/auto-scale invalidates
+        # each frame's geometry, making eager image allocation and bounds/
+        # overlap preparation wasted work on the latency-sensitive paint path.
+        use_image = (reused_geometry and not self.interactive_resize
+                     and sum(len(rects) for _brush, rects in self.batches) > 64
                      and painter.opacity() == 1.0
                      and painter.compositionMode() == QtGui.QPainter.CompositionMode.CompositionMode_SourceOver)
+        if use_image and self._cpu_bounds.isEmpty():
+            ordered = sorted((rect for _brush, rects in self.batches for rect in rects),
+                             key=lambda rect: rect.left())
+            for rect in ordered:
+                self._cpu_bounds = self._cpu_bounds.united(rect)
+            self._cpu_disjoint = all(a.right() <= b.left() for a, b in zip(ordered, ordered[1:]))
+        bounds = self._cpu_bounds
+        target = screen.intersected(bounds).toAlignedRect()
         if use_image and not target.isEmpty():
             if self._cpu_image.isNull() or not self._cpu_image_rect.contains(target):
                 padded = screen if self.interactive_resize else screen.adjusted(
@@ -1448,8 +1474,13 @@ class PixelBarBatch:
             build_screen = self.cache_screen
             self.batches = []
 
-            data = self.data
-            x_ref = float(data[0, 0])
+            first, last = self.prepared.screen_slice(
+                build_screen.left(), build_screen.right(), transform.m11(), transform.dx(),
+            )
+            data = self.data[first:last]
+            if not len(data):
+                return
+            x_ref = float(self.data[0, 0])
             origin_x = transform.map(QtCore.QPointF(x_ref, 0.0)).x()
             xs = (data[:, 0] - x_ref) * transform.m11() + origin_x
             slots = abs(transform.m11()) * data[:, 6]
@@ -1663,8 +1694,16 @@ class PixelBarBatch:
             build_screen = self.cache_screen
             self.batches = []
 
-            data = self.data
-            x_ref, y_ref = data[0, :2]
+            geometry_transform = self._cpu_geometry_transform
+            first, last = self.prepared.screen_slice(
+                build_screen.left(), build_screen.right(),
+                geometry_transform.m11(), geometry_transform.dx(),
+                pixel_margin=bloom_margin + max(1.0, float(style.get("wick", 1.0))) * .5 + 2.0,
+            )
+            data = self.data[first:last]
+            if not len(data):
+                return
+            x_ref, y_ref = self.data[0, :2]
             origin = self._cpu_geometry_transform.map(QtCore.QPointF(x_ref, y_ref))
             xs = (data[:, 0] - x_ref) * transform.m11() + origin.x()
             ys = (data[:, 1:5] - y_ref) * transform.m22() + origin.y()
@@ -2605,7 +2644,7 @@ class VolumeOverlayItem(pg.GraphicsObject):
         data = batch.data
         if not data.size:
             return 0.0
-        xs = data[:, 0]
+        xs = batch.prepared.times
         low, high = sorted((float(x0), float(x1)))
         left = max(0, int(np.searchsorted(xs, low, side="left")) - 1)
         right = min(len(xs), int(np.searchsorted(xs, high, side="right")) + 1)
