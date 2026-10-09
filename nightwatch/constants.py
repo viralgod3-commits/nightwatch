@@ -1,9 +1,6 @@
 """Application, exchange and shell configuration defaults."""
 from __future__ import annotations
 
-# ========================================================================
-# constants
-# ========================================================================
 APP_NAME = "Nightwatch Futures V2"
 
 
@@ -246,9 +243,7 @@ HISTORY_PAGE_LIMIT = 1000
 BINANCE_WS_CONNECTION_LIMIT_5M = 300
 
 
-# ========================================================================
 # shell_config
-# ========================================================================
 RIGHT_PANEL_NAMES = (
     "Market depth",
     "Trading / positions",
@@ -315,9 +310,7 @@ RIGHT_PANEL_SPLITTER_HIT_WIDTH = 16
 # theme or uses a familiar high-contrast green/red convention.
 
 
-# ========================================================================
 # fixed_orderbook_presentation
-# ========================================================================
 # The DOM is a trading instrument, not a themed application surface.  Keep its
 # contrast, semantic colors and compact signal vocabulary stable across every
 # application theme so screenshots, muscle memory and signal meaning do not

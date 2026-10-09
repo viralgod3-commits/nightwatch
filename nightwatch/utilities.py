@@ -1,9 +1,7 @@
 """Shared Qt presentation: typography, widgets, icons and UI geometry."""
 from __future__ import annotations
 
-# ========================================================================
 # typography
-# ========================================================================
 import os
 import html
 import math
@@ -1013,9 +1011,7 @@ def load_app_fonts(application: QtGui.QGuiApplication, package_root: str) -> Non
     application._nightwatch_typography_filter = font_filter
 
 
-# ========================================================================
 # utilities
-# ========================================================================
 
 from PySide6.QtCore import Qt
 
@@ -1910,9 +1906,7 @@ def get_diagnostics() -> DiagnosticsHub:
     return _DIAGNOSTICS
 
 
-# ========================================================================
 # coin identity and icon assets
-# ========================================================================
 
 COIN_ICON_MAX_BYTES = 2_000_000
 

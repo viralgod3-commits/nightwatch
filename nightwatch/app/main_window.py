@@ -1182,9 +1182,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.hub.start(self.current_symbol, self.current_interval)
         QTimer.singleShot(1200, self._refresh_watchlist_hour_changes)
 
-    # ------------------------------------------------------------------
     # Startup staging
-    # ------------------------------------------------------------------
 
     def _startup_mark(self, label: str) -> None:
         elapsed = (time.monotonic() - self._startup_started_mono) * 1000.0
