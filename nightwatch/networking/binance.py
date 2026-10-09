@@ -1035,7 +1035,18 @@ from collections.abc import Awaitable, Callable
 import numpy as np
 from ..constants import CONDITIONAL_ORDER_TYPES, HISTORY_PAGE_LIMIT, MAIN_REST, MAX_CHART_CANDLES, TEST_REST
 from ..models import Candle, shift_candle_time
-from ..models import api_period, safe_float
+from ..models import safe_float
+
+
+def api_period(interval: str) -> str:
+    """Map chart intervals to Binance open-interest history request periods."""
+    if interval in {"1m", "3m", "5m"}:
+        return "5m"
+    if interval == "1w":
+        return "1d"
+    return interval if interval in {"15m", "30m", "1h", "2h", "4h", "6h", "12h", "1d"} else "15m"
+
+
 _KLINE_INFLIGHT: dict[tuple[Any, ...], asyncio.Task[Any]] = {}
 _BACKGROUND_GATE: asyncio.Semaphore | None = None
 

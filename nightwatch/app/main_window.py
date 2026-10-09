@@ -20,10 +20,11 @@ from PySide6.QtCore import QSettings, QTimer, Qt
 
 from ..entrypoint import AppComposition
 from ..coin_catalog import (
+    COIN_ICON_MAX_BYTES,
     coin_base_symbol,
     coin_icon_exists,
-    coin_icon_path,
     coin_remote_symbol,
+    write_coin_icon,
 )
 from ..models import DiagnosticsPort
 from ..presentation import (
@@ -174,52 +175,6 @@ COIN_ICON_REFRESH_MS = 7 * 24 * 60 * 60 * 1000
 COINGECKO_DEMO_API_KEY = os.getenv("COINGECKO_API_KEY", "").strip()
 COINGECKO_API = "https://api.coingecko.com/api/v3"
 COINPAPRIKA_API = "https://api.coinpaprika.com/v1"
-COIN_ICON_MAX_BYTES = 2_000_000
-
-
-def _coin_icon_payload_valid(payload: bytes) -> bool:
-    if len(payload) < 64 or len(payload) > COIN_ICON_MAX_BYTES:
-        return False
-    head = payload[:512].lstrip().lower()
-    return bool(
-        payload.startswith(b"\x89PNG\r\n\x1a\n")
-        or payload.startswith(b"\xff\xd8\xff")
-        or payload.startswith((b"GIF87a", b"GIF89a"))
-        or (payload.startswith(b"RIFF") and payload[8:12] == b"WEBP")
-        or head.startswith(b"<svg")
-        or b"<svg" in head[:256]
-    )
-
-
-def _write_coin_icon(base: str, payload: bytes) -> tuple[str, bool]:
-    if not _coin_icon_payload_valid(payload):
-        raise RuntimeError("Remote icon payload is not a supported image.")
-    path = coin_icon_path(base)
-    if not path:
-        raise RuntimeError("Coin icon path is unavailable.")
-    directory = os.path.dirname(path)
-    os.makedirs(directory, exist_ok=True)
-    existing = b""
-    try:
-        with open(path, "rb") as handle:
-            existing = handle.read(COIN_ICON_MAX_BYTES + 1)
-    except OSError:
-        pass
-    if existing == payload:
-        return path, False
-    temporary = f"{path}.{time.time_ns()}.tmp"
-    try:
-        with open(temporary, "wb") as handle:
-            handle.write(payload)
-            handle.flush()
-        os.replace(temporary, path)
-    finally:
-        try:
-            if os.path.exists(temporary):
-                os.remove(temporary)
-        except OSError:
-            pass
-    return path, True
 
 
 def _coingecko_icon_rows(remote_symbols: list[str]) -> dict[str, dict[str, Any]]:
@@ -302,7 +257,7 @@ def _store_coin_icon_candidate(base: str, candidate: dict[str, str], db: Any) ->
         timeout=15.0,
         max_bytes=COIN_ICON_MAX_BYTES,
     )
-    path, changed = _write_coin_icon(base, payload)
+    path, changed = write_coin_icon(base, payload)
     db.save_coin_icon(
         base,
         provider=candidate.get("provider", ""),

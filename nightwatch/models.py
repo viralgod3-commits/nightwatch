@@ -90,16 +90,6 @@ def utc_stamp() -> str:
     return datetime.now(timezone.utc).strftime("%d/%m/%y · %H:%M:%S UTC")
 
 
-def api_period(interval: str) -> str:
-    if interval in {"1m", "3m", "5m"}:
-        return "5m"
-    if interval == "1w":
-
-
-        return "1d"
-    return interval if interval in {"15m", "30m", "1h", "2h", "4h", "6h", "12h", "1d"} else "15m"
-
-
 def quantize_step(value: str, step: str, *, rounding: str = ROUND_DOWN, offset: str = '0') -> str:
     try:
         number = Decimal(value)

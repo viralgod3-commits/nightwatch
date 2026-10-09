@@ -1,8 +1,12 @@
-"""Small bundled coin-name fallback and root-relative icon-cache helpers."""
+"""Bundled coin-name fallback and root-relative icon-cache reads and writes."""
 
 from __future__ import annotations
 
 import os
+import time
+
+
+COIN_ICON_MAX_BYTES = 2_000_000
 
 
 COIN_CATALOG: dict[str, dict[str, str]] = {'AAVE': {'name': 'Aave'},
@@ -147,3 +151,48 @@ def coin_icon_bytes(symbol: str) -> bytes:
             return handle.read()
     except OSError:
         return b""
+
+
+def _coin_icon_payload_valid(payload: bytes) -> bool:
+    if len(payload) < 64 or len(payload) > COIN_ICON_MAX_BYTES:
+        return False
+    head = payload[:512].lstrip().lower()
+    return bool(
+        payload.startswith(b"\x89PNG\r\n\x1a\n")
+        or payload.startswith(b"\xff\xd8\xff")
+        or payload.startswith((b"GIF87a", b"GIF89a"))
+        or (payload.startswith(b"RIFF") and payload[8:12] == b"WEBP")
+        or head.startswith(b"<svg")
+        or b"<svg" in head[:256]
+    )
+
+
+def write_coin_icon(base: str, payload: bytes) -> tuple[str, bool]:
+    if not _coin_icon_payload_valid(payload):
+        raise RuntimeError("Remote icon payload is not a supported image.")
+    path = coin_icon_path(base)
+    if not path:
+        raise RuntimeError("Coin icon path is unavailable.")
+    directory = os.path.dirname(path)
+    os.makedirs(directory, exist_ok=True)
+    existing = b""
+    try:
+        with open(path, "rb") as handle:
+            existing = handle.read(COIN_ICON_MAX_BYTES + 1)
+    except OSError:
+        pass
+    if existing == payload:
+        return path, False
+    temporary = f"{path}.{time.time_ns()}.tmp"
+    try:
+        with open(temporary, "wb") as handle:
+            handle.write(payload)
+            handle.flush()
+        os.replace(temporary, path)
+    finally:
+        try:
+            if os.path.exists(temporary):
+                os.remove(temporary)
+        except OSError:
+            pass
+    return path, True
