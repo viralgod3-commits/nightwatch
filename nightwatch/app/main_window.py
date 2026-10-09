@@ -860,6 +860,9 @@ class MainWindow(QtWidgets.QMainWindow):
             "chart_opengl_full_viewport": self.settings.value(
                 "testing/chart_opengl_full_viewport_v5", False, bool
             ),
+            "chart_isolated_composition": self.settings.value(
+                "testing/chart_isolated_composition_v1", False, bool
+            ),
             "multiple_chart_layouts": self.settings.value(
                 "testing/multiple_chart_layouts_v1", True, bool
             ),
@@ -1568,6 +1571,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.chart = ChartWorkspace(
             self.chart_theme,
             use_opengl=self.testing_flags["chart_opengl"],
+            isolate_gl_composition=self.testing_flags["chart_isolated_composition"],
             opengl_full_viewport=self.testing_flags["chart_opengl_full_viewport"],
             native_bar_renderer=self.testing_flags["chart_native_bar_renderer"],
             lod_aggregation=self.testing_flags["chart_lod_aggregation"],
@@ -1611,6 +1615,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.chart_theme,
             self._composition.create_chart_market_data_hub,
             use_opengl=self.testing_flags["chart_opengl"],
+            isolate_gl_composition=self.testing_flags["chart_isolated_composition"],
             opengl_full_viewport=self.testing_flags["chart_opengl_full_viewport"],
             native_bar_renderer=self.testing_flags["chart_native_bar_renderer"],
             lod_aggregation=self.testing_flags["chart_lod_aggregation"],
@@ -2188,7 +2193,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.settings.setValue(setting_key, bool(enabled))
         self.settings.sync()
         restart_required = False
-        if name in {"chart_opengl", "chart_opengl_full_viewport"}:
+        if name in {"chart_opengl", "chart_opengl_full_viewport", "chart_isolated_composition"}:
             # The viewport backend is selected during GraphicsView construction.
             restart_required = True
         elif name == "chart_native_bar_renderer":
@@ -9949,6 +9954,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self._ui_resize_active = True
             self._sync_background_priority()
             self.chart_container.begin_interactive_resize()
+            self.right_rail_controller.begin_interactive_resize()
         if explicit_drag or self._active_splitter_drags:
             self.resize_settle_timer.stop()
         else:
@@ -9969,6 +9975,7 @@ class MainWindow(QtWidgets.QMainWindow):
         if not self._ui_resize_active:
             return
         self._ui_resize_active = False
+        self.right_rail_controller.end_interactive_resize()
         self._sync_background_priority()
         self.right_rail_controller.capture_geometry()
         self.right_rail_controller.sync_interaction_surfaces()

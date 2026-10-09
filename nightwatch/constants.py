@@ -408,6 +408,11 @@ TESTING_ENTRIES = (
         "Required while the OpenGL canvas is enabled so QGraphicsView never relies on partial dirty regions",
     ),
     (
+        "chart_isolated_composition",
+        "Isolated GPU chart composition (restart)",
+        "Experimental native chart surface; compare on the target GPU before enabling, as software OpenGL can be slower",
+    ),
+    (
         "chart_native_bar_renderer",
         "Native GPU candle / volume renderer",
         "A/B switch for Nightwatch's instanced OpenGL bars versus the cached QPainter fallback inside the same canvas",

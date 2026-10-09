@@ -32,6 +32,7 @@ def arguments():
     parser.add_argument("--size", default="1920x1080", help="Desktop window width x height")
     parser.add_argument("--refresh-hz", type=float, help="Explicit target Hz, screen Hz remains recorded")
     parser.add_argument("--raster", action="store_true", help="Disable GL; software smoke/comparison only")
+    parser.add_argument("--isolate-chart-gl", action="store_true", help="Opt in to experimental native chart composition isolation; compare on the target GPU")
     parser.add_argument("--symbols", default="BTCUSDT,ETHUSDT,SHIBUSDT", help="Representative price scales")
     parser.add_argument("--cases", default="pan,zoom,deep_pan,wide_pan,watchlist_resize,rail_resize")
     parser.add_argument("--market-hz", type=float, default=20.0, help="Offline watchlist/depth/trade updates per second")
@@ -124,6 +125,7 @@ def main():
     QtCore.QSettings.setPath(QtCore.QSettings.Format.IniFormat, QtCore.QSettings.Scope.UserScope, scratch.name)
     settings = QtCore.QSettings(ORG_NAME, APP_NAME)
     settings.setValue("testing/chart_opengl_v2", not args.raster)
+    settings.setValue("testing/chart_isolated_composition_v1", args.isolate_chart_gl)
     settings.setValue("right_layout_preset", "Balanced")
     request = _configure_chart_surface_format()
     QtWidgets.QApplication.setAttribute(QtCore.Qt.ApplicationAttribute.AA_DontCreateNativeWidgetSiblings, True)
@@ -192,10 +194,11 @@ def main():
     viewport = chart.graphics.viewport()
     screen = window.screen()
     target_hz = args.refresh_hz or float(screen.refreshRate() or 60.0)
-    results = {"schema_version": 1, "created_utc": datetime.now(timezone.utc).isoformat(), "label": args.label,
-        "measurement": "Primary native FPS uses valid QOpenGLWidget frameSwapped; raster uses chart paint completions or watchlist paint entries. Qt composition completion is not verified physical scanout.",
+    results = {"schema_version": 2, "created_utc": datetime.now(timezone.utc).isoformat(), "label": args.label,
+        "measurement": "Chart FPS uses valid QOpenGLWidget frameSwapped or raster paint completions. Watchlist resize uses visible table paint entries or resize preview completions. Qt composition completion is not verified physical scanout.",
         "configuration": {"symbols": symbols, "cases": cases, "history": args.history, "duration_s": args.duration,
             "app_source_root": str(app_root), "loaded_main_window": str(Path(main_window.__file__).resolve()),
+            "isolated_chart_composition_requested": args.isolate_chart_gl,
             "numeric_threads": numeric_threads, "input_hz_requested": args.input_hz, "market_hz": args.market_hz, "live_candle_hz": args.live_candle_hz, "watchlist_pairs": pairs,
             "panel_ids": list(panel_ids(window.right_rail_controller.state.root)),
             "indicators_enabled": False, "offline": True, "data_workload": "Synthetic tickers/BBO at 20 Hz by default; 120 depth levels per side with 1k–10k quote notional per level; four 10k–100k quote trades per update; one display-only position; no network or order execution."},
@@ -216,22 +219,41 @@ def main():
                 results["environment"]["cpu"] = line.partition(":")[2].strip()
                 break
 
-    state = {"case": None, "paint_stamps": [], "swap_stamps": [], "widget_stamps": [],
+    state = {"case": None, "paint_stamps": [], "swap_stamps": [], "raw_swap_stamps": [], "widget_stamps": [],
+             "watchlist_surface_stamps": [], "panel_preview_stamps": {}, "panel_events": {},
              "input_stamps": [], "input_latencies_ms": [], "paint_start": None, "paint_durations_ms": [],
              "pending_inputs": [], "symbol_index": 0, "case_index": 0, "feed_index": 0,
              "gesture_start": None, "point": None, "target": None, "live_rows_max": 0,
              "snapshots_received": 0, "order_flow_failures": [], "last_received_snapshot": {},
              "capture_cpu_start": None, "live_fixture": None, "live_updates": 0, "live_stamp": 0}
 
+    shells = {shell.panel_id: shell for shell in window.right_rail_controller.sections.values()}
+    panel_contents = {shell.content: pid for pid, shell in shells.items()}
+
+    def panel_geometry():
+        return {pid: {"shell": [shell.width(), shell.height()],
+                      "content": [shell.content.width(), shell.content.height()],
+                      "preview_active": bool(getattr(shell, "interactive_resize_active", False))}
+                for pid, shell in shells.items()}
+
     class PaintProbe(QtCore.QObject):
         def eventFilter(self, obj, event):
-            if state["case"] and event.type() == QtCore.QEvent.Type.Paint:
+            if not state["case"]:
+                return False
+            kind = event.type()
+            if kind in (QtCore.QEvent.Type.Resize, QtCore.QEvent.Type.LayoutRequest) and obj in panel_contents:
+                phase = "release" if state.get("gesture_ended_at") is not None else "gesture"
+                counts = state["panel_events"][panel_contents[obj]][phase]
+                key = "resize" if kind == QtCore.QEvent.Type.Resize else "layout_request"
+                counts[key] += 1
+            if kind == QtCore.QEvent.Type.Paint:
                 now = time.monotonic()
                 if obj is viewport:
                     state["paint_start"] = now
                 if obj is window.watchlist_sidebar.table.viewport():
                     state["widget_stamps"].append(now)
-                    state["content_revision"] += 1
+                    if not getattr(shells["watchlist"], "interactive_resize_active", False):
+                        state["watchlist_surface_stamps"].append(now)
             return False
     def snapshot_received(payload):
         state["snapshots_received"] += 1
@@ -245,6 +267,17 @@ def main():
     probe = PaintProbe(app)
     viewport.installEventFilter(probe)
     window.watchlist_sidebar.table.viewport().installEventFilter(probe)
+    for pid, shell in shells.items():
+        shell.content.installEventFilter(probe)
+        signal = getattr(shell, "resize_preview_presented", None)
+        if signal is not None:
+            def preview_painted(pid=pid):
+                if state["case"]:
+                    now = time.monotonic()
+                    state["panel_preview_stamps"][pid].append(now)
+                    if pid == "watchlist":
+                        state["watchlist_surface_stamps"].append(now)
+            signal.connect(preview_painted)
     state["content_revision"] = 0
     state["composed_revision"] = 0
 
@@ -267,6 +300,8 @@ def main():
         state["live_rows_max"] = max(state["live_rows_max"], len(chart.live_candle.pixel_batch.data))
     chart.graphics.frame_presented.connect(painted)
     def swapped():
+        if state["case"]:
+            state["raw_swap_stamps"].append(time.monotonic())
         if state["case"] and state["content_revision"] > state["composed_revision"]:
             state["swap_stamps"].append(time.monotonic())
             state["composed_revision"] = state["content_revision"]
@@ -424,10 +459,14 @@ def main():
         gesture.stop()
         case = state["case"]
         obj = state["target"]
+        state["panel_geometry_before_release"] = panel_geometry()
+        state["market_updates_during_gesture"] = state["feed_index"]-state["feed_index_start"]
+        state["snapshots_during_gesture"] = state["snapshots_received"]-state["snapshots_received_start"]
+        # Classify synchronous release layout separately from held-drag work.
+        state["gesture_ended_at"] = time.monotonic()
         # A real release flushes any coalesced final pointer sample.
         if case != "zoom":
             mouse(QtCore.QEvent.Type.MouseButtonRelease, obj, obj.mapFromGlobal(state["latest_global"]), held=False)
-        state["gesture_ended_at"] = time.monotonic()
         state["live_updates_end"] = state["live_updates"]
         state["case_cpu_end"] = cgroup_cpu_stat()
         QtCore.QTimer.singleShot(250, finalize_case)
@@ -472,7 +511,15 @@ def main():
             "cgroup_cpu_stat_delta": counter_delta(state["case_cpu_start"],state["case_cpu_end"]),
             "chart_paints": interval_summary(stamps,state["gesture_start"],end,target_hz),
             "qt_compositions": interval_summary([t for t in state["swap_stamps"] if t <= end],state["gesture_start"],end,target_hz),
+            "qt_swap_events": interval_summary([t for t in state["raw_swap_stamps"] if t <= end],state["gesture_start"],end,target_hz),
             "watchlist_paint_entries": interval_summary([t for t in state["widget_stamps"] if t <= end],state["gesture_start"],end,target_hz),
+            "watchlist_surface_paints": interval_summary([t for t in state["watchlist_surface_stamps"] if t <= end],state["gesture_start"],end,target_hz),
+            "panel_resize_previews": {pid: interval_summary([t for t in stamps if t <= end],state["gesture_start"],end,target_hz)
+                                      for pid, stamps in state["panel_preview_stamps"].items()},
+            "panel_content_events": state["panel_events"],
+            "panel_geometry_start": state["panel_geometry_start"],
+            "panel_geometry_before_release": state["panel_geometry_before_release"],
+            "panel_geometry_after_release": panel_geometry(),
             "input_to_next_chart_paint_complete_ms": {"sample_count": len(latency), "coalesced_inputs_included": True,
                 "unpainted_input_count": len(state["pending_inputs"]), "p99": latency[min(len(latency)-1,math.ceil(len(latency)*.99)-1)] if latency else None,
                 "max": latency[-1] if latency else None, "average": sum(latency)/len(latency) if latency else None},
@@ -483,7 +530,8 @@ def main():
             "history_preparation_commits_during_gesture": sum(entry["at_gesture_ms"] <= (end-state["gesture_start"])*1000.0 for entry in state["rendered_window_commits"]),
             "swipes_started": state["swipes_started"] if case == "history_traverse" else None,
             "view_range_start": state["view_range_start"], "view_range_changed": chart.price_plot.viewRange() != state["view_range_start"],
-            "resize_mode": "forced_opaque_content_resize" if "resize" in case else None,
+            "resize_mode": ("scaled_panel_previews" if any(p["preview_active"] for p in state["panel_geometry_before_release"].values())
+                            else "opaque_content_resize") if "resize" in case else None,
             "watchlist_geometry_start": state["watchlist_geometry_start"], "watchlist_geometry_end": [window.watchlist_sidebar.width(),window.watchlist_sidebar.height()],
             "paint_durations_ms": state["paint_durations_ms"],
             "diagnostics_capture_includes_release_tail_ms": 250, "diagnostics": profile,
@@ -491,6 +539,8 @@ def main():
             "visible_panels": {pid: window.right_rail_controller.panel_active(pid) for pid in ("depth","trades","watchlist","trading")},
             "watchlist_row_count": window.watchlist_sidebar.table.rowCount(),
             "fixture_observations": {"market_updates": state["feed_index"]-state["feed_index_start"],
+                "market_updates_during_gesture": state["market_updates_during_gesture"],
+                "order_flow_snapshots_during_gesture": state["snapshots_during_gesture"],
                 "order_flow_snapshots_received": state["snapshots_received"]-state["snapshots_received_start"],
                 **depth_observations(),
                 "tape_visible_rows": window.large_trades.model.rowCount(),
@@ -514,13 +564,29 @@ def main():
             raise RuntimeError("Mutable-candle fixture did not update inside the gesture without appending rows")
         if "resize" in case and item["watchlist_geometry_start"] == item["watchlist_geometry_end"]:
             raise RuntimeError("Synthetic content resize did not change visible geometry")
+        if item["resize_mode"] == "scaled_panel_previews":
+            for pid, before in item["panel_geometry_before_release"].items():
+                if not before["preview_active"]:
+                    continue
+                after = item["panel_geometry_after_release"][pid]
+                if (before["content"] != item["panel_geometry_start"][pid]["content"]
+                        or item["panel_content_events"][pid]["gesture"]["resize"]):
+                    raise RuntimeError(f"Panel controls resized during preview: {pid}")
+                if after["preview_active"] or not shells[pid].content.updatesEnabled() or not shells[pid].layout().isEnabled():
+                    raise RuntimeError(f"Panel preview did not restore live controls: {pid}")
+                shell = shells[pid]
+                expected = shell.contentsRect().marginsRemoved(shell.layout().contentsMargins()).size()
+                if shell.content.size() != expected:
+                    raise RuntimeError(f"Panel controls did not adopt final geometry: {pid}")
+            if args.market_hz and min(state["market_updates_during_gesture"],state["snapshots_during_gesture"]) <= 0:
+                raise RuntimeError("Market models stopped during panel preview")
         fixtures = item["fixture_observations"]
         if args.market_hz > 0 and (fixtures["order_flow_snapshots_received"] <= 0 or not fixtures["depth_ready"]
                 or min(fixtures["depth_bid_levels"],fixtures["depth_ask_levels"],fixtures["tape_visible_rows"],fixtures["display_position_count"]) <= 0
                 or fixtures["trading_armed"]):
             raise RuntimeError(f"Populated offline fixture did not reach visible widgets: {fixtures}")
         valid_gl_viewport = swap_signal is not None and callable(getattr(viewport, "isValid", None)) and viewport.isValid()
-        item["primary_surface"] = "qt_compositions" if valid_gl_viewport else "watchlist_paint_entries" if case.startswith("watchlist") else "chart_paints"
+        item["primary_surface"] = "watchlist_surface_paints" if case.startswith("watchlist") else "qt_compositions" if valid_gl_viewport else "chart_paints"
         results["cases"].append(item)
         state["case"] = None
         primary = item[item["primary_surface"]]
@@ -530,8 +596,13 @@ def main():
 
     def begin_case():
         case = cases[state["case_index"]]
-        for key in ("paint_stamps","swap_stamps","widget_stamps","input_stamps","input_latencies_ms","paint_durations_ms","pending_inputs"):
+        for key in ("paint_stamps","swap_stamps","raw_swap_stamps","widget_stamps","watchlist_surface_stamps","input_stamps","input_latencies_ms","paint_durations_ms","pending_inputs"):
             state[key] = []
+        state["gesture_ended_at"] = None
+        state["panel_preview_stamps"] = {pid: [] for pid in shells}
+        state["panel_events"] = {pid: {phase: {"resize": 0, "layout_request": 0} for phase in ("gesture", "release")}
+                                 for pid in shells}
+        state["panel_geometry_start"] = panel_geometry()
         state["live_rows_max"] = 0
         state["content_revision"] = 0
         state["composed_revision"] = 0

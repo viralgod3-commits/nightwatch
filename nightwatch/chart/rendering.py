@@ -2053,25 +2053,25 @@ void main() {
 
     @QtCore.Slot()
     def cleanup(self):
-        previous = QtGui.QOpenGLContext.currentContext()
-        previous_surface = previous.surface() if previous is not None else None
-        switched = not same_gl_context(previous, self.context)
-        if switched:
-            surface = self.context.surface()
-            if surface is None or not self.context.makeCurrent(surface):
-                return  # The context owns these wrappers and will reclaim them.
+        if self.program is None and self.vbo is None and self.vao is None:
+            return
         try:
-            if self.vbo is not None:
-                self.vbo.destroy()
-            if self.vao is not None:
-                self.vao.destroy()
-            self.program = None
-            self.revision = -1
+            # Never revive a context via its last surface: a native chart may
+            # already have destroyed that QSurface during reparenting/close.
+            # Qt's resource guards reclaim objects when no owner is current.
+            if (same_gl_context(QtGui.QOpenGLContext.currentContext(), self.context)
+                    and self.context.isValid()):
+                if self.vbo is not None:
+                    self.vbo.destroy()
+                if self.vao is not None:
+                    self.vao.destroy()
+        except RuntimeError:
+            # PySide can invalidate wrappers before the destruction callback.
+            pass
         finally:
-            if switched:
-                self.context.doneCurrent()
-                if previous is not None and previous_surface is not None:
-                    previous.makeCurrent(previous_surface)
+            self.program = self.vbo = self.vao = None
+            self.capacity = 0
+            self.revision = -1
 
     @QtCore.Slot()
     def dispose(self):
@@ -3087,6 +3087,12 @@ class ChartGraphicsView(pg.GraphicsLayoutWidget):
     def showEvent(self, event):
         super().showEvent(event)
         self._scene_dirty = False
+        self.request_redraw()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        # Geometry changes request their own frame. A held panel drag alone
+        # must not continuously repaint a chart whose geometry is unchanged.
         self.request_redraw()
 
     def _scene_changed(self, _rects):

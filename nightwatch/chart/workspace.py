@@ -999,6 +999,7 @@ class ChartWorkspace(QtWidgets.QWidget):
         parent: QtWidgets.QWidget | None = None,
         *,
         use_opengl: bool = False,
+        isolate_gl_composition: bool = False,
         opengl_full_viewport: bool = False,
         native_bar_renderer: bool = True,
         lod_aggregation: bool = True,
@@ -1008,6 +1009,7 @@ class ChartWorkspace(QtWidgets.QWidget):
         super().__init__(parent)
         self.theme = theme
         self.use_opengl = bool(use_opengl)
+        self._isolate_gl_composition = bool(isolate_gl_composition)
         self._requested_opengl = self.use_opengl
         self._opengl_runtime_failure_reason = ""
         self.opengl_full_viewport = bool(opengl_full_viewport)
@@ -2109,7 +2111,6 @@ class ChartWorkspace(QtWidgets.QWidget):
         self._presentation_clock.set_continuous(bool(
             self._presentation_active and self.isVisible() and (
                 self._interaction_render_active
-                or self._resize_expensive_deferred
                 or self._pending_zoom_range is not None
                 or self._navigation_pending_rail
             )
@@ -3773,6 +3774,12 @@ class ChartWorkspace(QtWidgets.QWidget):
             self._start_navigation_scheduler(immediate=True)
 
     def showEvent(self, event: QtGui.QShowEvent) -> None:
+        if (self.use_opengl and self._isolate_gl_composition
+                and not self.testAttribute(Qt.WidgetAttribute.WA_NativeWindow)):
+            # A native chart ancestor keeps raster sibling updates out of GL
+            # composition. Establish it after parenting, before first exposure.
+            self.setAttribute(Qt.WidgetAttribute.WA_DontCreateNativeAncestors)
+            self.setAttribute(Qt.WidgetAttribute.WA_NativeWindow)
         super().showEvent(event)
         self.set_presentation_active(True)
         self._sync_frame_activity()
@@ -8627,6 +8634,7 @@ class ChartWorkspace(QtWidgets.QWidget):
             "renderer": "OpenGL" if self.use_opengl else "Raster",
             "viewport": type(viewport).__name__,
             "viewport_update_mode": getattr(mode, "name", str(mode)),
+            "composition_isolated": self.testAttribute(Qt.WidgetAttribute.WA_NativeWindow),
             "size": (int(viewport.width()), int(viewport.height())),
             "device_pixel_ratio": float(viewport.devicePixelRatioF()),
             "ready": bool(self._initial_snapshot_painted),
@@ -8929,6 +8937,7 @@ class AuxiliaryChartPane(QtWidgets.QFrame):
         parent: QtWidgets.QWidget | None = None,
         *,
         use_opengl: bool = False,
+        isolate_gl_composition: bool = False,
         opengl_full_viewport: bool = False,
         native_bar_renderer: bool = True,
         lod_aggregation: bool = True,
@@ -8994,6 +9003,7 @@ class AuxiliaryChartPane(QtWidgets.QFrame):
         self.chart = ChartWorkspace(
             theme,
             use_opengl=use_opengl,
+            isolate_gl_composition=isolate_gl_composition,
             opengl_full_viewport=opengl_full_viewport,
             native_bar_renderer=native_bar_renderer,
             lod_aggregation=lod_aggregation,
@@ -9180,6 +9190,7 @@ class MultiChartContainer(QtWidgets.QWidget):
         parent: QtWidgets.QWidget | None = None,
         *,
         use_opengl: bool = False,
+        isolate_gl_composition: bool = False,
         opengl_full_viewport: bool = False,
         native_bar_renderer: bool = True,
         lod_aggregation: bool = True,
@@ -9200,6 +9211,7 @@ class MultiChartContainer(QtWidgets.QWidget):
         self.grid.setSpacing(2)
         self._market_data_factory = market_data_factory
         self._use_opengl = bool(use_opengl)
+        self._isolate_gl_composition = bool(isolate_gl_composition)
         self._opengl_full_viewport = bool(opengl_full_viewport)
         self._native_bar_renderer = bool(native_bar_renderer)
         self._lod_aggregation = bool(lod_aggregation)
@@ -9252,6 +9264,7 @@ class MultiChartContainer(QtWidgets.QWidget):
                 interval,
                 self,
                 use_opengl=self._use_opengl,
+                isolate_gl_composition=self._isolate_gl_composition,
                 opengl_full_viewport=self._opengl_full_viewport,
                 native_bar_renderer=self._native_bar_renderer,
                 lod_aggregation=self._lod_aggregation,
@@ -9316,7 +9329,6 @@ class MultiChartContainer(QtWidgets.QWidget):
             self.grid.setColumnStretch(column, 0)
         for pane in self.auxiliary:
             pane.set_active(False)
-        self.primary_chart.show()
         self.primary_chart.setMinimumWidth(280 if mode != "Single" else 680)
         if mode == "2 Horizontal":
             self.grid.addWidget(self.primary_chart, 0, 0)
@@ -9343,6 +9355,9 @@ class MultiChartContainer(QtWidgets.QWidget):
             self.grid.addWidget(self.primary_chart, 0, 0)
             self.grid.setRowStretch(0, 1)
             self.grid.setColumnStretch(0, 1)
+        # Parent the primary surface before exposing it. A temporary top-level
+        # GL surface would be destroyed and recreated as the grid adopts it.
+        self.primary_chart.show()
         self.layout_mode = mode
 
     def set_workspace_active(self, active: bool) -> None:

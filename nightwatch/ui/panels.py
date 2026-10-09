@@ -1135,8 +1135,29 @@ if QtWidgets is not None:
                 painter.end()
 
 
+    class _PanelResizePreview(QtWidgets.QWidget):
+        """A paint-only resize surface; the live controls retain their geometry."""
+
+        presented = Signal()
+
+        def __init__(self, parent):
+            super().__init__(parent)
+            self.pixmap = QtGui.QPixmap()
+            self.setAttribute(Qt.WidgetAttribute.WA_OpaquePaintEvent)
+            self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+            self.hide()
+
+        def paintEvent(self, event):
+            painter = QtGui.QPainter(self)
+            painter.drawPixmap(self.rect(), self.pixmap)
+            painter.end()
+            self.presented.emit()
+
+
     class RightPanelShell(QtWidgets.QFrame):
         """Unified outer geometry contract for one right-rail feature."""
+
+        resize_preview_presented = Signal()
 
         def __init__(
             self,
@@ -1170,9 +1191,54 @@ if QtWidgets is not None:
                 QtWidgets.QSizePolicy.Policy.Ignored,
             )
             layout.addWidget(content, 1)
+            self._resize_preview = _PanelResizePreview(self)
+            self._resize_preview.presented.connect(self.resize_preview_presented)
+            self._resize_restore = None
             self._edge_overlay = RightPanelEdgeOverlay(self)
             self._edge_overlay.setGeometry(self.rect())
             self._edge_overlay.raise_()
+
+        @property
+        def interactive_resize_active(self) -> bool:
+            return self._resize_restore is not None
+
+        def begin_interactive_resize(self) -> None:
+            if self.interactive_resize_active or not self.isVisible() or not self.content.isVisible():
+                return
+            pixmap = self.content.grab()
+            if pixmap.isNull():
+                return
+            layout = self.layout()
+            self._resize_restore = (layout.isEnabled(), self.content.updatesEnabled())
+            # Do not hide/reparent the controls: their market models, worker
+            # subscriptions, focus and visibility-dependent timers stay live.
+            layout.setEnabled(False)
+            self.content.setUpdatesEnabled(False)
+            self._resize_preview.pixmap = pixmap
+            self._sync_resize_preview_geometry()
+            self._resize_preview.show()
+            self._resize_preview.raise_()
+            self._edge_overlay.raise_()
+
+        def _sync_resize_preview_geometry(self) -> None:
+            self._resize_preview.setGeometry(
+                self.contentsRect().marginsRemoved(self.layout().contentsMargins())
+            )
+
+        def end_interactive_resize(self) -> None:
+            restore = self._resize_restore
+            if restore is None:
+                return
+            self._resize_restore = None
+            layout = self.layout()
+            layout.setEnabled(restore[0])
+            if restore[0]:
+                layout.invalidate()
+                layout.activate()
+            self.content.setUpdatesEnabled(restore[1])
+            self._resize_preview.hide()
+            self._resize_preview.pixmap = QtGui.QPixmap()
+            self.update()
 
         def set_edge_style(
             self,
@@ -1190,6 +1256,8 @@ if QtWidgets is not None:
 
         def resizeEvent(self, event: QtGui.QResizeEvent) -> None:
             super().resizeEvent(event)
+            if self.interactive_resize_active:
+                self._sync_resize_preview_geometry()
             self._edge_overlay.setGeometry(self.rect())
             self._edge_overlay.raise_()
 
@@ -1197,6 +1265,10 @@ if QtWidgets is not None:
             super().showEvent(event)
             self._edge_overlay.setGeometry(self.rect())
             self._edge_overlay.raise_()
+
+        def hideEvent(self, event: QtGui.QHideEvent) -> None:
+            self.end_interactive_resize()
+            super().hideEvent(event)
 
         def minimumSizeHint(self) -> QtCore.QSize:
             return QtCore.QSize(0, self.minimumHeight())
@@ -1485,7 +1557,16 @@ if QtWidgets is not None:
                 splitters.append(self._main_splitter)
             for splitter in splitters:
                 splitter.cancel_grab_drag()
+            self.end_interactive_resize()
             self._dirty_splitters.clear()
+
+        def begin_interactive_resize(self):
+            for shell in self.sections.values():
+                shell.begin_interactive_resize()
+
+        def end_interactive_resize(self):
+            for shell in self.sections.values():
+                shell.end_interactive_resize()
 
         def queue_splitter(self, splitter, *, surfaces=False):
             (self._dirty_surfaces if surfaces else self._dirty_splitters).add(splitter)
