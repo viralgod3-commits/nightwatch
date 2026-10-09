@@ -43,6 +43,15 @@ analytics processes from oversubscribing the CPU. Set
 workload. Windows high process priority is opt-in through
 `NIGHTWATCH_HIGH_PRIORITY=1`.
 
+Spawned workers share a CPU budget based on process affinity, physical cores and
+Linux cgroup quotas. On hosts with at least four available physical cores and
+CPU capacity, workers exclude one physical core, including its SMT siblings, so
+the GUI can use it without competing with child processes. Live order-flow and
+DOM workers keep their inherited priority; analysis workers use lower priority.
+The analysis pool reserves capacity for the GUI and both live workers, with a
+minimum of one analysis worker. CPU topology or affinity restrictions fall back
+to inherited placement. Trading transport stays in the main process.
+
 Chart preparation workers build an immutable multiresolution candle index for
 wide zooms and live aggregate updates (about 2 MB for 250,000 contiguous candles).
 Older history is fetched and adopted during held pans. The order-book rendering

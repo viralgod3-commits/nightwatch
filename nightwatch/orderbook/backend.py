@@ -3622,6 +3622,8 @@ def _orderbook_process_main(connection, factory, options):
     signal.signal(signal.SIGINT, signal.SIG_IGN)
     worker = None
     try:
+        from ..compute import configure_worker
+        configure_worker()
 
         import os
         for key in ('OMP_NUM_THREADS', 'OPENBLAS_NUM_THREADS', 'MKL_NUM_THREADS'):

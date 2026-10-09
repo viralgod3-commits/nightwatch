@@ -180,20 +180,16 @@ _closed = False
 
 
 def analysis_worker_count():
-    """Six independent analyses on an eight-core host; reserve GUI/ingress CPU."""
-    count = getattr(os, "process_cpu_count", os.cpu_count)() or 1
-    if hasattr(os, "sched_getaffinity"):
-        try:
-            count = min(count, len(os.sched_getaffinity(0)))
-        except OSError:
-            pass
-    return max(1, min(6, count - 2))
+    from ..compute import cpu_budget
+    return cpu_budget().analysis_workers
 
 
 def _initialize_analysis_worker():
     # The GUI owns Ctrl+C and coordinates cooperative worker shutdown.
     import signal
     signal.signal(signal.SIGINT, signal.SIG_IGN)
+    from ..compute import configure_worker
+    configure_worker(analysis=True)
 
 
 
