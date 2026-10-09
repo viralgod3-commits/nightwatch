@@ -1757,8 +1757,13 @@ class NightwatchSettingsDialog(QtWidgets.QDialog):
         super().__init__(dialog_parent)
         self.host = host
         self.setObjectName("nightwatchSettingsDialog")
+        self.setProperty("nightwatchOwnsEscape", True)
         self.setWindowTitle("Nightwatch settings")
         self.setModal(False)
+        self._restore_after_activation = False
+        self._application_visibility_timer = QtCore.QTimer(self)
+        self._application_visibility_timer.setSingleShot(True)
+        self._application_visibility_timer.timeout.connect(self._sync_application_visibility)
         self._preferred_size = QtCore.QSize(1120, 760)
         self._preferred_minimum_size = QtCore.QSize(760, 540)
         self.resize(self._preferred_size)
@@ -1890,6 +1895,50 @@ class NightwatchSettingsDialog(QtWidgets.QDialog):
         escape_shortcut.activated.connect(self._settings_escape)
         self.categories.setCurrentRow(0)
         self._fit_to_available_screen(prefer_default=True)
+        application = QtWidgets.QApplication.instance()
+        if application is not None:
+            application.applicationStateChanged.connect(self._application_state_changed)
+
+    def _application_state_changed(self, state: Qt.ApplicationState) -> None:
+        if state != Qt.ApplicationState.ApplicationActive:
+            if self.isVisible():
+                self._restore_after_activation = True
+            # Window switchers briefly take focus before selecting their target.
+            # Unmapping the selected dialog during that handoff changes the target.
+            self._application_visibility_timer.start(100)
+        else:
+            self._application_visibility_timer.start(0)
+
+    def _sync_application_visibility(self) -> None:
+        application = QtWidgets.QApplication.instance()
+        if application is None:
+            return
+        if application.applicationState() != Qt.ApplicationState.ApplicationActive:
+            if self._restore_after_activation:
+                if QtGui.QGuiApplication.queryKeyboardModifiers() & (
+                    Qt.KeyboardModifier.AltModifier | Qt.KeyboardModifier.MetaModifier
+                ):
+                    self._application_visibility_timer.start(100)
+                    return
+                self.hide()
+            return
+        if not self._restore_after_activation:
+            return
+        if self.isVisible():
+            self._restore_after_activation = False
+            return
+        parent = self.parentWidget()
+        if parent is not None and (not parent.isVisible() or parent.isMinimized()):
+            return
+        self._restore_after_activation = False
+        self.show()
+        self.raise_()
+        self.activateWindow()
+
+    def closeEvent(self, event: QtGui.QCloseEvent) -> None:
+        self._restore_after_activation = False
+        self._application_visibility_timer.stop()
+        super().closeEvent(event)
 
     def _ensure_page_built(self, index: int) -> QtWidgets.QWidget | None:
         index = int(index)
@@ -2928,8 +2977,8 @@ class NightwatchSettingsDialog(QtWidgets.QDialog):
             self._syncing = False
 
     def showEvent(self, event: QtGui.QShowEvent) -> None:
-
-
+        self._restore_after_activation = False
+        self._application_visibility_timer.stop()
         self.sync_from_owner()
         self._refresh_frame_benchmark()
         self._fit_to_available_screen(prefer_default=False)

@@ -451,6 +451,7 @@ class _TickerPreparation:
 class MainWindow(QtWidgets.QMainWindow):
     _application_filter_events = frozenset((
         QtCore.QEvent.Type.ApplicationStateChange, QtCore.QEvent.Type.WindowActivate,
+        QtCore.QEvent.Type.WindowDeactivate,
         QtCore.QEvent.Type.Close, QtCore.QEvent.Type.Hide, QtCore.QEvent.Type.Show,
         QtCore.QEvent.Type.KeyPress, QtCore.QEvent.Type.ShortcutOverride,
         QtCore.QEvent.Type.Shortcut, QtCore.QEvent.Type.ToolTip,
@@ -4992,6 +4993,8 @@ class MainWindow(QtWidgets.QMainWindow):
                 QTimer.singleShot(0, self, self._sync_windows_fullscreen_native_stack)
         elif event_type == QtCore.QEvent.Type.WindowActivate and watched is self:
             QTimer.singleShot(0, self, self._restore_terminal_keyboard_focus)
+        elif event_type == QtCore.QEvent.Type.WindowDeactivate and watched is self:
+            self._reset_armed_order_sequence()
         elif (
             event_type in (QtCore.QEvent.Type.Close, QtCore.QEvent.Type.Hide)
             and isinstance(watched, QtWidgets.QWidget)
@@ -5066,7 +5069,10 @@ class MainWindow(QtWidgets.QMainWindow):
                 self._switch_workspace(key-int(Qt.Key.Key_1))
                 return True
             if (
-                modifiers & Qt.KeyboardModifier.ControlModifier
+                modifiers in (
+                    Qt.KeyboardModifier.ControlModifier,
+                    Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.ShiftModifier,
+                )
                 and key in {int(Qt.Key.Key_Tab), int(Qt.Key.Key_Backtab)}
             ):
                 reverse = (

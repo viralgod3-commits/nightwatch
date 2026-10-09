@@ -271,6 +271,9 @@ class _BorderlessWindowFilter(QtCore.QObject):
 
 
                 window = QtWidgets.QApplication.activeWindow()
+                if (isinstance(window, QtWidgets.QWidget)
+                        and window.property("nightwatchOwnsEscape") is True):
+                    return False
                 if (
                     isinstance(window, QtWidgets.QWidget)
                     and window.isWindow()
