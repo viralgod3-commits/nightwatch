@@ -3004,6 +3004,7 @@ class WatchlistSidebarWidget(QtWidgets.QWidget):
         self._sort_descending = False
         self._sorting = False
         self._row_display_signatures = {}
+        self._row_source_signatures = {}
         self._icon_refresh_after = {}
         self._theme_revision = 0
         self._last_size_style_key = None
@@ -3385,6 +3386,7 @@ class WatchlistSidebarWidget(QtWidgets.QWidget):
             }
         now = time.monotonic()
         signatures = {}
+        source_signatures = {}
         style_key = (self._theme_revision, self.devicePixelRatioF())
         if style_key != self._last_size_style_key:
             self._invalidate_numeric_widths()
@@ -3405,6 +3407,19 @@ class WatchlistSidebarWidget(QtWidgets.QWidget):
             price = safe_float(ticker.get("c"))
             change_1h = self.source.hour_changes.get(symbol)
             change_24h = safe_float(ticker.get("P"))
+            # Compare source values before formatting every row. Preserve the
+            # sign of zero as text; it can change the displayed percentage.
+            source_signature = (
+                symbol, str(ticker.get("c")), str(ticker.get("P")), str(change_1h),
+                bool(ticker), move_direction, symbol == active_symbol, style_key,
+            )
+            source_signatures[row] = source_signature
+            previous = self._row_display_signatures.get(row)
+            icon_due = now >= self._icon_refresh_after.get(symbol, 0.0)
+            if (previous is not None and not icon_due
+                    and source_signature == self._row_source_signatures.get(row)):
+                signatures[row] = previous
+                continue
             quote = "USDC" if symbol.endswith("USDC") else "USDT"
             base = symbol.removesuffix(quote)
             display = f"{base}{quote}.P"
@@ -3420,9 +3435,7 @@ class WatchlistSidebarWidget(QtWidgets.QWidget):
                              change_24h >= 0)
             signature = (symbol, values, change_colors, bool(ticker),
                          move_direction, symbol == active_symbol, style_key)
-            previous = self._row_display_signatures.get(row)
             signatures[row] = signature
-            icon_due = now >= self._icon_refresh_after.get(symbol, 0.0)
             if signature == previous and not icon_due:
                 continue
             static_changed = previous is None or (previous[0], previous[-1]) != (symbol, style_key)
@@ -3507,6 +3520,7 @@ class WatchlistSidebarWidget(QtWidgets.QWidget):
             if static_changed:
                 self.table.setRowHeight(row, 23)
         self._row_display_signatures = signatures
+        self._row_source_signatures = source_signatures
         if selected_row >= 0 and (
             self.table.currentRow() != selected_row
             or self.selected_symbol() != symbols[selected_row]

@@ -1040,8 +1040,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self._apply_stylesheet()
         self._reset_top_metrics()
         # Chart interaction priority protects direct manipulation frame time.
-        # Cheap visible state stays at display cadence; only expensive broad
-        # ranking/analytics recomputation is deferred until the gesture settles.
+        # Geometry stays at display cadence; secondary content is coalesced
+        # during gestures and broad ranking waits until the gesture settles.
         self._chart_interaction_priority_active = False
         self._interaction_deferred_ticker_ui = False
         self.market_event_timer = QTimer(self)
@@ -7409,8 +7409,8 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _sync_interaction_driver(self, _chart=None) -> None:
         active = self._chart_interaction_priority_active or self._ui_resize_active
-        # Geometry, DOM/tape adoption and chart preparation share one visual
-        # transaction during gestures instead of racing two presentation clocks.
+        # Geometry joins every chart transaction. Secondary DOM/tape/ticker
+        # content joins only when its own adoption deadline is due.
         driver = None
         if active:
             chart = self.chart_container.interaction_chart() or self.chart
@@ -7500,6 +7500,10 @@ class MainWindow(QtWidgets.QMainWindow):
             return
         if self._chart_interaction_priority_active or self._ui_resize_active:
             self._interaction_deferred_ticker_ui = True
+            if self.pending_ticker_symbols:
+                # A watchlist-only layout has no DOM/tape arrival to wake the
+                # secondary clock. Point updates still join its bounded cadence.
+                self.presentation_clock.request()
             return
         self.presentation_clock.request()
 

@@ -40,7 +40,9 @@ from .raster_regions import (
 from .tape import TAPE_CAPACITY, TapeSeedRequired
 from .tape_source import SharedTradeTapeSource
 
-from ..presentation import DisplayRefreshObserver, display_frame_interval_ms
+from ..presentation import (
+    DisplayRefreshObserver, display_frame_interval_ms, INTERACTION_CONTENT_INTERVAL_MS,
+)
 from ..chart.analysis import LatestJob
 
 
@@ -388,44 +390,7 @@ import math
 from ..models import BOOK_DEPTH_FRESH_SECONDS, BOOK_BBO_FRESH_SECONDS, book_data_is_fresh
 from PySide6 import QtGui
 from ..models import safe_float
-
-def _general_to_fixed(text: str) -> str:
-    """Convert a short general-format float string to fixed notation."""
-    lowered = text.lower()
-    if 'e' not in lowered:
-        if '.' in lowered:
-            lowered = lowered.rstrip('0').rstrip('.')
-        return '0' if lowered in {'', '-0'} else lowered
-    mantissa, exponent_text = lowered.split('e', 1)
-    exponent = int(exponent_text)
-    negative = mantissa.startswith('-')
-    if negative:
-        mantissa = mantissa[1:]
-    whole, _dot, fraction = mantissa.partition('.')
-    digits = whole + fraction
-    decimal_position = len(whole) + exponent
-    if decimal_position <= 0:
-        output = '0.' + '0' * -decimal_position + digits
-    elif decimal_position >= len(digits):
-        output = digits + '0' * (decimal_position - len(digits))
-    else:
-        output = digits[:decimal_position] + '.' + digits[decimal_position:]
-    if '.' in output:
-        output = output.rstrip('0').rstrip('.')
-    if negative and output != '0':
-        output = '-' + output
-    return output
-
-def format_book_price(value: float, decimals: int | None=None) -> str:
-    """Fixed-point price text without arbitrary-precision number allocation."""
-    value = safe_float(value)
-    if not value:
-        precision = max(0, min(16, int(decimals or 0)))
-        return f'{0.0:.{precision}f}' if decimals is not None else '0'
-    if decimals is not None:
-        precision = max(0, min(16, int(decimals)))
-        return f'{value:.{precision}f}'
-    return _general_to_fixed(format(value, '.12g'))
+from .formatting import _general_to_fixed, format_book_price
 
 def _decimal_places_from_float(value: float) -> int:
     """Match normalized decimal-place semantics from Python's short float repr."""
@@ -480,6 +445,8 @@ class _TradesTapeModel(QtCore.QAbstractTableModel):
         self.decimals: int | None = None
         self.value_mode = 'quote'
         self.amount_decimals = {'base': 0, 'quote': 2}
+        self._prepared_format = None
+        self._prepared_cells = {}
         self.buy = QtGui.QColor(ORDERBOOK_REFERENCE['bid'])
         self.sell = QtGui.QColor(ORDERBOOK_REFERENCE['ask'])
         self.muted = QtGui.QColor(ORDERBOOK_REFERENCE['muted'])
@@ -536,6 +503,10 @@ class _TradesTapeModel(QtCore.QAbstractTableModel):
         return None
 
     def _row(self, trade):
+        if self._prepared_format == (self.decimals, self.value_mode, self.amount_decimals[self.value_mode]):
+            prepared = self._prepared_cells.get(self.identity(trade))
+            if prepared is not None and prepared[0] == trade:
+                return trade, prepared[1]
         self.formatted_rows += 1
         stamp = datetime.fromtimestamp(trade.event_time_ms / 1000.0, timezone.utc).strftime('%H:%M:%S') if trade.event_time_ms > 0 else '—'
         amount = trade.quantity if self.value_mode == 'base' else trade.notional
@@ -568,16 +539,31 @@ class _TradesTapeModel(QtCore.QAbstractTableModel):
     def clear(self):
         self.beginResetModel()
         self.rows, self.keys, self._indices = [], [], {}
+        self._prepared_cells = {}
+        self._prepared_format = None
         self.endResetModel()
 
     def set_frame(self, frame, *, reformat=False):
         patch = frame.patch
         updates = dict(patch.upserts)
         seed = frame.base_revision is None
+        prepared = (frame.format_key == (self.decimals, self.value_mode)
+                    and frame.amount_decimals is not None)
+        self._prepared_cells = {}
+        self._prepared_format = None
+        if prepared:
+            precision = frame.amount_decimals
+            reformat |= precision != self.amount_decimals[self.value_mode]
+            self.amount_decimals[self.value_mode] = precision
+            self._prepared_format = (self.decimals, self.value_mode, precision)
+            self._prepared_cells = {
+                self.identity(trade): (trade, cells) for trade, cells in frame.formatted
+            }
         if patch.order is None and not seed:
             if patch.removed or any(key not in self._indices for key in updates):
                 raise TapeSeedRequired('Tape membership changed without an ordering')
-            reformat |= self._precision(patch.upserts)
+            if not prepared:
+                reformat |= self._precision(patch.upserts)
             if reformat:
                 for key, trade in patch.upserts:
                     row = self._indices[key]
@@ -594,7 +580,8 @@ class _TradesTapeModel(QtCore.QAbstractTableModel):
                 or any(key not in updates and (seed or key not in self._indices) for key in order)
                 or any(key not in ordered_keys for key in updates)):
             raise TapeSeedRequired('Incomplete trade-tape view')
-        reformat |= self._precision(patch.upserts)
+        if not prepared:
+            reformat |= self._precision(patch.upserts)
         previous = self.keys
         prefix = order.index(previous[0]) if previous and previous[0] in order else len(order)
         retained = len(order) - prefix
@@ -961,6 +948,7 @@ class TradesTapeWidget(QtWidgets.QWidget):
         if decimals != self.model.decimals:
             self.model.decimals = decimals
             self._reformat = self._dirty = True
+            self._request_tape_view()
             self._schedule_refresh()
 
     def set_quote_volume(self, quote_volume_24h):
@@ -1030,15 +1018,20 @@ class TradesTapeWidget(QtWidgets.QWidget):
         if clock is self._presentation_clock:
             return
         if self._presentation_clock is not None:
-            self._presentation_clock.interaction_frame.disconnect(self._commit_frame_refresh)
+            self._presentation_clock.frame.disconnect(self._commit_frame_refresh)
         self._presentation_clock = clock
         if clock is not None:
-            clock.interaction_frame.connect(self._commit_frame_refresh)
+            clock.frame.connect(self._commit_frame_refresh)
         elif self._frame_refresh_pending:
             self._commit_frame_refresh()
 
     def set_interaction_priority(self, active):
-        self._interaction_priority_active = bool(active)
+        active = bool(active)
+        if active == self._interaction_priority_active:
+            return
+        self._interaction_priority_active = active
+        if self._tape_source is not None:
+            self._tape_source.refresh(self)
         if not active and self._frame_refresh_pending:
             self._commit_frame_refresh()
 
@@ -1083,10 +1076,12 @@ class TradesTapeWidget(QtWidgets.QWidget):
             self._value_mode = self.model.value_mode = mode
             # A unit switch can expose amounts that were never measured in
             # that mode. Inspect retained rows once, even without a new frame.
-            self.model._precision(zip(self.model.keys, (row[0] for row in self.model.rows)),
-                                  force=True)
+            if self._tape_source is None:
+                self.model._precision(zip(self.model.keys, (row[0] for row in self.model.rows)),
+                                      force=True)
             self.model.headerDataChanged.emit(Qt.Orientation.Horizontal, 1, 1)
             self._reformat = self._dirty = True
+            self._request_tape_view()
             self._schedule_refresh()
             if emit:
                 self.value_mode_changed.emit(mode)
@@ -1103,6 +1098,8 @@ class TradesTapeWidget(QtWidgets.QWidget):
     def _receive_tape_frame(self, frame):
         if (frame.consumer != self._tape_consumer or frame.token != self._tape_token
                 or frame.symbol != self.symbol or frame.mode != self._mode
+                or (frame.format_key is not None
+                    and frame.format_key != (self.model.decimals, self._value_mode))
                 or not self._active or not self.isVisible()):
             return False
         if frame.base_revision is not None and frame.base_revision != self._tape_revision:
@@ -1133,6 +1130,10 @@ class TradesTapeWidget(QtWidgets.QWidget):
             return
         self._refresh_timer.stop()
         frame = self._pending_tape_frame
+        if frame is None and self._reformat and self._tape_source is not None:
+            # Precision/unit changes request a freshly formatted worker seed.
+            # Do not reformat the old 500-row model while that seed is pending.
+            return
         if frame is None and self._tape_revision is None and not self.model.rows:
             return  # Keep the waiting state until this view receives its seed.
         bar = self.table.verticalScrollBar()
@@ -6879,7 +6880,9 @@ class OrderFlowDomCanvas(_DomRasterCanvas):
                       depth_range=self._profile_ruler_fraction,
                       columns=self.column_preferences(), widths=self.column_width_state(),
                       size=(max(1,self.width()), max(1,self.height())), dpr=self.devicePixelRatioF(),
-                      interval=display_frame_interval_ms(self), theme=self._bar_theme,
+                      interval=max(display_frame_interval_ms(self),
+                                   INTERACTION_CONTENT_INTERVAL_MS if self._interaction_priority_active else 1),
+                      theme=self._bar_theme,
                       interaction_priority=self._interaction_priority_active,
                       typography=self._remote_typography)
         if config == self._sent_config:
@@ -6956,10 +6959,10 @@ class OrderFlowDomCanvas(_DomRasterCanvas):
         if clock is self._presentation_clock:
             return
         if self._presentation_clock is not None:
-            self._presentation_clock.interaction_frame.disconnect(self._commit_pending_raster)
+            self._presentation_clock.frame.disconnect(self._commit_pending_raster)
         self._presentation_clock = clock
         if clock is not None:
-            clock.interaction_frame.connect(self._commit_pending_raster)
+            clock.frame.connect(self._commit_pending_raster)
         else:
             self._commit_pending_raster()
 

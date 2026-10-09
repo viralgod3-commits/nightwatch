@@ -3,11 +3,13 @@ from __future__ import annotations
 
 from collections import OrderedDict
 from dataclasses import dataclass, replace
+from datetime import datetime, timezone
 import math
 import uuid
 
 from ..models import OrderFlowSnapshot, OrderFlowTradePrint
 from .revisions import print_revision_key, prints_equal
+from .formatting import format_book_price
 
 
 TAPE_CAPACITY = 500
@@ -56,6 +58,9 @@ class TapeFrame:
     base_revision: int | None
     threshold: float
     patch: TapePatch
+    format_key: tuple | None = None
+    amount_decimals: int | None = None
+    formatted: tuple = ()
 
 
 class TapeSeedRequired(RuntimeError):
@@ -267,13 +272,44 @@ class TapeStateDecoder:
 
 
 class _TapeView:
-    def __init__(self, consumer, token, symbol, mode, active, interval):
+    def __init__(self, consumer, token, symbol, mode, active, interval, format_key):
         self.consumer, self.token, self.symbol = consumer, token, symbol
         self.mode, self.active = mode, active
         self.base = self.pending = self.key = None
         self.revision = None
         self.last_sent = -math.inf
         self.interval = interval
+        self.format_key = format_key
+        self.amount_decimals = 0 if format_key and format_key[1] == 'base' else 2
+
+    def format_patch(self, entries, patch):
+        """Format immutable cells in the producer process, never in a paint.
+
+        Normal updates only format changed prints. A precision increase needs
+        all retained cells once so old and new sizes keep aligned decimals.
+        """
+        if self.format_key is None:
+            return ()
+        decimals, mode = self.format_key
+        precision = self.amount_decimals
+        for _key, trade in patch.upserts:
+            amount = trade.quantity if mode == 'base' else trade.notional
+            if mode == 'base' or 0 < abs(amount) < .01:
+                precision = max(precision, len(format_book_price(amount).partition('.')[2]))
+        rows = entries if precision != self.amount_decimals else patch.upserts
+        self.amount_decimals = precision
+        prefix = '' if mode == 'base' else '$'
+        outcomes = {'FOLLOW_THROUGH': '✓', 'REJECTED': '×', 'UNRESOLVED': '…'}
+        formatted = []
+        for _key, trade in rows:
+            stamp = (datetime.fromtimestamp(trade.event_time_ms / 1000.0, timezone.utc).strftime('%H:%M:%S')
+                     if trade.event_time_ms > 0 else '—')
+            amount = trade.quantity if mode == 'base' else trade.notional
+            cells = (format_book_price(trade.price, decimals),
+                     prefix + format_book_price(amount, precision),
+                     outcomes.get(trade.outcome, '—'), stamp)
+            formatted.append((trade, cells))
+        return tuple(formatted)
 
 
 class TapePublisher:
@@ -283,7 +319,7 @@ class TapePublisher:
         self.views = {}
         self.frames = self.seeds = self.upserts = self.acks = 0
 
-    def set_view(self, consumer, token, symbol, mode, active, interval=TAPE_INTERVAL_SECONDS):
+    def set_view(self, consumer, token, symbol, mode, active, interval=TAPE_INTERVAL_SECONDS, format_key=None):
         if not active:
             self.views.pop(consumer, None)
             return
@@ -294,11 +330,13 @@ class TapePublisher:
             interval = TAPE_INTERVAL_SECONDS
         interval = max(.001, interval)
         previous = self.views.get(consumer)
-        if previous is not None and (previous.token, previous.symbol, previous.mode) == (token, symbol, mode):
+        if (previous is not None
+                and (previous.token, previous.symbol, previous.mode, previous.format_key)
+                == (token, symbol, mode, format_key)):
             # A refresh-rate change keeps the acknowledged delta base and lease.
             previous.interval = interval
             return
-        self.views[consumer] = _TapeView(consumer, token, symbol, mode, True, interval)
+        self.views[consumer] = _TapeView(consumer, token, symbol, mode, True, interval, format_key)
 
     def reset(self):
         for view in self.views.values():
@@ -328,8 +366,11 @@ class TapePublisher:
                 continue
             entries = state.all_entries if view.mode == 'ALL' else state.large_entries
             patch = make_patch(entries, view.base)
+            formatted = view.format_patch(entries, patch)
             frame = TapeFrame(view.consumer, view.token, state.symbol, view.mode, state.stream,
-                              state.revision, view.revision, state.threshold, patch)
+                              state.revision, view.revision, state.threshold, patch,
+                              view.format_key, view.amount_decimals if view.format_key is not None else None,
+                              formatted)
             view.pending = state.revision, entries, key
             view.last_sent = now
             frames.append(frame)

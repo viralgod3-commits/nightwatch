@@ -18,6 +18,9 @@ from PySide6 import QtCore, QtWidgets
 from PySide6.QtCore import Qt, Signal
 
 _PREPARE_FRAME_EVENT = QtCore.QEvent.Type(QtCore.QEvent.registerEventType())
+# Secondary market views stay live while direct manipulation owns the display.
+# This is a content-adoption interval, never a chart or splitter frame cap.
+INTERACTION_CONTENT_INTERVAL_MS = 33
 
 
 _PROFILE_DIAGNOSTIC_STARTED_AT = 0.0
@@ -211,6 +214,8 @@ class PresentationClock(QtCore.QObject):
         self._pacing_window = None
         self._frame_presenter: Callable[[], bool] | None = None
         self._driver_clock: PresentationClock | None = None
+        self._content_pending = False
+        self._next_content_deadline = 0.0
         self._prepare_queued = False
         self._prepare_queued_at = 0.0
         self._frame_epoch = 0
@@ -249,6 +254,11 @@ class PresentationClock(QtCore.QObject):
         self._timer.setTimerType(Qt.TimerType.PreciseTimer)
         self._timer.timeout.connect(self._flush)
 
+        self._content_timer = QtCore.QTimer(self)
+        self._content_timer.setSingleShot(True)
+        self._content_timer.setTimerType(Qt.TimerType.PreciseTimer)
+        self._content_timer.timeout.connect(self._request_deferred_content)
+
 
         self._profile_probe_timer = QtCore.QTimer(self)
         self._profile_probe_timer.setSingleShot(False)
@@ -281,6 +291,9 @@ class PresentationClock(QtCore.QObject):
             previous.destroyed.disconnect(self._driver_destroyed)
         self._timer.stop()
         self._next_frame_deadline = 0.0
+        self._content_timer.stop()
+        self._next_content_deadline = 0.0
+        self._requested |= self._content_pending
         if clock is not None:
             clock.interaction_frame.connect(self._driver_frame)
             clock.destroyed.connect(self._driver_destroyed)
@@ -306,8 +319,15 @@ class PresentationClock(QtCore.QObject):
     def _driver_destroyed(self) -> None:
         self._driver_clock = None
         self._next_frame_deadline = 0.0
+        self._content_timer.stop()
+        self._next_content_deadline = 0.0
+        self._requested |= self._content_pending
         if self._requested:
             self._schedule_frame(immediate=True)
+
+    def _request_deferred_content(self) -> None:
+        if self._content_pending:
+            self.request()
 
     def set_continuous(self, active: bool) -> None:
         """Run completion-paced commits only for an active visual transition."""
@@ -596,6 +616,9 @@ class PresentationClock(QtCore.QObject):
         self._awaiting_swap = False
         self._next_frame_deadline = 0.0
         self._timer.stop()
+        self._content_timer.stop()
+        self._content_pending = False
+        self._next_content_deadline = 0.0
         self._prepare_queued = False
         QtCore.QCoreApplication.removePostedEvents(self, _PREPARE_FRAME_EVENT)
 
@@ -969,7 +992,22 @@ class PresentationClock(QtCore.QObject):
         started = time.perf_counter() if performance_profile_active() else 0.0
         try:
             self.interaction_frame.emit(frame_time)
-            self.frame.emit(frame_time)
+            # Splitter/rail geometry must precede every chart preparation.
+            # DOM/tape/ticker adoption does not: repeatedly formatting models
+            # and dirtying sibling widgets here consumes the chart's budget.
+            remaining = self._next_content_deadline - frame_time
+            if self._driver_clock is not None and remaining > 0.0:
+                self._content_pending = True
+                if not self._content_timer.isActive():
+                    self._content_timer.start(max(1, math.ceil(remaining * 1000)))
+            else:
+                self._content_pending = False
+                self._content_timer.stop()
+                self._next_content_deadline = (
+                    frame_time + INTERACTION_CONTENT_INTERVAL_MS / 1000.0
+                    if self._driver_clock is not None else 0.0
+                )
+                self.frame.emit(frame_time)
         finally:
             self._flushing = False
             if started:

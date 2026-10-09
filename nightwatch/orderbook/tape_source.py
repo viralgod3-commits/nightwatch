@@ -12,7 +12,7 @@ import weakref
 from PySide6 import QtCore
 
 from ..models import OrderFlowSnapshot
-from ..presentation import display_frame_interval_ms
+from ..presentation import display_frame_interval_ms, INTERACTION_CONTENT_INTERVAL_MS
 from .tape import TapeFrame, TapePublisher, TradeTapeHistory
 
 
@@ -149,9 +149,12 @@ class SharedTradeTapeSource(QtCore.QObject):
         self.command('set_tape_view', (consumer, 0, '', 'LARGE', False))
 
     def refresh(self, widget):
+        interval = max(display_frame_interval_ms(widget),
+                       INTERACTION_CONTENT_INTERVAL_MS if widget._interaction_priority_active else 1)
         self.command('set_tape_view', (widget._tape_consumer, widget._tape_token, widget.symbol,
                                       widget.mode(), widget._active and widget.isVisible(),
-                                      display_frame_interval_ms(widget) / 1000.0))
+                                      interval / 1000.0,
+                                      (widget.model.decimals, widget.value_mode())))
 
     def ingest_snapshot(self, snapshot):
         # External runtime sources consume accepted trades directly. A host may
