@@ -1140,12 +1140,31 @@ if QtWidgets is not None:
 
         presented = Signal()
 
+        _input_events = frozenset({
+            QtCore.QEvent.Type.MouseButtonPress, QtCore.QEvent.Type.MouseButtonRelease,
+            QtCore.QEvent.Type.MouseButtonDblClick, QtCore.QEvent.Type.MouseMove,
+            QtCore.QEvent.Type.Wheel, QtCore.QEvent.Type.ContextMenu,
+            QtCore.QEvent.Type.KeyPress, QtCore.QEvent.Type.KeyRelease,
+            QtCore.QEvent.Type.ShortcutOverride, QtCore.QEvent.Type.InputMethod,
+            QtCore.QEvent.Type.TouchBegin, QtCore.QEvent.Type.TouchUpdate,
+            QtCore.QEvent.Type.TouchEnd,
+        })
+
         def __init__(self, parent):
             super().__init__(parent)
+            self.setObjectName("panelResizePreview")
             self.pixmap = QtGui.QPixmap()
             self.setAttribute(Qt.WidgetAttribute.WA_OpaquePaintEvent)
-            self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+            self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
             self.hide()
+
+        def event(self, event):
+            # Cached controls cannot receive clicks, keyboard submission or Tab
+            # navigation until their current live layout is visible again.
+            if event.type() in self._input_events:
+                event.accept()
+                return True
+            return super().event(event)
 
         def paintEvent(self, event):
             painter = QtGui.QPainter(self)
@@ -1194,6 +1213,7 @@ if QtWidgets is not None:
             self._resize_preview = _PanelResizePreview(self)
             self._resize_preview.presented.connect(self.resize_preview_presented)
             self._resize_restore = None
+            self._resize_focus = None
             self._edge_overlay = RightPanelEdgeOverlay(self)
             self._edge_overlay.setGeometry(self.rect())
             self._edge_overlay.raise_()
@@ -1210,8 +1230,11 @@ if QtWidgets is not None:
                 return
             layout = self.layout()
             self._resize_restore = (layout.isEnabled(), self.content.updatesEnabled())
+            focus = QtWidgets.QApplication.focusWidget()
+            self._resize_focus = focus if focus is not None and (
+                focus is self.content or self.content.isAncestorOf(focus)) else None
             # Do not hide/reparent the controls: their market models, worker
-            # subscriptions, focus and visibility-dependent timers stay live.
+            # subscriptions and visibility-dependent timers stay live.
             layout.setEnabled(False)
             self.content.setUpdatesEnabled(False)
             self._resize_preview.pixmap = pixmap
@@ -1219,6 +1242,8 @@ if QtWidgets is not None:
             self._resize_preview.show()
             self._resize_preview.raise_()
             self._edge_overlay.raise_()
+            if self._resize_focus is not None:
+                self._resize_preview.setFocus(Qt.FocusReason.OtherFocusReason)
 
         def _sync_resize_preview_geometry(self) -> None:
             self._resize_preview.setGeometry(
@@ -1230,6 +1255,8 @@ if QtWidgets is not None:
             if restore is None:
                 return
             self._resize_restore = None
+            focus, self._resize_focus = self._resize_focus, None
+            restore_focus = QtWidgets.QApplication.focusWidget() is self._resize_preview
             layout = self.layout()
             layout.setEnabled(restore[0])
             if restore[0]:
@@ -1238,6 +1265,12 @@ if QtWidgets is not None:
             self.content.setUpdatesEnabled(restore[1])
             self._resize_preview.hide()
             self._resize_preview.pixmap = QtGui.QPixmap()
+            if restore_focus and focus is not None:
+                try:
+                    if focus.isVisible() and focus.isEnabled():
+                        focus.setFocus(Qt.FocusReason.OtherFocusReason)
+                except RuntimeError:  # A live account update can remove a row/control.
+                    pass
             self.update()
 
         def set_edge_style(
@@ -1563,6 +1596,15 @@ if QtWidgets is not None:
         def begin_interactive_resize(self):
             for shell in self.sections.values():
                 shell.begin_interactive_resize()
+            # A gesture that started with chart focus must not tab into a
+            # cached ticket. Preserve that focus for the final live layout.
+            focus = QtWidgets.QApplication.focusWidget()
+            if not isinstance(focus, _PanelResizePreview):
+                for shell in self.sections.values():
+                    if shell.interactive_resize_active and shell._resize_preview.isVisible():
+                        shell._resize_focus = focus
+                        shell._resize_preview.setFocus(Qt.FocusReason.OtherFocusReason)
+                        break
 
         def end_interactive_resize(self):
             for shell in self.sections.values():

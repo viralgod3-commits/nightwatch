@@ -3,7 +3,7 @@
 Charts prepare the next frame outside painting when composition completes.
 One queued event coalesces producer state before the Qt paint. Timers recover
 missing completions or service surfaces without swap feedback. Secondary UI
-clocks remain dirty-driven.
+clocks remain dirty-driven and join the active chart transaction during gestures.
 """
 from __future__ import annotations
 
@@ -210,6 +210,7 @@ class PresentationClock(QtCore.QObject):
         self._pacing_source = None
         self._pacing_window = None
         self._frame_presenter: Callable[[], bool] | None = None
+        self._driver_clock: PresentationClock | None = None
         self._prepare_queued = False
         self._prepare_queued_at = 0.0
         self._frame_epoch = 0
@@ -260,6 +261,53 @@ class PresentationClock(QtCore.QObject):
     def set_frame_presenter(self, presenter: Callable[[], bool]) -> None:
         """Bind a chart's asynchronous viewport-update boundary, once."""
         self._frame_presenter = presenter
+
+    def set_driver_clock(self, clock: PresentationClock | None) -> None:
+        """Commit secondary UI at the manipulating chart's frame boundary.
+
+        Independent panel timers can resize/repaint siblings between a chart
+        commit and its paint. One transaction applies panel geometry first,
+        then the chart reads the final size and prepares that same frame.
+        Idle panels return to their dirty-driven timer when the gesture ends.
+        """
+        if clock is self._driver_clock:
+            return
+        if clock is self or (clock is not None and self._frame_presenter is not None):
+            raise ValueError("Only secondary presentation clocks may follow a chart")
+        previous = self._driver_clock
+        self._driver_clock = clock
+        if previous is not None:
+            previous.interaction_frame.disconnect(self._driver_frame)
+            previous.destroyed.disconnect(self._driver_destroyed)
+        self._timer.stop()
+        self._next_frame_deadline = 0.0
+        if clock is not None:
+            clock.interaction_frame.connect(self._driver_frame)
+            clock.destroyed.connect(self._driver_destroyed)
+        if self._requested:
+            self._schedule_frame(immediate=True)
+
+    def _driver_frame(self, frame_time: float) -> None:
+        if self._requested and not self._flushing:
+            self._timer.stop()
+            period = 1.0 / display_refresh_rate(self._owner)
+            previous_deadline = self._next_frame_deadline
+            if previous_deadline <= 0.0 or frame_time < previous_deadline:
+                self._next_frame_deadline = frame_time + period
+            else:
+                # Preserve fractional display periods for timer-paced previews;
+                # restarting 17 ms each time would turn 60 Hz into 58.8 Hz.
+                steps = math.floor((frame_time - previous_deadline) / period) + 1
+                self._next_frame_deadline = previous_deadline + steps * period
+            self._commit_frame(frame_time)
+            if self._requested:
+                self._schedule_frame()
+
+    def _driver_destroyed(self) -> None:
+        self._driver_clock = None
+        self._next_frame_deadline = 0.0
+        if self._requested:
+            self._schedule_frame(immediate=True)
 
     def set_continuous(self, active: bool) -> None:
         """Run completion-paced commits only for an active visual transition."""
@@ -498,6 +546,20 @@ class PresentationClock(QtCore.QObject):
 
     def _schedule_frame(self, *, immediate: bool = False) -> None:
         if self._flushing or self._painting:
+            return
+        if self._driver_clock is not None:
+            # An unrelated panel can resize without changing chart geometry.
+            # Such a transaction has no chart swap to pace the next pointer
+            # sample, so retain the secondary display cadence in that case.
+            driver = self._driver_clock
+            if not driver._continuous and not driver.frame_pending():
+                remaining = self._next_frame_deadline - time.monotonic()
+                if remaining > 0:
+                    delay = max(1, math.ceil(remaining * 1000))
+                    if not self._timer.isActive() or delay < self._timer.remainingTime():
+                        self._timer.start(delay)
+                    return
+            self._driver_clock.request(immediate=immediate)
             return
         if self._frame_presenter is not None:
             source = self._pacing_source
@@ -860,6 +922,10 @@ class PresentationClock(QtCore.QObject):
         }
 
     def _flush(self) -> None:
+        if self._driver_clock is not None:
+            if self._requested:
+                self._driver_clock.request()
+            return
         if self._frame_presenter is not None:
             if self._awaiting_paint or self._awaiting_swap:
                 kind = "paint" if self._awaiting_paint else "swap"

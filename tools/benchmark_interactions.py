@@ -91,6 +91,22 @@ def counter_delta(start, end):
     return {key: end[key]-value for key, value in start.items() if key in end}
 
 
+def disable_benchmark_network(binance):
+    """Suppress constructor clock sync and reject any shared HTTP transport use."""
+    attempts = []
+    # A disarmed TradingGateway still constructs BinanceRest, which otherwise
+    # starts its background server-clock request without needing credentials.
+    binance.BinanceRest._ensure_time_sync_loop = lambda self: None
+
+    async def reject_request(*args, **kwargs):
+        attempts.append("HTTP transport request")
+        raise RuntimeError("Network is disabled in the interaction benchmark")
+
+    binance._AsyncHttpRuntime.request_json = reject_request
+    binance._AsyncHttpRuntime.request_bytes = reject_request
+    return attempts
+
+
 def main():
     args = arguments()
     app_root = args.app_root.resolve()
@@ -117,9 +133,11 @@ def main():
     from nightwatch.models import Candle, SymbolRules
     from nightwatch.app import main_window
     from nightwatch.trading.gateway import TradingGateway
+    from nightwatch.networking import binance
     from nightwatch.ui.panels import panel_ids
     from nightwatch.chart.analysis import shutdown_analysis
     from nightwatch import presentation
+    network_attempts = disable_benchmark_network(binance)
 
     QtCore.QSettings.setDefaultFormat(QtCore.QSettings.Format.IniFormat)
     QtCore.QSettings.setPath(QtCore.QSettings.Format.IniFormat, QtCore.QSettings.Scope.UserScope, scratch.name)
@@ -678,6 +696,8 @@ def main():
 
     def load_symbol():
         if state["symbol_index"] >= len(symbols):
+            if network_attempts:
+                raise RuntimeError(f"Offline fixture attempted {len(network_attempts)} HTTP requests")
             capture_cpu_end = cgroup_cpu_stat()
             cpu_max_path = Path("/sys/fs/cgroup/cpu.max")
             results["environment"]["cgroup_cpu_stat"] = {

@@ -988,6 +988,7 @@ class ChartWorkspace(QtWidgets.QWidget):
     indicator_settings_requested = Signal(str)
     history_requested = Signal(float)
     interaction_priority_changed = Signal(bool)
+    interaction_started = Signal()
     render_surface_changed = Signal(object)
 
     snapshot_committed = Signal(object)
@@ -2061,6 +2062,7 @@ class ChartWorkspace(QtWidgets.QWidget):
         if self._interaction_priority_release_timer.isActive():
             self._interaction_priority_release_timer.stop()
         if self._interaction_priority_active:
+            self.interaction_started.emit()
             return
         self._interaction_priority_active = True
 
@@ -2068,6 +2070,7 @@ class ChartWorkspace(QtWidgets.QWidget):
         if not self._order_rail_dragging:
             self._set_crosshair_visible(False)
         self.interaction_priority_changed.emit(True)
+        self.interaction_started.emit()
 
     def _hold_interaction_priority(self) -> None:
         """Extend the navigation-active window while pointer motion continues."""
@@ -9180,6 +9183,7 @@ class MultiChartContainer(QtWidgets.QWidget):
     auxiliary_order_rail_leverage_requested = Signal(str, int)
     auxiliary_market_changed = Signal(str, str, object)
     interaction_priority_changed = Signal(bool)
+    interaction_driver_changed = Signal(object)
     chart_added = Signal(object)
 
     def __init__(
@@ -9201,8 +9205,13 @@ class MultiChartContainer(QtWidgets.QWidget):
         self.setObjectName("multiChartContainer")
         self.primary_chart = primary_chart
         self._interacting_charts: set[ChartWorkspace] = set()
+        self._interaction_order: dict[ChartWorkspace, None] = {}
+        self._interaction_chart: ChartWorkspace | None = None
         primary_chart.interaction_priority_changed.connect(
             lambda active: self._chart_interaction(primary_chart, active)
+        )
+        primary_chart.interaction_started.connect(
+            lambda: self._chart_interaction_started(primary_chart)
         )
         self.layout_mode = "Single"
         self.workspace_active = True
@@ -9246,11 +9255,38 @@ class MultiChartContainer(QtWidgets.QWidget):
         previous = bool(self._interacting_charts)
         if active:
             self._interacting_charts.add(chart)
+            self._interaction_order.pop(chart, None)
+            self._interaction_order[chart] = None
         else:
             self._interacting_charts.discard(chart)
+            self._interaction_order.pop(chart, None)
         current = bool(self._interacting_charts)
+        self._refresh_interaction_chart()
         if previous != current:
             self.interaction_priority_changed.emit(current)
+
+    def _chart_interaction_started(self, chart: ChartWorkspace) -> None:
+        # Gesture priority has a release tail. A new gesture can return to a
+        # pane before that tail ends, without another priority True transition.
+        if chart is self._interaction_chart or chart not in self._interacting_charts:
+            return
+        self._interaction_order.pop(chart, None)
+        self._interaction_order[chart] = None
+        self._refresh_interaction_chart()
+
+    def _refresh_interaction_chart(self) -> None:
+        chart = next(reversed(self._interaction_order), None)
+        if chart is self._interaction_chart:
+            return
+        self._interaction_chart = chart
+        self.interaction_driver_changed.emit(chart)
+
+    def interaction_chart(self) -> ChartWorkspace | None:
+        """Most recently manipulated visible pane, independent of release tails."""
+        return next(
+            (chart for chart in reversed(self._interaction_order) if chart.isVisible()),
+            None,
+        )
 
     def _ensure_auxiliary(self, count: int) -> None:
         required = max(0, min(3, int(count)))
@@ -9310,6 +9346,9 @@ class MultiChartContainer(QtWidgets.QWidget):
             self.auxiliary.append(pane)
             pane.chart.interaction_priority_changed.connect(
                 lambda active, chart=pane.chart: self._chart_interaction(chart, active)
+            )
+            pane.chart.interaction_started.connect(
+                lambda chart=pane.chart: self._chart_interaction_started(chart)
             )
             self.chart_added.emit(pane.chart)
 

@@ -1633,6 +1633,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self.chart_container.interaction_priority_changed.connect(
             self._set_chart_interaction_priority
         )
+        self.chart_container.interaction_driver_changed.connect(
+            self._sync_interaction_driver
+        )
         self.orderbook = OrderBookWidget(self.orderbook_theme)
         self.orderbook.set_presentation_clock(self.presentation_clock)
         self.orderbook.set_symbol(self.current_symbol)
@@ -7391,7 +7394,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.chart.update_oi_history(payload.get("oi_history", []))
 
     def _flush_presentation_frame(self, _frame_mono: float) -> None:
-        """Commit secondary GUI state only when chart interaction is idle."""
+        """Adopt point updates; broad ticker work waits for idle interaction."""
         if (
             getattr(self, "pending_ticker_symbols", None)
             or getattr(self, "ticker_rank_dirty", False)
@@ -7404,8 +7407,20 @@ class MainWindow(QtWidgets.QMainWindow):
         self.presentation_clock.register_frame_source(chart.graphics.viewport())
         chart.render_surface_changed.connect(self.presentation_clock.register_frame_source)
 
+    def _sync_interaction_driver(self, _chart=None) -> None:
+        active = self._chart_interaction_priority_active or self._ui_resize_active
+        # Geometry, DOM/tape adoption and chart preparation share one visual
+        # transaction during gestures instead of racing two presentation clocks.
+        driver = None
+        if active:
+            chart = self.chart_container.interaction_chart() or self.chart
+            if chart.isVisible():
+                driver = chart._presentation_clock
+        self.presentation_clock.set_driver_clock(driver)
+
     def _sync_background_priority(self) -> None:
         active = self._chart_interaction_priority_active or self._ui_resize_active
+        self._sync_interaction_driver()
         for workspace in (self.market_board, self.sector_overview, self.rotation_overview):
             if workspace is not None:
                 workspace.set_interaction_priority(active)
@@ -7425,9 +7440,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self._chart_interaction_priority_active = active
         self._sync_background_priority()
         if active:
-            # Keep pending rail geometry alive. The shared interaction phase
-            # runs before _flush_presentation_frame, whose priority guard defers
-            # ticker work while canonical market state continues updating.
+            # Keep rail geometry and point updates alive. Broad ticker work
+            # waits for idle while canonical market state keeps advancing.
             if self.pending_ticker_symbols or self.ticker_rank_dirty:
                 self._interaction_deferred_ticker_ui = True
             return

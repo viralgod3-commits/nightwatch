@@ -49,6 +49,12 @@ Older history is fetched and adopted during held pans. The order-book rendering
 process retains shared pixel-buffer capacity across panel resizes, growing it
 only when necessary while keeping the displayed buffer leased until painting.
 
+During chart gestures, panel geometry and secondary updates join the active
+chart's presentation clock before chart preparation. Moving between chart panes
+hands that clock over to the newly manipulated pane. Panel-only resizes retain
+display pacing without forcing an unchanged chart to repaint. Cached resize
+previews isolate control input until the live layout and focus are restored.
+
 Measure chart pan/zoom and watchlist resizing with all four panels, ten pairs,
 and no indicators using `python tools/benchmark_interactions.py`. The offline
 benchmark records actual paint/composition cadence, slowest 1% frame intervals,
