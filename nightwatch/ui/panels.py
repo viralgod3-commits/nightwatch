@@ -1136,7 +1136,7 @@ if QtWidgets is not None:
 
 
     class _PanelResizePreview(QtWidgets.QWidget):
-        """A paint-only resize surface; the live controls retain their geometry."""
+        """A native-scale resize surface; the live controls retain their geometry."""
 
         presented = Signal()
 
@@ -1168,8 +1168,17 @@ if QtWidgets is not None:
 
         def paintEvent(self, event):
             painter = QtGui.QPainter(self)
-            painter.drawPixmap(self.rect(), self.pixmap)
-            painter.end()
+            try:
+                # Fill newly exposed space and let the widget clip on shrink.
+                # A target rectangle would stretch the cached text and controls;
+                # the point overload preserves their size and the pixmap's DPR.
+                painter.fillRect(
+                    self.rect(),
+                    self.parentWidget().palette().brush(QtGui.QPalette.ColorRole.Window),
+                )
+                painter.drawPixmap(0, 0, self.pixmap)
+            finally:
+                painter.end()
             self.presented.emit()
 
 
