@@ -96,3 +96,10 @@ trading panel to retry after a connection failure; refreshing never submits an
 order. Account and leverage errors remain visible until resolved, and a failed
 order-history request does not hide a successfully loaded balance. Position
 reductions do not require fresh collateral for a new entry.
+
+The trading panel separates **Open position** and **Reduce position**. Select
+Buy / Long or Sell / Short, choose an order type and size, then use the fixed
+submit button (or **Ctrl+Enter**). Selecting a side never submits an order.
+The form scrolls in short panels and switches to columns in wide panels.
+Reduce mode sizes against the selected position; TP/SL, conditional orders,
+account activity and execution status remain available in the same workspace.
