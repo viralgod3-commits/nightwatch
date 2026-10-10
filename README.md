@@ -87,3 +87,7 @@ accepted protection intent cannot be reconstructed automatically.
 Collateral-percentage shortcuts require fresh, asset-specific available balance
 in confirmed Single-Asset Mode. Multi-Assets Mode requires manual quantity
 sizing; account-wide USD-equivalent collateral is not a specific asset balance.
+Connected trading sessions refresh account data in the background, including
+while the Trade tab is open or the panel is hidden. Use **Refresh** in the
+trading panel to retry after a connection failure; refreshing never submits an
+order. Position reductions do not require fresh collateral for a new entry.

@@ -2542,8 +2542,7 @@ class OrderPanel(QtWidgets.QWidget):
             self.hedge_mode = value if isinstance(value, bool) else str(value).lower() == "true"
         self._sync_auto_position_side()
         account = snapshot.get("account") or {}
-        available = max(0.0, safe_float(account.get("availableBalance")))
-        if available <= 0:
+        if "assets" in account:
             margin_row = next(
                 (
                     row
@@ -2553,6 +2552,8 @@ class OrderPanel(QtWidgets.QWidget):
                 {},
             )
             available = max(0.0, safe_float(margin_row.get("availableBalance")))
+        else:
+            available = max(0.0, safe_float(account.get("availableBalance")))
         self._available_margin = available
         self._position_cache = []
         active_leverage = 0
@@ -5062,6 +5063,19 @@ class TradingWorkspace(QtWidgets.QWidget):
         set_text_role(self.view_tabs, TextRole.UI_CONTROL)
         self.view_tabs.addTab("Trade")
         self.view_tabs.addTab("Account")
+        self.refresh_button = QtWidgets.QPushButton("Refresh")
+        self.refresh_button.setAccessibleName("Refresh trading account")
+        self.refresh_button.setToolTip("Refresh balances, positions and working orders")
+        self.refresh_button.setAutoDefault(False)
+        set_text_role(self.refresh_button, TextRole.UI_CONTROL)
+        self.refresh_button.clicked.connect(
+            lambda: self.gateway.refresh_account(self.symbol, True)
+        )
+        self.refresh_button.setEnabled(self.gateway.has_credentials())
+        self.gateway.credentials_changed.connect(
+            lambda _key: self.refresh_button.setEnabled(self.gateway.has_credentials())
+        )
+        header_layout.addWidget(self.refresh_button)
         header_layout.addWidget(self.view_tabs, 0, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         layout.addWidget(header)
         self.pages = QtWidgets.QStackedWidget()

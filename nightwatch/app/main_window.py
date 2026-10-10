@@ -3481,7 +3481,15 @@ class MainWindow(QtWidgets.QMainWindow):
             return
         self._open_market_from_board(symbol)
         self._show_trading_sidebar()
-        self.order_panel.apply_account_snapshot({"account": {"positions": list(self.trading_gateway.position_cache.values()), "availableBalance": self.trading_gateway.available_balance(self.order_panel.rules.margin_asset)}})
+        # Closing a position does not require fresh collateral for a new entry.
+        try:
+            available = self.trading_gateway.available_balance(self.order_panel.rules.margin_asset)
+        except ValueError:
+            available = 0.0
+        self.order_panel.apply_account_snapshot({"account": {
+            "positions": list(self.trading_gateway.position_cache.values()),
+            "availableBalance": available,
+        }})
         self.order_panel.focus_position(active, enter_reduce=True)
 
     def _open_watchlist_symbol(self, symbol: str) -> None:

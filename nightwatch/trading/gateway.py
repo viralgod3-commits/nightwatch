@@ -126,6 +126,8 @@ class TradingGateway(QtCore.QObject):
     MAX_OPEN_ORDER_WRITES = 16
     MAX_ENTRY_WRITES = 8
     MAX_PROTECTIVE_WRITES = 64
+    ACCOUNT_REFRESH_SECONDS = 15.0
+    COLLATERAL_MAX_AGE_SECONDS = 30.0
 
     state_changed = Signal(str)
     armed_changed = Signal(bool)
@@ -215,6 +217,9 @@ class TradingGateway(QtCore.QObject):
         self.account_event_refresh_timer.setSingleShot(True)
         self.account_event_refresh_timer.setInterval(1_500)
         self.account_event_refresh_timer.timeout.connect(self._refresh_after_account_event)
+        self.account_poll_timer = QTimer(self)
+        self.account_poll_timer.setInterval(5_000)
+        self.account_poll_timer.timeout.connect(self._poll_account)
         self.protection_poll_timer = QTimer(self)
         self.protection_poll_timer.setInterval(5_000)
         self.protection_poll_timer.timeout.connect(self._poll_disconnected_protections)
@@ -773,6 +778,7 @@ class TradingGateway(QtCore.QObject):
         self.user_reconnect.stop()
         self.keepalive_timer.stop()
         self.account_event_refresh_timer.stop()
+        self.account_poll_timer.stop()
         self.protection_poll_timer.stop()
         self.trade_socket.close()
         self.user_socket.close()
@@ -826,6 +832,7 @@ class TradingGateway(QtCore.QObject):
         self.state_changed.emit("ARMED · CONNECTING ORDER LINK")
         self._open_trade_socket()
         self._start_user_stream()
+        self.account_poll_timer.start()
         if self.listen_key:
             self._keepalive_user_stream()
         return True
@@ -840,8 +847,19 @@ class TradingGateway(QtCore.QObject):
         """Keep account/order transport independent of quick-key arming."""
         if self.stopping or not self.has_credentials():
             return
+        if not self.account_poll_timer.isActive():
+            self.account_poll_timer.start()
         self._open_trade_socket()
         self._start_user_stream()
+
+    def _poll_account(self) -> None:
+        """Keep sizing fresh even when the account panel is closed or hidden."""
+        if self.stopping or not self.has_credentials() or self.account_task is not None:
+            return
+        symbol, all_orders = self._last_snapshot_scope or (None, True)
+        self.refresh_account(
+            symbol, all_orders, poll_minimum_interval=self.ACCOUNT_REFRESH_SECONDS,
+        )
 
     def _next_id(self, prefix: str = "req") -> str:
         self.counter = (self.counter + 1) % 1_000_000
@@ -1329,7 +1347,8 @@ class TradingGateway(QtCore.QObject):
         symbol = str(symbol).upper().strip()
         if symbol:
             self.account_event_refresh_symbols.add(symbol)
-        if not self.stopping and self.has_credentials():
+        if (not self.stopping and self.has_credentials()
+                and not self.account_event_refresh_timer.isActive()):
             self.account_event_refresh_timer.start()
 
     def _refresh_after_account_event(self) -> None:
@@ -2346,6 +2365,8 @@ class TradingGateway(QtCore.QObject):
         poll_minimum_interval: float = 0.0,
         follow_up: bool = False,
     ) -> None:
+        if self.stopping:
+            return
         if not self.has_credentials():
             self.problem.emit("API credentials are required to load account data.")
             return
@@ -3099,8 +3120,9 @@ class TradingGateway(QtCore.QObject):
         )
 
     def available_balance(self, asset: str) -> float:
-        if not self.account_loaded or self._last_snapshot_mono <= 0 or time.monotonic() - self._last_snapshot_mono > 30.0:
-            raise ValueError('Account collateral is stale or still loading; refresh before sizing another entry.')
+        if (not self.account_loaded or self._last_snapshot_mono <= 0
+                or time.monotonic() - self._last_snapshot_mono > self.COLLATERAL_MAX_AGE_SECONDS):
+            raise ValueError('Account collateral is loading or stale. Use Refresh in the trading panel, then retry.')
         if self.multi_assets_margin is not False:
             raise ValueError("Collateral shortcuts require confirmed Single-Asset Mode. Multi-Assets USD collateral needs an explicit conversion policy; use a quantity-based order.")
         row = self.balance_cache.get(asset) or {}
@@ -3145,6 +3167,7 @@ class TradingGateway(QtCore.QObject):
         self.keepalive_timer.stop()
         self.pending_timeout_timer.stop()
         self.account_event_refresh_timer.stop()
+        self.account_poll_timer.stop()
         self.protection_poll_timer.stop()
         self.stream_generation += 1
         self.account_event_refresh_symbols.clear()
