@@ -31,6 +31,7 @@ from .rendering import (
     ChartGraphicsView, CandlestickItem, VolumeOverlayItem, NativeBarCompositeItem,
     NativeAreaItem, NativeBandItem,
 )
+from .retained import RetainedChartItems
 from ..utilities import alpha_color, TextRole, set_text_role, typography_controller, typography_font
 from ..utilities import hide_hover_tooltip, show_hover_tooltip
 from ..presentation import (
@@ -1343,6 +1344,7 @@ class ChartWorkspace(QtWidgets.QWidget):
                 "right": self.price_axis,
             },
         )
+        self.graphics.scene().pan_view_box = self.price_plot.getViewBox()
         self.oi_plot = self.graphics.addPlot(
             row=1,
             col=0,
@@ -1783,6 +1785,14 @@ class ChartWorkspace(QtWidgets.QWidget):
         self.graphics.frame_needed.connect(self._scene_frame_needed)
         self.graphics.frame_presented.connect(self._surface_presented)
         self._configure_chart_viewport(self.graphics.viewport())
+        self._retained_indicators = RetainedChartItems(self.price_plot.getViewBox(), self)
+        for item in (
+            self.bb_mid, self.bb_upper, self.bb_lower, self.bb_fill,
+            *(curve for curves in self.trend_curves.values() for curve in curves),
+            self.trend_label, self.auto_fib_badge,
+            self.visible_profile, self.session_profile, self.liquidation_points,
+        ):
+            self._retained_indicators.register(item)
         self.apply_theme(theme)
         typography_controller().changed.connect(self._apply_typography)
         self._apply_typography()

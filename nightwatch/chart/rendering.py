@@ -530,6 +530,7 @@ void main() {
                 "instance_vbo": instance_vbo,
                 "context": context,
                 "uniforms": uniforms,
+                "uniform_values": {},
                 "revision": -1,
                 "count": 0,
                 "first_instance": 0,
@@ -686,6 +687,18 @@ void main() {
             "tick_up": tick_up,
             "tick_down": tick_down,
         }
+        colors = {
+            name: value
+            for name, value in state.items()
+            if isinstance(value, QtGui.QColor)
+        }
+        colors["background"] = QtGui.QColor(background)
+        colors["transparent"] = QtGui.QColor(0, 0, 0, 0)
+        state["rgba"] = {
+            name: (float(color.redF()), float(color.greenF()),
+                   float(color.blueF()), float(color.alphaF()))
+            for name, color in colors.items()
+        }
         resources["style_key"] = key
         resources["style_state"] = state
         return state
@@ -785,7 +798,10 @@ void main() {
             )
 
             vao.bind()
-            program.bind()
+            if not program.bind():
+                vao.release()
+                functions.glDisable(cls.GL_SCISSOR_TEST)
+                return False
 
             # Scissoring discards fragments, not offscreen vertex work. Point
             # the instance attributes into the retained VBO so every style
@@ -808,93 +824,73 @@ void main() {
                 QtCore.QPointF(x_origin, 0.0 if overlay_enabled else y_origin)
             )
             uniforms = resources["uniforms"]
-            functions.glUniform4f(
-                int(uniforms["u_map"]),
+            # Uniforms belong to this dedicated program and survive Qt's native
+            # painting boundary. Cache exact values, never camera approximations.
+            uniform_values = resources["uniform_values"]
+            profiling = performance_profile_active()
+            uniform_uploads = uniform_skips = 0
+            uniform1i = functions.glUniform1i
+            uniform1f = functions.glUniform1f
+            uniform2f = functions.glUniform2f
+            uniform4f = functions.glUniform4f
+
+            def upload_uniform(name, values, setter):
+                nonlocal uniform_uploads, uniform_skips
+                if uniform_values.get(name) == values:
+                    if profiling:
+                        uniform_skips += 1
+                    return
+                setter(uniforms[name], *values)
+                uniform_values[name] = values
+                if profiling:
+                    uniform_uploads += 1
+
+            upload_uniform("u_map", (
                 float(sx),
                 1.0 if overlay_enabled else float(sy),
                 float(mapped_origin.x()),
                 0.0 if overlay_enabled else float(mapped_origin.y()),
-            )
-            functions.glUniform2f(
-                int(uniforms["u_screen"]),
+            ), uniform4f)
+            upload_uniform("u_screen", (
                 float(width),
                 float(height),
-            )
-            functions.glUniform1i(
-                int(uniforms["u_volume_overlay"]),
-                1 if overlay_enabled else 0,
-            )
-            functions.glUniform1f(
-                int(uniforms["u_volume_max"]),
-                float(volume_overlay_max) if overlay_enabled else 0.0,
-            )
-            functions.glUniform1f(
-                int(uniforms["u_volume_height_fraction"]),
-                max(0.0, min(1.0, float(volume_overlay_fraction)))
-                if overlay_enabled
-                else 0.0,
-            )
-            functions.glUniform1f(
-                int(uniforms["u_clip_top"]),
-                float(overlay_screen.top()) if overlay_enabled else float(top),
-            )
-            functions.glUniform1f(
-                int(uniforms["u_clip_bottom"]),
-                float(overlay_screen.bottom()) if overlay_enabled else float(bottom),
-            )
-            functions.glUniform1f(
-                int(uniforms["u_body_width"]),
-                float(state["body_width"]),
-            )
-            functions.glUniform1f(
-                int(uniforms["u_wick_width"]),
-                float(state["wick_width"]),
-            )
-            functions.glUniform1f(
-                int(uniforms["u_outline"]),
-                float(state["outline"]),
-            )
+            ), uniform2f)
+            upload_uniform("u_volume_overlay", (1 if overlay_enabled else 0,), uniform1i)
+            for name, value in (
+                ("u_volume_max", float(volume_overlay_max) if overlay_enabled else 0.0),
+                ("u_volume_height_fraction",
+                 max(0.0, min(1.0, float(volume_overlay_fraction))) if overlay_enabled else 0.0),
+                ("u_clip_top", float(overlay_screen.top()) if overlay_enabled else float(top)),
+                ("u_clip_bottom", float(overlay_screen.bottom()) if overlay_enabled else float(bottom)),
+                ("u_body_width", float(state["body_width"])),
+                ("u_wick_width", float(state["wick_width"])),
+                ("u_outline", float(state["outline"])),
+            ):
+                upload_uniform(name, (value,), uniform1f)
 
-            up_color = state["up"]
-            down_color = state["down"]
+            rgba = state["rgba"]
+            up_color = rgba["up"]
+            down_color = rgba["down"]
 
 
-            up_body = state["up_body"]
-            down_body = state["down_body"]
-            if performance_profile_active():
+            up_body = rgba["up_body"]
+            down_body = rgba["down_body"]
+            if profiling:
                 profile_name = str(resources.get("profile_name") or "bars")
                 record_performance_sum(f"gl.draw.{profile_name}_visible_rows", count)
                 record_performance_sum(f"gl.draw.{profile_name}_resident_rows", len(data))
 
             def draw_pass(
                 geometry: int,
-                up_pass: QtGui.QColor,
-                down_pass: QtGui.QColor,
+                up_pass: tuple[float, float, float, float],
+                down_pass: tuple[float, float, float, float],
                 *,
                 expand: float = 0.0,
             ) -> None:
-                functions.glUniform1i(
-                    int(uniforms["u_geometry"]),
-                    int(geometry),
-                )
-                functions.glUniform1f(
-                    int(uniforms["u_expand"]),
-                    float(expand),
-                )
-                functions.glUniform4f(
-                    int(uniforms["u_up_color"]),
-                    float(up_pass.redF()),
-                    float(up_pass.greenF()),
-                    float(up_pass.blueF()),
-                    float(up_pass.alphaF()),
-                )
-                functions.glUniform4f(
-                    int(uniforms["u_down_color"]),
-                    float(down_pass.redF()),
-                    float(down_pass.greenF()),
-                    float(down_pass.blueF()),
-                    float(down_pass.alphaF()),
-                )
+                upload_uniform("u_geometry", (int(geometry),), uniform1i)
+                upload_uniform("u_expand", (float(expand),), uniform1f)
+                upload_uniform("u_up_color", up_pass, uniform4f)
+                upload_uniform("u_down_color", down_pass, uniform4f)
                 functions.glDrawArraysInstanced(
                     cls.GL_TRIANGLES,
                     0,
@@ -903,8 +899,8 @@ void main() {
                 )
 
 
-            up_glow = state["glow_up"]
-            down_glow = state["glow_down"]
+            up_glow = rgba.get("glow_up")
+            down_glow = rgba.get("glow_down")
             expand = state["glow_expand"]
             if (
                 not overlay_enabled
@@ -924,11 +920,11 @@ void main() {
                 hollow_up = bool(style.get("hollow") or style.get("hollow_up"))
                 hollow_down = bool(style.get("hollow") or style.get("hollow_down"))
                 if hollow_up or hollow_down:
-                    transparent = QtGui.QColor(0, 0, 0, 0)
+                    transparent = rgba["transparent"]
                     draw_pass(
                         1,
-                        QtGui.QColor(background) if hollow_up else transparent,
-                        QtGui.QColor(background) if hollow_down else transparent,
+                        rgba["background"] if hollow_up else transparent,
+                        rgba["background"] if hollow_down else transparent,
                     )
             else:
 
@@ -936,16 +932,20 @@ void main() {
                 draw_pass(0, up_color, down_color)
                 draw_pass(1, up_body, down_body)
 
-            up_tick = state["tick_up"]
-            down_tick = state["tick_down"]
+            up_tick = rgba.get("tick_up")
+            down_tick = rgba.get("tick_down")
             if not volume and up_tick is not None and down_tick is not None:
                 draw_pass(3, up_tick, down_tick)
 
             program.release()
             vao.release()
             functions.glDisable(cls.GL_SCISSOR_TEST)
+            if profiling:
+                record_performance_sum(f"gl.draw.{profile_name}_uniform_uploads", uniform_uploads)
+                record_performance_sum(f"gl.draw.{profile_name}_uniform_skips", uniform_skips)
             return True
         except (AttributeError, RuntimeError, TypeError, ValueError):
+            resources["uniform_values"].clear()
             try:
                 resources["program"].release()
                 resources["vao"].release()
@@ -3041,6 +3041,31 @@ class NativeBarCompositeItem(pg.GraphicsObject):
 from ..presentation import record_frame_request
 
 
+class _ChartGraphicsScene(pg.GraphicsScene):
+    def __init__(self, parent):
+        super().__init__(parent=parent)
+        self.pan_view_box = None
+
+    def sendHoverEvents(self, event, exitOnly=False):
+        owner = self.pan_view_box
+        if (
+            not exitOnly
+            and owner is not None
+            and self.dragItem is owner
+            and self.dragButtons == [Qt.MouseButton.LeftButton]
+            and event.type() == QtCore.QEvent.Type.GraphicsSceneMouseMove
+            and event.buttons() == Qt.MouseButton.LeftButton
+            and event.modifiers() == Qt.KeyboardModifier.NoModifier
+            and owner.state["mouseMode"] == pg.ViewBox.PanMode
+            and self.mouseGrabberItem() is None
+        ):
+            # Drag ownership is fixed until release; new hover targets cannot
+            # claim this gesture. Keep Qt dispatch and the final hover update.
+            record_performance_count("input.pan_hover_skipped")
+            return
+        super().sendHoverEvents(event, exitOnly=exitOnly)
+
+
 class ChartGraphicsView(pg.GraphicsLayoutWidget):
     frame_needed = QtCore.Signal()
     frame_presented = QtCore.Signal()
@@ -3054,8 +3079,12 @@ class ChartGraphicsView(pg.GraphicsLayoutWidget):
         self._pointer_paint_sample_at = 0.0
         self.presentation_clock = None
         super().__init__(*args, **kwargs)
-
-
+        original_scene = self.sceneObj
+        original_scene.removeItem(self.ci)
+        self.sceneObj = _ChartGraphicsScene(parent=self)
+        self.setScene(self.sceneObj)
+        self.sceneObj.addItem(self.ci)
+        original_scene.deleteLater()
         self.setViewportUpdateMode(QtWidgets.QGraphicsView.ViewportUpdateMode.NoViewportUpdate)
         self.scene().changed.connect(self._scene_changed)
 
