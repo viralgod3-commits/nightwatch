@@ -423,7 +423,7 @@ class RsiAxisItem(ScalableStudyAxisItem):
 
 
 class StudyPaneHeader(QtWidgets.QGraphicsWidget):
-    """Retained pane chrome, outside the plot's data and scale coordinates."""
+    """TradingView-style in-pane legend with a thin draggable pane separator."""
 
     settings_requested = Signal()
     remove_requested = Signal()
@@ -432,7 +432,8 @@ class StudyPaneHeader(QtWidgets.QGraphicsWidget):
     resize_requested = Signal(float)
     resize_reset = Signal()
     HANDLE_HEIGHT = 6.0
-    BUTTON_WIDTH = 26.0
+    BUTTON_WIDTH = 24.0
+    SIDE_PADDING = 8.0
 
     def __init__(self, name, theme, parent=None):
         super().__init__(parent)
@@ -442,80 +443,207 @@ class StudyPaneHeader(QtWidgets.QGraphicsWidget):
         self._hovered = ""
         self._pressed = ""
         self._drag_y = None
+        self._overlay_height = 26.0
         self.setAcceptHoverEvents(True)
         self.setAcceptedMouseButtons(Qt.MouseButton.LeftButton)
         self.setFlag(QtWidgets.QGraphicsItem.GraphicsItemFlag.ItemIsFocusable, True)
-        self.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Fixed)
         self.setFont(typography_font(TextRole.UI_CAPTION))
         self.setZValue(80)
+        self.sync_geometry()
 
     def setFont(self, font):
         super().setFont(font)
-        height = max(30, math.ceil(QtGui.QFontMetricsF(font).height()) + 14)
-        self.setMinimumHeight(height)
-        self.setPreferredHeight(height)
-        self.setMaximumHeight(height)
+        self._overlay_height = max(
+            24.0,
+            float(math.ceil(QtGui.QFontMetricsF(font).height()) + 10),
+        )
+        self.sync_geometry()
         self.update()
+
+    def sync_geometry(self) -> None:
+        parent = self.parentWidget() or self.parentItem()
+        if parent is None:
+            return
+        rect = parent.boundingRect()
+        self.setGeometry(
+            QtCore.QRectF(
+                float(rect.left()),
+                float(rect.top()),
+                max(0.0, float(rect.width())),
+                self._overlay_height,
+            )
+        )
 
     def set_caption(self, caption):
         if caption != self.caption:
             self.caption = caption
             self.update()
 
+    def _title_rect(self) -> QtCore.QRectF:
+        rect = self.rect()
+        available = max(
+            0.0,
+            rect.width() - self.SIDE_PADDING * 2 - self.BUTTON_WIDTH * 3,
+        )
+        preferred = QtGui.QFontMetricsF(self.font()).horizontalAdvance(self.caption) + 4.0
+        width = min(available, preferred)
+        return QtCore.QRectF(
+            self.SIDE_PADDING,
+            self.HANDLE_HEIGHT,
+            width,
+            max(0.0, rect.height() - self.HANDLE_HEIGHT),
+        )
+
     def button_rect(self, action):
         index = ("auto", "settings", "remove").index(action)
-        return QtCore.QRectF(self.rect().width() - (3 - index) * self.BUTTON_WIDTH - 4,
-                             self.HANDLE_HEIGHT, self.BUTTON_WIDTH, self.rect().height() - self.HANDLE_HEIGHT)
+        title = self._title_rect()
+        return QtCore.QRectF(
+            title.right() + 2.0 + index * self.BUTTON_WIDTH,
+            self.HANDLE_HEIGHT,
+            self.BUTTON_WIDTH,
+            max(0.0, self.rect().height() - self.HANDLE_HEIGHT),
+        )
+
+    def _legend_rect(self) -> QtCore.QRectF:
+        title = self._title_rect()
+        remove = self.button_rect("remove")
+        return QtCore.QRectF(
+            self.SIDE_PADDING,
+            self.HANDLE_HEIGHT,
+            max(0.0, remove.right() - self.SIDE_PADDING),
+            max(0.0, self.rect().height() - self.HANDLE_HEIGHT),
+        )
+
+    def shape(self):
+        path = QtGui.QPainterPath()
+        rect = self.rect()
+        path.addRect(QtCore.QRectF(0.0, 0.0, rect.width(), self.HANDLE_HEIGHT))
+        path.addRect(self._legend_rect())
+        return path
 
     def _hit(self, point):
         if point.y() < self.HANDLE_HEIGHT:
             return "resize"
-        return next((action for action in ("auto", "settings", "remove")
-                     if self.button_rect(action).contains(point)), "title")
+        for action in ("auto", "settings", "remove"):
+            if self.button_rect(action).contains(point):
+                return action
+        if self._title_rect().contains(point):
+            return "title"
+        return ""
 
     def paint(self, painter, option, widget=None):
         rect = self.rect()
-        painter.fillRect(rect, QtGui.QColor(self.theme.get("chart_panel2", self.theme["panel2"])))
-        divider = self.theme["text"] if self._hovered == "resize" or self._drag_y is not None else self.theme["muted"]
+        divider = (
+            self.theme["text"]
+            if self._hovered == "resize" or self._drag_y is not None
+            else self.theme["muted"]
+        )
         painter.setPen(pg.mkPen(divider, width=1, cosmetic=True))
-        painter.drawLine(QtCore.QLineF(0, .5, rect.width(), .5))
+        painter.drawLine(QtCore.QLineF(0.0, 0.5, rect.width(), 0.5))
+
+        title_rect = self._title_rect()
         painter.setFont(self.font())
         painter.setPen(QtGui.QColor(self.theme["text"]))
-        text_rect = QtCore.QRectF(8, self.HANDLE_HEIGHT, max(0, self.button_rect("auto").left() - 14), rect.height() - self.HANDLE_HEIGHT)
-        text = QtGui.QFontMetricsF(self.font()).elidedText(self.caption, Qt.TextElideMode.ElideRight, text_rect.width())
-        painter.drawText(text_rect, Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, text)
-        for action in ("auto", "settings", "remove"):
-            button = self.button_rect(action)
-            if self._hovered == action:
-                painter.fillRect(button.adjusted(2, 1, -2, -1), QtGui.QColor(self.theme["control_hover"]))
-            painter.setPen(pg.mkPen(self.theme["text"] if self._hovered == action else self.theme["muted"], width=1, cosmetic=True))
-            x, y = button.center().x(), button.center().y()
-            if action == "auto":
-                painter.drawText(button, Qt.AlignmentFlag.AlignCenter, "A")
-            elif action == "remove":
-                painter.drawLine(QtCore.QLineF(x - 4, y - 4, x + 4, y + 4))
-                painter.drawLine(QtCore.QLineF(x - 4, y + 4, x + 4, y - 4))
-            else:
-                for offset, knob in ((-4, -2), (0, 3), (4, -1)):
-                    painter.drawLine(QtCore.QLineF(x - 6, y + offset, x + 6, y + offset))
-                    painter.drawLine(QtCore.QLineF(x + knob, y + offset - 2, x + knob, y + offset + 2))
+        text = QtGui.QFontMetricsF(self.font()).elidedText(
+            self.caption,
+            Qt.TextElideMode.ElideRight,
+            title_rect.width(),
+        )
+        painter.drawText(
+            title_rect,
+            Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
+            text,
+        )
+
+        show_controls = bool(
+            self.hasFocus()
+            or (self._hovered and self._hovered != "resize")
+        )
+        if show_controls:
+            for action in ("auto", "settings", "remove"):
+                button = self.button_rect(action)
+                if self._hovered == action:
+                    painter.fillRect(
+                        button.adjusted(2.0, 2.0, -2.0, -2.0),
+                        QtGui.QColor(self.theme["control_hover"]),
+                    )
+                painter.setPen(
+                    pg.mkPen(
+                        self.theme["text"]
+                        if self._hovered == action
+                        else self.theme["muted"],
+                        width=1,
+                        cosmetic=True,
+                    )
+                )
+                x, y = button.center().x(), button.center().y()
+                if action == "auto":
+                    painter.drawText(
+                        button,
+                        Qt.AlignmentFlag.AlignCenter,
+                        "A",
+                    )
+                elif action == "remove":
+                    painter.drawLine(
+                        QtCore.QLineF(x - 4.0, y - 4.0, x + 4.0, y + 4.0)
+                    )
+                    painter.drawLine(
+                        QtCore.QLineF(x - 4.0, y + 4.0, x + 4.0, y - 4.0)
+                    )
+                else:
+                    for offset, knob in ((-4.0, -2.0), (0.0, 3.0), (4.0, -1.0)):
+                        painter.drawLine(
+                            QtCore.QLineF(
+                                x - 6.0,
+                                y + offset,
+                                x + 6.0,
+                                y + offset,
+                            )
+                        )
+                        painter.drawLine(
+                            QtCore.QLineF(
+                                x + knob,
+                                y + offset - 2.0,
+                                x + knob,
+                                y + offset + 2.0,
+                            )
+                        )
+
         if self.hasFocus():
-            painter.setPen(pg.mkPen(self.theme["text"], width=1, style=Qt.PenStyle.DotLine))
-            painter.drawRect(rect.adjusted(2, self.HANDLE_HEIGHT, -2, -2))
+            painter.setPen(
+                pg.mkPen(
+                    self.theme["text"],
+                    width=1,
+                    style=Qt.PenStyle.DotLine,
+                )
+            )
+            painter.drawRect(self._legend_rect().adjusted(0.0, 1.0, 0.0, -1.0))
 
     def hoverMoveEvent(self, event):
         hovered = self._hit(event.pos())
         if hovered != self._hovered:
             self._hovered = hovered
-            self.setCursor(Qt.CursorShape.SplitVCursor if hovered == "resize" else Qt.CursorShape.PointingHandCursor)
-            self.setToolTip({"resize": "Drag divider to resize · double-click to reset height",
-                             "auto": "Reset automatic scale", "settings": f"{self.name} settings",
-                             "remove": f"Remove {self.name}", "title": f"{self.name} settings · Enter to open · Delete to remove"}[hovered])
+            self.setCursor(
+                Qt.CursorShape.SplitVCursor
+                if hovered == "resize"
+                else Qt.CursorShape.PointingHandCursor
+            )
+            tooltips = {
+                "resize": "Drag separator to resize · double-click to reset height",
+                "auto": "Reset automatic scale",
+                "settings": f"{self.name} settings",
+                "remove": f"Remove {self.name}",
+                "title": (
+                    f"{self.name} settings · Enter to open · Delete to remove"
+                ),
+            }
+            self.setToolTip(tooltips.get(hovered, ""))
             self.update()
         event.accept()
 
     def hoverLeaveEvent(self, event):
         self._hovered = ""
+        self.unsetCursor()
         self.update()
         event.accept()
 
@@ -524,6 +652,9 @@ class StudyPaneHeader(QtWidgets.QGraphicsWidget):
             event.ignore()
             return
         self._pressed = self._hit(event.pos())
+        if not self._pressed:
+            event.ignore()
+            return
         self.setFocus(Qt.FocusReason.MouseFocusReason)
         if self._pressed == "resize":
             self._drag_y = float(event.screenPos().y())
@@ -533,12 +664,14 @@ class StudyPaneHeader(QtWidgets.QGraphicsWidget):
     def mouseMoveEvent(self, event):
         if self._drag_y is not None:
             self.resize_requested.emit(float(event.screenPos().y()) - self._drag_y)
-        event.accept()
+            event.accept()
+            return
+        super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event):
         pressed, self._pressed = self._pressed, ""
         dragging, self._drag_y = self._drag_y is not None, None
-        if not dragging and pressed == self._hit(event.pos()):
+        if not dragging and pressed and pressed == self._hit(event.pos()):
             if pressed in {"settings", "title"}:
                 self.settings_requested.emit()
             elif pressed == "auto":
@@ -553,9 +686,12 @@ class StudyPaneHeader(QtWidgets.QGraphicsWidget):
             self._drag_y = None
             self._pressed = ""
             self.resize_reset.emit()
-        else:
+        elif self._hit(event.pos()) in {"title", "settings"}:
             self._pressed = ""
             self.settings_requested.emit()
+        else:
+            event.ignore()
+            return
         event.accept()
 
     def keyPressEvent(self, event):
@@ -567,7 +703,6 @@ class StudyPaneHeader(QtWidgets.QGraphicsWidget):
             super().keyPressEvent(event)
             return
         event.accept()
-
 
 class ProfileItem(NativeAreaItem):
     def __init__(self, background: str):
@@ -1597,8 +1732,6 @@ class ChartWorkspace(QtWidgets.QWidget):
         ):
             plot.layout.removeItem(plot.titleLabel)
             header = StudyPaneHeader(study_name, theme, plot)
-            plot.layout.addItem(header, 0, 0, 1, 3)
-            plot.layout.setRowStretchFactor(0, 0)
             plot.getAxis("right").setStyle(tickTextOffset=6)
             header.settings_requested.connect(lambda name=study_name: self.indicator_settings_requested.emit(name))
             header.remove_requested.connect(lambda name=study_name: self._remove_study(name))
@@ -8607,18 +8740,25 @@ class ChartWorkspace(QtWidgets.QWidget):
         panes = getattr(self, "study_panes", None)
         if not panes:
             return
-        height = max(1.0, float(self.graphics.viewport().height()))
+        viewport = self.graphics.viewport()
+        width = max(1.0, float(viewport.width()))
+        height = max(1.0, float(viewport.height()))
         visible = [(name, plot, header) for name, (plot, header) in panes.items() if plot.isVisible()]
-        signature = (height, tuple((name, self.study_heights[name], header.minimumHeight())
-                                   for name, _plot, header in visible))
+        signature = (
+            width,
+            height,
+            tuple((name, self.study_heights[name]) for name, _plot, _header in visible),
+        )
         if signature == self._study_layout_signature:
             return
         self._study_layout_signature = signature
         self._sync_bottom_time_axis()
-        # Each pane keeps its header and a data region; only the last owns time.
+        # Pane legends overlay the plot like TradingView; they do not consume a row.
         axis_height = math.ceil(QtGui.QFontMetricsF(_chart_axis_font()).height()) + 10
-        minimum = [header.minimumHeight() + 28 + (axis_height if index == len(visible) - 1 else 0)
-                   for index, (_name, _plot, header) in enumerate(visible)]
+        minimum = [
+            52.0 + (axis_height if index == len(visible) - 1 else 0)
+            for index, (_name, _plot, _header) in enumerate(visible)
+        ]
         desired = [max(floor, self.study_heights[name]) for floor, (name, _plot, _header) in zip(minimum, visible)]
         available = max(sum(minimum), height - max(100.0, height * .35))
         extra = sum(wanted - floor for wanted, floor in zip(desired, minimum))
@@ -8640,6 +8780,8 @@ class ChartWorkspace(QtWidgets.QWidget):
             grid.setRowStretchFactor(row, 0)
         grid.invalidate()
         grid.activate()
+        for _name, _plot, header in visible:
+            header.sync_geometry()
         self.graphics.updateGeometry()
         self._sync_crosshair_study_visibility()
         self.graphics.request_redraw()
