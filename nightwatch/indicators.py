@@ -8,6 +8,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from .constants import INTERVAL_SECONDS
 from .models import Candle, Zone
 
 
@@ -466,18 +467,25 @@ def detect_auto_fibonacci_candidates(
 
 
 def bollinger_values(candles: list[Candle], period: int = 20, deviations: float = 2.0) -> tuple[np.ndarray, ...]:
-    close = candle_arrays(candles)[4]
+    period = max(1, int(period))
+    close = np.fromiter((c.close for c in candles), dtype=float, count=len(candles))
     middle = np.full(len(close), np.nan)
     upper = np.full(len(close), np.nan)
     lower = np.full(len(close), np.nan)
     if len(close) < period:
         return middle, upper, lower
     windows = np.lib.stride_tricks.sliding_window_view(close, period)
-    means = windows.mean(axis=1)
-    standard = windows.std(axis=1)
-    middle[period - 1 :] = means
-    upper[period - 1 :] = means + standard * deviations
-    lower[period - 1 :] = means - standard * deviations
+    # NumPy's std materializes window deviations. Bound that temporary to ~2 MiB
+    # even at maximum chart history, retaining the stable two-pass calculation.
+    chunk_size = max(1, 262_144 // period)
+    for start in range(0, len(windows), chunk_size):
+        chunk = windows[start:start + chunk_size]
+        means = chunk.mean(axis=1)
+        width = chunk.std(axis=1) * deviations
+        target = slice(start + period - 1, start + period - 1 + len(chunk))
+        middle[target] = means
+        upper[target] = means + width
+        lower[target] = means - width
     return middle, upper, lower
 
 
@@ -842,6 +850,16 @@ def rolling_previous_extreme(values: np.ndarray, period: int, maximum: bool) -> 
             candidates.pop()
         candidates.append(index)
     return output
+
+
+def vwap_supports_interval(interval: str, anchor: str) -> bool:
+    """A candle must fit wholly inside its UTC VWAP anchor period."""
+    if interval not in INTERVAL_SECONDS or anchor not in {"day", "week", "month"}:
+        return False
+    return (
+        INTERVAL_SECONDS[interval] <= 86400
+        or (interval, anchor) in {("1w", "week"), ("1M", "month")}
+    )
 
 
 def _vwap_components(candles, anchor="week"):

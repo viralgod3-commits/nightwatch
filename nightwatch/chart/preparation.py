@@ -324,18 +324,25 @@ def decimate_series(times, values, pixel_width):
     budget = max(512, min(6000, int(max(320., pixel_width)*3)))
     if count <= budget:
         return times[:count], values[:count], False
-    edges = np.linspace(0, count, max(1, (budget-2)//5)+1, dtype=np.int64)
+    finite_mask = np.isfinite(values[:count])
+    has_gaps = not finite_mask.all()
+    # Four samples per bucket, plus room for a separator between each selected
+    # pair when necessary. Multiple anchor resets may fall in a single bucket.
+    points_per_bucket = 8 if has_gaps else 4
+    edges = np.linspace(0, count, max(1, (budget-2)//points_per_bucket)+1, dtype=np.int64)
     chosen = [0, count-1]
     for start, end in zip(edges[:-1], edges[1:]):
         segment = values[start:end]
-        finite = np.flatnonzero(np.isfinite(segment))
+        finite = np.flatnonzero(finite_mask[start:end])
         chosen.extend((int(start), int(end-1)))
         if finite.size:
             chosen.extend((int(start+finite[np.argmin(segment[finite])]), int(start+finite[np.argmax(segment[finite])])))
-        missing = np.flatnonzero(~np.isfinite(segment))
-        if missing.size:
-            chosen.append(int(start+missing[0]))
     selected = np.asarray(sorted(set(chosen)), dtype=np.int64)
+    if has_gaps:
+        last_missing = np.maximum.accumulate(np.where(finite_mask, -1, np.arange(count)))
+        left, right = selected[:-1], selected[1:]
+        bridges = finite_mask[left] & finite_mask[right] & (last_missing[right] > left)
+        selected = np.sort(np.r_[selected, last_missing[right[bridges]]])
     return times[selected], values[selected], True
 
 

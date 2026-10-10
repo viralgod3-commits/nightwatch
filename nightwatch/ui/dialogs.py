@@ -450,7 +450,7 @@ class IndicatorSettingsDialog(QtWidgets.QDialog):
                 page_layout.addRow("History", history_note)
             explanations = {
                 "EMA Trend": "21 / 50 / 200 by default. Rising, ordered averages help describe trend strength and pullbacks. Periods use the selected timeframe; they are not fixed daily averages.",
-                "VWAP": "Volume-weighted price since the selected UTC boundary. Uses quote/base traded volume; OHLC typical-price approximation only when quote volume is missing. The first incomplete anchor stays blank until more history is loaded.",
+                "VWAP": "Volume-weighted price since the selected UTC boundary. Uses quote/base traded volume; OHLC typical-price approximation only when quote volume is missing. The first incomplete anchor stays blank until more history is loaded. Daily and intraday candles support every anchor; weekly candles require Week, and monthly candles require Month.",
                 "Donchian Channels": "Breakout context from completed prior candles. A 20-candle channel reacts faster; 55 gives a broader trend range. The current candle cannot move its own breakout threshold.",
                 "RSI": "Momentum, not an automatic sell signal. RSI can remain above 70 during a strong bull trend. Flat prices produce 50.",
                 "ATR": "Displayed as ATR / close × 100, allowing comparison across differently priced pairs. Measures volatility, not direction.",

@@ -78,7 +78,7 @@ from ..constants import (
     DEFAULT_SYMBOL,
     TIMEFRAMES,
 )
-from ..indicators import AutoFibCandidate
+from ..indicators import AutoFibCandidate, vwap_supports_interval
 from ..models import ChartMarketDataFactory, ChartMarketDataPort
 
 
@@ -7524,6 +7524,17 @@ class ChartWorkspace(QtWidgets.QWidget):
             bool(self.logarithmic),
         )
 
+    @staticmethod
+    def _indicator_display_compatible(prepared_key, requested_key) -> bool:
+        # A newer tick must not starve an otherwise current result. Market,
+        # closed history, settings, viewport and scale still have to match.
+        return (
+            prepared_key is not None
+            and requested_key is not None
+            and prepared_key[0] == requested_key[0]
+            and prepared_key[2:] == requested_key[2:]
+        )
+
     def _start_indicator_display_worker(
         self,
         key: tuple[Any, ...],
@@ -7602,16 +7613,18 @@ class ChartWorkspace(QtWidgets.QWidget):
 
         if (
             error is None
+            and epoch_is_current
             and not cache_miss
-            and finished_key == self._indicator_display_requested_key
+            and self._indicator_display_compatible(finished_key, self._indicator_display_requested_key)
         ):
             self._indicator_display_mailbox = (finished_key, prepared_dict)
             self._navigation_deferred_indicators = True
             self._start_navigation_scheduler()
         elif (
             error is None
+            and epoch_is_current
             and cache_miss
-            and finished_key == self._indicator_display_requested_key
+            and self._indicator_display_compatible(finished_key, self._indicator_display_requested_key)
         ):
 
 
@@ -7627,7 +7640,6 @@ class ChartWorkspace(QtWidgets.QWidget):
     def _commit_indicator_display(
         self,
         prepared: dict[str, dict[str, Any]],
-        display_stride: int,
     ) -> None:
         groups = {
             "Bollinger Bands": (self.bb_mid, self.bb_upper, self.bb_lower),
@@ -7641,12 +7653,10 @@ class ChartWorkspace(QtWidgets.QWidget):
                 continue
             prepared_curves = payload.get("curves", ())
             for curve, series in zip(curves, prepared_curves):
-                display_times, display_values, predecimated = series
-                curve.setDownsampling(
-                    ds=1 if predecimated else display_stride,
-                    auto=False,
-                    method="peak",
-                )
+                display_times, display_values, _predecimated = series
+                # The worker already enforces a pixel budget and preserves gaps
+                # and extrema. A second decimation can erase that information.
+                curve.setDownsampling(ds=1, auto=False)
                 curve.setData(display_times, display_values, connect="finite")
             if name == "Bollinger Bands":
                 self.bb_fill.prepare_geometry()
@@ -7698,8 +7708,7 @@ class ChartWorkspace(QtWidgets.QWidget):
             settings = dict(self.indicator_settings[name])
             if (
                 name == "VWAP"
-                and INTERVAL_SECONDS[self.interval] > 86400
-                and settings.get("anchor", "week") != "week"
+                and not vwap_supports_interval(self.interval, settings.get("anchor", "week"))
             ):
                 for curve in groups[name]:
                     curve.setData([], [])
@@ -7720,11 +7729,12 @@ class ChartWorkspace(QtWidgets.QWidget):
         if self._indicator_committed_key == display_key:
             return
         mailbox = self._indicator_display_mailbox
-        if mailbox is not None and mailbox[0] == display_key:
+        if mailbox is not None and self._indicator_display_compatible(mailbox[0], display_key):
             self._indicator_display_mailbox = None
-            self._commit_indicator_display(mailbox[1], display_stride)
-            self._indicator_committed_key = display_key
-            return
+            self._commit_indicator_display(mailbox[1])
+            self._indicator_committed_key = mailbox[0]
+            if mailbox[0] == display_key:
+                return
 
 
         self._request_indicator_display_worker(
@@ -7750,8 +7760,8 @@ class ChartWorkspace(QtWidgets.QWidget):
                                   for key, color in (("fast", "cyan"), ("medium", "amber"), ("slow", "purple")))
             elif name == "VWAP":
                 text = f"VWAP · {settings['anchor'].upper()} UTC"
-                if INTERVAL_SECONDS[self.interval] > 86400 and settings['anchor'] != "week":
-                    text += " · USE DAILY OR SMALLER CANDLES"
+                if not vwap_supports_interval(self.interval, settings['anchor']):
+                    text += " · ANCHOR UNAVAILABLE ON THIS TIMEFRAME"
             else:
                 text = f"DONCHIAN {settings['period']} · PRIOR BARS"
             rows.append(text)
