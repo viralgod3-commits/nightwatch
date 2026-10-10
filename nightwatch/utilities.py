@@ -140,21 +140,20 @@ def _font_profile(
         "hinting": hinting,
         "antialias": "prefer",
         "quality": "quality",
-        "no_subpixel": False,
+        "no_subpixel": True,
     }
 
 
 TYPOGRAPHY_DEFAULTS: dict[str, dict[str, Any]] = {
-    TextRole.UI_BODY: _font_profile("ui", 9.0, 400, hinting="vertical"),
-    # Small uppercase labels were previously 9-10 px. 8.5 pt keeps the dense
-    # geometry while giving 96-DPI/1080p displays materially more raster detail.
-    TextRole.UI_LABEL: _font_profile("ui", 8.5, 500, hinting="vertical"),
-    TextRole.UI_CAPTION: _font_profile("ui", 8.0, 400, hinting="vertical"),
+    TextRole.UI_BODY: _font_profile("ui", 9.75, 400, hinting="vertical"),
+    # Readable at 100% scaling, with grayscale antialiasing on dark surfaces.
+    TextRole.UI_LABEL: _font_profile("ui", 9.0, 500, hinting="vertical"),
+    TextRole.UI_CAPTION: _font_profile("ui", 9.0, 400, hinting="vertical"),
     TextRole.UI_HEADING: _font_profile("ui", 11.0, 600, hinting="vertical"),
     TextRole.WORKSPACE_TITLE: _font_profile("ui", 17.0, 600, hinting="vertical"),
-    TextRole.WORKSPACE_SUBTITLE: _font_profile("ui", 8.5, 400, hinting="vertical"),
+    TextRole.WORKSPACE_SUBTITLE: _font_profile("ui", 9.0, 400, hinting="vertical"),
     TextRole.PANEL_TITLE: _font_profile("ui", 10.5, 600, hinting="vertical"),
-    TextRole.UI_CONTROL: _font_profile("ui", 9.0, 400, hinting="vertical"),
+    TextRole.UI_CONTROL: _font_profile("ui", 9.75, 400, hinting="vertical"),
     TextRole.UI_CONTROL_COMPACT: _font_profile("ui", 8.25, 400, hinting="vertical"),
     TextRole.ICON_FALLBACK: _font_profile("ui", 6.5, 600, hinting="vertical"),
     TextRole.TRADING_TICKET: _font_profile("ui", 7.75, 400, hinting="vertical"),
@@ -175,8 +174,8 @@ TYPOGRAPHY_DEFAULTS: dict[str, dict[str, Any]] = {
     TextRole.MARKET_VALUE_EMPHASIZED: _font_profile("numeric", 9.0, 600, hinting="full", fixed_pitch=True),
     TextRole.MARKET_VALUE_LARGE: _font_profile("numeric", 13.0, 500, hinting="full", fixed_pitch=True, numeric_width="extended"),
     TextRole.MARKET_VALUE_HERO: _font_profile("numeric", 17.0, 600, hinting="full", fixed_pitch=True, numeric_width="extended"),
-    TextRole.TABLE_TEXT: _font_profile("ui", 9.0, 400, hinting="vertical"),
-    TextRole.TABLE_VALUE: _font_profile("numeric", 9.0, 500, hinting="full", fixed_pitch=True),
+    TextRole.TABLE_TEXT: _font_profile("ui", 9.75, 400, hinting="vertical"),
+    TextRole.TABLE_VALUE: _font_profile("numeric", 10.0, 500, hinting="full", fixed_pitch=True),
     TextRole.CHART_AXIS: _font_profile("numeric", 9.0, 500, hinting="full", fixed_pitch=True),
     TextRole.CHART_OVERLAY: _font_profile("numeric", 9.0, 500, hinting="full", fixed_pitch=True),
     # Painted DOM text is pixel-sized so row geometry stays deterministic.
@@ -1102,7 +1101,7 @@ INSTRUMENT_BAR_HEIGHT = 44
 class MainToolbar(QtWidgets.QFrame):
     """Compact global navigation, independent of the chart/right-panel split."""
 
-    HEIGHT = 28
+    HEIGHT = 42
 
     def __init__(self, navigation: QtWidgets.QWidget, layout_control: QtWidgets.QWidget,
                  settings_control: QtWidgets.QWidget, parent: QtWidgets.QWidget | None = None):
@@ -1111,8 +1110,13 @@ class MainToolbar(QtWidgets.QFrame):
         self.setAttribute(QtCore.Qt.WidgetAttribute.WA_StyledBackground, True)
         self.setFixedHeight(self.HEIGHT)
         row = QtWidgets.QHBoxLayout(self)
-        row.setContentsMargins(0, 0, 0, 0)
-        row.setSpacing(0)
+        row.setContentsMargins(12, 0, 8, 0)
+        row.setSpacing(8)
+        brand = QtWidgets.QLabel("NIGHTWATCH", self)
+        brand.setObjectName("terminalBrand")
+        set_text_role(brand, TextRole.UI_LABEL)
+        brand.setContentsMargins(0, 0, 16, 0)
+        row.addWidget(brand)
         navigation.setFixedHeight(self.HEIGHT - 1)
         for button in navigation.findChildren(QtWidgets.QPushButton):
             button.setFixedHeight(self.HEIGHT - 1)
@@ -1128,15 +1132,20 @@ class MainToolbar(QtWidgets.QFrame):
         muted = theme.get("muted", "#8E8E96")
         hover = theme.get("control_hover", "#1E1E22")
         active = theme.get("active_line", text)
+        background = theme.get("panel", "#10151D")
+        border = theme.get("border", "#273140")
+        selected = theme.get("active", "#1C3048")
         # Scope all rules locally so the instrument cards retain their styling.
         self.setStyleSheet(f"""
-            QFrame#mainToolbar {{ background: #000000; border: 0; }}
-            QFrame#workspaceNav {{ background: #000000; border: 0; padding: 0; }}
+            QFrame#mainToolbar {{ background: {background}; border: 0; border-bottom: 1px solid {border}; }}
+            QLabel#terminalBrand {{ background: transparent; color: {text}; border: 0; }}
+            QFrame#workspaceNav {{ background: transparent; border: 0; padding: 0; }}
             QPushButton#workspaceNavButton {{ background: transparent; color: {muted};
-                border: 0; border-bottom: 1px solid transparent;
-                padding: 0 8px; margin: 0; border-radius: 0; }}
+                border: 0; border-bottom: 2px solid transparent;
+                padding: 0 12px; margin: 0; border-radius: 0; }}
             QPushButton#workspaceNavButton:hover {{ color: {text}; background: {hover}; }}
-            QPushButton#workspaceNavButton:checked {{ color: {text}; border-bottom-color: {active}; }}
+            QPushButton#workspaceNavButton:checked {{ color: {active}; background: {selected}; border-bottom-color: {active}; }}
+            QPushButton#workspaceNavButton:focus:!checked {{ color: {text}; border-bottom-color: {muted}; }}
             QPushButton#topUtilityButton {{ background: transparent; color: {text};
                 border: 0; padding: 0; margin: 0; border-radius: 0; }}
             QPushButton#topUtilityButton:hover {{ background: {hover}; }}
@@ -1236,6 +1245,10 @@ class InstrumentBar(QtWidgets.QFrame):
     def minimumSizeHint(self) -> QtCore.QSize:
         # Fixed-width children describe the expanded strip, not its minimum.
         width = self._timeframe_width(collapsed=True) + 8
+        for index in range(2, self.row.count()):
+            control = self.row.itemAt(index).widget()
+            if control is not None and not control.isHidden():
+                width += self._stable_widget_width(control) + self.row.spacing()
         return QtCore.QSize(width, INSTRUMENT_BAR_HEIGHT)
 
     @staticmethod
@@ -1264,6 +1277,10 @@ class InstrumentBar(QtWidgets.QFrame):
         try:
             left, right = self._normal_horizontal_margins
             available_width = self.contentsRect().width()
+            for index in range(2, self.row.count()):
+                control = self.row.itemAt(index).widget()
+                if control is not None and not control.isHidden():
+                    available_width -= self._stable_widget_width(control) + self.row.spacing()
             identity_width = self._stable_widget_width(self.identity_control)
             identity_margins = self._identity_horizontal_margins
             measure_identity = getattr(self.identity_control, "identity_width", None)

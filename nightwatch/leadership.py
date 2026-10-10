@@ -32,6 +32,7 @@ from .utilities import (
     typography_font,
 )
 from .presentation import display_frame_interval_ms, profile_callback
+from .theme import NIGHTWATCH_COLORS
 
 
 HOUR = 3_600_000
@@ -41,26 +42,7 @@ LEADERS_REFRESH_MS = 300_000
 log = logging.getLogger(__name__)
 
 
-LEADERS_PALETTE: dict[str, str] = {
-    "bg": "#000000",
-    "panel": "#000000",
-    "panel2": "#000000",
-    "grid": "#1C1C20",
-    "border": "#262629",
-    "separator": "#1F1F22",
-    "control": "#000000",
-    "control_hover": "#000000",
-    "control_border": "#3A3A3F",
-    "header": "#000000",
-    "active": "#000000",
-    "active_line": "#E070D8",
-    "text": "#EDEDED",
-    "muted": "#8E8E96",
-    "green": "#22D27A",
-    "red": "#FF4757",
-    "cyan": "#E070D8",
-    "amber": "#E8A64A",
-}
+LEADERS_PALETTE: dict[str, str] = dict(NIGHTWATCH_COLORS)
 
 SECTORS_PALETTE = dict(LEADERS_PALETTE)
 
@@ -957,6 +939,8 @@ class LeadershipTimelineWidget(QtWidgets.QWidget):
         end = prepared["end"]
         self.metrics = prepared["metrics"]
         ordered = prepared["ordered"]
+        self.table_empty.setText("No coins match these filters.\nTry another search or reset the filters.")
+        self.table_empty.setVisible(not ordered)
         covered, btc_ready = prepared["covered"], prepared["btc_ready"]
         unavailable = sum(symbol in self.errors for symbol in self.symbols)
         self.coverage.setText(f"{covered}/{len(self.symbols)} histories · {self.eligible_count} liquid pairs"
@@ -1538,7 +1522,7 @@ def _heat_color(value: float | None, theme: dict[str, str]) -> tuple[str, str]:
 
 
     strength = min(abs(value) / 3.0, 1.0)
-    fill = 0.08 + 0.30 * strength
+    fill = 0.04 + 0.14 * strength
     return _blend_hex(base, accent, fill), accent
 
 
@@ -1556,6 +1540,8 @@ class LeadershipCellDelegate(QtWidgets.QStyledItemDelegate):
         background = data.get("background", self.owner.theme.get("panel", "#000000"))
         if option.state & QtWidgets.QStyle.StateFlag.State_Selected:
             background = self.owner.theme.get("active", "#000000")
+        elif option.state & QtWidgets.QStyle.StateFlag.State_MouseOver:
+            background = self.owner.theme["control_hover"]
         painter.fillRect(rect, QtGui.QColor(background))
         painter.setPen(QtGui.QColor(self.owner.theme.get("separator", self.owner.theme.get("border", "#262629"))))
         painter.drawLine(rect.bottomLeft(), rect.bottomRight())
@@ -1581,7 +1567,7 @@ class LeadershipCellDelegate(QtWidgets.QStyledItemDelegate):
             metrics = QtGui.QFontMetrics(state_font)
             width = min(rect.width() - 10, max(58, metrics.horizontalAdvance(state) + 22))
             pill = QtCore.QRectF(rect.center().x() - width / 2, rect.center().y() - 11, width, 22)
-            painter.setPen(QtGui.QPen(color, 1))
+            painter.setPen(Qt.PenStyle.NoPen)
             painter.setBrush(fill)
             painter.drawRoundedRect(pill, 11, 11)
             painter.setFont(state_font)
@@ -1622,9 +1608,9 @@ class LeadershipCellDelegate(QtWidgets.QStyledItemDelegate):
             painter.drawText(rect.adjusted(6, 0, -6, 0), alignment, text)
 
         if option.state & QtWidgets.QStyle.StateFlag.State_Selected:
-            painter.setPen(QtGui.QPen(QtGui.QColor(self.owner.theme.get("active_line", "#E070D8")), 1))
-            painter.drawLine(rect.topLeft(), rect.topRight())
-            painter.drawLine(rect.bottomLeft(), rect.bottomRight())
+            if index.column() == 0:
+                painter.fillRect(rect.left(), rect.top(), 3, rect.height(),
+                                 QtGui.QColor(self.owner.theme["active_line"]))
         painter.restore()
 
 
@@ -1827,10 +1813,33 @@ def _workspace_drawer(owner, detail):
 
 
 def _workspace_shell(owner, name: str):
-    """Keep filters on the left and let the trading view fill the viewport."""
-    root = QtWidgets.QHBoxLayout(owner)
-    root.setContentsMargins(8, 8, 8, 8)
-    root.setSpacing(8)
+    """Shared research heading, filter rail and resizable content area."""
+    root = QtWidgets.QVBoxLayout(owner)
+    root.setContentsMargins(12, 10, 12, 12)
+    root.setSpacing(12)
+    title, description = {
+        "leadershipBody": ("Market leaders", "Find relative strength and confirm participation."),
+        "sectorBody": ("Sector overview", "Compare sector performance against Bitcoin."),
+        "rotationBody": ("Market rotation", "Track relative strength and changing momentum."),
+    }[name]
+    heading = QtWidgets.QHBoxLayout()
+    heading.setSpacing(24)
+    identity = QtWidgets.QVBoxLayout()
+    identity.setSpacing(3)
+    label = QtWidgets.QLabel(title)
+    set_text_role(label, TextRole.WORKSPACE_TITLE)
+    identity.addWidget(label)
+    subtitle = QtWidgets.QLabel(description)
+    subtitle.setProperty("workspaceMuted", True)
+    set_text_role(subtitle, TextRole.WORKSPACE_SUBTITLE)
+    identity.addWidget(subtitle)
+    heading.addLayout(identity)
+    heading.addStretch(1)
+    owner.workspace_heading = heading
+    root.addLayout(heading)
+    body = QtWidgets.QHBoxLayout()
+    body.setSpacing(12)
+    root.addLayout(body, 1)
     owner.controls_scroll = QtWidgets.QScrollArea(owner)
     owner.controls_scroll.setObjectName(name + "Controls")
     owner.controls_scroll.setWidgetResizable(True)
@@ -1840,8 +1849,8 @@ def _workspace_shell(owner, name: str):
     controls = QtWidgets.QWidget()
     controls.setObjectName(name)
     sidebar = QtWidgets.QVBoxLayout(controls)
-    sidebar.setContentsMargins(10, 10, 10, 10)
-    sidebar.setSpacing(10)
+    sidebar.setContentsMargins(0, 0, 0, 0)
+    sidebar.setSpacing(12)
     owner.controls_scroll.setWidget(controls)
     owner.controls_rail = QtWidgets.QWidget(owner)
     owner.controls_rail.setFixedWidth(224)
@@ -1850,16 +1859,16 @@ def _workspace_shell(owner, name: str):
     rail.setSpacing(4)
     rail.addWidget(owner.controls_scroll, 1)
     owner.actions_layout = QtWidgets.QVBoxLayout()
-    owner.actions_layout.setContentsMargins(8, 0, 8, 8)
+    owner.actions_layout.setContentsMargins(0, 0, 0, 0)
     owner.actions_layout.setSpacing(6)
     rail.addLayout(owner.actions_layout)
-    root.addWidget(owner.controls_rail)
+    body.addWidget(owner.controls_rail)
     owner.main_content = _WorkspaceContent(owner)
     owner.main_content.setProperty("workspaceTransparent", True)
     content = QtWidgets.QVBoxLayout(owner.main_content)
     content.setContentsMargins(0, 0, 0, 0)
     content.setSpacing(8)
-    root.addWidget(owner.main_content, 1)
+    body.addWidget(owner.main_content, 1)
     return sidebar, content
 
 
@@ -1869,10 +1878,10 @@ def _workspace_filter(sidebar, caption: str, control):
     layout = QtWidgets.QVBoxLayout(field)
     layout.setContentsMargins(0, 0, 0, 0)
     layout.setSpacing(4)
-    label = QtWidgets.QLabel(caption.upper())
+    label = QtWidgets.QLabel(caption)
     label.setProperty("workspaceMuted", True)
     label.setProperty("workspaceFilterLabel", True)
-    set_text_role(label, TextRole.UI_CAPTION)
+    set_text_role(label, TextRole.UI_LABEL)
     label.setBuddy(control)
     layout.addWidget(label)
     layout.addWidget(control)
@@ -1897,9 +1906,9 @@ def _workspace_section(sidebar, caption: str):
     layout = QtWidgets.QVBoxLayout(section)
     layout.setContentsMargins(10, 9, 10, 10)
     layout.setSpacing(9)
-    heading = QtWidgets.QLabel(caption.upper())
+    heading = QtWidgets.QLabel(caption)
     heading.setProperty("workspaceSectionHeading", True)
-    set_text_role(heading, TextRole.UI_CAPTION)
+    set_text_role(heading, TextRole.UI_LABEL)
     layout.addWidget(heading)
     sidebar.addWidget(section)
     return layout
@@ -1950,6 +1959,17 @@ def _workspace_clear_filters(owner):
 
 
 def _workspace_finish(owner):
+    # Existing data freshness labels were hidden in a compatibility container.
+    # Reuse their update path; no new timer, feed, or computation is needed.
+    freshness = getattr(owner, "asof", None)
+    if freshness is not None:
+        freshness.setProperty("workspaceMuted", True)
+        set_text_role(freshness, TextRole.UI_CAPTION)
+        freshness.setMinimumWidth(0)
+        freshness.setMaximumWidth(420)
+        freshness.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        owner.workspace_heading.addWidget(freshness, 1)
+        freshness.show()
     for widget in owner.findChildren(QtWidgets.QLabel):
         if any(token in widget.objectName().lower() for token in
                ("muted", "subtitle", "caption", "controllabel", "stattitle", "coverage")):
@@ -1980,8 +2000,9 @@ def _workspace_finish(owner):
         widget.setMinimumHeight(32)
         set_text_role(widget, TextRole.UI_CONTROL)
     for widget in owner.findChildren(QtWidgets.QTableWidget):
-        widget.verticalHeader().setDefaultSectionSize(38)
-        widget.horizontalHeader().setFixedHeight(34)
+        widget.verticalHeader().setDefaultSectionSize(40)
+        widget.horizontalHeader().setFixedHeight(38)
+        widget.setMouseTracking(True)
     owner.refresh_shortcut = QtGui.QShortcut(QtGui.QKeySequence("F5"), owner)
     owner.refresh_shortcut.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
     owner.refresh_shortcut.activated.connect(owner.refresh_button.click)
@@ -2031,7 +2052,7 @@ def _workspace_stylesheet(name: str) -> str:
         {scope} QWidget[workspaceFilterField="true"] {{ background: transparent; border: 0; }}
         {scope} QLabel[workspaceFilterLabel="true"] {{ color: {p['muted']}; padding-left: 1px; }}
         {scope} QFrame[workspacePanel="true"] {{ background: {p['panel']}; border: 1px solid {p['border']}; border-radius: 8px; }}
-        {scope} QFrame[leadersDetailGroup="true"] {{ background: {p['panel']}; border: 1px solid {p['separator']}; border-radius: 6px; }}
+        {scope} QFrame[leadersDetailGroup="true"] {{ background: {p['panel2']}; border: 1px solid {p['separator']}; border-radius: 6px; }}
         {scope} QPushButton[workspaceControl="true"], {scope} QToolButton[workspaceControl="true"],
         {scope} QComboBox[workspaceControl="true"], {scope} QLineEdit[workspaceControl="true"] {{
             background: {p['control']}; color: {p['text']}; border: 1px solid {p['control_border']};
@@ -2555,6 +2576,14 @@ def build_leaders(owner) -> None:
     owner.actions_layout.addWidget(owner.refresh_button)
     owner.table = QtWidgets.QTableWidget()
     owner.table.setObjectName("leadershipTable")
+    owner.table_empty = QtWidgets.QLabel("Waiting for market history…\nComparable returns appear after data loads.", owner.table.viewport())
+    owner.table_empty.setProperty("workspaceMuted", True)
+    owner.table_empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
+    owner.table_empty.setWordWrap(True)
+    owner.table_empty.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+    empty_layout = QtWidgets.QVBoxLayout(owner.table.viewport())
+    empty_layout.setContentsMargins(24, 24, 24, 24)
+    empty_layout.addWidget(owner.table_empty)
     owner.table.setColumnCount(len(_LEADER_HEADERS))
     owner.table.setHorizontalHeaderLabels(_LEADER_HEADERS)
     owner.table.setShowGrid(False)
@@ -2626,6 +2655,9 @@ def build_leaders(owner) -> None:
     owner.play.setCheckable(True)
     for name in ("asof", "coverage", "scope", "sample_caption", "latest", "changes"):
         setattr(owner, name, ElidedLabel("", support))
+    owner.sample_caption.setObjectName("leadersTableCaption")
+    content.addWidget(owner.sample_caption)
+    owner.sample_caption.show()
     owner.search_shortcut = QtGui.QShortcut(QtGui.QKeySequence("Ctrl+F"), owner)
     owner.search_shortcut.activated.connect(owner.search.setFocus)
     _workspace_finish(owner)
@@ -3409,6 +3441,8 @@ class _SectorOverviewSectorTile(QtWidgets.QFrame):
         self.selected = False
         self.setObjectName("sectorTile")
         self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.setAccessibleName(f"Inspect {sector} sector")
         layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(13, 11, 13, 10)
         layout.setSpacing(4)
@@ -3428,6 +3462,11 @@ class _SectorOverviewSectorTile(QtWidgets.QFrame):
         set_text_role(self.performance, TextRole.MARKET_VALUE_HERO)
         layout.addWidget(self.performance)
         self.bars = _SectorOverviewVolumeBars()
+        self.bars.setMaximumHeight(120)
+        self.window_caption = QtWidgets.QLabel("Median return vs BTC")
+        self.window_caption.setObjectName("sectorMuted")
+        set_text_role(self.window_caption, TextRole.UI_CAPTION)
+        layout.addWidget(self.window_caption)
         layout.addWidget(self.bars, 1)
         self.share = QtWidgets.QLabel("—")
         self.share.setObjectName("sectorTileShare")
@@ -3455,6 +3494,7 @@ class _SectorOverviewSectorTile(QtWidgets.QFrame):
         self.update()
 
     def update_data(self, metrics: dict[str, Any], timeframe_label: str) -> None:
+        self.window_caption.setText(f"{timeframe_label} median vs BTC")
         performance = metrics.get("performance")
         color = self.theme.get("green", "#22D27A") if not _sector_overview_finite(performance) or performance >= 0 else self.theme.get("red", "#FF7A85")
         performance_text = _sector_overview_pct(performance, 1)
@@ -3479,6 +3519,13 @@ class _SectorOverviewSectorTile(QtWidgets.QFrame):
             event.accept()
             return
         super().mouseReleaseEvent(event)
+
+    def keyPressEvent(self, event: QtGui.QKeyEvent) -> None:
+        if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter, Qt.Key.Key_Space):
+            self.clicked.emit(self.sector)
+            event.accept()
+            return
+        super().keyPressEvent(event)
 
 
 class _SectorOverviewSectorMetricCard(QtWidgets.QFrame):
@@ -3994,9 +4041,10 @@ class SectorOverviewWidget(QtWidgets.QWidget):
         participation_layout.setContentsMargins(12, 10, 12, 10)
         participation_layout.setSpacing(7)
         self.tile_host = QtWidgets.QWidget()
-        self.tile_layout = QtWidgets.QHBoxLayout(self.tile_host)
+        self.tile_host.installEventFilter(self)
+        self.tile_layout = QtWidgets.QGridLayout(self.tile_host)
         self.tile_layout.setContentsMargins(0, 0, 0, 0)
-        self.tile_layout.setSpacing(6)
+        self.tile_layout.setSpacing(10)
         participation_layout.addWidget(self.tile_host, 1)
         self.tiles: dict[str, _SectorOverviewSectorTile] = {}
         for sector in _SECTOR_OVERVIEW_SECTOR_ORDER:
@@ -4004,10 +4052,11 @@ class SectorOverviewWidget(QtWidgets.QWidget):
             tile.clicked.connect(self._select_sector)
             self.tiles[sector] = tile
         self._arrange_tiles()
-        self.area_caption = QtWidgets.QLabel("Area: selected-window traded volume · Label: performance vs BTC")
+        self.area_caption = QtWidgets.QLabel("Median returns vs BTC · Bars show each sector’s own volume history")
         self.area_caption.setObjectName("sectorMuted")
         set_text_role(self.area_caption, TextRole.UI_LABEL)
-        self.area_caption.hide()
+        self.area_caption.setWordWrap(True)
+        participation_layout.insertWidget(0, self.area_caption)
         layout.addWidget(self.participation_panel, 2)
 
         leadership_panel = QtWidgets.QFrame()
@@ -4015,10 +4064,9 @@ class SectorOverviewWidget(QtWidgets.QWidget):
         bottom = QtWidgets.QVBoxLayout(leadership_panel)
         bottom.setContentsMargins(12, 10, 12, 10)
         bottom.setSpacing(4)
-        self.coverage = QtWidgets.QLabel("Waiting for histories", support)
+        self.coverage = ElidedLabel("Waiting for histories")
         self.coverage.setObjectName("sectorMuted")
         set_text_role(self.coverage, TextRole.UI_LABEL)
-        self.coverage.hide()
         self.table = QtWidgets.QTableWidget(0, 8)
         self.table.setObjectName("sectorTable")
         set_text_role(self.table, TextRole.TABLE_TEXT)
@@ -4044,13 +4092,17 @@ class SectorOverviewWidget(QtWidgets.QWidget):
         leadership_panel.setMaximumHeight(340)
         header_view = self.table.horizontalHeader()
         header_view.setFixedHeight(38)
-        header_view.setSectionResizeMode(0, QtWidgets.QHeaderView.ResizeMode.Stretch)
-        self.table.setColumnWidth(0, 126)
+        header_view.setMinimumSectionSize(64)
+        header_view.setSectionResizeMode(0, QtWidgets.QHeaderView.ResizeMode.Interactive)
+        self.table.setColumnWidth(0, 150)
         for column in range(1, 7):
-            header_view.setSectionResizeMode(column, QtWidgets.QHeaderView.ResizeMode.ResizeToContents)
+            header_view.setSectionResizeMode(column, QtWidgets.QHeaderView.ResizeMode.Stretch)
+        header_view.setSectionResizeMode(5, QtWidgets.QHeaderView.ResizeMode.Interactive)
+        self.table.setColumnWidth(5, 142)
         header_view.setSectionResizeMode(7, QtWidgets.QHeaderView.ResizeMode.Interactive)
-        self.table.setColumnWidth(7, 176)
+        self.table.setColumnWidth(7, 136)
         bottom.addWidget(self.table)
+        bottom.addWidget(self.coverage)
         layout.addWidget(leadership_panel, 1)
 
         self.detail = _SectorOverviewSectorDetail(self.theme)
@@ -4067,11 +4119,17 @@ class SectorOverviewWidget(QtWidgets.QWidget):
         self._sector_layout_horizontal = None
         _workspace_finish(self)
 
+    def eventFilter(self, watched, event):
+        if watched is getattr(self, "tile_host", None) and event.type() == QtCore.QEvent.Type.Resize:
+            self._arrange_tiles()
+        return super().eventFilter(watched, event)
+
     def resizeEvent(self, event):
         super().resizeEvent(event)
         if not hasattr(self, "sector_splitter"):
             return
         horizontal = self.width() >= 1180
+        self.detail_drawer.setMinimumWidth(320 if horizontal else 0)
         if horizontal != self._sector_layout_horizontal:
             self._sector_layout_horizontal = horizontal
             self.sector_splitter.setOrientation(Qt.Orientation.Horizontal if horizontal else Qt.Orientation.Vertical)
@@ -4568,39 +4626,24 @@ class SectorOverviewWidget(QtWidgets.QWidget):
             self.render()
 
     def _arrange_tiles(self) -> None:
-
-
-        for tile in self.tiles.values():
-            tile.setParent(self.tile_host)
+        # Stable equal-sized cards: selection must not imply market size, nor
+        # move a target under the pointer. Reflow only across width breakpoints.
+        width = self.tile_host.width()
+        columns = 3 if width >= 690 else 2 if width >= 440 else 1
+        if getattr(self, "_tile_columns", None) == columns:
+            return
+        self._tile_columns = columns
         while self.tile_layout.count():
-            item = self.tile_layout.takeAt(0)
-            widget = item.widget()
-            if widget is not None and widget not in self.tiles.values():
-                widget.hide()
-                widget.deleteLater()
-
-        selected = self.tiles[self.selected_sector]
-        selected.setMinimumWidth(190)
-        selected.setMinimumHeight(366)
-        self.tile_layout.addWidget(selected, 1)
-
-        right = QtWidgets.QWidget(self.tile_host)
-        right_layout = QtWidgets.QVBoxLayout(right)
-        right_layout.setContentsMargins(0, 0, 0, 0)
-        right_layout.setSpacing(6)
-        remaining = [sector for sector in _SECTOR_OVERVIEW_SECTOR_ORDER if sector != self.selected_sector]
-        top = QtWidgets.QHBoxLayout()
-        top.setSpacing(6)
-        bottom = QtWidgets.QHBoxLayout()
-        bottom.setSpacing(6)
-        for index, sector in enumerate(remaining):
+            self.tile_layout.takeAt(0)
+        for column in range(3):
+            self.tile_layout.setColumnStretch(column, 1 if column < columns else 0)
+        for row in range(6):
+            self.tile_layout.setRowStretch(row, 0)
+        for index, sector in enumerate(_SECTOR_OVERVIEW_SECTOR_ORDER):
             tile = self.tiles[sector]
-            tile.setMinimumWidth(110)
-            tile.setMinimumHeight(180)
-            (top if index < 2 else bottom).addWidget(tile, 1)
-        right_layout.addLayout(top, 1)
-        right_layout.addLayout(bottom, 1)
-        self.tile_layout.addWidget(right, 2)
+            tile.setMinimumSize(180, 210)
+            self.tile_layout.addWidget(tile, index // columns, index % columns)
+            self.tile_layout.setRowStretch(index // columns, 1)
 
     def apply_theme(self, _theme: dict[str, str]) -> None:
         self._apply_fixed_palette()
@@ -4621,7 +4664,9 @@ class SectorOverviewWidget(QtWidgets.QWidget):
         self.setStyleSheet(f"""
             QWidget#sectorOverview, QScrollArea#sectorScroll, QWidget#sectorBody {{ background: {palette['bg']}; color: {palette['text']}; border: 0; }}
             QFrame#sectorPanel, QFrame#sectorStatCard, QFrame#sectorTile {{ background: {palette['panel']}; border: 1px solid {palette['control_border']}; border-radius: 6px; }}
-            QFrame#sectorTile[selected="true"] {{ border: 2px solid {palette.get("cyan", "#E070D8")}; }}
+            QFrame#sectorTile:hover {{ background: {palette['panel2']}; border-color: {palette['muted']}; }}
+            QFrame#sectorTile:focus {{ border-color: {palette['active_line']}; }}
+            QFrame#sectorTile[selected="true"] {{ background: {palette['active']}; border: 1px solid {palette['active_line']}; }}
             QLabel {{ background: transparent; border: 0; color: {palette['text']}; }}
             QLabel#sectorTitle {{ }}
             QLabel#sectorPanelTitle {{ }}
@@ -4917,7 +4962,7 @@ class RotationBubbleChart(QtWidgets.QWidget):
         self.update()
 
     def plot_rect(self):
-        return QtCore.QRectF(20, 20, max(1, self.width() - 40), max(1, self.height() - 40))
+        return QtCore.QRectF(62, 34, max(1, self.width() - 86), max(1, self.height() - 88))
 
     def map_point(self, x, y):
         r = self.plot_rect()
@@ -5079,9 +5124,33 @@ class RotationBubbleChart(QtWidgets.QWidget):
         p.fillRect(self.rect(), QtGui.QColor(ROTATION_PALETTE["panel"]))
         r = self.plot_rect()
         self._plot = r
-        center_color = QtGui.QColor("#FFFFFF")
-        center_color.setAlpha(24)
-        pen = QtGui.QPen(center_color, .65)
+        # Static context only; no animation or additional market calculations.
+        for quadrant, x, y in (("Improving", r.left(), r.top()),
+                                ("Leading", r.center().x(), r.top()),
+                                ("Lagging", r.left(), r.center().y()),
+                                ("Weakening", r.center().x(), r.center().y())):
+            tint = QtGui.QColor(QUADRANT_COLORS[quadrant])
+            tint.setAlpha(8)
+            p.fillRect(QtCore.QRectF(x, y, r.width() / 2, r.height() / 2), tint)
+        p.setFont(typography_font(TextRole.UI_CAPTION))
+        p.setPen(QtGui.QColor(ROTATION_PALETTE["muted"]))
+        p.drawText(QtCore.QRectF(r.left(), 6, r.width(), 22),
+                   Qt.AlignmentFlag.AlignLeft, "Momentum · RS change / 1H (pp)")
+        p.drawText(QtCore.QRectF(r.left(), r.bottom() + 28, r.width(), 22),
+                   Qt.AlignmentFlag.AlignCenter, f"Relative strength · {self.hours}H return vs BTC (%)")
+        for fraction in (-1, -.5, 0, .5, 1):
+            x = r.center().x() + fraction * r.width() / 2
+            y = r.center().y() - fraction * r.height() / 2
+            p.setPen(QtGui.QColor(ROTATION_PALETTE["grid"]))
+            p.drawLine(QtCore.QPointF(x, r.top()), QtCore.QPointF(x, r.bottom()))
+            p.drawLine(QtCore.QPointF(r.left(), y), QtCore.QPointF(r.right(), y))
+            p.setPen(QtGui.QColor(ROTATION_PALETTE["muted"]))
+            p.drawText(QtCore.QRectF(x - 30, r.bottom() + 5, 60, 20),
+                       Qt.AlignmentFlag.AlignCenter, f"{fraction * self.x_extent:+g}" if fraction else "0")
+            p.drawText(QtCore.QRectF(2, y - 10, 52, 20),
+                       Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
+                       f"{fraction * self.y_extent:+g}" if fraction else "0")
+        pen = QtGui.QPen(QtGui.QColor(ROTATION_PALETTE["control_border"]), 1)
         pen.setCosmetic(True)
         pen.setCapStyle(Qt.PenCapStyle.FlatCap)
         p.setPen(pen)
@@ -5442,6 +5511,22 @@ class RotationScannerWidget(LeadershipTimelineWidget):
         chart_layout = QtWidgets.QVBoxLayout(chart_panel)
         chart_layout.setContentsMargins(0, 0, 0, 0)
         chart_layout.setSpacing(0)
+        map_heading = QtWidgets.QHBoxLayout()
+        map_heading.setContentsMargins(16, 12, 16, 4)
+        map_heading.addWidget(_rotation_label("Strength × momentum", TextRole.PANEL_TITLE))
+        map_heading.addStretch(1)
+        self.summary_count.setProperty("workspaceMuted", True)
+        set_text_role(self.summary_count, TextRole.UI_CAPTION)
+        self.summary_count.setMinimumWidth(190)
+        self.summary_count.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        map_heading.addWidget(self.summary_count)
+        chart_layout.addLayout(map_heading)
+        self.summary_count.show()
+        map_note = _rotation_label("Top 3 by volume in each quadrant · Trail: prior 3 hours · Hover for exact values",
+                                   TextRole.UI_CAPTION, "rotationMuted")
+        map_note.setContentsMargins(16, 0, 16, 4)
+        map_note.setWordWrap(True)
+        chart_layout.addWidget(map_note)
         self.bubbles = RotationBubbleChart()
         self.bubbles.setMinimumHeight(180)
         self.bubbles.chosen.connect(self.select_symbol)
@@ -5455,6 +5540,9 @@ class RotationScannerWidget(LeadershipTimelineWidget):
         table_layout.setContentsMargins(0, 0, 0, 0)
         table_layout.setSpacing(6)
         self.table = QtWidgets.QTableWidget(0, 7)
+        candidate_title = _rotation_label("Candidates", TextRole.PANEL_TITLE)
+        candidate_title.setContentsMargins(12, 10, 12, 0)
+        table_layout.addWidget(candidate_title)
         self.table.setObjectName("rotationCandidates")
         self.table.setHorizontalHeaderLabels(["#", "Pair", "1H vs BTC", "Volume / baseline", "OI 1H", "Spread", "Status"])
         self.table.verticalHeader().hide()

@@ -202,7 +202,26 @@ def chart_palette(resolved: dict[str, object]) -> dict[str, object]:
         chart[runtime_key] = str(resolved[source_key])
     return chart
 DEFAULT_THEME_NAME = 'Nightwatch'
-THEMES: dict[str, dict[str, object]] = {'Nightwatch': {'bg': '#000000', 'panel': '#000000', 'panel2': '#080808', 'grid': '#181818', 'border': '#202020', 'control': '#090909', 'control_top': '#0D0D0D', 'control_hover': '#151515', 'control_border': '#303030', 'text': '#D2D2D2', 'muted': '#858585', 'green': '#008C3A', 'red': '#E60028', 'cyan': '#BEBEBE', 'info': '#BEBEBE', 'amber': '#A28B5E', 'purple': '#777777', 'take_profit': '#008C3A', 'risk': '#E60028', 'chart_bg': '#000000', 'chart_grid': '#1B2129', 'chart_border': '#202020', 'chart_panel2': '#0C0C0C', 'chart_control': '#0C0C0C', 'chart_control_border': '#2E2F2F', 'chart_text': '#C7C8C1', 'chart_muted': '#8B8C8C', 'reference_price': '#777777', 'series_1': '#BEBEBE', 'series_2': '#777777', 'series_3': '#A28B5E', 'series_4': '#008C3A', 'orderbook_bg': '#000000', 'book_grid': '#151515', 'orderbook_muted': '#858585', 'orderbook_value_text': '#D2D2D2', 'orderbook_badge_text': '#D2D2D2', 'current_price_line': '#202020', 'current_price_text': '#777777', 'rail_neutral': '#66C2FF', 'rail_buy': '#28D07F', 'rail_sell': '#FF5A6E', 'rail_take_profit': '#48D6C2', 'rail_stop': '#FF855A', 'rail_secondary': '#9B8CFF', 'rail_warning': '#F0B34A'}, 'Obsidian Signal': {'bg': '#0B0B0D', 'panel': '#121215', 'panel2': '#17171B', 'grid': '#24242A', 'border': '#2D2D33', 'control': '#1F2026', 'control_top': '#282A31', 'control_hover': '#32343D', 'control_border': '#3A3A42', 'text': '#F1E7DA', 'muted': '#B4A89B', 'green': '#4CBB17', 'red': '#880808', 'cyan': '#C88A4A', 'info': '#7DB0D6', 'amber': '#F0C86A', 'purple': '#9A88C9', 'take_profit': '#79C6D9', 'risk': '#E7885E', 'chart_bg': '#0B0B0D', 'chart_grid': '#25262B', 'chart_border': '#34343A', 'chart_panel2': '#141417', 'chart_control': '#1F2026', 'chart_control_border': '#3A3A42', 'chart_text': '#D2C7BA', 'chart_muted': '#8B837A', 'reference_price': '#D4C0A3', 'series_1': '#7DB0D6', 'series_2': '#9A88C9', 'series_3': '#C88A4A', 'series_4': '#6FB497', 'orderbook_bg': '#101012', 'book_grid': '#2D2D33', 'orderbook_muted': '#8B837A', 'orderbook_value_text': '#DDD5CA', 'orderbook_badge_text': '#FFF7EC', }, 'Neon Reactor': {'bg': '#07040D', 'panel': '#0F0A18', 'panel2': '#151126', 'grid': '#241B42', 'border': '#2A2350', 'control': '#1C1633', 'control_top': '#261F45', 'control_hover': '#32265C', 'control_border': '#45366E', 'text': '#F3F7FF', 'muted': '#A39BC6', 'green': '#29F28A', 'red': '#FF4F9A', 'cyan': '#42E8FF', 'info': '#78B8FF', 'amber': '#FFC44D', 'purple': '#A05CFF', 'take_profit': '#39F0C8', 'risk': '#FF8A54', 'chart_bg': '#07040D', 'chart_grid': '#221A3A', 'chart_border': '#34285A', 'chart_panel2': '#120E20', 'chart_control': '#1C1633', 'chart_control_border': '#45366E', 'chart_text': '#D7D1EA', 'chart_muted': '#817A9F', 'reference_price': '#C8B7FF', 'series_1': '#42E8FF', 'series_2': '#A05CFF', 'series_3': '#FFC44D', 'series_4': '#78B8FF', 'orderbook_bg': '#0B0712', 'book_grid': '#2A2350', 'orderbook_muted': '#817A9F', 'orderbook_value_text': '#E4E8FA', 'orderbook_badge_text': '#FFFFFF', }, 'Arctic Terminal': {'bg': '#071017', 'panel': '#0C1620', 'panel2': '#12202C', 'grid': '#1A2F3E', 'border': '#1A3444', 'control': '#172A39', 'control_top': '#213749', 'control_hover': '#29475D', 'control_border': '#2F536A', 'text': '#EAF6FF', 'muted': '#9CB3C3', 'green': '#37D28A', 'red': '#FF6176', 'cyan': '#77E3FF', 'info': '#82AFFF', 'amber': '#F1C15B', 'purple': '#90A2FF', 'take_profit': '#4FD1C5', 'risk': '#FF9463', 'chart_bg': '#071017', 'chart_grid': '#173043', 'chart_border': '#25465A', 'chart_panel2': '#0F1B26', 'chart_control': '#172A39', 'chart_control_border': '#2F536A', 'chart_text': '#CBDCE8', 'chart_muted': '#71899A', 'reference_price': '#B8D8EA', 'series_1': '#77E3FF', 'series_2': '#82AFFF', 'series_3': '#90A2FF', 'series_4': '#4FD1C5', 'orderbook_bg': '#09131B', 'book_grid': '#1A3444', 'orderbook_muted': '#71899A', 'orderbook_value_text': '#DCEAF3', 'orderbook_badge_text': '#F5FDFF', }, 'Pulse Light': {'bg': '#F4F7FB', 'panel': '#FFFFFF', 'panel2': '#F7F9FC', 'grid': '#D8E0E9', 'border': '#CBD5E1', 'control': '#DCE4EE', 'control_top': '#E7ECF3', 'control_hover': '#D0DAE6', 'control_border': '#B8C5D3', 'text': '#16202B', 'muted': '#556373', 'green': '#137A4A', 'red': '#B72E41', 'cyan': '#1967B3', 'info': '#1967B3', 'amber': '#8B5D00', 'purple': '#5749C6', 'take_profit': '#08788F', 'risk': '#B24A18', 'chart_bg': '#FFFFFF', 'chart_grid': '#D9E1EA', 'chart_border': '#C2CEDA', 'chart_panel2': '#F7F9FC', 'chart_control': '#EEF2F7', 'chart_control_border': '#B8C5D3', 'chart_text': '#334155', 'chart_muted': '#64748B', 'reference_price': '#64748B', 'series_1': '#1967B3', 'series_2': '#5749C6', 'series_3': '#8B5D00', 'series_4': '#08796D', 'orderbook_bg': '#FAFCFE', 'book_grid': '#D8E0E9', 'orderbook_muted': '#687482', 'orderbook_value_text': '#243447', 'orderbook_badge_text': '#16202B', }}
+NIGHTWATCH_COLORS: Final[dict[str, str]] = {
+    'bg': '#0A0E14', 'panel': '#10161F', 'panel2': '#151D28',
+    'grid': '#202B38', 'border': '#293544', 'separator': '#202B38',
+    'control': '#151E2A', 'control_top': '#192433', 'control_hover': '#223247',
+    'control_border': '#3D4E63', 'text': '#E6EDF5', 'muted': '#A0AEC0',
+    'green': '#3DD6A0', 'red': '#FF7185', 'cyan': '#7CB8FF', 'info': '#7CB8FF',
+    'amber': '#E8BA69', 'purple': '#B49AF4', 'take_profit': '#3DD6A0', 'risk': '#FF7185',
+    'active': '#1C3048', 'active_line': '#7CB8FF', 'header': '#151D28',
+    'chart_bg': '#0A0E14', 'chart_grid': '#202B38', 'chart_border': '#293544',
+    'chart_panel2': '#151D28', 'chart_control': '#151E2A', 'chart_control_border': '#3D4E63',
+    'chart_text': '#D2DCE8', 'chart_muted': '#A0AEC0', 'reference_price': '#A0AEC0',
+    'current_price_line': '#7CB8FF', 'current_price_text': '#E6EDF5',
+    'series_1': '#7CB8FF', 'series_2': '#B49AF4', 'series_3': '#E8BA69', 'series_4': '#3DD6A0',
+    'orderbook_bg': '#000000', 'book_grid': '#202B38', 'orderbook_muted': '#A0AEC0',
+    'orderbook_value_text': '#D2DCE8', 'orderbook_badge_text': '#E6EDF5',
+    'rail_neutral': '#7CB8FF', 'rail_buy': '#3DD6A0', 'rail_sell': '#FF7185',
+    'rail_take_profit': '#48D6C2', 'rail_stop': '#FF855A',
+    'rail_secondary': '#B49AF4', 'rail_warning': '#E8BA69',
+}
+THEMES: dict[str, dict[str, object]] = {'Nightwatch': dict(NIGHTWATCH_COLORS), 'Obsidian Signal': {'bg': '#0B0B0D', 'panel': '#121215', 'panel2': '#17171B', 'grid': '#24242A', 'border': '#2D2D33', 'control': '#1F2026', 'control_top': '#282A31', 'control_hover': '#32343D', 'control_border': '#3A3A42', 'text': '#F1E7DA', 'muted': '#B4A89B', 'green': '#4CBB17', 'red': '#880808', 'cyan': '#C88A4A', 'info': '#7DB0D6', 'amber': '#F0C86A', 'purple': '#9A88C9', 'take_profit': '#79C6D9', 'risk': '#E7885E', 'chart_bg': '#0B0B0D', 'chart_grid': '#25262B', 'chart_border': '#34343A', 'chart_panel2': '#141417', 'chart_control': '#1F2026', 'chart_control_border': '#3A3A42', 'chart_text': '#D2C7BA', 'chart_muted': '#8B837A', 'reference_price': '#D4C0A3', 'series_1': '#7DB0D6', 'series_2': '#9A88C9', 'series_3': '#C88A4A', 'series_4': '#6FB497', 'orderbook_bg': '#101012', 'book_grid': '#2D2D33', 'orderbook_muted': '#8B837A', 'orderbook_value_text': '#DDD5CA', 'orderbook_badge_text': '#FFF7EC', }, 'Neon Reactor': {'bg': '#07040D', 'panel': '#0F0A18', 'panel2': '#151126', 'grid': '#241B42', 'border': '#2A2350', 'control': '#1C1633', 'control_top': '#261F45', 'control_hover': '#32265C', 'control_border': '#45366E', 'text': '#F3F7FF', 'muted': '#A39BC6', 'green': '#29F28A', 'red': '#FF4F9A', 'cyan': '#42E8FF', 'info': '#78B8FF', 'amber': '#FFC44D', 'purple': '#A05CFF', 'take_profit': '#39F0C8', 'risk': '#FF8A54', 'chart_bg': '#07040D', 'chart_grid': '#221A3A', 'chart_border': '#34285A', 'chart_panel2': '#120E20', 'chart_control': '#1C1633', 'chart_control_border': '#45366E', 'chart_text': '#D7D1EA', 'chart_muted': '#817A9F', 'reference_price': '#C8B7FF', 'series_1': '#42E8FF', 'series_2': '#A05CFF', 'series_3': '#FFC44D', 'series_4': '#78B8FF', 'orderbook_bg': '#0B0712', 'book_grid': '#2A2350', 'orderbook_muted': '#817A9F', 'orderbook_value_text': '#E4E8FA', 'orderbook_badge_text': '#FFFFFF', }, 'Arctic Terminal': {'bg': '#071017', 'panel': '#0C1620', 'panel2': '#12202C', 'grid': '#1A2F3E', 'border': '#1A3444', 'control': '#172A39', 'control_top': '#213749', 'control_hover': '#29475D', 'control_border': '#2F536A', 'text': '#EAF6FF', 'muted': '#9CB3C3', 'green': '#37D28A', 'red': '#FF6176', 'cyan': '#77E3FF', 'info': '#82AFFF', 'amber': '#F1C15B', 'purple': '#90A2FF', 'take_profit': '#4FD1C5', 'risk': '#FF9463', 'chart_bg': '#071017', 'chart_grid': '#173043', 'chart_border': '#25465A', 'chart_panel2': '#0F1B26', 'chart_control': '#172A39', 'chart_control_border': '#2F536A', 'chart_text': '#CBDCE8', 'chart_muted': '#71899A', 'reference_price': '#B8D8EA', 'series_1': '#77E3FF', 'series_2': '#82AFFF', 'series_3': '#90A2FF', 'series_4': '#4FD1C5', 'orderbook_bg': '#09131B', 'book_grid': '#1A3444', 'orderbook_muted': '#71899A', 'orderbook_value_text': '#DCEAF3', 'orderbook_badge_text': '#F5FDFF', }, 'Pulse Light': {'bg': '#F4F7FB', 'panel': '#FFFFFF', 'panel2': '#F7F9FC', 'grid': '#D8E0E9', 'border': '#CBD5E1', 'control': '#DCE4EE', 'control_top': '#E7ECF3', 'control_hover': '#D0DAE6', 'control_border': '#B8C5D3', 'text': '#16202B', 'muted': '#556373', 'green': '#137A4A', 'red': '#B72E41', 'cyan': '#1967B3', 'info': '#1967B3', 'amber': '#8B5D00', 'purple': '#5749C6', 'take_profit': '#08788F', 'risk': '#B24A18', 'chart_bg': '#FFFFFF', 'chart_grid': '#D9E1EA', 'chart_border': '#C2CEDA', 'chart_panel2': '#F7F9FC', 'chart_control': '#EEF2F7', 'chart_control_border': '#B8C5D3', 'chart_text': '#334155', 'chart_muted': '#64748B', 'reference_price': '#64748B', 'series_1': '#1967B3', 'series_2': '#5749C6', 'series_3': '#8B5D00', 'series_4': '#08796D', 'orderbook_bg': '#FAFCFE', 'book_grid': '#D8E0E9', 'orderbook_muted': '#687482', 'orderbook_value_text': '#243447', 'orderbook_badge_text': '#16202B', }}
 THEME_METADATA: dict[str, dict[str, str]] = {'Nightwatch': {'style_family': 'dark_terminal', 'identity': 'nightwatch_core'}, 'Obsidian Signal': {'style_family': 'dark_terminal', 'identity': 'obsidian_signal'}, 'Neon Reactor': {'style_family': 'dark_terminal', 'identity': 'neon_reactor'}, 'Arctic Terminal': {'style_family': 'dark_terminal', 'identity': 'arctic_terminal'}, 'Pulse Light': {'style_family': 'light_terminal', 'identity': 'pulse_light'}}
 
 def theme_style_family(name: str) -> str:
@@ -287,6 +306,15 @@ def build_shell_stylesheet(theme_name: str, theme: dict[str, str], surfaces: dic
         QFrame#instrumentBar QFrame#instrumentContextSlot QWidget#topTimeframeStrip QPushButton#timeframeStripButton:checked:hover {{
             background: {t['active']}; color: {t['cyan']}; border: 0;
         }}
+        QFrame#instrumentBar QPushButton#chartFitButton {{
+            background: {t['control']}; color: {t['text']};
+            border: 1px solid {t['control_border']}; border-radius: 4px;
+            min-height: 26px; padding: 0 10px;
+        }}
+        QFrame#instrumentBar QPushButton#chartFitButton:hover,
+        QFrame#instrumentBar QPushButton#chartFitButton:focus {{
+            background: {t['control_hover']}; border-color: {t['active_line']};
+        }}
 
         QPushButton#marketTimeframeChoice:checked,
         QPushButton#marketTimeframePreset:checked {{
@@ -322,9 +350,9 @@ def build_shell_stylesheet(theme_name: str, theme: dict[str, str], surfaces: dic
     raised_bg = t.get('raised', t['control'])
     active_bg = t.get('active', t['control_hover'])
     active_line = t.get('active_line', t['muted'])
-    instrument_group_bg = '#0F0F0F' if theme_name == 'Nightwatch' else control_bg
-    instrument_hover_bg = '#1D1D1D' if theme_name == 'Nightwatch' else control_hover
-    instrument_hover_line = '#424242' if theme_name == 'Nightwatch' else control_border
+    instrument_group_bg = t['panel']
+    instrument_hover_bg = control_hover
+    instrument_hover_line = control_border
     status_values = status or {}
     status_background = str(status_values.get('background', t['panel']))
     status_border = str(status_values.get('border', separator))
@@ -1146,7 +1174,8 @@ def build_shell_stylesheet(theme_name: str, theme: dict[str, str], surfaces: dic
 
                     '''
     attention_font_weight = typography_state_weight("attention")
-    # Topology uses rightRailSplit now; keep every structural gap black in all themes.
+    # Structural gaps follow the shell; the independent order-book canvas keeps
+    # its own palette and raster pipeline.
     structural_overrides = """
         QWidget#centralRoot, QWidget#leftWorkspace, QWidget#workspaceStack,
         QWidget#instrumentBarHost,
@@ -1162,6 +1191,7 @@ def build_shell_stylesheet(theme_name: str, theme: dict[str, str], surfaces: dic
             background: #000000; border: 0; margin: 0; padding: 0;
         }
     """
+    structural_overrides = structural_overrides.replace('#000000', t['bg'])
     return f'''
             QMainWindow, QWidget {{
                 background: {t['bg']};

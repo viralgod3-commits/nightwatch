@@ -1441,13 +1441,13 @@ class MainWindow(QtWidgets.QMainWindow):
             Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
         )
         for index, (name, width) in enumerate(
-            (("CHART", 60), ("LEADERS", 78), ("SECTORS", 78), ("ROTATION", 84))
+            (("CHART", 80), ("LEADERS", 94), ("SECTORS", 94), ("ROTATION", 100))
         ):
             button = QtWidgets.QPushButton(name.title())
             button.setObjectName("workspaceNavButton")
             button.setCheckable(True)
             button.setFixedSize(width, toolbar_height)
-            button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+            button.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
             button.setToolTip(f"{name.title()} · Alt+{index + 1}")
             button.setProperty("informationalToolTip", True)
             button.clicked.connect(lambda _checked=False, page=index: self._switch_workspace(page))
@@ -1597,9 +1597,14 @@ class MainWindow(QtWidgets.QMainWindow):
         )
         self._apply_active_magnetic_rail_order_preset()
 
-        # Chart scale controls live in Settings → Chart, matching the chart
-        # settings gear workflow.  The chart surface itself stays free of FIT/LOG
-        # chrome; Alt+R remains the one-shot fit shortcut.
+        # Keep the recovery action visible when a pan/zoom leaves price offscreen.
+        self.fit_chart_button = QtWidgets.QPushButton("Fit chart")
+        self.fit_chart_button.setObjectName("chartFitButton")
+        self.fit_chart_button.setToolTip("Fit the primary chart to visible prices · Alt+R")
+        self.fit_chart_button.setAccessibleName("Fit primary chart")
+        self.fit_chart_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.fit_chart_button.clicked.connect(lambda _checked=False: self._fit_chart())
+        self.instrument_bar.row.addWidget(self.fit_chart_button)
         self.clear_drawings_action.triggered.connect(
             lambda _checked=False: self.chart.clear_drawings()
         )
