@@ -3482,13 +3482,11 @@ class MainWindow(QtWidgets.QMainWindow):
         self._open_market_from_board(symbol)
         self._show_trading_sidebar()
         # Closing a position does not require fresh collateral for a new entry.
-        try:
-            available = self.trading_gateway.available_balance(self.order_panel.rules.margin_asset)
-        except ValueError:
-            available = 0.0
+        available, balance_asset = self.trading_gateway.account_balance(self.order_panel.rules.margin_asset)
         self.order_panel.apply_account_snapshot({"account": {
             "positions": list(self.trading_gateway.position_cache.values()),
             "availableBalance": available,
+            "_balance_asset": balance_asset,
         }})
         self.order_panel.focus_position(active, enter_reduce=True)
 
@@ -9823,6 +9821,9 @@ class MainWindow(QtWidgets.QMainWindow):
         """Retain shared account state and chart-rail reconciliation."""
         if not isinstance(snapshot, dict):
             return
+        if snapshot.get('_orders_complete') is False:
+            previous = self._latest_trading_snapshot
+            snapshot = {**snapshot, **{key: previous[key] for key in ('orders', 'algoOrders') if key in previous}}
         self._latest_trading_snapshot = dict(snapshot)
         self._reconcile_magnetic_rail_requests(self._latest_trading_snapshot)
 
@@ -9854,6 +9855,8 @@ class MainWindow(QtWidgets.QMainWindow):
         )
 
     def _sync_chart_working_orders(self, snapshot: dict[str, Any]) -> None:
+        if snapshot.get('_orders_complete') is False:
+            return
         if isinstance(snapshot, dict):
             self._latest_trading_snapshot = dict(snapshot)
         visible = self._working_orders_for_symbol(snapshot, self.current_symbol)

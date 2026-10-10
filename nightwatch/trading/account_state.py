@@ -14,8 +14,8 @@ from typing import Any
 def exchange_bool(value: Any) -> bool | None:
     if isinstance(value, bool):
         return value
-    if str(value).lower() in {"true", "false"}:
-        return str(value).lower() == "true"
+    if str(value).strip().lower() in {"true", "false"}:
+        return str(value).strip().lower() == "true"
     return None
 
 
@@ -146,6 +146,11 @@ def replay_account_events(snapshot: dict, events) -> dict:
                         row["leverage"] = config["l"]
             mode = exchange_bool((event.get("ai") or {}).get("j"))
             if mode is not None:
+                previous = (result.get('accountConfig') or {}).get('multiAssetsMargin', account.get('multiAssetsMargin'))
+                if exchange_bool(previous) is not mode:
+                    account.pop('availableBalance', None)
+                    for balance in account.get('assets', []):
+                        balance.pop('availableBalance', None)
                 result.setdefault("accountConfig", {})["multiAssetsMargin"] = mode
                 account["multiAssetsMargin"] = mode
         elif event_type in {"ORDER_TRADE_UPDATE", "ALGO_UPDATE"}:

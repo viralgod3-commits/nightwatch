@@ -560,6 +560,7 @@ class TradingGatewayPort(Protocol):
     armed_changed: Any
     account_event: Any
     snapshot_ready: Any
+    account_status_changed: Any
     problem: Any
     credentials_changed: Any
     leverage_changing: Any
@@ -574,6 +575,7 @@ class TradingGatewayPort(Protocol):
     testnet: bool
     cross_pending: Any
     cross_ready: Any
+    queued_leverage: dict[str, int]
     hedge_mode: bool
     position_cache: Any
     rest: Any
@@ -585,6 +587,9 @@ class TradingGatewayPort(Protocol):
         ...
 
     def available_balance(self, asset: str) -> float:
+        ...
+
+    def account_balance(self, asset: str) -> tuple[float | None, str]:
         ...
 
     def arm(self) -> bool:

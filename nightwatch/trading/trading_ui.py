@@ -29,6 +29,7 @@ from .orders import (
     is_shift_letter_shortcut,
     is_smart_exit_shortcut,
 )
+from .account_state import exchange_bool
 
 
 _ACCOUNT_POLL_MINIMUM_INTERVAL = 8.0
@@ -1243,7 +1244,10 @@ class OrderPanel(QtWidgets.QWidget):
         self._submission_request_id = ""
         self._submission_generation = 0
         self._protection_lifecycle = ""
-        self._available_margin = 0.0
+        self._available_margin: float | None = None
+        self._balance_asset = self.rules.margin_asset
+        self._account_problem = ""
+        self._leverage_problem = ""
         self._last_confirmed_leverage = 5
         self.protection_plans: dict[str, list[dict[str, float]]] = {"tp": [], "sl": []}
         self.hedge_mode: bool | None = None
@@ -1595,6 +1599,13 @@ class OrderPanel(QtWidgets.QWidget):
         set_text_role(self.validation_label, TextRole.UI_CONTROL)
         self.validation_label.hide()
         feedback_cluster.addWidget(self.validation_label)
+        self.account_problem_label = QtWidgets.QLabel("")
+        self.account_problem_label.setWordWrap(True)
+        self.account_problem_label.setObjectName("tradeValidation")
+        self.account_problem_label.setProperty("blocked", True)
+        set_text_role(self.account_problem_label, TextRole.UI_CONTROL)
+        self.account_problem_label.hide()
+        feedback_cluster.addWidget(self.account_problem_label)
         layout.addLayout(feedback_cluster)
         layout.addSpacing(group_gap)
 
@@ -1678,6 +1689,7 @@ class OrderPanel(QtWidgets.QWidget):
         self.gateway.armed_changed.connect(self._armed_changed)
         self.gateway.credentials_changed.connect(self._prepare_manual_trading)
         self.gateway.snapshot_ready.connect(self.apply_account_snapshot)
+        self.gateway.account_status_changed.connect(self._account_status_changed)
         self.gateway.leverage_changing.connect(self._leverage_changing)
         self.gateway.leverage_changed.connect(self._leverage_changed)
         self._readiness_fresh_state = self._mark_is_fresh()
@@ -1817,7 +1829,7 @@ class OrderPanel(QtWidgets.QWidget):
         feedback = QtWidgets.QVBoxLayout(self.feedback_box)
         feedback.setContentsMargins(0, 0, 0, 0)
         feedback.setSpacing(3)
-        for widget in (self.risk_size_hint, self.protection_summary, self.validation_label,
+        for widget in (self.risk_size_hint, self.protection_summary, self.validation_label, self.account_problem_label,
                        self.execution_context_label, self.reconcile_button):
             feedback.addWidget(widget)
         content.addWidget(self.feedback_box)
@@ -1879,7 +1891,10 @@ class OrderPanel(QtWidgets.QWidget):
         self._position_cache = []
         self._desk_selected_key = None
         self.hedge_mode = None
-        self._available_margin = 0.0
+        self._available_margin = None
+        self._balance_asset = self.rules.margin_asset
+        self._account_problem = self._leverage_problem = ""
+        self._update_account_problem()
         self._last_confirmed_leverage = 0
         self.quantity_edit.clear()
         self._refresh_account_summary()
@@ -1977,7 +1992,7 @@ class OrderPanel(QtWidgets.QWidget):
                 estimate_row.setVisible(key == "value" or not reducing)
             self.estimate_captions["value"].setText("Estimated value")
             self.feedback_box.setVisible(any(not w.isHidden() for w in
-                                             (self.validation_label, self.risk_size_hint, self.protection_summary,
+                                             (self.validation_label, self.account_problem_label, self.risk_size_hint, self.protection_summary,
                                               self.execution_context_label, self.reconcile_button)))
             row = self.reduce_position_combo.currentData()
             self.reduce_position_combo.setVisible(reducing and self.reduce_position_combo.count() > 1)
@@ -2206,6 +2221,8 @@ class OrderPanel(QtWidgets.QWidget):
             # A delayed edit belongs to the old market. Never let its timer
             # apply that leverage to a different symbol after navigation.
             self._leverage_apply_timer.stop()
+            self._leverage_problem = ""
+            self._update_account_problem()
             self.mark_price = 0.0
             self._last_mark_mono = 0.0
             self._position_cache = []
@@ -2225,14 +2242,11 @@ class OrderPanel(QtWidgets.QWidget):
             # The gateway already owns the reconciled account for all markets.
             # Restore the new ticket's positions immediately; opening Reduce
             # must not depend on first visiting Account to request another read.
-            try:
-                available = self.gateway.available_balance(rules.margin_asset)
-            except ValueError:
-                available = 0.0
+            available, balance_asset = self.gateway.account_balance(rules.margin_asset)
             mode = self.gateway.hedge_mode
             self.apply_account_snapshot({
                 "positionMode": {"dualSidePosition": mode} if isinstance(mode, bool) else {},
-                "account": {"availableBalance": available,
+                "account": {"availableBalance": available, "_balance_asset": balance_asset,
                             "positions": list(self.gateway.position_cache.values())},
             })
             self._sync_mark_controls()
@@ -2244,9 +2258,10 @@ class OrderPanel(QtWidgets.QWidget):
 
     def _prepare_manual_trading(self, *_args) -> None:
         if self.gateway.has_credentials() and not self.gateway.stopping:
-            self.gateway.ensure_cross(self.symbol)
             if not self.gateway.account_loaded:
                 self.gateway.refresh_account(self.symbol)
+            else:
+                self.gateway.ensure_cross(self.symbol)
 
     def set_mark_price(self, price: float) -> None:
         self.mark_price = price
@@ -2282,8 +2297,16 @@ class OrderPanel(QtWidgets.QWidget):
     def _leverage_value_changed(self, leverage: int) -> None:
         self._leverage_apply_timer.start()
 
+    def _leverage_edit_pending(self) -> bool:
+        return (self._leverage_apply_timer.isActive()
+                or self.leverage._popup_open
+                or bool(self.leverage._custom_editor and self.leverage._custom_editor.isVisible())
+                or self.symbol in self.gateway.queued_leverage)
+
     def _leverage_changing(self, symbol: str, leverage: int) -> None:
         if symbol == self.symbol:
+            self._leverage_problem = ""
+            self._update_account_problem()
             self._update_execution_state()
 
     def _leverage_changed(
@@ -2292,16 +2315,22 @@ class OrderPanel(QtWidgets.QWidget):
         if symbol != self.symbol:
             return
         if succeeded:
+            self._leverage_problem = ""
+            self._update_account_problem()
             self._last_confirmed_leverage = leverage
-            blocker = QtCore.QSignalBlocker(self.leverage)
-            self.leverage.setValue(leverage)
-            del blocker
+            if not self._leverage_edit_pending():
+                blocker = QtCore.QSignalBlocker(self.leverage)
+                self.leverage.setValue(leverage)
+                del blocker
             self._update_execution_state()
         elif message:
+            self._leverage_problem = f"Leverage change failed: {message}"
+            self._update_account_problem()
             confirmed = self.gateway.current_leverage(symbol) or self._last_confirmed_leverage
-            blocker = QtCore.QSignalBlocker(self.leverage)
-            self.leverage.setValue(confirmed)
-            del blocker
+            if not self._leverage_edit_pending():
+                blocker = QtCore.QSignalBlocker(self.leverage)
+                self.leverage.setValue(confirmed)
+                del blocker
             self._gateway_state_text = message
             self._update_execution_state()
 
@@ -2542,7 +2571,9 @@ class OrderPanel(QtWidgets.QWidget):
             self.hedge_mode = value if isinstance(value, bool) else str(value).lower() == "true"
         self._sync_auto_position_side()
         account = snapshot.get("account") or {}
-        if "assets" in account:
+        multi = exchange_bool((snapshot.get('accountConfig') or {}).get('multiAssetsMargin', account.get('multiAssetsMargin')))
+        self._balance_asset = str(account.get('_balance_asset') or ('USD' if multi is True else self.rules.margin_asset))
+        if "assets" in account and multi is not True:
             margin_row = next(
                 (
                     row
@@ -2551,10 +2582,10 @@ class OrderPanel(QtWidgets.QWidget):
                 ),
                 {},
             )
-            available = max(0.0, safe_float(margin_row.get("availableBalance")))
+            available = safe_float(margin_row.get("availableBalance"), -1.0)
         else:
-            available = max(0.0, safe_float(account.get("availableBalance")))
-        self._available_margin = available
+            available = safe_float(account.get("availableBalance"), -1.0)
+        self._available_margin = available if available >= 0 else None
         self._position_cache = []
         active_leverage = 0
         for row in account.get("positions", []):
@@ -2566,20 +2597,34 @@ class OrderPanel(QtWidgets.QWidget):
         active_leverage = self.gateway.current_leverage(self.symbol) or active_leverage
         if active_leverage:
             self._last_confirmed_leverage = active_leverage
-            blocker = QtCore.QSignalBlocker(self.leverage)
-            self.leverage.setValue(active_leverage)
-            del blocker
+            # Refreshes may complete between a user selection and the debounce
+            # timer, or while Binance is applying it. Keep the requested value.
+            if not self._leverage_edit_pending() and self.symbol not in self.gateway.cross_pending:
+                blocker = QtCore.QSignalBlocker(self.leverage)
+                self.leverage.setValue(active_leverage)
+                del blocker
         self._refresh_account_summary()
         self._refresh_reduce_positions()
         self._update_execution_state()
         self._update_order_summary()
 
     def _refresh_account_summary(self) -> None:
-        margin_asset = str(getattr(self.rules, "margin_asset", "") or "USDT").strip() or "USDT"
+        margin_asset = self._balance_asset
+        amount = f"{self._available_margin:,.2f}" if self._available_margin is not None else "—"
         _set_text_if_changed(
             self.account_summary,
-            f"Available {self._available_margin:,.2f} {margin_asset}",
+            f"Available {amount} {margin_asset}",
         )
+
+    def _account_status_changed(self, message: str) -> None:
+        self._account_problem = message
+        self._update_account_problem()
+
+    def _update_account_problem(self) -> None:
+        text = "\n".join(value for value in (self._account_problem, self._leverage_problem) if value)
+        _set_text_if_changed(self.account_problem_label, text)
+        self.account_problem_label.setVisible(bool(text))
+        self._sync_position_desk()
 
     def _size_mode_changed(self, mode: str) -> None:
         previous = getattr(self, "_quantity_unit", mode)
@@ -3117,14 +3162,17 @@ class OrderPanel(QtWidgets.QWidget):
             self._update_execution_state()
             return
         self._set_validation_message("")
-        self.order_requested.emit(
-            {
-                "order": order,
-                "protections": active_protections,
-                "rules": self.rules,
-                "position_intent": "REDUCE" if reducing else "OPEN",
-            }
-        )
+        request = {
+            "order": order,
+            "protections": active_protections,
+            "rules": self.rules,
+            "position_intent": "REDUCE" if reducing else "OPEN",
+        }
+        if not reducing and self.size_mode.currentData() in {'BALANCE %', 'RISK %'}:
+            request['collateral_asset'] = self.rules.margin_asset
+            request['collateral_required'] = (safe_float(order['quantity'])
+                                              * self._entry_reference(order_type) / confirmed_leverage)
+        self.order_requested.emit(request)
 
 
 def _validated_limit_price(value: str, rules: SymbolRules, label: str = "Limit price") -> str:
@@ -5546,7 +5594,7 @@ class TradingWorkspace(QtWidgets.QWidget):
             self._order_count = len(combined_orders)
             self.account_frame.set_orders(combined_orders, self.symbol, self.gateway.has_credentials())
 
-        if snapshot.get("fillsSymbol", self.symbol) == self.symbol:
+        if "fills" in snapshot and snapshot.get("fillsSymbol", self.symbol) == self.symbol:
             _populate_fill_cards(self.fills, snapshot, self.symbol, connected=self.gateway.has_credentials())
 
         balances: list[tuple[tuple[str, ...], dict[str, Any]]] = []

@@ -15,6 +15,7 @@ from typing import Any, Coroutine
 from urllib.parse import urlsplit
 import httpx
 from ..constants import APP_NAME
+from ..trading.account_state import exchange_bool
 
 log = logging.getLogger(__name__)
 
@@ -1137,7 +1138,7 @@ class BinanceRest:
     @staticmethod
     def _request_weight(path: str, params: dict[str, Any] | None) -> int:
         params = params or {}
-        if path == '/fapi/v1/positionSide/dual':
+        if path in {'/fapi/v1/positionSide/dual', '/fapi/v1/multiAssetsMargin'}:
             return 30
         if path in {'/fapi/v1/accountConfig', '/fapi/v1/symbolConfig'}:
             return 5
@@ -1159,6 +1160,8 @@ class BinanceRest:
             if limit <= 500:
                 return 10
             return 20
+        if path == '/fapi/v1/assetIndex':
+            return 1 if params.get('symbol') else 10
         if path == '/fapi/v1/ticker/24hr':
             return 1 if params.get('symbol') else 40
         if path == '/fapi/v1/premiumIndex':
@@ -1914,6 +1917,8 @@ class BinanceRest:
         symbol_param = {'symbol': symbol} if symbol else {}
         order_param = {} if all_open_orders else symbol_param
         async def collect():
+            warnings = []
+
             async def read(path, params=None, fallback=None):
                 try:
                     return await self._signed_request_async(api_key, api_secret, path, params, priority='reconciliation')
@@ -1922,64 +1927,129 @@ class BinanceRest:
                         return await self._signed_request_async(api_key, api_secret, fallback, params, priority='reconciliation')
                     raise
 
-            async def fills_read():
-                return await read('/fapi/v1/userTrades', {'symbol': symbol, 'limit': 100}) if symbol else []
+            async def optional(path, params=None, fallback=None):
+                try:
+                    return await read(path, params, fallback)
+                except Exception as exc:
+                    warnings.append(f'{path}: {exc}')
+                    return None
 
-            values = await asyncio.gather(
+            # A history or order-list outage must not discard a valid balance,
+            # account mode, or leverage response. Missing lists remain unknown.
+            account, risk, orders, fills, algos, config, symbols = await asyncio.gather(
                 read('/fapi/v3/account', fallback='/fapi/v2/account'),
-                read('/fapi/v3/positionRisk', fallback='/fapi/v2/positionRisk'),
-                read('/fapi/v1/openOrders', order_param), fills_read(),
-                read('/fapi/v1/openAlgoOrders', order_param),
-                read('/fapi/v1/accountConfig'),
-                read('/fapi/v1/symbolConfig'),
-                return_exceptions=True,
+                optional('/fapi/v3/positionRisk', fallback='/fapi/v2/positionRisk'),
+                optional('/fapi/v1/openOrders', order_param),
+                optional('/fapi/v1/userTrades', {'symbol': symbol, 'limit': 100}) if symbol else asyncio.sleep(0, result=[]),
+                optional('/fapi/v1/openAlgoOrders', order_param),
+                optional('/fapi/v1/accountConfig'),
+                optional('/fapi/v1/symbolConfig'),
             )
-            for value in values:
-                if isinstance(value, BaseException):
-                    raise value
-            return values
-
-        account, position_risk, open_orders, fills, algo_orders, account_config, symbol_config = run_async(collect())
-        if not isinstance(account_config, dict) or not isinstance(symbol_config, list):
-            raise RuntimeError('Unexpected Binance account/symbol configuration response.')
-        configs = {str(row.get('symbol')): row for row in symbol_config if isinstance(row, dict)}
-        position_mode = ({'dualSidePosition': account_config['dualSidePosition']}
-                         if 'dualSidePosition' in account_config
-                         else run_async(self._position_mode_async(api_key, api_secret, priority='reconciliation')))
-        if not isinstance(account, dict):
-            raise RuntimeError('Unexpected response: Binance account payload is not an object.')
-        if not isinstance(position_risk, list):
-            raise RuntimeError('Unexpected response: Binance position-risk payload is not a list.')
-        if isinstance(account, dict):
+            if not isinstance(account, dict) or not isinstance(account.get('positions'), list):
+                raise RuntimeError('Unexpected Binance account response: positions are unavailable.')
             account = dict(account)
-            account.update({key: account_config[key] for key in ('canTrade', 'multiAssetsMargin') if key in account_config})
-            account_positions = [dict(row) for row in account.get('positions', []) if isinstance(row, dict)]
-            account_keys = {(str(row.get('symbol', '')), str(row.get('positionSide', 'BOTH'))) for row in account_positions}
-            risk_by_key = {(str(row.get('symbol', '')), str(row.get('positionSide', 'BOTH'))): row for row in position_risk if isinstance(row, dict) and row.get('symbol')}
-            merged_positions: list[dict[str, Any]] = []
-            for row in account_positions:
-                key = (str(row.get('symbol', '')), str(row.get('positionSide', 'BOTH')))
-                merged = {**row, **risk_by_key.get(key, {}), **configs.get(key[0], {})}
-                if 'unRealizedProfit' in merged:
-                    merged['unrealizedProfit'] = merged['unRealizedProfit']
-                merged_positions.append(merged)
-            for key, row in risk_by_key.items():
-                if key in account_keys or abs(safe_float(row.get('positionAmt'))) <= 0:
-                    continue
-                merged = {**row, **configs.get(key[0], {})}
-                if 'unRealizedProfit' in merged:
-                    merged['unrealizedProfit'] = merged['unRealizedProfit']
-                merged_positions.append(merged)
-            account['positions'] = merged_positions
-        if not isinstance(open_orders, list):
-            raise RuntimeError('Unexpected response: Binance open-orders payload is not a list.')
-        if not isinstance(fills, list):
-            raise RuntimeError('Unexpected response: Binance trade-history payload is not a list.')
+            config = dict(config) if isinstance(config, dict) else {}
+            # V3 omits account permissions and mode. Older venues can omit the
+            # configuration endpoint, so use V2 metadata and explicit mode reads.
+            if (exchange_bool(config.get('canTrade', account.get('canTrade'))) is None
+                    or not isinstance(symbols, list)):
+                legacy = await optional('/fapi/v2/account')
+                if isinstance(legacy, dict):
+                    for key in ('canTrade', 'multiAssetsMargin'):
+                        if key not in account and key in legacy:
+                            account[key] = legacy[key]
+                    if not isinstance(symbols, list):
+                        symbols = [dict(row, marginType='ISOLATED' if exchange_bool(row.get('isolated')) is True else 'CROSSED')
+                                   for row in legacy.get('positions', [])
+                                   if isinstance(row, dict) and row.get('symbol') and 'isolated' in row]
+            for key in ('canTrade', 'multiAssetsMargin'):
+                value = exchange_bool(config.get(key))
+                if value is None:
+                    value = exchange_bool(account.get(key))
+                if value is not None:
+                    config[key] = account[key] = value
+            if exchange_bool(config.get('canTrade')) is None:
+                warnings.append('Trading permission could not be confirmed. Check the API connection and Futures API permissions.')
+            if not isinstance(symbols, list):
+                symbols = []
+            if symbol and not any(isinstance(row, dict) and row.get('symbol') == symbol for row in (symbols or [])):
+                current = await optional('/fapi/v1/symbolConfig', symbol_param)
+                if isinstance(current, list):
+                    symbols = [*(symbols or []), *current]
+            if exchange_bool(config.get('multiAssetsMargin')) is None:
+                mode = await optional('/fapi/v1/multiAssetsMargin')
+                value = exchange_bool((mode or {}).get('multiAssetsMargin')) if isinstance(mode, dict) else None
+                if value is not None:
+                    config['multiAssetsMargin'] = account['multiAssetsMargin'] = value
+                else:
+                    warnings.append('Account asset mode is unavailable; percentage sizing is waiting for confirmation.')
+            dual = exchange_bool(config.get('dualSidePosition'))
+            if dual is None:
+                mode = await optional('/fapi/v1/positionSide/dual')
+                dual = exchange_bool((mode or {}).get('dualSidePosition')) if isinstance(mode, dict) else None
+            position_mode = {'dualSidePosition': dual} if dual is not None else {}
+            if dual is None:
+                warnings.append('Position mode is unavailable; refresh account data before placing an order.')
+
+            assets = account.get('assets')
+            if (not isinstance(assets, list) or not assets
+                    or any(not isinstance(row, dict) or 'availableBalance' not in row for row in assets)):
+                balances = await optional('/fapi/v3/balance', fallback='/fapi/v2/balance')
+                if isinstance(balances, list):
+                    previous = {str(row.get('asset')): row for row in (assets or []) if isinstance(row, dict)}
+                    for row in balances:
+                        if not isinstance(row, dict) or not row.get('asset'):
+                            continue
+                        previous[str(row['asset'])] = {**previous.get(str(row['asset']), {}), **row,
+                            'walletBalance': row.get('balance', row.get('walletBalance', '0')),
+                            'unrealizedProfit': row.get('crossUnPnl', '0')}
+                    account['assets'] = list(previous.values())
+            if not isinstance(account.get('assets'), list):
+                account['assets'] = []
+            account['assets'] = [row for row in account['assets'] if isinstance(row, dict) and row.get('asset')]
+
+            indexes = []
+            if config.get('multiAssetsMargin') is True:
+                try:
+                    indexes = await self._request_async('/fapi/v1/assetIndex', priority='reconciliation')
+                    if isinstance(indexes, dict):
+                        indexes = [indexes]
+                    if not isinstance(indexes, list):
+                        raise RuntimeError('Unexpected asset-index response.')
+                except Exception as exc:
+                    indexes = []
+                    warnings.append(f'Collateral conversion rates unavailable: {exc}')
+            return account, risk, orders, fills, algos, config, symbols, position_mode, indexes, warnings
+
+        account, position_risk, open_orders, fills, algo_orders, account_config, symbol_config, position_mode, indexes, warnings = run_async(collect())
+        symbol_config = symbol_config if isinstance(symbol_config, list) else []
+        position_risk = position_risk if isinstance(position_risk, list) else []
+        configs = {str(row.get('symbol')): row for row in symbol_config if isinstance(row, dict)}
+        positions = [dict(row) for row in account['positions'] if isinstance(row, dict)]
+        keys = {(str(row.get('symbol', '')), str(row.get('positionSide', 'BOTH'))) for row in positions}
+        risk_by_key = {(str(row.get('symbol', '')), str(row.get('positionSide', 'BOTH'))): row for row in position_risk if isinstance(row, dict) and row.get('symbol')}
+        positions.extend(dict(row) for key, row in risk_by_key.items() if key not in keys and abs(safe_float(row.get('positionAmt'))) > 0)
+        for index, row in enumerate(positions):
+            key = (str(row.get('symbol', '')), str(row.get('positionSide', 'BOTH')))
+            merged = {**row, **risk_by_key.get(key, {}), **configs.get(key[0], {})}
+            if 'unRealizedProfit' in merged:
+                merged['unrealizedProfit'] = merged['unRealizedProfit']
+            positions[index] = merged
+        account['positions'] = positions
         if isinstance(algo_orders, dict):
             algo_orders = next((algo_orders[key] for key in ('orders', 'rows', 'data') if isinstance(algo_orders.get(key), list)), None)
-        if not isinstance(algo_orders, list):
-            raise RuntimeError('Unexpected response: Binance open-Algo payload is not a list.')
-        return {'account': account, 'accountConfig': account_config, 'symbolConfig': symbol_config, 'positionRisk': position_risk, 'orders': open_orders, 'algoOrders': algo_orders, 'ordersScope': 'ALL' if all_open_orders or not symbol else symbol, 'fills': fills, 'fillsSymbol': symbol or '', 'positionMode': position_mode}
+        orders_complete = isinstance(open_orders, list) and isinstance(algo_orders, list)
+        if not orders_complete:
+            warnings.append('Working orders could not be fully refreshed; existing orders are retained.')
+        payload = {'account': account, 'accountConfig': account_config, 'symbolConfig': symbol_config,
+                   'positionRisk': position_risk, 'positionMode': position_mode, 'assetIndex': indexes,
+                   '_orders_complete': orders_complete, '_warnings': warnings,
+                   'ordersScope': ('ALL' if all_open_orders or not symbol else symbol) if orders_complete else ''}
+        if orders_complete:
+            payload.update(orders=open_orders, algoOrders=algo_orders)
+        if isinstance(fills, list):
+            payload.update(fills=fills, fillsSymbol=symbol or '')
+        return payload
 
     def start_user_stream(self, api_key: str) -> str:
         payload = self._request('/fapi/v1/listenKey', method='POST', headers={'X-MBX-APIKEY': api_key}, priority='live')

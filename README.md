@@ -84,10 +84,15 @@ An unknown or absent protection outcome keeps new entries blocked; use
 Recovery does not resend missing orders. Plans from versions that never saved
 accepted protection intent cannot be reconstructed automatically.
 
-Collateral-percentage shortcuts require fresh, asset-specific available balance
-in confirmed Single-Asset Mode. Multi-Assets Mode requires manual quantity
-sizing; account-wide USD-equivalent collateral is not a specific asset balance.
+Collateral-percentage shortcuts use fresh available balance for the confirmed
+account mode. Single-Asset Mode uses the contract's margin-asset balance;
+Multi-Assets Mode uses the shared USD collateral pool and Binance's current
+asset conversion rates, including pending orders across margin assets.
+The account summary displays the balance in its currency even when collateral
+sizing is waiting for an account refresh or conversion rate.
 Connected trading sessions refresh account data in the background, including
 while the Trade tab is open or the panel is hidden. Use **Refresh** in the
 trading panel to retry after a connection failure; refreshing never submits an
-order. Position reductions do not require fresh collateral for a new entry.
+order. Account and leverage errors remain visible until resolved, and a failed
+order-history request does not hide a successfully loaded balance. Position
+reductions do not require fresh collateral for a new entry.

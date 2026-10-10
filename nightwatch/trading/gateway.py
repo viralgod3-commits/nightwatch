@@ -135,6 +135,7 @@ class TradingGateway(QtCore.QObject):
     request_failed = Signal(str, str, bool)
     account_event = Signal(object)
     snapshot_ready = Signal(object)
+    account_status_changed = Signal(str)
     leverage_changing = Signal(str, int)
     leverage_changed = Signal(str, int, bool, str)
     problem = Signal(str)
@@ -182,6 +183,9 @@ class TradingGateway(QtCore.QObject):
         self._last_account_snapshot: dict | None = None
         self.balance_cache: dict[str, dict[str, Any]] = {}
         self.multi_assets_margin: bool | None = None
+        self._available_usd: float | None = None
+        self._asset_index: dict[str, float] = {}
+        self._leverage_updated_mono: dict[str, float] = {}
         self._refresh_events: list[dict[str, Any]] | None = None
         self._refresh_events_overflow = False
         self._collateral_reservations: dict[str, dict[str, Any]] = {}
@@ -790,6 +794,9 @@ class TradingGateway(QtCore.QObject):
         self.balance_cache.clear()
         self._collateral_reservations.clear()
         self.multi_assets_margin = None
+        self._available_usd = None
+        self._asset_index.clear()
+        self._leverage_updated_mono.clear()
         self._refresh_events = None
         self.account_can_trade = None
         self.position_cache.clear()
@@ -815,6 +822,7 @@ class TradingGateway(QtCore.QObject):
         else:
             self.state_changed.emit("API CREDENTIALS REQUIRED")
         self.credentials_changed.emit(self.api_key)
+        self.account_status_changed.emit("")
 
     def arm(self) -> bool:
         if not self.has_credentials():
@@ -1701,7 +1709,10 @@ class TradingGateway(QtCore.QObject):
             if required > available + 1e-9:
                 self._remember_failure(request_id, 'Collateral has already been reserved by another admitted order. Refresh or reduce allocation.', False, details)
                 return request_id
-            self._collateral_reservations[request_id] = {'asset': asset, 'amount': required, 'accepted_at': None}
+            self._collateral_reservations[request_id] = {
+                'asset': asset, 'amount': required, 'accepted_at': None,
+                'usd_amount': required * self._asset_index[asset] if self.multi_assets_margin is True else None,
+            }
         return self._send_or_rest(
             request_id,
             method,
@@ -2442,6 +2453,7 @@ class TradingGateway(QtCore.QObject):
                 if accepted_at is not None and accepted_at <= refresh_started:
                     self._collateral_reservations.pop(request_id, None)
             self.snapshot_ready.emit(payload)
+            self.account_status_changed.emit("\n".join(payload.get('_warnings') or []))
             if self._protection_recovery_pending:
                 self._recover_protections()
             self._run_pending_account_refresh()
@@ -2451,7 +2463,9 @@ class TradingGateway(QtCore.QObject):
             self.account_task = None
             self.account_task_scope = None
             self._refresh_events = None
-            self.problem.emit(f"Account refresh failed: {message}")
+            detail = f"Account refresh failed: {message}"
+            self.account_status_changed.emit(detail)
+            self.problem.emit(detail)
             self._run_pending_account_refresh()
 
         self._refresh_events = []
@@ -2587,7 +2601,7 @@ class TradingGateway(QtCore.QObject):
         self.cross_pending.add(symbol)
         task: ApiTask
 
-        cross_is_ready = symbol in self.cross_ready
+        cross_is_ready = symbol in self.cross_ready or self.multi_assets_margin is True
 
         def execute() -> dict[str, Any]:
             if cross_is_ready:
@@ -2619,6 +2633,7 @@ class TradingGateway(QtCore.QObject):
                 if key[0] == symbol:
                     row["leverage"] = str(actual_leverage)
             self.leverage_cache[symbol] = actual_leverage
+            self._leverage_updated_mono[symbol] = time.monotonic()
             prefix = "ARMED" if self.armed else "SETTINGS"
             self.state_changed.emit(
                 f"{prefix} · {symbol} CROSS READY · {actual_leverage}×"
@@ -2653,6 +2668,11 @@ class TradingGateway(QtCore.QObject):
             or symbol in self.cross_ready
             or symbol in self.cross_pending
         ):
+            return
+        # Binance Multi-Assets Mode already uses cross margin. Sending a margin
+        # mode change first can reject a perfectly valid leverage request.
+        if self.multi_assets_margin is True:
+            self.cross_ready.add(symbol)
             return
         self.cross_pending.add(symbol)
         self.state_changed.emit(f"ARMED · VERIFYING {symbol} CROSS MARGIN")
@@ -2939,9 +2959,6 @@ class TradingGateway(QtCore.QObject):
                 for (cached_symbol, _side), row in self.position_cache.items():
                     if cached_symbol == symbol:
                         row["leverage"] = leverage
-            mode = exchange_bool((payload.get("ai") or {}).get("j"))
-            if mode is not None:
-                self.multi_assets_margin = mode
         elif event_type == "MARGIN_CALL":
             positions = list(payload.get("p") or [])
             symbols = ", ".join(
@@ -2999,12 +3016,23 @@ class TradingGateway(QtCore.QObject):
             else None
         )
         position_mode = payload.get("positionMode") or {}
-        if "dualSidePosition" in position_mode:
-            value = position_mode.get("dualSidePosition")
-            self.hedge_mode = (
-                value if isinstance(value, bool) else str(value).casefold() == "true"
-            )
+        self.hedge_mode = exchange_bool(position_mode.get('dualSidePosition'))
         self.multi_assets_margin = exchange_bool(config.get("multiAssetsMargin", account.get("multiAssetsMargin")))
+        self._available_usd = (safe_float(account.get('availableBalance'), -1.0)
+                               if self.multi_assets_margin is True else None)
+        self._asset_index = {}
+        now_ms = self.rest.cached_timestamp_ms()
+        for row in payload.get('assetIndex', []):
+            if not isinstance(row, dict):
+                continue
+            name = str(row.get('symbol') or '')
+            index = safe_float(row.get('index'))
+            stamp = safe_float(row.get('time'))
+            if (name.endswith('USD') and index > 0 and stamp > 0
+                    and -5_000 <= now_ms - stamp <= 60_000):
+                # Use the larger liability-side rate; never assume a stablecoin
+                # is worth exactly one USD when sizing from the shared pool.
+                self._asset_index[name[:-3]] = max(index, safe_float(row.get('askRate')))
         self.balance_cache = {
             str(row.get("asset")): dict(row)
             for row in account.get("assets", [])
@@ -3019,7 +3047,8 @@ class TradingGateway(QtCore.QObject):
         for row in payload.get("symbolConfig", []):
             symbol = str(row.get("symbol") or "")
             leverage = int(safe_float(row.get("leverage")))
-            if symbol and leverage > 0:
+            if (symbol and leverage > 0
+                    and self._leverage_updated_mono.get(symbol, 0) <= payload.get('_read_started_mono', float('inf'))):
                 self.leverage_cache[symbol] = leverage
             mode = str(row.get("marginType") or "").lower()
             if symbol and mode:
@@ -3027,7 +3056,8 @@ class TradingGateway(QtCore.QObject):
         for row in self.position_cache.values():
             symbol = str(row.get("symbol") or "")
             leverage = int(safe_float(row.get("leverage")))
-            if symbol and leverage > 0:
+            if (symbol and leverage > 0
+                    and self._leverage_updated_mono.get(symbol, 0) <= payload.get('_read_started_mono', float('inf'))):
                 self.leverage_cache[symbol] = leverage
             margin_mode = str(row.get("marginType") or "").lower()
             if symbol and margin_mode:
@@ -3050,12 +3080,27 @@ class TradingGateway(QtCore.QObject):
             if order:
                 order.setdefault('updateTime', event_timestamp(payload, order))
             self._observe_protection_order(self.protection_client_id(order), order)
+        if payload.get('e') == 'ACCOUNT_CONFIG_UPDATE':
+            mode = exchange_bool((payload.get('ai') or {}).get('j'))
+            if mode is not None and mode != self.multi_assets_margin:
+                self.multi_assets_margin = mode
+                self._available_usd = None
+                self._asset_index.clear()
+                for balance in self.balance_cache.values():
+                    balance.pop('availableBalance', None)
+            config = payload.get('ac') or {}
+            symbol = str(config.get('s') or '')
+            leverage = int(safe_float(config.get('l')))
+            if symbol and leverage > 0:
+                self.leverage_cache[symbol] = leverage
+                self._leverage_updated_mono[symbol] = time.monotonic()
         if payload.get("e") != "ACCOUNT_UPDATE":
             return
 
 
         for balance in self.balance_cache.values():
             balance.pop("availableBalance", None)
+        self._available_usd = None
         account = payload.get("a") or {}
         stamp = event_timestamp(payload)
         for row in account.get("B", []):
@@ -3123,13 +3168,38 @@ class TradingGateway(QtCore.QObject):
         if (not self.account_loaded or self._last_snapshot_mono <= 0
                 or time.monotonic() - self._last_snapshot_mono > self.COLLATERAL_MAX_AGE_SECONDS):
             raise ValueError('Account collateral is loading or stale. Use Refresh in the trading panel, then retry.')
-        if self.multi_assets_margin is not False:
-            raise ValueError("Collateral shortcuts require confirmed Single-Asset Mode. Multi-Assets USD collateral needs an explicit conversion policy; use a quantity-based order.")
+        if self.multi_assets_margin is None:
+            raise ValueError("Account asset mode has not loaded. Refresh the account; the connection error is shown in the trading panel.")
+        if self.multi_assets_margin is True:
+            if self._available_usd is None or self._available_usd < 0:
+                raise ValueError("Available Multi-Assets collateral is updating. Refresh the account and retry.")
+            rate = self._asset_index.get(asset, 0.0)
+            if rate <= 0:
+                raise ValueError(f"The {asset}/USD collateral conversion rate has not loaded. Refresh the account and retry.")
+            reserved = 0.0
+            for item in self._collateral_reservations.values():
+                amount = item.get('usd_amount')
+                if amount is None:
+                    conversion = self._asset_index.get(item['asset'], 0.0)
+                    if conversion <= 0:
+                        raise ValueError("An admitted order's collateral is awaiting reconciliation. Refresh the account.")
+                    amount = item['amount'] * conversion
+                reserved += amount
+            return max(0.0, self._available_usd - reserved) / rate
         row = self.balance_cache.get(asset) or {}
         if "availableBalance" in row:
             reserved = sum(item['amount'] for item in self._collateral_reservations.values() if item['asset'] == asset)
             return max(0.0, safe_float(row.get("availableBalance")) - reserved)
         return 0.0
+
+    def account_balance(self, asset: str) -> tuple[float | None, str]:
+        """Display the exchange balance without hiding it behind sizing checks."""
+        if self.multi_assets_margin is True:
+            value = self._available_usd
+            return (value if value is not None and value >= 0 else None), 'USD'
+        row = self.balance_cache.get(asset) or {}
+        value = safe_float(row.get('availableBalance'), -1.0)
+        return (value if value >= 0 else None), asset
 
     def stop(self) -> None:
         self.stopping = True
