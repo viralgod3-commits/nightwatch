@@ -755,6 +755,17 @@ class LeadershipTimelineWidget(QtWidgets.QWidget):
         self._needs_clock = True
         self.refresh(force=True)
 
+    def _reset_filters(self) -> None:
+        changed = _workspace_clear_filters(self)
+        if not changed:
+            return
+        self.state_filter = self.state_selector.currentData()
+        self.category_filter_value = self.category_filter.currentText()
+        if self.limit in changed or self.liquidity in changed:
+            self._filters_changed()
+        else:
+            _refresh_leaders_view(self)
+
     @profile_callback("workspace.leaders.refresh_ms")
     def refresh(self, *, force: bool = False) -> None:
         if self.closing:
@@ -1113,9 +1124,7 @@ class LeadershipTimelineWidget(QtWidgets.QWidget):
             self.table.selectRow(ordered.index(self.selected))
         del blocker
         self.table.verticalScrollBar().setValue(scroll)
-        self.chart_button.setEnabled(self.selected in ordered)
         self.watch_button.setEnabled(self.selected in ordered and self.watchlist is not None)
-        self.chart_button.setText("Open " + self.selected.removesuffix("USDT") if self.selected else "Open chart")
 
         for state, cards in self.cards.items():
             candidates = prepared["candidates"].get(state, [])
@@ -1150,8 +1159,6 @@ class LeadershipTimelineWidget(QtWidgets.QWidget):
         if symbol not in self.metrics:
             return
         self.selected = symbol
-        self.chart_button.setText("Open " + symbol.removesuffix("USDT"))
-        self.chart_button.setEnabled(True)
         self.watch_button.setEnabled(self.watchlist is not None)
         if symbol in self.row_symbols:
             self.table.selectRow(self.row_symbols.index(symbol))
@@ -1171,7 +1178,9 @@ class LeadershipTimelineWidget(QtWidgets.QWidget):
         self.watch_selected.setText("★ Watched" if watched else "☆ Watch")
         self.watch_selected.setToolTip("Remove from watchlist" if watched else "Add to watchlist")
         if hasattr(self, "watch_button"):
-            self.watch_button.setText("★ Remove watch" if watched else "☆ Add watch")
+            self.watch_button.setChecked(watched)
+            self.watch_button.setText("★ Watched" if watched else "☆ Watch")
+            self.watch_button.setToolTip("Remove from watchlist" if watched else "Add to watchlist")
 
     def _schedule_details(self) -> None:
         if not self._view_visible:
@@ -1353,10 +1362,10 @@ class LeadershipTimelineWidget(QtWidgets.QWidget):
         self.search.setText(settings.value("markets/leadership/search", "", str))
         self.replay.setValue(24)
         state = settings.value("markets/leadership/state", "All", str)
-        _set_state_filter(self, state if state in self.state_buttons else "All")
+        _set_state_filter(self, state if self.state_selector.findData(state) >= 0 else "All")
         category = settings.value("markets/leadership/category", "All Sectors", str)
         if self.category_filter.findText(category) < 0:
-            self.category_filter.addItem(category)
+            self.category_filter.addItem(category, category)
         self.category_filter.setCurrentText(category)
         blocker = QtCore.QSignalBlocker(self.view_selector)
         view = settings.value("markets/leadership/view", "overview", str)
@@ -1875,6 +1884,58 @@ def _workspace_combo(items, index=0):
     return combo
 
 
+def _workspace_section(sidebar, caption: str):
+    if sidebar.count():
+        sidebar.addSpacing(6)
+    label = QtWidgets.QLabel(caption)
+    set_text_role(label, TextRole.PANEL_TITLE)
+    sidebar.addWidget(label)
+
+
+def _workspace_filter_value(control):
+    if isinstance(control, QtWidgets.QLineEdit):
+        return control.text()
+    if isinstance(control, QtWidgets.QCheckBox):
+        return control.isChecked()
+    return control.currentData()
+
+
+def _workspace_sync_reset(owner):
+    owner.reset_button.setEnabled(any(_workspace_filter_value(control) != default
+                                     for control, default in owner.filter_defaults))
+
+
+def _workspace_add_reset(owner, sidebar, defaults):
+    owner.filter_defaults = defaults
+    owner.reset_button = QtWidgets.QPushButton("Reset filters")
+    owner.reset_button.setToolTip("Restore default filters; keep the current table view and sort order")
+    owner.reset_button.clicked.connect(owner._reset_filters)
+    sidebar.addWidget(owner.reset_button)
+    for control, _default in defaults:
+        signal = (control.textChanged if isinstance(control, QtWidgets.QLineEdit) else
+                  control.toggled if isinstance(control, QtWidgets.QCheckBox) else control.currentIndexChanged)
+        signal.connect(lambda *_args: _workspace_sync_reset(owner))
+    _workspace_sync_reset(owner)
+
+
+def _workspace_clear_filters(owner):
+    """Reset controls together so one user action triggers one data/view update."""
+    changed = {control for control, default in owner.filter_defaults
+               if _workspace_filter_value(control) != default}
+    if hasattr(owner, "search_timer"):
+        owner.search_timer.stop()
+    for control, default in owner.filter_defaults:
+        with QtCore.QSignalBlocker(control):
+            if isinstance(control, QtWidgets.QLineEdit):
+                control.setText(default)
+            elif isinstance(control, QtWidgets.QCheckBox):
+                control.setChecked(default)
+            else:
+                control.setCurrentIndex(control.findData(default))
+    _workspace_sync_reset(owner)
+    return changed
+
+
 def _workspace_finish(owner):
     for widget in owner.findChildren(QtWidgets.QLabel):
         if any(token in widget.objectName().lower() for token in
@@ -1911,7 +1972,16 @@ def _workspace_finish(owner):
     owner.refresh_shortcut = QtGui.QShortcut(QtGui.QKeySequence("F5"), owner)
     owner.refresh_shortcut.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
     owner.refresh_shortcut.activated.connect(owner.refresh_button.click)
-    owner.refresh_button.setToolTip("Refresh market data (F5)")
+    owner.refresh_button.setToolTip(owner.refresh_button.toolTip() or "Refresh market data (F5)")
+    if hasattr(owner, "_open_row"):
+        owner.table.setToolTip("Double-click a row or press Enter to open its chart")
+        owner.table.setAccessibleDescription(owner.table.toolTip())
+        owner.chart_shortcuts = []
+        for key in ("Return", "Enter"):
+            shortcut = QtGui.QShortcut(QtGui.QKeySequence(key), owner.table)
+            shortcut.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
+            shortcut.activated.connect(lambda: owner._open_row(owner.table.currentRow(), 0))
+            owner.chart_shortcuts.append(shortcut)
 
 
 def _workspace_restore_chrome(owner, settings, page: str):
@@ -1919,6 +1989,7 @@ def _workspace_restore_chrome(owner, settings, page: str):
                                    settings.value(f"markets/{page}/context_visible_v2", False, bool))
     if hasattr(owner, "compare_toggle"):
         owner.compare_toggle.setChecked(settings.value(f"markets/{page}/comparison_visible", False, bool))
+    _workspace_sync_reset(owner)
 
 
 def _workspace_save_chrome(owner, settings, page: str):
@@ -2069,8 +2140,10 @@ class _SegmentedSelector(QtWidgets.QWidget):
 
 def _set_state_filter(owner, state: str) -> None:
     owner.state_filter = state
-    for key, button in owner.state_buttons.items():
-        button.setChecked(key == state)
+    with QtCore.QSignalBlocker(owner.state_selector):
+        owner.state_selector.setCurrentIndex(owner.state_selector.findData(state))
+    if hasattr(owner, "reset_button"):
+        _workspace_sync_reset(owner)
     _refresh_leaders_view(owner)
 
 
@@ -2281,6 +2354,11 @@ def _build_leader_context(owner):
     instrument.addWidget(owner.context_symbol, 1)
     instrument.addWidget(owner.context_state)
     layout.addLayout(instrument)
+    owner.watch_button = QtWidgets.QPushButton("☆ Watch")
+    owner.watch_button.setCheckable(True)
+    owner.watch_button.setEnabled(False)
+    owner.watch_button.clicked.connect(lambda: owner.toggle_watch(owner.selected))
+    layout.addWidget(owner.watch_button)
     owner.context_name = ElidedLabel("")
     owner.context_name.setProperty("workspaceMuted", True)
     set_text_role(owner.context_name, TextRole.UI_BODY)
@@ -2390,6 +2468,7 @@ def build_leaders(owner) -> None:
     owner.state_filter = "All"
     owner.category_filter_value = "All Sectors"
     sidebar, content = _workspace_shell(owner, "leadershipBody")
+    _workspace_section(sidebar, "Filters")
     owner.search = QtWidgets.QLineEdit()
     owner.search.setPlaceholderText("Search coin…")
     owner.search.setClearButtonEnabled(True)
@@ -2410,9 +2489,20 @@ def build_leaders(owner) -> None:
     for caption, control in (("Universe", owner.limit), ("Min. 24H volume", owner.liquidity),
                              ("Sector", owner.category_filter)):
         _workspace_filter(sidebar, caption, control)
+    owner.state_selector = _workspace_combo([(state, state) for state in
+                                            ("All", "Leading", "Improving", "Cooling", "Lagging", "Flat", "Waiting")])
+    owner.state_selector.currentIndexChanged.connect(lambda _index: _set_state_filter(owner, owner.state_selector.currentData()))
+    _workspace_filter(sidebar, "Leadership state", owner.state_selector)
+    _workspace_add_reset(owner, sidebar, ((owner.search, ""), (owner.limit, 80),
+                                         (owner.liquidity, 20_000_000), (owner.category_filter, "All Sectors"),
+                                         (owner.state_selector, "All")))
+    _workspace_section(sidebar, "Display")
     owner.view_selector = _workspace_combo([("Overview", "overview"), ("Relative strength", "strength"),
                                            ("Participation", "participation"), ("Custom columns", "custom")])
     _workspace_filter(sidebar, "View", owner.view_selector)
+    owner.columns_button = QtWidgets.QToolButton()
+    owner.columns_button.setText("Columns…")
+    sidebar.addWidget(owner.columns_button)
     owner.sort = _workspace_combo([(caption, key) for caption, key in (
         ("Leadership state", "state"), ("RS score", "score"), ("4H vs BTC", "rs4"),
         ("Symbol", "pair"), ("Name", "name"), ("Price", "price"), ("1H return", "usd1"),
@@ -2425,40 +2515,10 @@ def build_leaders(owner) -> None:
     owner.direction_button = QtWidgets.QPushButton("↓ Leaders first")
     owner.direction_button.clicked.connect(lambda: _toggle_sort(owner))
     sidebar.addWidget(owner.direction_button)
-    state_label = QtWidgets.QLabel("STATE")
-    state_label.setProperty("workspaceMuted", True)
-    set_text_role(state_label, TextRole.UI_CAPTION)
-    sidebar.addWidget(state_label)
-    owner.state_buttons = {}
-    state_grid = QtWidgets.QGridLayout()
-    state_grid.setSpacing(5)
-    sidebar.addLayout(state_grid)
-    for index, state in enumerate(("All", "Leading", "Improving", "Cooling", "Lagging", "Flat", "Waiting")):
-        button = QtWidgets.QPushButton(state)
-        button.setSizePolicy(QtWidgets.QSizePolicy.Policy.Ignored, QtWidgets.QSizePolicy.Policy.Fixed)
-        button.setCheckable(True)
-        button.setChecked(state == "All")
-        if state != "All":
-            color = _leader_color(state, owner.theme)
-            button.setStyleSheet(f"QPushButton {{color: {color}; border-left: 2px solid {color}; padding: 0 4px; text-align: left;}}"
-                                f"QPushButton:checked {{background: {_blend_hex(owner.theme['panel'], color, .18)}; border-color: {color}; color: {color};}}")
-        button.clicked.connect(lambda _checked=False, value=state: _set_state_filter(owner, value))
-        owner.state_buttons[state] = button
-        state_grid.addWidget(button, 0 if index == 0 else (index + 1) // 2,
-                             0 if index == 0 else (index - 1) % 2, 1, 2 if index == 0 else 1)
-    owner.columns_button = QtWidgets.QToolButton()
-    owner.columns_button.setText("Columns")
-    sidebar.addWidget(owner.columns_button)
     sidebar.addStretch(1)
-    owner.chart_button = QtWidgets.QPushButton("Open chart")
-    owner.watch_button = QtWidgets.QPushButton("☆ Add watch")
-    for button in (owner.chart_button, owner.watch_button):
-        button.setEnabled(False)
-        owner.actions_layout.addWidget(button)
-    owner.chart_button.clicked.connect(lambda: owner.symbol_selected.emit(owner.selected) if owner.selected else None)
-    owner.watch_button.clicked.connect(lambda: owner.toggle_watch(owner.selected))
     owner.context_button = QtWidgets.QPushButton("Coin detail")
     owner.context_button.setCheckable(True)
+    owner.context_button.setToolTip("Show or hide details for the selected coin")
     owner.actions_layout.addWidget(owner.context_button)
     owner.refresh_button = QtWidgets.QPushButton("Refresh")
     owner.refresh_button.clicked.connect(lambda _checked=False: owner.refresh(force=True))
@@ -2612,20 +2672,20 @@ def update_dashboard(owner, prepared) -> None:
     if [owner.category_filter.itemText(i) for i in range(owner.category_filter.count())] != desired:
         blocker = QtCore.QSignalBlocker(owner.category_filter)
         owner.category_filter.clear()
-        owner.category_filter.addItems(desired)
+        for category in desired:
+            owner.category_filter.addItem(category, category)
         index = owner.category_filter.findText(current)
         owner.category_filter.setCurrentIndex(index if index >= 0 else 0)
         del blocker
         owner.category_filter_value = owner.category_filter.currentText()
 
     counts = prepared["counts"]
-    for state, button in owner.state_buttons.items():
-        count = len(owner.symbols) if state == "All" else counts.get(state, 0)
-        caption = "All" if state == "All" else state
-        button_text = f"All ({count})" if state == "All" else caption
-        button.setToolTip(f"{count} pairs · {caption}")
-        if button.text() != button_text:
-            button.setText(button_text)
+    with QtCore.QSignalBlocker(owner.state_selector):
+        for index in range(owner.state_selector.count()):
+            state = owner.state_selector.itemData(index)
+            count = len(owner.symbols) if state == "All" else counts.get(state, 0)
+            owner.state_selector.setItemText(index, f"{state} ({count})")
+            owner.state_selector.setItemData(index, f"{count} pairs · {state}", Qt.ItemDataRole.ToolTipRole)
 
 def leaders_stylesheet(theme: dict[str, str] | None = None) -> str:
     """Leaders cells and chrome using the shared market workspace palette."""
@@ -3854,6 +3914,7 @@ class SectorOverviewWidget(QtWidgets.QWidget):
 
     def _build_ui(self) -> None:
         sidebar, layout = _workspace_shell(self, "sectorBody")
+        _workspace_section(sidebar, "Filters")
         self.sector_splitter = QtWidgets.QSplitter(Qt.Orientation.Horizontal)
         self.sector_splitter.setChildrenCollapsible(False)
         self.sector_splitter.setHandleWidth(8)
@@ -3870,27 +3931,17 @@ class SectorOverviewWidget(QtWidgets.QWidget):
         layout.setSpacing(8)
         self.overview_scroll.setWidget(overview)
         self.sector_splitter.addWidget(self.overview_scroll)
-        self.timeframe_group = QtWidgets.QButtonGroup(self)
-        self.timeframe_group.setExclusive(True)
-        self.timeframe_buttons = {}
-        windows = QtWidgets.QWidget()
-        windows.setProperty("workspaceTransparent", True)
-        window_layout = QtWidgets.QGridLayout(windows)
-        window_layout.setContentsMargins(0, 0, 0, 0)
-        window_layout.setSpacing(5)
-        for index, (key, (label, _step, _count)) in enumerate(_SECTOR_OVERVIEW_TIMEFRAMES.items()):
-            button = QtWidgets.QPushButton(label)
-            button.setCheckable(True)
-            button.setChecked(key == self.timeframe)
-            button.clicked.connect(lambda _checked=False, value=key: self._set_timeframe(value))
-            self.timeframe_group.addButton(button)
-            self.timeframe_buttons[key] = button
-            window_layout.addWidget(button, index // 2, index % 2)
-        _workspace_filter(sidebar, "Window vs BTC", windows)
+        self.window_selector = _SegmentedSelector("sectorWindow", columns=2)
+        for key, (label, _step, _count) in _SECTOR_OVERVIEW_TIMEFRAMES.items():
+            self.window_selector.addItem(label, key)
+        self.window_selector.setCurrentIndex(self.window_selector.findData(self.timeframe))
+        self.window_selector.currentIndexChanged.connect(lambda _index: self._set_timeframe(self.window_selector.currentData()))
+        _workspace_filter(sidebar, "Window vs BTC", self.window_selector)
         self.liquidity = _workspace_combo([("All", 0), ("$20M+", 20_000_000),
                                           ("$50M+", 50_000_000), ("$100M+", 100_000_000)])
         self.liquidity.currentIndexChanged.connect(self._filters_changed)
         _workspace_filter(sidebar, "Min. 24H volume", self.liquidity)
+        _workspace_add_reset(self, sidebar, ((self.window_selector, "4h"), (self.liquidity, 0)))
         sidebar.addStretch(1)
         self.context_button = QtWidgets.QPushButton("Sector detail", self)
         self.context_button.setCheckable(True)
@@ -4111,6 +4162,16 @@ class SectorOverviewWidget(QtWidgets.QWidget):
     def _filters_changed(self) -> None:
         self.minimum_volume = safe_float(self.liquidity.currentData())
         self.refresh()
+
+    def _reset_filters(self) -> None:
+        changed = _workspace_clear_filters(self)
+        if not changed:
+            return
+        self.timeframe = self.window_selector.currentData()
+        if self.liquidity in changed:
+            self._filters_changed()
+        else:
+            self.render()
 
     def _leaders_changed(self) -> None:
 
@@ -4572,7 +4633,8 @@ class SectorOverviewWidget(QtWidgets.QWidget):
         timeframe = settings.value("markets/sectors/timeframe_v1", "4h", str)
         if timeframe in _SECTOR_OVERVIEW_TIMEFRAMES:
             self.timeframe = timeframe
-            self.timeframe_buttons[timeframe].setChecked(True)
+            with QtCore.QSignalBlocker(self.window_selector):
+                self.window_selector.setCurrentIndex(self.window_selector.findData(timeframe))
         minimum = settings.value("markets/sectors/minimum_volume_v1", 0, int)
         index = self.liquidity.findData(minimum)
         if index >= 0:
@@ -5294,6 +5356,7 @@ class RotationScannerWidget(LeadershipTimelineWidget):
     def _build_ui(self):
         self.setObjectName("rotationScanner")
         sidebar, outer = _workspace_shell(self, "rotationBody")
+        _workspace_section(sidebar, "Filters")
         self.search = QtWidgets.QLineEdit()
         self.search.setPlaceholderText("Search coin…")
         self.search.setClearButtonEnabled(True)
@@ -5311,8 +5374,7 @@ class RotationScannerWidget(LeadershipTimelineWidget):
         self.category_filter = _workspace_combo([("All sectors", "All sectors")])
         self.candidate_mode = _workspace_combo([("Improving", "improving"), ("All candidates", "all")])
         for caption, control in (("Window vs BTC", self.span), ("Universe", self.limit),
-                                 ("Min. 24H volume", self.liquidity), ("Sector", self.category_filter),
-                                 ("Candidates", self.candidate_mode)):
+                                 ("Min. 24H volume", self.liquidity), ("Sector", self.category_filter)):
             _workspace_filter(sidebar, caption, control)
         self.spot_confirmation = QtWidgets.QCheckBox("Spot confirmation")
         self.spot_confirmation.setToolTip("Require rising spot share over consecutive 4H windows. Unavailable history does not pass.")
@@ -5321,13 +5383,19 @@ class RotationScannerWidget(LeadershipTimelineWidget):
         self.watched_only = QtWidgets.QCheckBox("Watchlist only")
         for checkbox in (self.spot_confirmation, self.hide_thin, self.watched_only):
             sidebar.addWidget(checkbox)
-        self.reset_button = _rotation_button("Reset filters")
-        self.reset_button.clicked.connect(self._reset_filters)
-        sidebar.addWidget(self.reset_button)
+        _workspace_section(sidebar, "Candidates")
+        _workspace_filter(sidebar, "Show", self.candidate_mode)
+        self.candidate_mode.setToolTip("Filter the candidate table; the map keeps all coins matching the other filters")
+        _workspace_add_reset(self, sidebar, ((self.search, ""), (self.span, 4), (self.limit, 0),
+                                             (self.liquidity, 20_000_000), (self.category_filter, "All sectors"),
+                                             (self.candidate_mode, "improving"), (self.spot_confirmation, False),
+                                             (self.hide_thin, False), (self.watched_only, False)))
         sidebar.addStretch(1)
         self.context_button = _rotation_button("Coin detail")
         self.context_button.setCheckable(True)
+        self.context_button.setToolTip("Show or hide details for the selected coin")
         self.refresh_button = _rotation_button("Refresh")
+        self.refresh_button.setToolTip("Reload the latest Leaders snapshot (F5)")
         self.refresh_button.clicked.connect(self._reload_snapshot)
         support = QtWidgets.QWidget(self)
         support.hide()
@@ -5403,7 +5471,7 @@ class RotationScannerWidget(LeadershipTimelineWidget):
         self.watch_selected.setMinimumHeight(30)
         self.watch_selected.clicked.connect(lambda: self.toggle_watch(self.selected))
         instrument_row.addWidget(self.selected_symbol, 1)
-        self.actions_layout.addWidget(self.watch_selected)
+        instrument_row.addWidget(self.watch_selected)
         info.addLayout(instrument_row)
         self.selected_name = _rotation_label("Click a bubble or candidate", TextRole.UI_CAPTION, "rotationMuted")
         self.selected_name.setWordWrap(False)
@@ -5459,9 +5527,6 @@ class RotationScannerWidget(LeadershipTimelineWidget):
         self.compare_other_chart = _rotation_MiniChart(compact=True, color=ROTATION_PALETTE["active_line"])
         comparison_layout.addWidget(self.compare_other_chart)
         info.addStretch(1)
-        self.open_selected = _rotation_button("Open chart", "rotationPrimary")
-        self.open_selected.clicked.connect(lambda: self.symbol_selected.emit(self.selected) if self.selected else None)
-        self.actions_layout.addWidget(self.open_selected)
         # Reserve inspector space instead of covering the right-hand quadrants.
         self.detail_drawer = QtWidgets.QScrollArea()
         self.detail_drawer.setObjectName("workspaceDrawer")
@@ -5809,7 +5874,6 @@ class RotationScannerWidget(LeadershipTimelineWidget):
         self.compare_other.setText(f"{other.removesuffix('USDT') or 'No comparison'} vs BTC   {_pct(self.metrics.get(other, {}).get('x'), 1)}")
         self.compare_chart.set_values(values.get("relative", []))
         self.compare_other_chart.set_values(charts.get(other, {}).get("relative", []))
-        self.open_selected.setEnabled(bool(symbol))
         self._sync_watch()
 
     def _refresh_detail_view(self):
@@ -5855,15 +5919,13 @@ class RotationScannerWidget(LeadershipTimelineWidget):
                 self.detail_timer.start()
 
     def _reset_filters(self):
-        for widget, data in ((self.limit, 0), (self.liquidity, 20_000_000), (self.span, 4), (self.category_filter, "All sectors"), (self.candidate_mode, "improving")):
-            blocker = QtCore.QSignalBlocker(widget)
-            widget.setCurrentIndex(max(0, widget.findData(data)))
-            del blocker
-        for widget in (self.spot_confirmation, self.hide_thin, self.watched_only, self.search):
-            blocker = QtCore.QSignalBlocker(widget)
-            widget.clear() if widget is self.search else widget.setChecked(False)
-            del blocker
-        self._filters_changed()
+        changed = _workspace_clear_filters(self)
+        if not changed:
+            return
+        if self.limit in changed or self.liquidity in changed:
+            self._filters_changed()
+        else:
+            self._view_changed()
 
     def bind_leadership(self, leadership):
         """Bind to the existing Leaders loader; Rotation never issues network requests."""
