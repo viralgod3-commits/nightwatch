@@ -1836,15 +1836,15 @@ def _workspace_shell(owner, name: str):
     owner.controls_scroll.setWidgetResizable(True)
     owner.controls_scroll.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
     owner.controls_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-    owner.controls_scroll.setFixedWidth(184)
+    owner.controls_scroll.setFixedWidth(224)
     controls = QtWidgets.QWidget()
     controls.setObjectName(name)
     sidebar = QtWidgets.QVBoxLayout(controls)
-    sidebar.setContentsMargins(8, 8, 8, 8)
-    sidebar.setSpacing(8)
+    sidebar.setContentsMargins(10, 10, 10, 10)
+    sidebar.setSpacing(10)
     owner.controls_scroll.setWidget(controls)
     owner.controls_rail = QtWidgets.QWidget(owner)
-    owner.controls_rail.setFixedWidth(184)
+    owner.controls_rail.setFixedWidth(224)
     rail = QtWidgets.QVBoxLayout(owner.controls_rail)
     rail.setContentsMargins(0, 0, 0, 0)
     rail.setSpacing(4)
@@ -1864,14 +1864,21 @@ def _workspace_shell(owner, name: str):
 
 
 def _workspace_filter(sidebar, caption: str, control):
+    field = QtWidgets.QWidget()
+    field.setProperty("workspaceFilterField", True)
+    layout = QtWidgets.QVBoxLayout(field)
+    layout.setContentsMargins(0, 0, 0, 0)
+    layout.setSpacing(4)
     label = QtWidgets.QLabel(caption.upper())
     label.setProperty("workspaceMuted", True)
+    label.setProperty("workspaceFilterLabel", True)
     set_text_role(label, TextRole.UI_CAPTION)
     label.setBuddy(control)
-    sidebar.addWidget(label)
-    sidebar.addWidget(control)
+    layout.addWidget(label)
+    layout.addWidget(control)
+    sidebar.addWidget(field)
     control.setAccessibleName(caption)
-    control.setSizePolicy(QtWidgets.QSizePolicy.Policy.Ignored, QtWidgets.QSizePolicy.Policy.Fixed)
+    control.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Fixed)
 
 
 def _workspace_combo(items, index=0):
@@ -1885,11 +1892,17 @@ def _workspace_combo(items, index=0):
 
 
 def _workspace_section(sidebar, caption: str):
-    if sidebar.count():
-        sidebar.addSpacing(6)
-    label = QtWidgets.QLabel(caption)
-    set_text_role(label, TextRole.PANEL_TITLE)
-    sidebar.addWidget(label)
+    section = QtWidgets.QFrame()
+    section.setProperty("workspaceFilterSection", True)
+    layout = QtWidgets.QVBoxLayout(section)
+    layout.setContentsMargins(10, 9, 10, 10)
+    layout.setSpacing(9)
+    heading = QtWidgets.QLabel(caption.upper())
+    heading.setProperty("workspaceSectionHeading", True)
+    set_text_role(heading, TextRole.UI_CAPTION)
+    layout.addWidget(heading)
+    sidebar.addWidget(section)
+    return layout
 
 
 def _workspace_filter_value(control):
@@ -2008,6 +2021,15 @@ def _workspace_stylesheet(name: str) -> str:
         {scope} QSplitter#leadersDetailSplit::handle:hover {{ background: {p['control_border']}; }}
         {scope} QLabel {{ background: transparent; color: {p['text']}; }}
         {scope} QLabel[workspaceMuted="true"] {{ color: {p['muted']}; }}
+        {scope} QFrame[workspaceFilterSection="true"] {{
+            background: {p['panel']}; border: 1px solid {p['border']}; border-radius: 7px;
+        }}
+        {scope} QLabel[workspaceSectionHeading="true"] {{
+            color: {p['text']}; border: 0; border-bottom: 1px solid {p['separator']};
+            padding: 0 0 7px 0;
+        }}
+        {scope} QWidget[workspaceFilterField="true"] {{ background: transparent; border: 0; }}
+        {scope} QLabel[workspaceFilterLabel="true"] {{ color: {p['muted']}; padding-left: 1px; }}
         {scope} QFrame[workspacePanel="true"] {{ background: {p['panel']}; border: 1px solid {p['border']}; border-radius: 8px; }}
         {scope} QFrame[leadersDetailGroup="true"] {{ background: {p['panel']}; border: 1px solid {p['separator']}; border-radius: 6px; }}
         {scope} QPushButton[workspaceControl="true"], {scope} QToolButton[workspaceControl="true"],
@@ -2021,6 +2043,10 @@ def _workspace_stylesheet(name: str) -> str:
         {scope} QPushButton[workspaceControl="true"]:focus, {scope} QToolButton[workspaceControl="true"]:focus,
         {scope} QComboBox[workspaceControl="true"]:focus, {scope} QLineEdit[workspaceControl="true"]:focus {{ border-color: {p['active_line']}; }}
         {scope} QPushButton[workspaceControl="true"]:disabled {{ color: {p['muted']}; background: {p['panel']}; border-color: {p['separator']}; }}
+        {scope} QCheckBox {{ color: {p['text']}; spacing: 8px; padding: 3px 1px; }}
+        {scope} QCheckBox::indicator {{ width: 16px; height: 16px; background: {p['control']}; border: 1px solid {p['control_border']}; border-radius: 3px; }}
+        {scope} QCheckBox::indicator:hover {{ border-color: {p['muted']}; }}
+        {scope} QCheckBox::indicator:checked {{ background: {p['active_line']}; border-color: {p['active_line']}; }}
         {scope} QComboBox QAbstractItemView {{ background: {p['panel2']}; color: {p['text']}; selection-background-color: {p['active']}; selection-color: {p['text']}; border: 1px solid {p['border']}; padding: 4px; }}
         {scope} QTableWidget {{ outline: 0; }}
         {scope} QTableWidget::item:selected {{ background: {p['active']}; color: {p['text']}; }}
@@ -2208,14 +2234,18 @@ def _layout_leader_columns(owner):
                if not table.isColumnHidden(header.logicalIndex(i))]
     widths = {column: max(defaults.get(column, 98), metrics.horizontalAdvance(_LEADER_HEADERS[column]) + 26)
               for column in columns}
+    # Sparklines become misleadingly flat when a single column consumes a wide
+    # viewport. Keep the 24H trend compact and spend spare room on text fields.
+    if 10 in widths:
+        widths[10] = min(widths[10], 176)
     spare = max(0, table.viewport().width() - sum(widths.values()))
-    weight = sum(width for column, width in widths.items() if column != 0)
+    flexible = [column for column in columns if column not in (0, 10)]
+    weight = sum(widths[column] for column in flexible)
     owner._fitting_leader_columns = True
     try:
         remaining = spare
-        flexible = [column for column in columns if column != 0]
         for index, column in enumerate(flexible):
-            extra = remaining if index == len(flexible) - 1 else int(spare * widths[column] / weight)
+            extra = remaining if index == len(flexible) - 1 else int(spare * widths[column] / max(1, weight))
             widths[column] += extra
             remaining -= extra
         for column, width in widths.items():
@@ -2468,12 +2498,12 @@ def build_leaders(owner) -> None:
     owner.state_filter = "All"
     owner.category_filter_value = "All Sectors"
     sidebar, content = _workspace_shell(owner, "leadershipBody")
-    _workspace_section(sidebar, "Filters")
+    filters = _workspace_section(sidebar, "Filters")
     owner.search = QtWidgets.QLineEdit()
     owner.search.setPlaceholderText("Search coin…")
     owner.search.setClearButtonEnabled(True)
     owner.search.setToolTip("Search symbol or name (Ctrl+F)")
-    sidebar.addWidget(owner.search)
+    _workspace_filter(filters, "Search", owner.search)
     owner.search_timer = QtCore.QTimer(owner)
     owner.search_timer.setSingleShot(True)
     owner.search_timer.setInterval(180)
@@ -2488,21 +2518,21 @@ def build_leaders(owner) -> None:
     owner.category_filter.currentTextChanged.connect(lambda text: _category_changed(owner, text))
     for caption, control in (("Universe", owner.limit), ("Min. 24H volume", owner.liquidity),
                              ("Sector", owner.category_filter)):
-        _workspace_filter(sidebar, caption, control)
+        _workspace_filter(filters, caption, control)
     owner.state_selector = _workspace_combo([(state, state) for state in
                                             ("All", "Leading", "Improving", "Cooling", "Lagging", "Flat", "Waiting")])
     owner.state_selector.currentIndexChanged.connect(lambda _index: _set_state_filter(owner, owner.state_selector.currentData()))
-    _workspace_filter(sidebar, "Leadership state", owner.state_selector)
-    _workspace_add_reset(owner, sidebar, ((owner.search, ""), (owner.limit, 80),
+    _workspace_filter(filters, "Leadership state", owner.state_selector)
+    _workspace_add_reset(owner, filters, ((owner.search, ""), (owner.limit, 80),
                                          (owner.liquidity, 20_000_000), (owner.category_filter, "All Sectors"),
                                          (owner.state_selector, "All")))
-    _workspace_section(sidebar, "Display")
+    display = _workspace_section(sidebar, "Display")
     owner.view_selector = _workspace_combo([("Overview", "overview"), ("Relative strength", "strength"),
                                            ("Participation", "participation"), ("Custom columns", "custom")])
-    _workspace_filter(sidebar, "View", owner.view_selector)
+    _workspace_filter(display, "View", owner.view_selector)
     owner.columns_button = QtWidgets.QToolButton()
     owner.columns_button.setText("Columns…")
-    sidebar.addWidget(owner.columns_button)
+    display.addWidget(owner.columns_button)
     owner.sort = _workspace_combo([(caption, key) for caption, key in (
         ("Leadership state", "state"), ("RS score", "score"), ("4H vs BTC", "rs4"),
         ("Symbol", "pair"), ("Name", "name"), ("Price", "price"), ("1H return", "usd1"),
@@ -2511,10 +2541,10 @@ def build_leaders(owner) -> None:
         ("Relative volume", "rvol"), ("4H volume share", "volume_share"), ("Share change", "share_delta"),
         ("Spot share", "spot_share"), ("Spot change", "spot_delta"))])
     owner.sort.currentIndexChanged.connect(lambda _index: _sort_changed(owner))
-    _workspace_filter(sidebar, "Sort by", owner.sort)
+    _workspace_filter(display, "Sort by", owner.sort)
     owner.direction_button = QtWidgets.QPushButton("↓ Leaders first")
     owner.direction_button.clicked.connect(lambda: _toggle_sort(owner))
-    sidebar.addWidget(owner.direction_button)
+    display.addWidget(owner.direction_button)
     sidebar.addStretch(1)
     owner.context_button = QtWidgets.QPushButton("Coin detail")
     owner.context_button.setCheckable(True)
@@ -3914,7 +3944,7 @@ class SectorOverviewWidget(QtWidgets.QWidget):
 
     def _build_ui(self) -> None:
         sidebar, layout = _workspace_shell(self, "sectorBody")
-        _workspace_section(sidebar, "Filters")
+        filters = _workspace_section(sidebar, "Filters")
         self.sector_splitter = QtWidgets.QSplitter(Qt.Orientation.Horizontal)
         self.sector_splitter.setChildrenCollapsible(False)
         self.sector_splitter.setHandleWidth(8)
@@ -3936,12 +3966,12 @@ class SectorOverviewWidget(QtWidgets.QWidget):
             self.window_selector.addItem(label, key)
         self.window_selector.setCurrentIndex(self.window_selector.findData(self.timeframe))
         self.window_selector.currentIndexChanged.connect(lambda _index: self._set_timeframe(self.window_selector.currentData()))
-        _workspace_filter(sidebar, "Window vs BTC", self.window_selector)
+        _workspace_filter(filters, "Window vs BTC", self.window_selector)
         self.liquidity = _workspace_combo([("All", 0), ("$20M+", 20_000_000),
                                           ("$50M+", 50_000_000), ("$100M+", 100_000_000)])
         self.liquidity.currentIndexChanged.connect(self._filters_changed)
-        _workspace_filter(sidebar, "Min. 24H volume", self.liquidity)
-        _workspace_add_reset(self, sidebar, ((self.window_selector, "4h"), (self.liquidity, 0)))
+        _workspace_filter(filters, "Min. 24H volume", self.liquidity)
+        _workspace_add_reset(self, filters, ((self.window_selector, "4h"), (self.liquidity, 0)))
         sidebar.addStretch(1)
         self.context_button = QtWidgets.QPushButton("Sector detail", self)
         self.context_button.setCheckable(True)
@@ -4014,11 +4044,12 @@ class SectorOverviewWidget(QtWidgets.QWidget):
         leadership_panel.setMaximumHeight(340)
         header_view = self.table.horizontalHeader()
         header_view.setFixedHeight(38)
-        header_view.setSectionResizeMode(0, QtWidgets.QHeaderView.ResizeMode.Interactive)
+        header_view.setSectionResizeMode(0, QtWidgets.QHeaderView.ResizeMode.Stretch)
         self.table.setColumnWidth(0, 126)
         for column in range(1, 7):
             header_view.setSectionResizeMode(column, QtWidgets.QHeaderView.ResizeMode.ResizeToContents)
-        header_view.setSectionResizeMode(7, QtWidgets.QHeaderView.ResizeMode.Stretch)
+        header_view.setSectionResizeMode(7, QtWidgets.QHeaderView.ResizeMode.Interactive)
+        self.table.setColumnWidth(7, 176)
         bottom.addWidget(self.table)
         layout.addWidget(leadership_panel, 1)
 
@@ -5356,12 +5387,12 @@ class RotationScannerWidget(LeadershipTimelineWidget):
     def _build_ui(self):
         self.setObjectName("rotationScanner")
         sidebar, outer = _workspace_shell(self, "rotationBody")
-        _workspace_section(sidebar, "Filters")
+        filters = _workspace_section(sidebar, "Filters")
         self.search = QtWidgets.QLineEdit()
         self.search.setPlaceholderText("Search coin…")
         self.search.setClearButtonEnabled(True)
         self.search.setToolTip("Search symbol or name (Ctrl+F)")
-        sidebar.addWidget(self.search)
+        _workspace_filter(filters, "Search", self.search)
         self.span = _SegmentedSelector("rotationWindow", columns=2)
         for caption, hours in (("1H", 1), ("4H", 4), ("12H", 12), ("24H", 24)):
             self.span.addItem(caption, hours)
@@ -5375,18 +5406,18 @@ class RotationScannerWidget(LeadershipTimelineWidget):
         self.candidate_mode = _workspace_combo([("Improving", "improving"), ("All candidates", "all")])
         for caption, control in (("Window vs BTC", self.span), ("Universe", self.limit),
                                  ("Min. 24H volume", self.liquidity), ("Sector", self.category_filter)):
-            _workspace_filter(sidebar, caption, control)
+            _workspace_filter(filters, caption, control)
         self.spot_confirmation = QtWidgets.QCheckBox("Spot confirmation")
         self.spot_confirmation.setToolTip("Require rising spot share over consecutive 4H windows. Unavailable history does not pass.")
         self.hide_thin = QtWidgets.QCheckBox("Hide thin books")
         self.hide_thin.setToolTip("Hide verified spreads above 0.15% or combined ±0.5% depth below $25K. Unknown or stale books stay visible.")
         self.watched_only = QtWidgets.QCheckBox("Watchlist only")
         for checkbox in (self.spot_confirmation, self.hide_thin, self.watched_only):
-            sidebar.addWidget(checkbox)
-        _workspace_section(sidebar, "Candidates")
-        _workspace_filter(sidebar, "Show", self.candidate_mode)
+            filters.addWidget(checkbox)
+        candidates = _workspace_section(sidebar, "Candidates")
+        _workspace_filter(candidates, "Show", self.candidate_mode)
         self.candidate_mode.setToolTip("Filter the candidate table; the map keeps all coins matching the other filters")
-        _workspace_add_reset(self, sidebar, ((self.search, ""), (self.span, 4), (self.limit, 0),
+        _workspace_add_reset(self, candidates, ((self.search, ""), (self.span, 4), (self.limit, 0),
                                              (self.liquidity, 20_000_000), (self.category_filter, "All sectors"),
                                              (self.candidate_mode, "improving"), (self.spot_confirmation, False),
                                              (self.hide_thin, False), (self.watched_only, False)))
