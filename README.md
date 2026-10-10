@@ -89,17 +89,17 @@ account mode. Single-Asset Mode uses the contract's margin-asset balance;
 Multi-Assets Mode uses the shared USD collateral pool and Binance's current
 asset conversion rates, including pending orders across margin assets.
 The account summary displays the balance in its currency even when collateral
-sizing is waiting for an account update or conversion rate.
-Connected trading sessions update account data in the background, including
-while the Trade tab is open or the panel is hidden. Use the update icon in the
-trading panel to retry after a connection failure; updating never submits an
-order. Manual orders validate account data and confirmed leverage before sending.
-A failed order-history request does not hide a successfully loaded balance. Position
+sizing is waiting for an account refresh or conversion rate.
+Connected trading sessions refresh account data in the background, including
+while the Trade tab is open or the panel is hidden. Use **Refresh** in the
+trading panel to retry after a connection failure; refreshing never submits an
+order. Account and leverage errors remain visible until resolved, and a failed
+order-history request does not hide a successfully loaded balance. Position
 reductions do not require fresh collateral for a new entry.
 
-The trading panel separates **Open** and **Reduce**. Choose the order type and
-size, then use **Buy / Long** or **Sell / Short**. **Ctrl+Enter** submits the
-current side. Arrow keys switch the selected side without submitting an order.
+The trading panel separates **Open position** and **Reduce position**. Select
+Buy / Long or Sell / Short, choose an order type and size, then use the fixed
+submit button (or **Ctrl+Enter**). Selecting a side never submits an order.
 The form scrolls in short panels and switches to columns in wide panels.
-Reduce mode sizes against the selected position. API credentials are configured
-from the Trading menu; account data can be updated with the circular arrow icon.
+Reduce mode sizes against the selected position; TP/SL, conditional orders,
+account activity and execution status remain available in the same workspace.

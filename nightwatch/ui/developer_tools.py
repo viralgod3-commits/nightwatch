@@ -1062,7 +1062,7 @@ class DeveloperDialog(QtWidgets.QWidget):
             f"max {float(profile.get('frame_max_ms', 0.0)):.2f} ms · "
             f"1% low {float(profile.get('one_percent_low_fps', 0.0)):.1f} FPS · "
             f"{int(profile.get('frame_count', 0))} frames · "
-            f"{int(profile.get('estimated_missed_refresh_slots', 0))} estimated missed display slots"
+            f"{int(profile.get('estimated_missed_refresh_slots', 0))} estimated missed refresh slots"
             + "".join(f"\n{surface['name']}: {surface['paint_rate_fps']:.1f} paints/s · {surface['swap_rate_fps']:.1f} swaps/s · p99 {surface['frame_p99_ms']:.2f} ms · max {surface['frame_max_ms']:.2f} ms"
                       for surface in profile.get('surfaces', []))
         )

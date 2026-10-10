@@ -2588,7 +2588,7 @@ class NightwatchSettingsDialog(QtWidgets.QDialog):
             f"MAX {float(profile.get('frame_max_ms', 0.0)):.2f} ms · "
             f"{int(profile.get('frame_count', 0))} frames · "
             f"{float(profile.get('target_fps', 0.0)):.0f} Hz display · "
-            f"{int(profile.get('estimated_missed_refresh_slots', 0))} estimated missed display slots. "
+            f"{int(profile.get('estimated_missed_refresh_slots', 0))} estimated missed refresh slots. "
             "1% low uses the mean of the slowest 1% of frame intervals."
         )
 

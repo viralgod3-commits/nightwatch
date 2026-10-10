@@ -77,7 +77,7 @@ def build_quick_order_request(
         raise ValueError("Quick order side must be BUY or SELL.")
     if hedge_mode is None:
         raise ValueError(
-            "Binance position mode is still loading. Update the account before using quick orders."
+            "Binance position mode is still loading. Refresh the account before using quick orders."
         )
     reduce_only = bool(preset.get("reduce_only"))
     if hedge_mode and reduce_only:
@@ -90,7 +90,7 @@ def build_quick_order_request(
         raise ValueError("Leverage must be between 1× and 125×.")
     available = gateway.available_balance(rules.margin_asset)
     if available <= 0:
-        raise ValueError("Update the account before using collateral-based shortcuts.")
+        raise ValueError("Refresh the account before using collateral-based shortcuts.")
 
     aggressive_reference = best_ask if side == "BUY" else best_bid
     passive_reference = best_bid if side == "BUY" else best_ask
@@ -217,7 +217,7 @@ def build_magnetic_rail_order_request(
         raise ValueError("Magnetic rail side must be BUY or SELL.")
     if hedge_mode is None:
         raise ValueError(
-            "Position mode is still loading. Update the account before using the magnetic rail."
+            "Position mode is still loading. Refresh the account before using the magnetic rail."
         )
 
     rail_price = safe_float(rail_state.get("railPrice"))
@@ -313,7 +313,7 @@ def build_magnetic_rail_order_request(
     else:
         available = gateway.available_balance(rules.margin_asset)
         if available <= 0:
-            raise ValueError("Update the account before using collateral-based rail sizing.")
+            raise ValueError("Refresh the account before using collateral-based rail sizing.")
         sizing_price = rail_price or mark_price or best_ask or best_bid
         if sizing_price <= 0:
             raise ValueError("A valid rail or market price is required for sizing.")
@@ -724,7 +724,7 @@ class RailAmendments(QtCore.QObject):
             self._notice(f"RAIL · {item['stage'].upper()} PENDING · {item['identity'][0]}")
         else:
             message = ('REPLACEMENT NOT SENT · original canceled; no replacement active'
-                       if item['stage'] == 'replace' else 'AMENDMENT NOT SENT · update order status')
+                       if item['stage'] == 'replace' else 'AMENDMENT NOT SENT · refresh order status')
             self._resolve_item_preview(item, False)
             self._finish(item, message)
 
@@ -739,12 +739,12 @@ class RailAmendments(QtCore.QObject):
             algo_cancelled = (item['identity'][1] == 'ALGO' and str(payload.get('code')) == '200'
                               and item['identity'][2] in {str(payload.get('algoId') or ''), str(payload.get('clientAlgoId') or '')})
             if status not in {'CANCELED', 'CANCELLED'} and not algo_cancelled:
-                self._finish(item, 'REPLACEMENT STOPPED · cancellation not confirmed; update order status')
+                self._finish(item, 'REPLACEMENT STOPPED · cancellation not confirmed; refresh order status')
                 return
             self._confirm_cancelled(item)
             return
         self._resolve_item_preview(item, True)
-        self._finish(item, 'RAIL · exchange confirmed amendment; updating order state')
+        self._finish(item, 'RAIL · exchange confirmed amendment; refreshing order state')
 
     def _confirm_cancelled(self, item):
         """Confirm the parent never triggered before creating another entry."""
@@ -807,7 +807,7 @@ class RailAmendments(QtCore.QObject):
             detail = ('Original canceled; replacement outcome UNKNOWN. Reconcile before retrying.' if uncertain
                       else 'Original canceled; replacement FAILED. No replacement is active.')
         else:
-            detail = 'Outcome UNKNOWN; updating exchange state. No replacement sent.' if uncertain else 'Request rejected; updating exchange state.'
+            detail = 'Outcome UNKNOWN; refreshing exchange state. No replacement sent.' if uncertain else 'Request rejected; refreshing exchange state.'
         if uncertain:
             self.pending[request_id] = item
         else:

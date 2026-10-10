@@ -782,8 +782,17 @@ class _TypographyRoleFilter(QtCore.QObject):
 
 
 def tooltips_allowed(widget: QtCore.QObject) -> bool:
-    """The application uses visible controls and labels rather than hover tips."""
-    return False
+    """Honor surface exclusions for native and explicitly requested hovers."""
+    essential = False
+    current = widget
+    while current is not None:
+        if current.property("suppressTooltips"):
+            return False
+        essential = essential or bool(current.property("essentialToolTip"))
+        if current.property("suppressNonessentialTooltips") and not essential:
+            return False
+        current = current.parent()
+    return True
 
 
 class _TooltipStyle(QtWidgets.QProxyStyle):
@@ -879,9 +888,9 @@ class _TooltipController(QtCore.QObject):
             and isinstance(watched, QtWidgets.QWidget)
             and watched.windowType() == QtCore.Qt.WindowType.ToolTip
         ):
-            watched.hide()
-            event.accept()
-            return True
+            if watched.styleSheet() != self._stylesheet:
+                watched.setStyleSheet(self._stylesheet)
+            set_text_role(watched, TextRole.UI_BODY)
         if event_type == QtCore.QEvent.Type.ToolTip and isinstance(watched, QtWidgets.QWidget):
             if not tooltips_allowed(watched):
                 self.hide()
@@ -1061,9 +1070,12 @@ class ElidedLabel(QtWidgets.QLabel):
             width,
         )
         super().setText(shown)
-        if self.toolTip():
+        if shown != self._full_text and (not self.toolTip() or self._auto_tooltip):
+            super().setToolTip(self._full_text)
+            self._auto_tooltip = True
+        elif shown == self._full_text and self._auto_tooltip:
             super().setToolTip("")
-        self._auto_tooltip = False
+            self._auto_tooltip = False
 
     def resizeEvent(self, event: QtGui.QResizeEvent) -> None:
         super().resizeEvent(event)
@@ -1462,7 +1474,7 @@ class TerminalStatusBar(QtWidgets.QStatusBar):
         self.fps = QtWidgets.QLabel("FPS idle")
         self.fps.setObjectName("statusFrameRate")
         self.fps.setToolTip(
-            "Recent dirty-driven Nightwatch presentation transactions / active display update. "
+            "Recent dirty-driven Nightwatch presentation transactions / active display refresh. "
             "Idle means no visual transaction was needed in the last second."
         )
         self.latency.setToolTip(
