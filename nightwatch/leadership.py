@@ -28,6 +28,7 @@ from .utilities import (
     coin_icon_bytes,
     coin_name,
     coin_remote_symbol,
+    line_icon,
     set_text_role,
     typography_font,
 )
@@ -2006,7 +2007,7 @@ def _workspace_finish(owner):
     owner.refresh_shortcut = QtGui.QShortcut(QtGui.QKeySequence("F5"), owner)
     owner.refresh_shortcut.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
     owner.refresh_shortcut.activated.connect(owner.refresh_button.click)
-    owner.refresh_button.setToolTip(owner.refresh_button.toolTip() or "Refresh market data (F5)")
+    owner.refresh_button.setToolTip(owner.refresh_button.toolTip() or "Update market data (F5)")
     if hasattr(owner, "_open_row"):
         owner.table.setToolTip("Double-click a row or press Enter to open its chart")
         owner.table.setAccessibleDescription(owner.table.toolTip())
@@ -2064,6 +2065,7 @@ def _workspace_stylesheet(name: str) -> str:
         {scope} QPushButton[workspaceControl="true"]:focus, {scope} QToolButton[workspaceControl="true"]:focus,
         {scope} QComboBox[workspaceControl="true"]:focus, {scope} QLineEdit[workspaceControl="true"]:focus {{ border-color: {p['active_line']}; }}
         {scope} QPushButton[workspaceControl="true"]:disabled {{ color: {p['muted']}; background: {p['panel']}; border-color: {p['separator']}; }}
+        {scope} QPushButton#workspaceRefreshButton {{ padding: 0; min-width: 34px; max-width: 34px; }}
         {scope} QCheckBox {{ color: {p['text']}; spacing: 8px; padding: 3px 1px; }}
         {scope} QCheckBox::indicator {{ width: 16px; height: 16px; background: {p['control']}; border: 1px solid {p['control_border']}; border-radius: 3px; }}
         {scope} QCheckBox::indicator:hover {{ border-color: {p['muted']}; }}
@@ -2571,7 +2573,12 @@ def build_leaders(owner) -> None:
     owner.context_button.setCheckable(True)
     owner.context_button.setToolTip("Show or hide details for the selected coin")
     owner.actions_layout.addWidget(owner.context_button)
-    owner.refresh_button = QtWidgets.QPushButton("Refresh")
+    owner.refresh_button = QtWidgets.QPushButton()
+    owner.refresh_button.setObjectName("workspaceRefreshButton")
+    owner.refresh_button.setIcon(line_icon("refresh", LEADERS_PALETTE["muted"], owner.devicePixelRatioF()))
+    owner.refresh_button.setIconSize(QtCore.QSize(18, 18))
+    owner.refresh_button.setAccessibleName("Update market data")
+    owner.refresh_button.setToolTip("Update market data")
     owner.refresh_button.clicked.connect(lambda _checked=False: owner.refresh(force=True))
     owner.actions_layout.addWidget(owner.refresh_button)
     owner.table = QtWidgets.QTableWidget()
@@ -4024,7 +4031,12 @@ class SectorOverviewWidget(QtWidgets.QWidget):
         self.context_button.setCheckable(True)
         self.context_button.setChecked(True)
         self.context_button.hide()
-        self.refresh_button = QtWidgets.QPushButton("Refresh")
+        self.refresh_button = QtWidgets.QPushButton()
+        self.refresh_button.setObjectName("workspaceRefreshButton")
+        self.refresh_button.setIcon(line_icon("refresh", LEADERS_PALETTE["muted"], self.devicePixelRatioF()))
+        self.refresh_button.setIconSize(QtCore.QSize(18, 18))
+        self.refresh_button.setAccessibleName("Update sector data")
+        self.refresh_button.setToolTip("Update sector data")
         self.refresh_button.clicked.connect(lambda _checked=False: self.refresh())
         self.actions_layout.addWidget(self.refresh_button)
         support = QtWidgets.QWidget(self)
@@ -5494,8 +5506,12 @@ class RotationScannerWidget(LeadershipTimelineWidget):
         self.context_button = _rotation_button("Coin detail")
         self.context_button.setCheckable(True)
         self.context_button.setToolTip("Show or hide details for the selected coin")
-        self.refresh_button = _rotation_button("Refresh")
-        self.refresh_button.setToolTip("Reload the latest Leaders snapshot (F5)")
+        self.refresh_button = _rotation_button("")
+        self.refresh_button.setObjectName("workspaceRefreshButton")
+        self.refresh_button.setIcon(line_icon("refresh", LEADERS_PALETTE["muted"], self.devicePixelRatioF()))
+        self.refresh_button.setIconSize(QtCore.QSize(18, 18))
+        self.refresh_button.setAccessibleName("Update market data")
+        self.refresh_button.setToolTip("Load the latest market snapshot (F5)")
         self.refresh_button.clicked.connect(self._reload_snapshot)
         support = QtWidgets.QWidget(self)
         support.hide()

@@ -1104,7 +1104,8 @@ class MainToolbar(QtWidgets.QFrame):
     HEIGHT = 42
 
     def __init__(self, navigation: QtWidgets.QWidget, layout_control: QtWidgets.QWidget,
-                 settings_control: QtWidgets.QWidget, parent: QtWidgets.QWidget | None = None):
+                 settings_control: QtWidgets.QWidget, fullscreen_control: QtWidgets.QWidget,
+                 parent: QtWidgets.QWidget | None = None):
         super().__init__(parent)
         self.setObjectName("mainToolbar")
         self.setAttribute(QtCore.Qt.WidgetAttribute.WA_StyledBackground, True)
@@ -1122,7 +1123,7 @@ class MainToolbar(QtWidgets.QFrame):
             button.setFixedHeight(self.HEIGHT - 1)
         row.addWidget(navigation)
         row.addStretch(1)
-        for control in (layout_control, settings_control):
+        for control in (layout_control, settings_control, fullscreen_control):
             control.setFixedSize(self.HEIGHT, self.HEIGHT - 1)
             row.addWidget(control)
         self.apply_theme({})
@@ -1149,6 +1150,7 @@ class MainToolbar(QtWidgets.QFrame):
             QPushButton#topUtilityButton {{ background: transparent; color: {text};
                 border: 0; padding: 0; margin: 0; border-radius: 0; }}
             QPushButton#topUtilityButton:hover {{ background: {hover}; }}
+            QPushButton#topUtilityButton:checked {{ background: {selected}; color: {active}; }}
         """)
 
 
@@ -1767,6 +1769,48 @@ def line_icon_pixmap(
         path.lineTo(7.2, 9.1)
         path.closeSubpath()
         painter.drawPath(path)
+    elif kind == 'refresh':
+        circle = QtCore.QRectF(3.0, 3.0, 12.0, 12.0)
+        painter.drawArc(circle, 48 * 16, 260 * 16)
+        painter.drawArc(circle, 228 * 16, 260 * 16)
+        first = QtGui.QPainterPath(QtCore.QPointF(13.6, 3.9))
+        first.lineTo(16.3, 4.4)
+        first.lineTo(15.0, 6.8)
+        first.closeSubpath()
+        painter.drawPath(first)
+        second = QtGui.QPainterPath(QtCore.QPointF(4.4, 14.1))
+        second.lineTo(1.7, 13.6)
+        second.lineTo(3.0, 11.2)
+        second.closeSubpath()
+        painter.drawPath(second)
+    elif kind == 'trade':
+        painter.drawLine(QtCore.QPointF(9.0, 2.5), QtCore.QPointF(9.0, 15.5))
+        painter.drawLine(QtCore.QPointF(3.7, 4.2), QtCore.QPointF(3.7, 12.8))
+        painter.drawLine(QtCore.QPointF(14.3, 5.5), QtCore.QPointF(14.3, 14.4))
+        painter.drawRoundedRect(QtCore.QRectF(2.0, 6.1, 3.4, 3.7), 0.6, 0.6)
+        painter.drawRoundedRect(QtCore.QRectF(7.1, 8.4, 3.8, 3.6), 0.6, 0.6)
+        painter.drawRoundedRect(QtCore.QRectF(12.5, 7.2, 3.5, 3.6), 0.6, 0.6)
+    elif kind == 'account':
+        painter.drawEllipse(QtCore.QRectF(6.0, 2.7, 6.0, 6.0))
+        painter.drawArc(QtCore.QRectF(2.8, 7.7, 12.4, 10.0), 20 * 16, 140 * 16)
+        painter.drawArc(QtCore.QRectF(2.8, 7.7, 12.4, 10.0), 200 * 16, 140 * 16)
+    elif kind in {'fullscreen', 'fullscreen_exit'}:
+        if kind == 'fullscreen':
+            for points in (
+                ((3, 7), (3, 3), (7, 3)), ((11, 3), (15, 3), (15, 7)),
+                ((3, 11), (3, 15), (7, 15)), ((11, 15), (15, 15), (15, 11)),
+            ):
+                path = QtGui.QPainterPath(QtCore.QPointF(*points[0]))
+                for point in points[1:]:
+                    path.lineTo(QtCore.QPointF(*point))
+                painter.drawPath(path)
+        else:
+            painter.drawRect(QtCore.QRectF(4.0, 4.0, 10.0, 10.0))
+            for start, stop in (((2.5, 2.5), (6.0, 2.5)), ((2.5, 2.5), (2.5, 6.0)),
+                                ((15.5, 2.5), (12.0, 2.5)), ((15.5, 2.5), (15.5, 6.0)),
+                                ((2.5, 15.5), (6.0, 15.5)), ((2.5, 15.5), (2.5, 12.0)),
+                                ((15.5, 15.5), (12.0, 15.5)), ((15.5, 15.5), (15.5, 12.0))):
+                painter.drawLine(QtCore.QPointF(*start), QtCore.QPointF(*stop))
     elif kind == 'panels':
         painter.drawRoundedRect(QtCore.QRectF(2.0, 2.5, 14.0, 13.0), 1.0, 1.0)
         painter.drawLine(QtCore.QPointF(10.5, 2.5), QtCore.QPointF(10.5, 15.5))

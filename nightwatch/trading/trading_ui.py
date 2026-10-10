@@ -100,6 +100,7 @@ def _trading_stylesheet(theme: dict[str, str]) -> str:
         QTabBar#tradingViewSwitch::tab:selected, QTabBar#ticketIntentTabs::tab:selected {{
             color: {t['text']}; background: {t['control_hover']}; border-color: {t['muted']};
         }}
+        QPushButton#portfolioSyncButton {{ padding: 0; min-width: 34px; max-width: 34px; min-height: 32px; }}
         QTabBar#ticketIntentTabs[intent="reduce"]::tab:selected {{ color: {t['red']}; border-color: {t['red']}; }}
         QTabBar#ticketOrderTypes::tab, QTabWidget#tradingAccountTabs QTabBar::tab {{
             background: transparent; color: {t['muted']}; border: 0;
@@ -262,7 +263,7 @@ class TradingHotkeysDialog(QtWidgets.QDialog):
         ("close_3", "Close preset 3"),
         ("cancel_all", "Cancel all symbol orders"),
         ("open_trading", "Open Trading workspace"),
-        ("refresh_account", "Refresh account"),
+        ("refresh_account", "Update portfolio data"),
         ("kill_session", "Cancel all + lock quick orders"),
     )
 
@@ -624,7 +625,7 @@ class QuickTradingSettingsDialog(QtWidgets.QDialog):
             "close_3": "Close the selected position using close percentage preset 3.",
             "cancel_all": "Cancel every active order for the current symbol.",
             "open_trading": "Open the chart workspace with the trading sidebar visible.",
-            "refresh_account": "Refresh positions, orders, fills and balances.",
+            "refresh_account": "Update positions, orders, fills and balances.",
             "kill_session": "Cancel current-symbol orders and immediately lock quick-order hotkeys.",
         }
         for key, label in TradingHotkeysDialog.ACTIONS:
@@ -4879,11 +4880,20 @@ class TradingWorkspace(QtWidgets.QWidget):
         self.view_tabs.setSizePolicy(QtWidgets.QSizePolicy.Policy.Fixed, QtWidgets.QSizePolicy.Policy.Fixed)
         self.view_tabs.setAccessibleName("Trading panel view")
         set_text_role(self.view_tabs, TextRole.UI_CONTROL)
-        self.view_tabs.addTab("Trade")
-        self.view_tabs.addTab("Account")
-        self.refresh_button = QtWidgets.QPushButton("Refresh")
-        self.refresh_button.setAccessibleName("Refresh trading account")
-        self.refresh_button.setToolTip("Refresh balances, positions and working orders")
+        self.view_tabs.setIconSize(QtCore.QSize(16, 16))
+        self.view_tabs.addTab(line_icon("trade", self.theme.get("muted", "#8E8E96"), self.devicePixelRatioF()), "")
+        self.view_tabs.setTabToolTip(0, "Order entry")
+        self.view_tabs.setTabWhatsThis(0, "Order entry and position controls")
+        self.view_tabs.addTab(line_icon("account", self.theme.get("muted", "#8E8E96"), self.devicePixelRatioF()), "")
+        self.view_tabs.setTabToolTip(1, "Positions and balances")
+        self.view_tabs.setTabWhatsThis(1, "Positions, working orders, fills and balances")
+        self.refresh_button = QtWidgets.QPushButton()
+        self.refresh_button.setObjectName("portfolioSyncButton")
+        self.refresh_button.setIcon(line_icon("refresh", self.theme.get("muted", "#8E8E96"), self.devicePixelRatioF()))
+        self.refresh_button.setIconSize(QtCore.QSize(18, 18))
+        self.refresh_button.setFixedSize(36, 34)
+        self.refresh_button.setAccessibleName("Update portfolio data")
+        self.refresh_button.setToolTip("Update balances, positions and working orders")
         self.refresh_button.setAutoDefault(False)
         set_text_role(self.refresh_button, TextRole.UI_CONTROL)
         self.refresh_button.clicked.connect(

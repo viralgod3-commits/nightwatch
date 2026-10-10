@@ -1423,6 +1423,16 @@ class MainWindow(QtWidgets.QMainWindow):
         self.settings_button.clicked.connect(
             lambda _checked=False: self._show_settings_window()
         )
+        self.fullscreen_button = QtWidgets.QPushButton()
+        self.fullscreen_button.setObjectName("topUtilityButton")
+        self.fullscreen_button.setFixedSize(toolbar_height, toolbar_height - 1)
+        self.fullscreen_button.setIconSize(QtCore.QSize(18, 18))
+        self.fullscreen_button.setCheckable(True)
+        self.fullscreen_button.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.fullscreen_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.fullscreen_button.setAccessibleName("Full screen")
+        self.fullscreen_button.setProperty("informationalToolTip", True)
+        self._sync_fullscreen_toolbar_button(self._effective_fullscreen())
 
         self.workspace_group = QtWidgets.QButtonGroup(self)
         self.workspace_group.setExclusive(True)
@@ -1561,7 +1571,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.clear_drawings_action = QtGui.QAction("Clear drawings", self)
 
         self.main_toolbar = MainToolbar(
-            workspace_nav, self.panel_layout_button, self.settings_button, central
+            workspace_nav, self.panel_layout_button, self.settings_button,
+            self.fullscreen_button, central
         )
         self.main_toolbar.apply_theme(self.ui_theme)
         outer.addWidget(self.main_toolbar)
@@ -1597,14 +1608,6 @@ class MainWindow(QtWidgets.QMainWindow):
         )
         self._apply_active_magnetic_rail_order_preset()
 
-        # Keep the recovery action visible when a pan/zoom leaves price offscreen.
-        self.fit_chart_button = QtWidgets.QPushButton("Fit chart")
-        self.fit_chart_button.setObjectName("chartFitButton")
-        self.fit_chart_button.setToolTip("Fit the primary chart to visible prices · Alt+R")
-        self.fit_chart_button.setAccessibleName("Fit primary chart")
-        self.fit_chart_button.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.fit_chart_button.clicked.connect(lambda _checked=False: self._fit_chart())
-        self.instrument_bar.row.addWidget(self.fit_chart_button)
         self.clear_drawings_action.triggered.connect(
             lambda _checked=False: self.chart.clear_drawings()
         )
@@ -1976,10 +1979,11 @@ class MainWindow(QtWidgets.QMainWindow):
         self.logarithmic_action.setChecked(self.logarithmic)
         self.logarithmic_action.toggled.connect(self._set_logarithmic)
         self.scale_menu.addSeparator()
-        self.fit_chart_action = self.scale_menu.addAction("Fit chart now", self._fit_chart)
+        self.fit_chart_action = QtGui.QAction("Fit chart to visible data", self)
         self.fit_chart_action.setShortcut(QtGui.QKeySequence("Alt+R"))
         self.fit_chart_action.setShortcutContext(Qt.ShortcutContext.WindowShortcut)
         self.addAction(self.fit_chart_action)
+        self.fit_chart_action.triggered.connect(self._fit_chart)
         self.fullscreen_action = view_menu.addAction("Full screen")
         self.fullscreen_action.setCheckable(True)
         # The bootstrap-level application event filter owns the physical F11 key.
@@ -1989,6 +1993,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.fullscreen_action.setShortcut(QtGui.QKeySequence())
         self.addAction(self.fullscreen_action)
         self.fullscreen_action.toggled.connect(self._toggle_fullscreen)
+        self.fullscreen_button.toggled.connect(self.fullscreen_action.setChecked)
         data_menu = self.menuBar().addMenu("Data")
         self.data_menu = data_menu
         self.download_history_action = data_menu.addAction(
@@ -2028,7 +2033,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.trading_gateway.reconcile_unknown_orders,
         )
         trading_menu.addAction(
-            "Refresh account",
+            "Update portfolio data",
             lambda: self.trading_gateway.refresh_account(self.current_symbol, True),
         )
         trading_menu.addAction("Cancel all current-symbol orders", lambda: self.trading_gateway.cancel_all(self.current_symbol))
@@ -3084,7 +3089,7 @@ class MainWindow(QtWidgets.QMainWindow):
             "close_3": "Reduce selected position by close preset 3",
             "cancel_all": "Cancel current-symbol open orders",
             "open_trading": "Open Trading / Positions",
-            "refresh_account": "Refresh trading account snapshot",
+            "refresh_account": "Update portfolio data",
             "kill_session": "Cancel current-symbol orders and lock quick trading",
         }
         for action, shortcut in self.trading_hotkeys.items():
@@ -6247,9 +6252,30 @@ class MainWindow(QtWidgets.QMainWindow):
             button.setIcon(
                 line_icon("gear", self.ui_theme["muted"], self.devicePixelRatioF())
             )
+        fullscreen = getattr(self, "fullscreen_button", None)
+        if fullscreen is not None:
+            fullscreen.setIcon(line_icon(
+                "fullscreen", self.ui_theme["muted"], self.devicePixelRatioF(),
+                active_color=self.ui_theme.get("cyan", self.ui_theme["text"]),
+                active_kind="fullscreen_exit",
+            ))
+
+    def _sync_fullscreen_toolbar_button(self, enabled: bool) -> None:
+        button = getattr(self, "fullscreen_button", None)
+        if button is None:
+            return
+        enabled = bool(enabled)
+        if button.isChecked() != enabled:
+            blocker = QtCore.QSignalBlocker(button)
+            button.setChecked(enabled)
+            del blocker
+        label = "Exit full screen" if enabled else "Enter full screen"
+        button.setAccessibleName(label)
+        button.setToolTip(label)
 
     def _sync_fullscreen_controls(self, enabled: bool) -> None:
         enabled = bool(enabled)
+        self._sync_fullscreen_toolbar_button(enabled)
         action = getattr(self, "fullscreen_action", None)
         if action is not None and action.isChecked() != enabled:
             blocker = QtCore.QSignalBlocker(action)
