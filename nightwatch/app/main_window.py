@@ -2022,10 +2022,11 @@ class MainWindow(QtWidgets.QMainWindow):
             "Reconcile unknown order outcomes",
             self.trading_gateway.reconcile_unknown_orders,
         )
-        trading_menu.addAction(
-            "Refresh account",
+        account_update_action = trading_menu.addAction(
+            "Account data",
             lambda: self.trading_gateway.refresh_account(self.current_symbol, True),
         )
+        account_update_action.setIcon(self.style().standardIcon(QtWidgets.QStyle.StandardPixmap.SP_BrowserReload))
         trading_menu.addAction("Cancel all current-symbol orders", lambda: self.trading_gateway.cancel_all(self.current_symbol))
         trading_menu.addSeparator()
         trading_menu.addAction("Quick trading and shortcuts…", self.edit_quick_trading_settings)
@@ -3079,7 +3080,7 @@ class MainWindow(QtWidgets.QMainWindow):
             "close_3": "Reduce selected position by close preset 3",
             "cancel_all": "Cancel current-symbol open orders",
             "open_trading": "Open Trading / Positions",
-            "refresh_account": "Refresh trading account snapshot",
+            "refresh_account": "Update account data",
             "kill_session": "Cancel current-symbol orders and lock quick trading",
         }
         for action, shortcut in self.trading_hotkeys.items():
@@ -3477,7 +3478,7 @@ class MainWindow(QtWidgets.QMainWindow):
                        and str(row.get("positionSide") or "BOTH") == str(position.get("positionSide") or "BOTH")
                        and abs(safe_float(row.get("positionAmt"))) > 0), None)
         if active is None:
-            self.statusBar().showMessage("This position is no longer open. Refresh account data.", 5000)
+            self.statusBar().showMessage("This position is no longer open. Update account data.", 5000)
             return
         self._open_market_from_board(symbol)
         self._show_trading_sidebar()
@@ -3817,7 +3818,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
         task = ApiTask(
             lambda: self._refresh_coin_icons_weekly(symbols, db),
-            source="coin icon weekly refresh",
+            source="coin icon weekly update",
         )
         self.coin_icon_refresh_task = task
         self.tasks.add(task)

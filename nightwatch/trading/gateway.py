@@ -830,7 +830,7 @@ class TradingGateway(QtCore.QObject):
             return False
         if self.account_can_trade is not True:
             self.problem.emit(
-                "Refresh the account and verify Binance trading permission before arming."
+                "Update the account and verify Binance trading permission before arming."
             )
             return False
         self.armed = True
@@ -1115,7 +1115,7 @@ class TradingGateway(QtCore.QObject):
             if emergency:
                 return
             raise ValueError(
-                "Binance position mode is still loading. Refresh the account before placing an order."
+                "Binance position mode is still loading. Update the account before placing an order."
             )
         if self.hedge_mode and position_side == "BOTH":
             raise ValueError("Hedge Mode requires positionSide LONG or SHORT.")
@@ -1707,7 +1707,7 @@ class TradingGateway(QtCore.QObject):
                 self._remember_failure(request_id, str(exc), False, details)
                 return request_id
             if required > available + 1e-9:
-                self._remember_failure(request_id, 'Collateral has already been reserved by another admitted order. Refresh or reduce allocation.', False, details)
+                self._remember_failure(request_id, 'Collateral has already been reserved by another admitted order. Update or reduce allocation.', False, details)
                 return request_id
             self._collateral_reservations[request_id] = {
                 'asset': asset, 'amount': required, 'accepted_at': None,
@@ -2420,7 +2420,7 @@ class TradingGateway(QtCore.QObject):
             if self._refresh_events_overflow:
                 self._refresh_events_overflow = False
                 self.pending_account_refresh = self._merge_account_refresh_scope(self.pending_account_refresh, requested_scope)
-                self.problem.emit("Account stream exceeded the reconciliation buffer; refreshing instead of publishing stale state.")
+                self.problem.emit("Account stream exceeded the reconciliation buffer; updating instead of publishing stale state.")
                 self._run_pending_account_refresh()
                 return
             payload = replay_account_events(payload, events)
@@ -2463,7 +2463,7 @@ class TradingGateway(QtCore.QObject):
             self.account_task = None
             self.account_task_scope = None
             self._refresh_events = None
-            detail = f"Account refresh failed: {message}"
+            detail = f"Account update failed: {message}"
             self.account_status_changed.emit(detail)
             self.problem.emit(detail)
             self._run_pending_account_refresh()
@@ -2653,7 +2653,7 @@ class TradingGateway(QtCore.QObject):
             detail = self._settings_error(message)
             uncertain = execution_outcome_uncertain(message)
             if uncertain:
-                detail += " The setting outcome is unknown; account state is being refreshed."
+                detail += " The setting outcome is unknown; account state is being updated."
                 self._queue_account_refresh(symbol)
             self.request_failed.emit(self._next_id("settings"), detail, uncertain)
             self.leverage_changed.emit(symbol, leverage, False, detail)
@@ -2695,7 +2695,7 @@ class TradingGateway(QtCore.QObject):
             queued = self.queued_leverage.pop(symbol, 0)
             detail = self._settings_error(message)
             if execution_outcome_uncertain(message):
-                detail += " The margin-mode outcome is unknown; account state is being refreshed."
+                detail += " The margin-mode outcome is unknown; account state is being updated."
                 self._queue_account_refresh(symbol)
             if queued:
                 self.leverage_changed.emit(symbol, queued, False, detail)
@@ -3167,22 +3167,22 @@ class TradingGateway(QtCore.QObject):
     def available_balance(self, asset: str) -> float:
         if (not self.account_loaded or self._last_snapshot_mono <= 0
                 or time.monotonic() - self._last_snapshot_mono > self.COLLATERAL_MAX_AGE_SECONDS):
-            raise ValueError('Account collateral is loading or stale. Use Refresh in the trading panel, then retry.')
+            raise ValueError('Account collateral is unavailable. Use the update icon, then retry.')
         if self.multi_assets_margin is None:
-            raise ValueError("Account asset mode has not loaded. Refresh the account; the connection error is shown in the trading panel.")
+            raise ValueError("Account asset mode has not loaded. Update the account; the connection error is shown in the trading panel.")
         if self.multi_assets_margin is True:
             if self._available_usd is None or self._available_usd < 0:
-                raise ValueError("Available Multi-Assets collateral is updating. Refresh the account and retry.")
+                raise ValueError("Available Multi-Assets collateral is updating. Update the account and retry.")
             rate = self._asset_index.get(asset, 0.0)
             if rate <= 0:
-                raise ValueError(f"The {asset}/USD collateral conversion rate has not loaded. Refresh the account and retry.")
+                raise ValueError(f"The {asset}/USD collateral conversion rate has not loaded. Update the account and retry.")
             reserved = 0.0
             for item in self._collateral_reservations.values():
                 amount = item.get('usd_amount')
                 if amount is None:
                     conversion = self._asset_index.get(item['asset'], 0.0)
                     if conversion <= 0:
-                        raise ValueError("An admitted order's collateral is awaiting reconciliation. Refresh the account.")
+                        raise ValueError("An admitted order's collateral is awaiting reconciliation. Update the account.")
                     amount = item['amount'] * conversion
                 reserved += amount
             return max(0.0, self._available_usd - reserved) / rate

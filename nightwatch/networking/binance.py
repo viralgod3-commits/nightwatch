@@ -1989,7 +1989,7 @@ class BinanceRest:
                 dual = exchange_bool((mode or {}).get('dualSidePosition')) if isinstance(mode, dict) else None
             position_mode = {'dualSidePosition': dual} if dual is not None else {}
             if dual is None:
-                warnings.append('Position mode is unavailable; refresh account data before placing an order.')
+                warnings.append('Position mode is unavailable; update account data before placing an order.')
 
             assets = account.get('assets')
             if (not isinstance(assets, list) or not assets
@@ -2040,7 +2040,7 @@ class BinanceRest:
             algo_orders = next((algo_orders[key] for key in ('orders', 'rows', 'data') if isinstance(algo_orders.get(key), list)), None)
         orders_complete = isinstance(open_orders, list) and isinstance(algo_orders, list)
         if not orders_complete:
-            warnings.append('Working orders could not be fully refreshed; existing orders are retained.')
+            warnings.append('Working orders could not be fully updated; existing orders are retained.')
         payload = {'account': account, 'accountConfig': account_config, 'symbolConfig': symbol_config,
                    'positionRisk': position_risk, 'positionMode': position_mode, 'assetIndex': indexes,
                    '_orders_complete': orders_complete, '_warnings': warnings,
