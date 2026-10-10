@@ -1607,6 +1607,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self.chart.order_rail_placement_changed.connect(self._sync_order_rail_action)
         self.chart.auto_scale_changed.connect(self._sync_auto_scale_action)
         self.chart.indicator_settings_requested.connect(self.edit_indicator_settings)
+        self.chart.indicator_visibility_changed.connect(
+            lambda name, enabled: self.indicator_actions[name].setChecked(enabled)
+        )
         for name, action in self.indicator_actions.items():
             self._set_indicator_enabled(name, action.isChecked())
         self.chart_container = MultiChartContainer(

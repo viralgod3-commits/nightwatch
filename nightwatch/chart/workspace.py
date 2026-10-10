@@ -417,6 +417,158 @@ class StudyViewBox(pg.ViewBox):
         super().mouseDoubleClickEvent(event)
 
 
+class RsiAxisItem(ScalableStudyAxisItem):
+    def tickStrings(self, values, scale, spacing):
+        return [f"{value:g}" for value in values]
+
+
+class StudyPaneHeader(QtWidgets.QGraphicsWidget):
+    """Retained pane chrome, outside the plot's data and scale coordinates."""
+
+    settings_requested = Signal()
+    remove_requested = Signal()
+    auto_scale_requested = Signal()
+    resize_started = Signal()
+    resize_requested = Signal(float)
+    resize_reset = Signal()
+    HANDLE_HEIGHT = 6.0
+    BUTTON_WIDTH = 26.0
+
+    def __init__(self, name, theme, parent=None):
+        super().__init__(parent)
+        self.name = name
+        self.caption = name.upper()
+        self.theme = theme
+        self._hovered = ""
+        self._pressed = ""
+        self._drag_y = None
+        self.setAcceptHoverEvents(True)
+        self.setAcceptedMouseButtons(Qt.MouseButton.LeftButton)
+        self.setFlag(QtWidgets.QGraphicsItem.GraphicsItemFlag.ItemIsFocusable, True)
+        self.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Fixed)
+        self.setFont(typography_font(TextRole.UI_CAPTION))
+        self.setZValue(80)
+
+    def setFont(self, font):
+        super().setFont(font)
+        height = max(30, math.ceil(QtGui.QFontMetricsF(font).height()) + 14)
+        self.setMinimumHeight(height)
+        self.setPreferredHeight(height)
+        self.setMaximumHeight(height)
+        self.update()
+
+    def set_caption(self, caption):
+        if caption != self.caption:
+            self.caption = caption
+            self.update()
+
+    def button_rect(self, action):
+        index = ("auto", "settings", "remove").index(action)
+        return QtCore.QRectF(self.rect().width() - (3 - index) * self.BUTTON_WIDTH - 4,
+                             self.HANDLE_HEIGHT, self.BUTTON_WIDTH, self.rect().height() - self.HANDLE_HEIGHT)
+
+    def _hit(self, point):
+        if point.y() < self.HANDLE_HEIGHT:
+            return "resize"
+        return next((action for action in ("auto", "settings", "remove")
+                     if self.button_rect(action).contains(point)), "title")
+
+    def paint(self, painter, option, widget=None):
+        rect = self.rect()
+        painter.fillRect(rect, QtGui.QColor(self.theme.get("chart_panel2", self.theme["panel2"])))
+        divider = self.theme["text"] if self._hovered == "resize" or self._drag_y is not None else self.theme["muted"]
+        painter.setPen(pg.mkPen(divider, width=1, cosmetic=True))
+        painter.drawLine(QtCore.QLineF(0, .5, rect.width(), .5))
+        painter.setFont(self.font())
+        painter.setPen(QtGui.QColor(self.theme["text"]))
+        text_rect = QtCore.QRectF(8, self.HANDLE_HEIGHT, max(0, self.button_rect("auto").left() - 14), rect.height() - self.HANDLE_HEIGHT)
+        text = QtGui.QFontMetricsF(self.font()).elidedText(self.caption, Qt.TextElideMode.ElideRight, text_rect.width())
+        painter.drawText(text_rect, Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, text)
+        for action in ("auto", "settings", "remove"):
+            button = self.button_rect(action)
+            if self._hovered == action:
+                painter.fillRect(button.adjusted(2, 1, -2, -1), QtGui.QColor(self.theme["control_hover"]))
+            painter.setPen(pg.mkPen(self.theme["text"] if self._hovered == action else self.theme["muted"], width=1, cosmetic=True))
+            x, y = button.center().x(), button.center().y()
+            if action == "auto":
+                painter.drawText(button, Qt.AlignmentFlag.AlignCenter, "A")
+            elif action == "remove":
+                painter.drawLine(QtCore.QLineF(x - 4, y - 4, x + 4, y + 4))
+                painter.drawLine(QtCore.QLineF(x - 4, y + 4, x + 4, y - 4))
+            else:
+                for offset, knob in ((-4, -2), (0, 3), (4, -1)):
+                    painter.drawLine(QtCore.QLineF(x - 6, y + offset, x + 6, y + offset))
+                    painter.drawLine(QtCore.QLineF(x + knob, y + offset - 2, x + knob, y + offset + 2))
+        if self.hasFocus():
+            painter.setPen(pg.mkPen(self.theme["text"], width=1, style=Qt.PenStyle.DotLine))
+            painter.drawRect(rect.adjusted(2, self.HANDLE_HEIGHT, -2, -2))
+
+    def hoverMoveEvent(self, event):
+        hovered = self._hit(event.pos())
+        if hovered != self._hovered:
+            self._hovered = hovered
+            self.setCursor(Qt.CursorShape.SplitVCursor if hovered == "resize" else Qt.CursorShape.PointingHandCursor)
+            self.setToolTip({"resize": "Drag divider to resize · double-click to reset height",
+                             "auto": "Reset automatic scale", "settings": f"{self.name} settings",
+                             "remove": f"Remove {self.name}", "title": f"{self.name} settings · Enter to open · Delete to remove"}[hovered])
+            self.update()
+        event.accept()
+
+    def hoverLeaveEvent(self, event):
+        self._hovered = ""
+        self.update()
+        event.accept()
+
+    def mousePressEvent(self, event):
+        if event.button() != Qt.MouseButton.LeftButton:
+            event.ignore()
+            return
+        self._pressed = self._hit(event.pos())
+        self.setFocus(Qt.FocusReason.MouseFocusReason)
+        if self._pressed == "resize":
+            self._drag_y = float(event.screenPos().y())
+            self.resize_started.emit()
+        event.accept()
+
+    def mouseMoveEvent(self, event):
+        if self._drag_y is not None:
+            self.resize_requested.emit(float(event.screenPos().y()) - self._drag_y)
+        event.accept()
+
+    def mouseReleaseEvent(self, event):
+        pressed, self._pressed = self._pressed, ""
+        dragging, self._drag_y = self._drag_y is not None, None
+        if not dragging and pressed == self._hit(event.pos()):
+            if pressed in {"settings", "title"}:
+                self.settings_requested.emit()
+            elif pressed == "auto":
+                self.auto_scale_requested.emit()
+            elif pressed == "remove":
+                self.remove_requested.emit()
+        self.update()
+        event.accept()
+
+    def mouseDoubleClickEvent(self, event):
+        if self._hit(event.pos()) == "resize":
+            self._drag_y = None
+            self._pressed = ""
+            self.resize_reset.emit()
+        else:
+            self._pressed = ""
+            self.settings_requested.emit()
+        event.accept()
+
+    def keyPressEvent(self, event):
+        if event.key() in (Qt.Key.Key_Enter, Qt.Key.Key_Return):
+            self.settings_requested.emit()
+        elif event.key() in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace):
+            self.remove_requested.emit()
+        else:
+            super().keyPressEvent(event)
+            return
+        event.accept()
+
+
 class ProfileItem(NativeAreaItem):
     def __init__(self, background: str):
         super().__init__("volume_profile")
@@ -987,6 +1139,7 @@ class ChartWorkspace(QtWidgets.QWidget):
     auto_scale_changed = Signal(bool)
     working_order_moved = Signal(object)
     indicator_settings_requested = Signal(str)
+    indicator_visibility_changed = Signal(str, bool)
     history_requested = Signal(float)
     interaction_priority_changed = Signal(bool)
     interaction_started = Signal()
@@ -1268,11 +1421,14 @@ class ChartWorkspace(QtWidgets.QWidget):
         self.rsi_lower = float(self.indicator_settings["RSI"]["lower"])
         self.overview_restore: tuple[tuple[float, float], tuple[float, float]] | None = None
         self.study_heights = {
-            "Open Interest": 110.0,
-            "ATR": 95.0,
-            "Funding Rate History": 105.0,
-            "RSI": 95.0,
+            "Open Interest": 125.0,
+            "ATR": 115.0,
+            "Funding Rate History": 125.0,
+            "RSI": 125.0,
         }
+        self._default_study_heights = dict(self.study_heights)
+        self._study_layout_signature = None
+        self._study_resize_start = 0.0
         self.study_manual_scale = {
             "Open Interest": False,
             "ATR": False,
@@ -1378,7 +1534,7 @@ class ChartWorkspace(QtWidgets.QWidget):
             viewBox=StudyViewBox(),
             axisItems={
                 "bottom": TimeAxisItem("bottom"),
-                "right": PercentAxisItem("right"),
+                "right": RsiAxisItem("right"),
             },
         )
         self.graphics.ci.layout.setRowStretchFactor(0, 14)
@@ -1412,6 +1568,7 @@ class ChartWorkspace(QtWidgets.QWidget):
             right_axis = plot.getAxis("right")
             right_axis.setWidth(self._effective_axis_width)
             right_axis.setTickFont(chart_font)
+            right_axis.setStyle(hideOverlappingLabels=True)
             plot.getAxis("bottom").setTickFont(chart_font)
             plot.showGrid(x=False, y=False)
             plot.setMenuEnabled(False)
@@ -1431,23 +1588,25 @@ class ChartWorkspace(QtWidgets.QWidget):
                 plot.setClipToView(False)
 
 
-        self.study_name_labels: dict[str, tuple[pg.PlotItem, pg.TextItem]] = {}
-        for study_name, label_text, plot in (
-            ("Open Interest", "OPEN INTEREST", self.oi_plot),
-            ("ATR", "ATR", self.atr_plot),
-            ("Funding Rate History", "FUNDING", self.funding_plot),
-            ("RSI", "RSI", self.rsi_plot),
+        self.study_panes: dict[str, tuple[pg.PlotItem, StudyPaneHeader]] = {}
+        for study_name, plot in (
+            ("Open Interest", self.oi_plot),
+            ("ATR", self.atr_plot),
+            ("Funding Rate History", self.funding_plot),
+            ("RSI", self.rsi_plot),
         ):
-            label = pg.TextItem(
-                label_text,
-                color=theme["muted"],
-                anchor=(0, 0),
-            )
-            label.setFont(typography_font(TextRole.UI_CAPTION))
-            label.setZValue(76)
-            label.setVisible(False)
-            plot.addItem(label, ignoreBounds=True)
-            self.study_name_labels[study_name] = (plot, label)
+            plot.layout.removeItem(plot.titleLabel)
+            header = StudyPaneHeader(study_name, theme, plot)
+            plot.layout.addItem(header, 0, 0, 1, 3)
+            plot.layout.setRowStretchFactor(0, 0)
+            plot.getAxis("right").setStyle(tickTextOffset=6)
+            header.settings_requested.connect(lambda name=study_name: self.indicator_settings_requested.emit(name))
+            header.remove_requested.connect(lambda name=study_name: self._remove_study(name))
+            header.auto_scale_requested.connect(lambda name=study_name: self._reset_study_scale(name))
+            header.resize_started.connect(lambda name=study_name: self._begin_study_resize(name))
+            header.resize_requested.connect(lambda delta, name=study_name: self._resize_study(name, delta))
+            header.resize_reset.connect(lambda name=study_name: self.set_study_heights({name: self._default_study_heights[name]}))
+            self.study_panes[study_name] = (plot, header)
 
         for plot in (
             self.price_plot,
@@ -1489,6 +1648,9 @@ class ChartWorkspace(QtWidgets.QWidget):
             if isinstance(view_box, StudyViewBox):
                 view_box.settings_requested.connect(
                     lambda value=study: self.indicator_settings_requested.emit(value)
+                )
+                view_box.sigRangeChangedManually.connect(
+                    lambda axes, value=study: self._set_study_manual_scale(value) if axes[1] else None
                 )
 
         seconds = INTERVAL_SECONDS[self.interval]
@@ -1770,7 +1932,7 @@ class ChartWorkspace(QtWidgets.QWidget):
         self.price_plot.getViewBox().sigYRangeChanged.connect(
             self._price_y_range_changed
         )
-        for plot, _label in self.study_name_labels.values():
+        for plot, _header in self.study_panes.values():
             view = plot.getViewBox()
 
 
@@ -1807,9 +1969,9 @@ class ChartWorkspace(QtWidgets.QWidget):
             plot.getAxis("right").setTickFont(chart_font)
             plot.getAxis("bottom").setTickFont(chart_font)
         self._sync_bottom_time_axis()
-        for _plot, label in self.study_name_labels.values():
-            label.setFont(typography_font(TextRole.UI_CAPTION))
-        self._position_study_name_labels()
+        for _plot, header in self.study_panes.values():
+            header.setFont(typography_font(TextRole.UI_CAPTION))
+        self._layout_study_panes()
         self.crosshair_time_label.setFont(typography_font(TextRole.CHART_OVERLAY))
         self.trend_label.setFont(typography_font(TextRole.UI_CAPTION))
         self.auto_fib_badge.setFont(typography_font(TextRole.UI_CAPTION))
@@ -3896,6 +4058,7 @@ class ChartWorkspace(QtWidgets.QWidget):
         if watched is viewport and event.type() == QtCore.QEvent.Type.Resize:
             # The ViewBox receives its final geometry after this event. Move
             # overlays once at the frame boundary, using that settled geometry.
+            self._layout_study_panes()
             self._schedule_overlay_frame()
         if watched is viewport:
             event_type = event.type()
@@ -6848,25 +7011,20 @@ class ChartWorkspace(QtWidgets.QWidget):
             self._hidden_presentation_dirty = True
 
 
-    def _position_study_name_labels(self) -> None:
-        """Pixel-anchor visible study names to each pane's top-left corner."""
-        labels = getattr(self, "study_name_labels", {})
-        for name, (plot, label) in labels.items():
-            visible = bool(
-                plot.isVisible()
-                and self.indicators_enabled
-                and self.indicators.get(name, False)
-            )
-            label.setVisible(visible)
-            if not visible:
-                continue
-            view = plot.getViewBox()
-            scene_rect = view.sceneBoundingRect()
-            if scene_rect.isEmpty():
-                continue
-            label.setPos(
-                view.mapSceneToView(scene_rect.topLeft() + QtCore.QPointF(5.0, 3.0))
-            )
+    def _update_study_headers(self) -> None:
+        for name, (_plot, header) in self.study_panes.items():
+            settings = self.indicator_settings[name]
+            if name == "Open Interest":
+                caption = "OPEN INTEREST · USD"
+                if int(settings.get("smoothing", 1)) > 1:
+                    caption += f" · SMA {settings['smoothing']}"
+            elif name == "Funding Rate History":
+                caption = "FUNDING · %"
+                if int(settings.get("smoothing", 1)) > 1:
+                    caption += f" · EMA {settings['smoothing']}"
+            else:
+                caption = f"{name} · {settings['period']}" + (" · %" if name == "ATR" else "")
+            header.set_caption(caption)
 
     def _price_to_graphics_y(self, price: float) -> float | None:
         if price <= 0.0:
@@ -7073,7 +7231,6 @@ class ChartWorkspace(QtWidgets.QWidget):
             self.trend_label.setPos(
                 view.mapSceneToView(scene_rect.topRight() + QtCore.QPointF(-6, 4))
             )
-        self._position_study_name_labels()
         x_range, y_range = self.price_plot.viewRange()
         for profile in (self.visible_profile, self.session_profile):
             if profile.isVisible():
@@ -8310,7 +8467,9 @@ class ChartWorkspace(QtWidgets.QWidget):
         return combined[:6]
 
     def toggle_indicator(self, name: str, enabled: bool) -> None:
-        self.indicators[name] = enabled
+        if self.indicators.get(name) == bool(enabled):
+            return
+        self.indicators[name] = bool(enabled)
         self._apply_indicator_visibility()
         if name in {"Bollinger Bands", "ATR", "RSI", "EMA Trend", "VWAP", "Donchian Channels"}:
             if enabled and self.indicators_enabled:
@@ -8386,6 +8545,8 @@ class ChartWorkspace(QtWidgets.QWidget):
             set_visible(region, zones_visible)
             set_visible(label, zones_visible)
         self._apply_auto_fibonacci_visibility()
+        self._update_study_headers()
+        self._layout_study_panes()
 
     def _sync_bottom_time_axis(self) -> None:
         """Show one shared time axis on the lowest visible chart row."""
@@ -8426,46 +8587,72 @@ class ChartWorkspace(QtWidgets.QWidget):
         if self.subplot_visibility.get(row) == visible:
             return
         self.subplot_visibility[row] = visible
-        grid = self.graphics.ci.layout
         if visible:
-
-
             plot.setXLink(self.price_plot)
-            plot.setMinimumHeight(0)
             plot.setMaximumHeight(maximum_height)
-            grid.setRowMinimumHeight(row, 0)
-            grid.setRowPreferredHeight(row, maximum_height)
-            grid.setRowMaximumHeight(row, maximum_height)
-            grid.setRowStretchFactor(row, 2)
             plot.setVisible(True)
             if plot not in self.graphics.ci.items:
                 self.graphics.ci.addItem(plot, row=row, col=0)
             plot.getViewBox().setMouseEnabled(x=True, y=True)
+            QTimer.singleShot(0, self, self._restore_study_ranges)
         else:
             plot.setVisible(False)
-
-
             plot.setXLink(None)
-            plot.setMinimumHeight(0)
-            plot.setMaximumHeight(0)
-            # A zero-height PlotItem still receives every width change and
-            # relayouts its axes/ViewBox. Park it outside the grid while retaining
-            # scene ownership, then reuse the same study and data when shown.
             if plot in self.graphics.ci.items:
                 self.graphics.ci.removeItem(plot)
                 plot.setParentItem(self.graphics.ci)
-            grid.setRowMinimumHeight(row, 0)
-            grid.setRowPreferredHeight(row, 0)
-            grid.setRowMaximumHeight(row, 0)
+
+    def _layout_study_panes(self) -> None:
+        """Allocate all pane rows together, reserving a usable price canvas."""
+        panes = getattr(self, "study_panes", None)
+        if not panes:
+            return
+        height = max(1.0, float(self.graphics.viewport().height()))
+        visible = [(name, plot, header) for name, (plot, header) in panes.items() if plot.isVisible()]
+        signature = (height, tuple((name, self.study_heights[name], header.minimumHeight())
+                                   for name, _plot, header in visible))
+        if signature == self._study_layout_signature:
+            return
+        self._study_layout_signature = signature
+        self._sync_bottom_time_axis()
+        # Each pane keeps its header and a data region; only the last owns time.
+        axis_height = math.ceil(QtGui.QFontMetricsF(_chart_axis_font()).height()) + 10
+        minimum = [header.minimumHeight() + 28 + (axis_height if index == len(visible) - 1 else 0)
+                   for index, (_name, _plot, header) in enumerate(visible)]
+        desired = [max(floor, self.study_heights[name]) for floor, (name, _plot, _header) in zip(minimum, visible)]
+        available = max(sum(minimum), height - max(100.0, height * .35))
+        extra = sum(wanted - floor for wanted, floor in zip(desired, minimum))
+        factor = min(1.0, max(0.0, available - sum(minimum)) / extra) if extra else 0.0
+        allocated = {name: floor + (wanted - floor) * factor
+                     for (name, _plot, _header), floor, wanted in zip(visible, minimum, desired)}
+        grid = self.graphics.ci.layout
+        for row, (name, (plot, _header)) in enumerate(panes.items(), 1):
+            pane_height = allocated.get(name, 0.0)
+            if pane_height:
+                plot.setMinimumHeight(pane_height)
+                plot.setMaximumHeight(pane_height)
+                plot.setPreferredHeight(pane_height)
+            else:
+                plot.setMinimumHeight(0)
+            grid.setRowMinimumHeight(row, pane_height)
+            grid.setRowPreferredHeight(row, pane_height)
+            grid.setRowMaximumHeight(row, pane_height)
             grid.setRowStretchFactor(row, 0)
         grid.invalidate()
         grid.activate()
-        self._sync_bottom_time_axis()
         self.graphics.updateGeometry()
         self._sync_crosshair_study_visibility()
-        QTimer.singleShot(0, self._position_study_name_labels)
-        if visible:
-            QTimer.singleShot(0, self, self._restore_study_ranges)
+        self.graphics.request_redraw()
+
+    def _begin_study_resize(self, name: str) -> None:
+        self._study_resize_start = self.study_panes[name][0].geometry().height()
+
+    def _resize_study(self, name: str, delta: float) -> None:
+        self.set_study_heights({name: self._study_resize_start - delta})
+
+    def _remove_study(self, name: str) -> None:
+        self.toggle_indicator(name, False)
+        self.indicator_visibility_changed.emit(name, False)
 
     def _set_study_manual_scale(self, name: str) -> None:
         if name in self.study_manual_scale:
@@ -8476,31 +8663,21 @@ class ChartWorkspace(QtWidgets.QWidget):
             return
         self.study_manual_scale[name] = False
         if name == "Open Interest":
-            self._render_oi()
+            self._fit_oi_to_visible()
         elif name == "Funding Rate History":
-            self._render_funding()
-        elif name in {"ATR", "RSI"}:
-            self._schedule_render_work(indicators=True)
+            self._fit_funding_to_visible()
+        elif name == "ATR":
+            self._fit_atr_to_visible()
+        elif name == "RSI":
+            self.rsi_plot.setYRange(0.0, 100.0, padding=0)
         self.graphics.request_redraw()
 
     def set_study_heights(self, values: dict[str, float | int]) -> None:
         for name in self.study_heights:
             if name in values:
-                self.study_heights[name] = max(55.0, min(260.0, float(values[name])))
-        for name, plot, row in (
-            ("Open Interest", self.oi_plot, 1),
-            ("ATR", self.atr_plot, 2),
-            ("Funding Rate History", self.funding_plot, 3),
-            ("RSI", self.rsi_plot, 4),
-        ):
-            if plot.isVisible():
-                height = self.study_heights[name]
-                plot.setMaximumHeight(height)
-                self.graphics.ci.layout.setRowPreferredHeight(row, height)
-                self.graphics.ci.layout.setRowMaximumHeight(row, height)
-        self.graphics.ci.layout.invalidate()
-        self.graphics.ci.layout.activate()
-        self._sync_bottom_time_axis()
+                value = safe_float(values[name], self._default_study_heights[name])
+                self.study_heights[name] = max(82.0, min(400.0, value))
+        self._layout_study_panes()
 
     def saved_study_heights(self) -> dict[str, int]:
         return {name: int(round(height)) for name, height in self.study_heights.items()}
@@ -8573,6 +8750,7 @@ class ChartWorkspace(QtWidgets.QWidget):
             float(rsi["lower"]),
             bool(rsi.get("show_thresholds", False)),
         )
+        self._update_study_headers()
         self._session_profile_cache_key = None
         self._visible_profile_cache_key = None
         self._major_levels_dirty = True
@@ -8904,9 +9082,9 @@ class ChartWorkspace(QtWidgets.QWidget):
         self.crosshair_time_label.setColor(theme["text"])
         self.crosshair_time_label.fill = pg.mkBrush(theme["panel2"])
         self.crosshair_time_label.update()
-        for _plot, label in self.study_name_labels.values():
-            label.setColor(theme["muted"])
-        self._position_study_name_labels()
+        for _plot, header in self.study_panes.values():
+            header.theme = theme
+            header.update()
         self.oi_curve.setPen(pg.mkPen(theme["purple"], width=1.4))
         self.atr_curve.setPen(pg.mkPen(theme["amber"], width=1.35))
         self.funding_curve.setPen(pg.mkPen(alpha_color(theme["muted"], 220), width=1.35))
