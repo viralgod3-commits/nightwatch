@@ -12,9 +12,15 @@ _ORDERBOOK_BASE = {
     'control_hover': '#111316', 'control_pressed': '#191C20',
     'dim_price': '#515862', 'bid_text': '#C4EAD5', 'ask_text': '#EDC1CD',
     'price_line': '#C89A47', 'last_price_line': '#444444',
+    'badge_text': ORDERBOOK_FIXED_PALETTE['text'],
+    'orderflow_absorption': ORDERBOOK_FIXED_PALETTE['mid'],
+    'orderflow_stacking': ORDERBOOK_FIXED_PALETTE['purple'],
+    'orderflow_pulling': ORDERBOOK_FIXED_PALETTE['amber'],
+    'orderflow_depletion': ORDERBOOK_FIXED_PALETTE['ask'],
+    'orderflow_wall': ORDERBOOK_FIXED_PALETTE['text'],
 }
-# These palettes belong only to the order book and its embedded tape. Resolve
-# once when a preference changes; the raster process receives the same palette.
+# Book presets supply directional accents; the app theme supplies surfaces.
+# Resolve on preference changes and pass the complete palette to the raster process.
 ORDERBOOK_THEMES: Final[dict[str, dict[str, str]]] = {
     'Nightwatch': {**_ORDERBOOK_BASE},
     'TapeSurf': {
@@ -58,6 +64,7 @@ for _name, _palette in ORDERBOOK_THEMES.items():
     _palette['orderbook_style'] = _name
     # Every palette supplies directional gradients for the heatmap/depth view.
     for _side in ('bid', 'ask'):
+        _palette.setdefault(f'{_side}_heat_high', _palette[_side])
         for _kind, _start, _end in (
             ('bar', f'{_side}_fill_strong', _side),
             ('background', f'{_side}_fill', f'{_side}_fill_strong'),
@@ -72,10 +79,59 @@ for _name, _palette in ORDERBOOK_THEMES.items():
             _palette.setdefault(f'{_side}_{_kind}_end', _end_color)
 
 
-def orderbook_palette(source: object = None) -> dict[str, str]:
-    """Resolve a validated, independent order-book preference (also across IPC)."""
+def orderbook_palette(source: object = None, theme: dict[str, object] | None = None) -> dict[str, str]:
+    """Combine app surfaces with book accents; retain resolved colors across IPC."""
     name = source.get('orderbook_style') if isinstance(source, dict) else source
-    return dict(ORDERBOOK_THEMES.get(str(name), ORDERBOOK_THEMES[DEFAULT_ORDERBOOK_THEME_NAME]))
+    palette = dict(ORDERBOOK_THEMES.get(str(name), ORDERBOOK_THEMES[DEFAULT_ORDERBOOK_THEME_NAME]))
+    # A resolved book palette may arrive from another widget or raster process.
+    # Do not reduce it to its preset name and lose the active app colors.
+    if isinstance(source, dict) and 'bid_fill' in source:
+        for key, fallback in palette.items():
+            if key != 'orderbook_style' and key in source:
+                palette[key] = _normalize_hex_color(source[key], fallback)
+        return palette
+    if theme is None and isinstance(source, dict):
+        theme = source
+    if theme is None:
+        return palette
+    resolved = ui_palette(theme)
+    mapping = {
+        'bg': 'orderbook_bg', 'surface_top': 'panel2', 'surface_raised': 'panel2',
+        'surface_center': 'panel2', 'control': 'control', 'control_hover': 'control_hover',
+        'control_pressed': 'active', 'control_border': 'control_border',
+        'control_hover_line': 'active_line', 'grid': 'book_grid', 'grid_strong': 'border',
+        'text': 'orderbook_value_text', 'badge_text': 'orderbook_badge_text',
+        'muted': 'orderbook_muted', 'dim_price': 'orderbook_muted',
+        'amber': 'amber', 'purple': 'purple', 'last_price_line': 'book_mid',
+        'orderflow_absorption': 'orderflow_absorption', 'orderflow_stacking': 'orderflow_stacking',
+        'orderflow_pulling': 'orderflow_pulling', 'orderflow_depletion': 'orderflow_depletion',
+        'orderflow_wall': 'orderflow_wall',
+    }
+    palette.update({key: str(resolved[token]) for key, token in mapping.items()})
+    # Named accent presets remain selectable. The default book follows the app's
+    # directional tokens, including color-tuner overrides and light themes.
+    if palette['orderbook_style'] == DEFAULT_ORDERBOOK_THEME_NAME:
+        def blend(first: str, second: str, amount: float) -> str:
+            return '#' + ''.join(f'{round(int(first[i:i + 2], 16) * (1 - amount) + int(second[i:i + 2], 16) * amount):02X}'
+                                 for i in (1, 3, 5))
+
+        palette['mid'] = str(resolved['book_mid'])
+        palette['price_line'] = palette['mid']
+        for side, token in (('bid', 'book_bid'), ('ask', 'book_ask')):
+            accent = str(resolved[token])
+            palette[side] = accent
+            palette[f'{side}_text'] = accent
+            palette[f'{side}_fill'] = blend(palette['bg'], accent, .20)
+            palette[f'{side}_fill_strong'] = blend(palette['bg'], accent, .55)
+            palette[f'{side}_heat_high'] = accent
+            for kind, start, end in (
+                ('bar', palette[f'{side}_fill_strong'], accent),
+                ('background', palette[f'{side}_fill'], blend(palette['bg'], accent, .30)),
+                ('line', palette[f'{side}_fill_strong'], accent),
+            ):
+                palette[f'{side}_{kind}_start'] = start
+                palette[f'{side}_{kind}_end'] = end
+    return palette
 
 CANDLE_STYLES: Final[dict[str, dict[str, object]]] = {'Inked': {'width': 0.64, 'body_alpha': 248, 'outline': 0.9, 'wick': 0.85, 'close_tick': True, 'pixel_snap': False, 'antialias': True}, 'Hollow': {'width': 0.74, 'body_alpha': 255, 'outline': 1.0, 'wick': 1.0, 'hollow_up': True, 'hollow_down': False, 'pixel_snap': True, 'antialias': False}, 'Luminous': {'width': 0.6, 'body_alpha': 232, 'outline': 0.85, 'wick': 0.85, 'glow_alpha': 34, 'glow_width': 2.2, 'pixel_snap': False, 'antialias': True}}
 import colorsys
@@ -215,7 +271,7 @@ NIGHTWATCH_COLORS: Final[dict[str, str]] = {
     'chart_text': '#D2DCE8', 'chart_muted': '#A0AEC0', 'reference_price': '#A0AEC0',
     'current_price_line': '#7CB8FF', 'current_price_text': '#E6EDF5',
     'series_1': '#7CB8FF', 'series_2': '#B49AF4', 'series_3': '#E8BA69', 'series_4': '#3DD6A0',
-    'orderbook_bg': '#000000', 'book_grid': '#202B38', 'orderbook_muted': '#A0AEC0',
+    'orderbook_bg': '#10161F', 'book_grid': '#202B38', 'orderbook_muted': '#A0AEC0',
     'orderbook_value_text': '#D2DCE8', 'orderbook_badge_text': '#E6EDF5',
     'rail_neutral': '#7CB8FF', 'rail_buy': '#3DD6A0', 'rail_sell': '#FF7185',
     'rail_take_profit': '#48D6C2', 'rail_stop': '#FF855A',

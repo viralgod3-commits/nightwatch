@@ -9,14 +9,7 @@ from ..constants import (
     ORDERBOOK_STATE_MIN_WIDTH,
 )
 
-from ..theme import ORDERBOOK_THEMES, orderbook_palette
-
-ORDERBOOK_REFERENCE = ORDERBOOK_THEMES['Nightwatch']
-_ORDERBOOK_SIGNAL_COLORS = {'ABSORBING': '#35C4B2',
- 'PULLING': '#D1A248',
- 'STACKING': '#8F7AC8',
- 'DEPLETING': '#F26B4B',
- 'PERSISTENT': '#B7A6E2'}
+from ..theme import orderbook_palette
 
 _REFERENCE_FULL_COLUMNS = ('state', 'memory', 'delta', 'bid', 'price', 'ask', 'flow')
 _REFERENCE_FULL_WEIGHTS = {
@@ -436,7 +429,7 @@ class _TradesTapeModel(QtCore.QAbstractTableModel):
         'UNRESOLVED': ('…', 'pending'),
     }
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, *, theme=None):
         super().__init__(parent)
         self.rows: list[tuple[OrderFlowTradePrint, tuple[str, ...]]] = []
         self.keys = []
@@ -447,10 +440,11 @@ class _TradesTapeModel(QtCore.QAbstractTableModel):
         self.amount_decimals = {'base': 0, 'quote': 2}
         self._prepared_format = None
         self._prepared_cells = {}
-        self.buy = QtGui.QColor(ORDERBOOK_REFERENCE['bid'])
-        self.sell = QtGui.QColor(ORDERBOOK_REFERENCE['ask'])
-        self.muted = QtGui.QColor(ORDERBOOK_REFERENCE['muted'])
-        self.text_color = QtGui.QColor(ORDERBOOK_REFERENCE['text'])
+        palette = orderbook_palette(theme)
+        self.buy = QtGui.QColor(palette['bid'])
+        self.sell = QtGui.QColor(palette['ask'])
+        self.muted = QtGui.QColor(palette['muted'])
+        self.text_color = QtGui.QColor(palette['text'])
 
     def rowCount(self, parent=QtCore.QModelIndex()):
         return 0 if parent.isValid() else len(self.rows)
@@ -854,7 +848,7 @@ class TradesTapeWidget(QtWidgets.QWidget):
         layout.addLayout(controls)
         self.table = QtWidgets.QTableView(self)
         self.table.setProperty('essentialToolTip', True)
-        self.model = _TradesTapeModel(self.table)
+        self.model = _TradesTapeModel(self.table, theme=self.theme)
         self.table.setModel(self.model)
         self.table.setItemDelegateForColumn(0, _TradePriceDelegate(self.table))
         self.table.setItemDelegateForColumn(1, _TradePriceDelegate(self.table, amount=True))
@@ -1221,7 +1215,7 @@ class _OrderBookSurfaceButton(QtWidgets.QPushButton):
             f"QPushButton:checked {{ color: {p['text']}; background: {p['control_hover']}; "
             f"border-color: {p['control_hover_line']}; }}"
             f"QPushButton:focus {{ border-color: {p['mid']}; }}"
-            f"QPushButton:disabled {{ color: #454B53; background: transparent; border-color: {p['grid']}; }}"
+            f"QPushButton:disabled {{ color: {p['dim_price']}; background: transparent; border-color: {p['grid']}; }}"
             f"QPushButton#orderBookViewChoice {{ border-color: transparent; }}"
             f"QPushButton#orderBookViewChoice:checked {{ color: {p['text']}; background: {p['grid']}; }}"
             f"QPushButton#orderBookViewChoice:focus {{ border-color: {p['control_hover_line']}; }}"
@@ -1417,7 +1411,7 @@ class OrderBookControlBar(QtWidgets.QFrame):
             f"QSlider::groove:horizontal {{ background: {p['grid_strong']}; height: 3px; border-radius: 1px; }}"
             f"QSlider::sub-page:horizontal {{ background: {p['control_hover_line']}; border-radius: 1px; }}"
             f"QSlider::handle:horizontal {{ background: {p['text']}; border: 2px solid {p['bg']}; width: 12px; margin: -6px 0; border-radius: 7px; }}"
-            f"QSlider::handle:horizontal:hover, QSlider::handle:horizontal:focus {{ background: #FFFFFF; border-color: {p['control_hover_line']}; }}"
+            f"QSlider::handle:horizontal:hover, QSlider::handle:horizontal:focus {{ background: {p['text']}; border-color: {p['control_hover_line']}; }}"
         )
         for button in self.findChildren(_OrderBookSurfaceButton):
             button.set_theme(p)
@@ -2260,7 +2254,9 @@ class _DomRasterCanvas(QtWidgets.QWidget):
         self._bg = QtGui.QColor(p['bg'])
         self._text = QtGui.QColor(p['text'])
         self._muted = QtGui.QColor(p['muted'])
-        self._badge_text = QtGui.QColor(p['text'])
+        self._badge_text = QtGui.QColor(p['badge_text'])
+        self._bar_text_shadow = QtGui.QColor(p['bg'])
+        self._bar_text_shadow.setAlpha(150)
         self._grid = QtGui.QColor(p['grid'])
         self._grid_strong = QtGui.QColor(p['grid_strong'])
         self._bid = QtGui.QColor(p['bid'])
@@ -2321,11 +2317,11 @@ class _DomRasterCanvas(QtWidgets.QWidget):
         self._center_bid_pen.setCosmetic(True)
         self._center_ask_pen.setCosmetic(True)
         # History is gray with a colored recent tail in the reference.
-        self._state_absorbing = QtGui.QColor(_ORDERBOOK_SIGNAL_COLORS['ABSORBING'])
-        self._state_stacking = QtGui.QColor(_ORDERBOOK_SIGNAL_COLORS['STACKING'])
-        self._state_pulling = QtGui.QColor(_ORDERBOOK_SIGNAL_COLORS['PULLING'])
-        self._state_depleting = QtGui.QColor(_ORDERBOOK_SIGNAL_COLORS['DEPLETING'])
-        self._state_wall = QtGui.QColor(_ORDERBOOK_SIGNAL_COLORS['PERSISTENT'])
+        self._state_absorbing = QtGui.QColor(p['orderflow_absorption'])
+        self._state_stacking = QtGui.QColor(p['orderflow_stacking'])
+        self._state_pulling = QtGui.QColor(p['orderflow_pulling'])
+        self._state_depleting = QtGui.QColor(p['orderflow_depletion'])
+        self._state_wall = QtGui.QColor(p['orderflow_wall'])
         self._bid_signal_fill = QtGui.QColor(p['bg'])
         self._ask_signal_fill = QtGui.QColor(p['bg'])
         self._ltp_line_color = QtGui.QColor(p['last_price_line'])
@@ -5078,9 +5074,7 @@ class _DomRasterCanvas(QtWidgets.QWidget):
             painter.setFont(chosen_font)
             flags = alignment | Qt.AlignmentFlag.AlignVCenter
             if bar_contrast and text:
-                shadow = QtGui.QColor('#000000')
-                shadow.setAlpha(150)
-                painter.setPen(shadow)
+                painter.setPen(self._bar_text_shadow)
                 px = max(0.65, min(1.0, self._physical_pixel_width()))
                 shadow_rect = text_rect.translated(0.0, px)
                 if not text_offset:
@@ -5660,7 +5654,7 @@ class _DomRasterCanvas(QtWidgets.QWidget):
                         continue
                     in_range = ruler_top <= top + row_height * 0.5 <= ruler_bottom
                     major = round(price / step) % 10 == 0
-                    color = QtGui.QColor('#FFFFFF') if major and in_range else self._profile_price if in_range else self._profile_dim_price
+                    color = self._badge_text if major and in_range else self._profile_price if in_range else self._profile_dim_price
                     self._draw_price_text(painter, self._column_rect('price', top, row_height),
                                           self._price_text(price), color, Qt.AlignmentFlag.AlignRight, pad=4.0)
         rows_rendered = False
@@ -7287,7 +7281,7 @@ class OrderBookWidget(QtWidgets.QWidget):
         self.splitter.setChildrenCollapsible(False)
         self.splitter.setHandleWidth(6)
         self.splitter.setStyleSheet(
-            f"QSplitter::handle:horizontal {{ background: {ORDERBOOK_REFERENCE['bg']}; border: 0; border-left: 1px solid {ORDERBOOK_REFERENCE['grid']}; }}"
+            f"QSplitter::handle:horizontal {{ background: {self.theme['bg']}; border: 0; border-left: 1px solid {self.theme['grid']}; }}"
         )
         self.splitter.addWidget(self.canvas)
         self.splitter.setStretchFactor(0, 1)
@@ -7299,7 +7293,7 @@ class OrderBookWidget(QtWidgets.QWidget):
         layout.addWidget(self.splitter, 1)
         self.setObjectName('orderBookWorkspace')
         self.setProperty('suppressNonessentialTooltips', True)
-        self.setStyleSheet(f"QWidget#orderBookWorkspace {{ background: {ORDERBOOK_REFERENCE['bg']}; }}")
+        self.setStyleSheet(f"QWidget#orderBookWorkspace {{ background: {self.theme['bg']}; }}")
         self.set_symbol(self.symbol)
         self.apply_theme(self.theme)
         self._sync_controls()

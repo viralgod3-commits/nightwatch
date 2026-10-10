@@ -21,7 +21,7 @@ from ..constants import (
 )
 from ..models import SymbolRules
 from ..models import TradingGatewayPort
-from ..theme import DEFAULT_THEME_NAME, THEMES, ui_palette
+from ..theme import DEFAULT_THEME_NAME, THEMES, _contrast_ratio_hex, ui_palette
 from ..utilities import ElidedLabel, line_icon
 from ..utilities import TextRole, set_text_role, typography_controller, typography_font
 from ..models import format_price, human_number, quantize_step, safe_float, validate_step
@@ -37,22 +37,29 @@ _ACCOUNT_POLL_MINIMUM_INTERVAL = 8.0
 
 def _trading_stylesheet(theme: dict[str, str]) -> str:
     """Theme-aware surfaces scoped to the trading workspace."""
-    t = ui_palette(THEMES[DEFAULT_THEME_NAME], theme)
+    t = ui_palette(theme or THEMES[DEFAULT_THEME_NAME])
     def tint(key: str, alpha: int) -> str:
         color = QtGui.QColor(t[key])
         return f"rgba({color.red()}, {color.green()}, {color.blue()}, {alpha})"
 
     def foreground(key: str) -> str:
-        color = QtGui.QColor(t[key])
-        return "#101418" if color.lightnessF() > .58 else "#FFFFFF"
+        candidates = (t['text'], t['bg'])
+        return max(candidates, key=lambda color: _contrast_ratio_hex(color, t[key]))
 
     return f"""
         QWidget#responsiveOrderTicket, QWidget#tradingWorkspace,
         QWidget#accountActivityPanel, QWidget#positionDeskBody,
+        QStackedWidget#tradingPages, QTabWidget#tradingAccountTabs,
+        QTabWidget#tradingAccountTabs > QStackedWidget,
+        QTabWidget#tradingAccountTabs QTabBar,
         QFrame#positionDeskView, QScrollArea#positionDeskScroll,
         QScrollArea#deskTicketScroll {{ background: {t['panel']}; border: 0; }}
         QFrame#tradingWorkspaceHeader {{ background: {t['panel2']}; border: 0; border-bottom: 1px solid {t['border']}; }}
         QFrame#ticketActionFooter {{ background: {t['panel2']}; border: 0; border-top: 1px solid {t['border']}; }}
+        QTabBar#ticketOrderTypes, QTabBar#ticketIntentTabs, QSlider#ticketAllocation,
+        QWidget#tradingAdaptiveActivity {{ background: {t['panel']}; border: 0; }}
+        QTabBar#tradingViewSwitch {{ background: transparent; border: 0; }}
+        QScrollArea#deskTicketScroll > QWidget, QScrollArea#positionDeskScroll > QWidget {{ background: {t['panel']}; border: 0; }}
         QFrame#ticketBalanceCard, QFrame#ticketEstimates {{ background: {t['panel2']}; border: 1px solid {t['border']}; border-radius: 8px; }}
         QFrame#ticketFeedback {{ background: {tint('amber', 15)}; border: 1px solid {tint('amber', 65)}; border-radius: 6px; }}
         QLabel {{ background: transparent; border: 0; padding: 0; color: {t['text']}; }}
@@ -1411,6 +1418,7 @@ class OrderPanel(QtWidgets.QWidget):
         self.position_side.hide()
 
         self.leverage_field = QtWidgets.QWidget()
+        self.leverage_field.setObjectName("tradingInlineField")
         leverage_row = QtWidgets.QHBoxLayout(self.leverage_field)
         leverage_row.setContentsMargins(0, 0, 0, 0)
         leverage_row.addWidget(label("Margin / leverage"), 1)
@@ -1421,6 +1429,7 @@ class OrderPanel(QtWidgets.QWidget):
         content.addWidget(self.leverage_field)
 
         self.side_selector = QtWidgets.QWidget()
+        self.side_selector.setObjectName("tradingInlineField")
         side = QtWidgets.QHBoxLayout(self.side_selector)
         side.setContentsMargins(0, 0, 0, 0)
         side.setSpacing(8)
@@ -1494,6 +1503,7 @@ class OrderPanel(QtWidgets.QWidget):
 
         def mark_field(edit):
             widget = QtWidgets.QWidget()
+            widget.setObjectName("tradingInlineField")
             row = QtWidgets.QHBoxLayout(widget)
             row.setContentsMargins(0, 0, 0, 0)
             row.setSpacing(6)
@@ -1510,6 +1520,7 @@ class OrderPanel(QtWidgets.QWidget):
         trigger, self.trigger_mark_button = mark_field(self.trigger_edit)
         activation, self.activation_mark_button = mark_field(self.activation_edit)
         amount = QtWidgets.QWidget()
+        amount.setObjectName("tradingInlineField")
         amount_row = QtWidgets.QHBoxLayout(amount)
         amount_row.setContentsMargins(0, 0, 0, 0)
         amount_row.setSpacing(6)
@@ -1579,6 +1590,7 @@ class OrderPanel(QtWidgets.QWidget):
 
         content = self._ticket_columns[2].layout()
         self.options_bar = QtWidgets.QWidget()
+        self.options_bar.setObjectName("tradingInlineField")
         options = QtWidgets.QHBoxLayout(self.options_bar)
         options.setContentsMargins(0, 0, 0, 0)
         options.setSpacing(10)
@@ -2132,8 +2144,9 @@ class OrderPanel(QtWidgets.QWidget):
         )
 
     def apply_theme(self, theme: dict[str, str]) -> None:
-        self.setStyleSheet(_trading_stylesheet(theme))
-        self.set_settings_icon(theme.get("muted", "#92929A"))
+        palette = ui_palette(theme)
+        self.setStyleSheet(_trading_stylesheet(palette))
+        self.set_settings_icon(palette['muted'])
 
     def _select_order_type_tab(self, index: int) -> None:
         value = ("MARKET", "LIMIT", self._conditional_order_type)[max(0, min(2, index))]
@@ -3557,7 +3570,7 @@ class FillAccountView(QtWidgets.QListView):
         self.viewport().update()
 
     def apply_theme(self, theme):
-        self._fill_delegate.theme = ui_palette(THEMES[DEFAULT_THEME_NAME], theme)
+        self._fill_delegate.theme = ui_palette(theme)
         self.viewport().update()
 
     def set_payloads(self, payloads, empty_text):
@@ -4688,10 +4701,12 @@ class PositionDeskView(QtWidgets.QFrame):
         self.fills = FillAccountView()
         self.fills.setSpacing(0)
         order_page = QtWidgets.QWidget()
+        order_page.setObjectName("accountActivityPanel")
         order_layout = QtWidgets.QVBoxLayout(order_page)
         order_layout.setContentsMargins(0, 0, 0, 0)
         order_layout.setSpacing(0)
         self.order_headers = QtWidgets.QWidget()
+        self.order_headers.setObjectName("tradingInlineField")
         headers = QtWidgets.QHBoxLayout(self.order_headers)
         headers.setContentsMargins(6, 5, 6, 5)
         headers.setSpacing(8)
@@ -4836,7 +4851,7 @@ class TradingWorkspace(QtWidgets.QWidget):
         symbol_rules: dict[str, SymbolRules] | None = None,
     ):
         super().__init__(parent)
-        self.theme = theme
+        self.theme = ui_palette(theme)
         self.gateway = gateway
         self.symbol_rules = symbol_rules if symbol_rules is not None else {}
         self.symbol = DEFAULT_SYMBOL
@@ -4881,15 +4896,15 @@ class TradingWorkspace(QtWidgets.QWidget):
         self.view_tabs.setAccessibleName("Trading panel view")
         set_text_role(self.view_tabs, TextRole.UI_CONTROL)
         self.view_tabs.setIconSize(QtCore.QSize(16, 16))
-        self.view_tabs.addTab(line_icon("trade", self.theme.get("muted", "#8E8E96"), self.devicePixelRatioF()), "")
+        self.view_tabs.addTab(line_icon("trade", self.theme['muted'], self.devicePixelRatioF()), "")
         self.view_tabs.setTabToolTip(0, "Order entry")
         self.view_tabs.setTabWhatsThis(0, "Order entry and position controls")
-        self.view_tabs.addTab(line_icon("account", self.theme.get("muted", "#8E8E96"), self.devicePixelRatioF()), "")
+        self.view_tabs.addTab(line_icon("account", self.theme['muted'], self.devicePixelRatioF()), "")
         self.view_tabs.setTabToolTip(1, "Positions and balances")
         self.view_tabs.setTabWhatsThis(1, "Positions, working orders, fills and balances")
         self.refresh_button = QtWidgets.QPushButton()
         self.refresh_button.setObjectName("portfolioSyncButton")
-        self.refresh_button.setIcon(line_icon("refresh", self.theme.get("muted", "#8E8E96"), self.devicePixelRatioF()))
+        self.refresh_button.setIcon(line_icon("refresh", self.theme['muted'], self.devicePixelRatioF()))
         self.refresh_button.setIconSize(QtCore.QSize(18, 18))
         self.refresh_button.setFixedSize(36, 34)
         self.refresh_button.setAccessibleName("Update portfolio data")
@@ -4907,6 +4922,7 @@ class TradingWorkspace(QtWidgets.QWidget):
         header_layout.addWidget(self.view_tabs, 0, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         layout.addWidget(header)
         self.pages = QtWidgets.QStackedWidget()
+        self.pages.setObjectName("tradingPages")
         layout.addWidget(self.pages, 1)
         self.ticket = OrderPanel(gateway, compact=True)
         self.ticket.setSizePolicy(
@@ -5646,8 +5662,12 @@ class TradingWorkspace(QtWidgets.QWidget):
         self.account_refresh_timer.start()
 
     def apply_theme(self, theme: dict[str, str]) -> None:
-        self.theme = theme
-        self.setStyleSheet(_trading_stylesheet(theme))
-        self.ticket.apply_theme(theme)
-        self.fills.apply_theme(theme)
+        self.theme = ui_palette(theme)
+        self.setStyleSheet(_trading_stylesheet(self.theme))
+        self.ticket.apply_theme(self.theme)
+        self.fills.apply_theme(self.theme)
+        ratio = self.devicePixelRatioF()
+        self.refresh_button.setIcon(line_icon('refresh', self.theme['muted'], ratio))
+        for index, kind in enumerate(('trade', 'account')):
+            self.view_tabs.setTabIcon(index, line_icon(kind, self.theme['muted'], ratio))
         QTimer.singleShot(0, self, self._sync_view_tabs_geometry)

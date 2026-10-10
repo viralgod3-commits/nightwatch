@@ -2610,14 +2610,14 @@ class MainWindow(QtWidgets.QMainWindow):
         self.chart_theme = candle_directional_palette(
             chart_base, self.directional_color_modes.get("candles", "theme")
         )
-        self.orderbook_theme = orderbook_palette(self.orderbook_theme_name)
+        self.orderbook_theme = orderbook_palette(self.orderbook_theme_name, self.ui_theme)
 
     def set_orderbook_theme(self, name: str) -> None:
         if name not in ORDERBOOK_THEMES or name == self.orderbook_theme_name:
             return
         self.orderbook_theme_name = name
         self.settings.setValue("appearance/orderbook_theme_v1", name)
-        self.orderbook_theme = orderbook_palette(name)
+        self.orderbook_theme = orderbook_palette(name, self.ui_theme)
         self.orderbook.apply_theme(self.orderbook_theme)
         self._sync_settings_window()
 
@@ -3167,7 +3167,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.right_rail_controller.set_panel_edge_style(
                 radius=int(surfaces["block_radius"]),
                 border_color=str(t.get("border", "#202020")),
-                gap_color="#000000",
+                gap_color=t["bg"],
             )
         application = QtWidgets.QApplication.instance()
         if application is not None:
