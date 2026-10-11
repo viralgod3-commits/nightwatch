@@ -1748,6 +1748,10 @@ class MainWindow(QtWidgets.QMainWindow):
         self.large_trades.value_mode_changed.connect(
             lambda mode: self.settings.setValue("trades/value_mode_v1", mode)
         )
+        chart_display = self.settings.value("trades/chart_display_v1", False, bool)
+        self.large_trades.set_chart_display_enabled(chart_display, emit=False)
+        self.chart.set_super_trades_enabled(chart_display)
+        self.large_trades.chart_display_changed.connect(self._set_trade_chart_display)
         self.watchlist_sidebar = WatchlistSidebarWidget(self.watchlist)
         self.watchlist_sidebar.symbol_selected.connect(self._open_watchlist_symbol)
         self.watchlist_sidebar.toggle_current_requested.connect(
@@ -7811,8 +7815,15 @@ class MainWindow(QtWidgets.QMainWindow):
             return False
         if self.workspace_stack.currentIndex() != 0:
             return False
-        # Exceptional chart trades must keep arriving when the tape is hidden.
-        return True
+        controller = getattr(self, "right_rail_controller", None)
+        panels_active = (controller.panel_active("depth") or controller.panel_active("trades")
+                         if controller is not None else self.orderbook.isVisible() or self.large_trades.isVisible())
+        return panels_active or self.chart.super_trade_overlay.enabled
+
+    def _set_trade_chart_display(self, enabled: bool) -> None:
+        self.settings.setValue("trades/chart_display_v1", bool(enabled))
+        self.chart.set_super_trades_enabled(enabled)
+        self._sync_market_depth_networking()
 
     def _set_order_flow_depth_capacity(self, limit_per_side: int) -> None:
         resolved = max(1, min(1000, int(limit_per_side)))

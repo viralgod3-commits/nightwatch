@@ -2622,6 +2622,7 @@ class ChartWorkspace(QtWidgets.QWidget):
         with self._overlay_geometry_transaction():
             self._position_current_price_line_overlay()
             self._position_price_axis_focus_overlay()
+            self._position_super_trades()
 
     def _commit_y_overlay(self) -> None:
         """Reposition only price-view overlays whose pixel anchors depend on Y."""
@@ -7346,17 +7347,27 @@ class ChartWorkspace(QtWidgets.QWidget):
     def add_super_trades(self, frame: SuperTradeFrame) -> None:
         if not self.super_trade_overlay.set_frame(frame):
             return
+        if not self.super_trade_overlay.enabled:
+            return
         if not self._presentation_active:
             self._hidden_presentation_dirty = True
             return
         self._schedule_overlay_frame()
 
+    def set_super_trades_enabled(self, enabled: bool) -> None:
+        if self.super_trade_overlay.set_enabled(enabled) and enabled:
+            self._schedule_overlay_frame()
+
     def _position_super_trades(self) -> None:
+        if not self.super_trade_overlay.enabled:
+            return
         if not self._presentation_active or not self.candles:
             self.super_trade_overlay.clear_hover()
             self.super_trade_overlay.hide()
             return
-        self.super_trade_overlay.refresh(self.price_plot.getViewBox(), self.logarithmic)
+        self.super_trade_overlay.refresh(
+            self.price_plot.getViewBox(), self.logarithmic,
+            current_candle=self.candles[-1], interval_seconds=INTERVAL_SECONDS[self.interval])
 
     def _position_interaction_overlays(self) -> tuple[float, float]:
         """Move only overlays that must remain attached during camera motion."""

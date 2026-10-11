@@ -9,7 +9,7 @@ import math
 from PySide6 import QtCore, QtGui, QtWidgets
 from PySide6.QtCore import Qt
 
-from ..models import chart_y, format_price, human_number
+from ..models import Candle, chart_y, format_price, human_number
 from ..orderbook.super_trades import SUPER_TRADE_CAPACITY, SuperTradeEvent, SuperTradeFrame
 from ..theme import _ensure_directional_contrast
 from ..utilities import TextRole, hide_hover_tooltip, show_hover_tooltip, typography_font
@@ -33,12 +33,14 @@ class SuperTradeOverlay(QtWidgets.QWidget):
         super().__init__(graphics)
         self.graphics = graphics
         self.symbol = ""
+        self.enabled = False
         self._events = OrderedDict()
         self._versions = OrderedDict()
         self._revision = 0
         self._layout_key = None
         self._markers: list[_Marker] = []
         self._plot_rect = QtCore.QRectF()
+        self._candle_rect = QtCore.QRectF()
         self._dirty_rect = QtCore.QRectF()
         self._hovered = None
         self._font = typography_font(TextRole.UI_CAPTION)
@@ -49,6 +51,18 @@ class SuperTradeOverlay(QtWidgets.QWidget):
         self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.apply_theme(theme)
         self.hide()
+
+    def set_enabled(self, enabled: bool) -> bool:
+        enabled = bool(enabled)
+        if enabled == self.enabled:
+            return False
+        self.enabled = enabled
+        self._layout_key = None
+        if not enabled:
+            self.clear_hover()
+            self._markers.clear()
+            self.hide()
+        return True
 
     def set_market(self, symbol: str) -> None:
         symbol = symbol.upper()
@@ -101,16 +115,19 @@ class SuperTradeOverlay(QtWidgets.QWidget):
         self._layout_key = None
         self.update()
 
-    def refresh(self, view, logarithmic: bool) -> None:
-        if not self._events:
+    def refresh(self, view, logarithmic: bool, *, current_candle: Candle | None = None,
+                interval_seconds: float = 60.0) -> None:
+        if not self.enabled or not self._events:
             self.hide()
             return
         font = typography_font(TextRole.UI_CAPTION)
         x_range, y_range = view.viewRange()
         viewport_rect = self.graphics.viewport().geometry()
         scene_rect = view.sceneBoundingRect()
+        candle_key = ((current_candle.time, current_candle.low, current_candle.high, interval_seconds)
+                      if current_candle is not None else None)
         key = (self._revision, tuple(x_range), tuple(y_range), logarithmic,
-               viewport_rect.getRect(), scene_rect.getRect(), font.key())
+               viewport_rect.getRect(), scene_rect.getRect(), font.key(), candle_key)
         if key == self._layout_key:
             if self._markers:
                 self.show()
@@ -131,6 +148,21 @@ class SuperTradeOverlay(QtWidgets.QWidget):
         top_right = transform.map(view.mapViewToScene(QtCore.QPointF(x_range[1], y_range[1]))) + offset
         x_scale = (top_right.x() - bottom_left.x()) / max(x_range[1] - x_range[0], 1e-30)
         y_scale = (top_right.y() - bottom_left.y()) / max(y_range[1] - y_range[0], 1e-30)
+        self._candle_rect = QtCore.QRectF()
+        if current_candle is not None:
+            center_x = bottom_left.x() + (current_candle.time - x_range[0]) * x_scale
+            high_y = bottom_left.y() + (chart_y(current_candle.high, logarithmic) - y_range[0]) * y_scale
+            low_y = bottom_left.y() + (chart_y(current_candle.low, logarithmic) - y_range[0]) * y_scale
+            # Protect the full candle slot and wick, including wider candle
+            # styles and a small visual margin. Recompute as the live wick grows.
+            half_width = max(2.0, abs(interval_seconds * x_scale) / 2)
+            self._candle_rect = QtCore.QRectF(
+                center_x - half_width, min(high_y, low_y),
+                half_width * 2, max(1.0, abs(low_y - high_y))).adjusted(-6, -6, 6, 6)
+        candle_left, candle_top, candle_right, candle_bottom = (
+            self._candle_rect.left(), self._candle_rect.top(),
+            self._candle_rect.right(), self._candle_rect.bottom())
+        candle_visible = current_candle is not None and self._plot_rect.intersects(self._candle_rect)
         candidates = []
         for event in self._events.values():
             x = event.event_time_ms / 1000.0
@@ -159,12 +191,29 @@ class SuperTradeOverlay(QtWidgets.QWidget):
             if label_count < self.MAX_LABELS and width <= self._plot_rect.width():
                 direction = 1 if event.aggressor_side == "buy" else -1
                 left = max(left_edge, min(anchor.x() - width / 2, right_edge - width))
-                for lane in range(3):
+                live_execution = (current_candle is not None
+                                  and current_candle.time <= x < current_candle.time + interval_seconds)
+                near_candle = (candle_visible
+                               and anchor.x() + width / 2 + 3 >= candle_left
+                               and anchor.x() - width / 2 - 3 <= candle_right)
+                # Live executions use the empty side of the candle first. At
+                # the viewport edge, try the other side without clamping back
+                # onto the candle. Historical labels retain their short stems.
+                right = max(anchor.x() + 9, candle_right + 6) if live_execution or near_candle else anchor.x() + 9
+                left_side = min(anchor.x() - width - 9, candle_left - width - 6) if live_execution or near_candle else anchor.x() - width - 9
+                positions = ((right, left_side) if live_execution else
+                             (left, right, left_side) if near_candle else (left,))
+                for candidate_left, lane in ((position, lane) for position in positions for lane in range(3)):
+                    if candidate_left < left_edge or candidate_left + width > right_edge:
+                        continue
                     center = anchor.y() + direction * (17 + lane * (height + 3))
                     top = center - height / 2
                     if top < top_edge or top + height > bottom_edge:
                         continue
-                    box = (left - 3, top - 2, left + width + 3, top + height + 2)
+                    box = (candidate_left - 3, top - 2, candidate_left + width + 3, top + height + 2)
+                    if (candle_visible and box[0] < candle_right and box[2] > candle_left
+                            and box[1] < candle_bottom and box[3] > candle_top):
+                        continue
                     cells = tuple((column, row)
                                   for column in range(math.floor(box[0] / 80), math.floor(box[2] / 80) + 1)
                                   for row in range(math.floor(box[1] / 24), math.floor(box[3] / 24) + 1))
@@ -172,7 +221,7 @@ class SuperTradeOverlay(QtWidgets.QWidget):
                            and box[1] < other[3] and box[3] > other[1]
                            for cell in cells for other in occupied.get(cell, ())):
                         continue
-                    badge = QtCore.QRectF(left, top, width, height)
+                    badge = QtCore.QRectF(candidate_left, top, width, height)
                     for cell in cells:
                         occupied.setdefault(cell, []).append(box)
                     label_count += 1
@@ -200,9 +249,9 @@ class SuperTradeOverlay(QtWidgets.QWidget):
             accent, fill, edge, stem = self._colors[marker.event.aggressor_side]
             painter.setPen(QtGui.QPen(stem, .8))
             if marker.badge is not None:
-                endpoint = QtCore.QPointF(marker.badge.center().x(),
-                                         marker.badge.top() if marker.event.aggressor_side == "buy"
-                                         else marker.badge.bottom())
+                endpoint = QtCore.QPointF(
+                    max(marker.badge.left(), min(marker.anchor.x(), marker.badge.right())),
+                    max(marker.badge.top(), min(marker.anchor.y(), marker.badge.bottom())))
                 painter.drawLine(QtCore.QLineF(marker.anchor, endpoint))
             painter.setPen(QtGui.QPen(edge, .8))
             painter.setBrush(accent)

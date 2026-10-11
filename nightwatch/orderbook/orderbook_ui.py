@@ -792,6 +792,7 @@ class TradesTapeWidget(QtWidgets.QWidget):
     """Visible incremental view of one worker-owned, shared trade history."""
     mode_changed = Signal(str)
     value_mode_changed = Signal(str)
+    chart_display_changed = Signal(bool)
     CAPACITY = TAPE_CAPACITY
 
     def __init__(self, theme: dict[str, str], parent: QtWidgets.QWidget | None = None):
@@ -801,6 +802,7 @@ class TradesTapeWidget(QtWidgets.QWidget):
         self.quote_volume_24h = 0.0
         self.current_threshold = 1000.0
         self._mode, self._value_mode = 'LARGE', 'quote'
+        self._chart_display_enabled = False
         self._active = False
         self._presentation_clock = None
         self._interaction_priority_active = False
@@ -829,22 +831,43 @@ class TradesTapeWidget(QtWidgets.QWidget):
         set_text_role(self.status, TextRole.UI_CAPTION)
         self.status.setToolTip('Adaptive minimum value from the existing trade analyzer. Times are UTC. History retains up to 500 prints per mode for the current market session.')
         controls.addWidget(self.status, 1)
-        self.mode_button = QtWidgets.QToolButton(self)
-        self.mode_button.setText('Large')
-        self.mode_button.setAutoRaise(True)
-        self.mode_button.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.mode_button.setToolTip('Switch between large trades and all trades')
-        self.mode_button.clicked.connect(self.toggle_mode)
-        controls.addWidget(self.mode_button)
-        self.units_button = QtWidgets.QToolButton(self)
-        self.units_button.setText('Value')
-        self.units_button.setCheckable(True)
-        self.units_button.setAutoRaise(True)
-        self.units_button.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.units_button.setAccessibleName('Trade size units: quote value or base quantity')
-        self.units_button.setToolTip('Show size as quote value or base quantity')
-        self.units_button.clicked.connect(self.toggle_value_mode)
-        controls.addWidget(self.units_button)
+        self.settings_button = QtWidgets.QToolButton(self)
+        self.settings_button.setText('Settings')
+        self.settings_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
+        self.settings_button.setAutoRaise(True)
+        self.settings_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.settings_button.setAccessibleName('Trade tape settings')
+        self.settings_button.setToolTip('Trade filter, size units, and large-trade chart display')
+        self.settings_button.setPopupMode(QtWidgets.QToolButton.ToolButtonPopupMode.InstantPopup)
+        self.settings_menu = QtWidgets.QMenu(self.settings_button)
+        set_text_role(self.settings_menu, TextRole.UI_CAPTION)
+        self._mode_actions = {}
+        mode_group = QtGui.QActionGroup(self.settings_menu)
+        for mode, label in (('LARGE', 'Large trades'), ('ALL', 'All trades')):
+            action = self.settings_menu.addAction(label)
+            action.setCheckable(True)
+            action.setChecked(mode == self._mode)
+            mode_group.addAction(action)
+            action.triggered.connect(lambda _checked, value=mode: self.set_mode(value))
+            self._mode_actions[mode] = action
+        self.settings_menu.addSeparator()
+        self._value_mode_actions = {}
+        units_group = QtGui.QActionGroup(self.settings_menu)
+        for mode, label in (('quote', 'Quote value'), ('base', 'Base quantity')):
+            action = self.settings_menu.addAction(label)
+            action.setCheckable(True)
+            action.setChecked(mode == self._value_mode)
+            units_group.addAction(action)
+            action.triggered.connect(lambda _checked, value=mode: self.set_value_mode(value))
+            self._value_mode_actions[mode] = action
+        self.settings_menu.addSeparator()
+        self.chart_display_action = self.settings_menu.addAction('Show large trades on chart')
+        self.chart_display_action.setCheckable(True)
+        self.chart_display_action.setToolTip('Single trades or same-side bursts totaling at least 10× the live tape threshold')
+        self.chart_display_action.triggered.connect(self.set_chart_display_enabled)
+        self.settings_menu.setToolTipsVisible(True)
+        self.settings_button.setMenu(self.settings_menu)
+        controls.addWidget(self.settings_button)
         layout.addLayout(controls)
         self.table = QtWidgets.QTableView(self)
         self.table.setProperty('essentialToolTip', True)
@@ -1043,7 +1066,7 @@ class TradesTapeWidget(QtWidgets.QWidget):
         if mode == self._mode:
             return
         self._mode = mode
-        self.mode_button.setText('All' if mode == 'ALL' else 'Large')
+        self._mode_actions[mode].setChecked(True)
         self._reformat = self._dirty = True
         # Rows and revisions belong to one mode. A delayed seed must not leave
         # the previous mode's prints under the newly selected filter.
@@ -1063,9 +1086,7 @@ class TradesTapeWidget(QtWidgets.QWidget):
 
     def set_value_mode(self, mode, *, emit=True):
         mode = 'base' if str(mode).lower() == 'base' else 'quote'
-        self.units_button.setText('Qty' if mode == 'base' else 'Value')
-        with QtCore.QSignalBlocker(self.units_button):
-            self.units_button.setChecked(mode == 'base')
+        self._value_mode_actions[mode].setChecked(True)
         if mode != self._value_mode:
             self._value_mode = self.model.value_mode = mode
             # A unit switch can expose amounts that were never measured in
@@ -1079,6 +1100,18 @@ class TradesTapeWidget(QtWidgets.QWidget):
             self._schedule_refresh()
             if emit:
                 self.value_mode_changed.emit(mode)
+
+    def chart_display_enabled(self):
+        return self._chart_display_enabled
+
+    def set_chart_display_enabled(self, enabled, *, emit=True):
+        enabled = bool(enabled)
+        self.chart_display_action.setChecked(enabled)
+        if enabled == self._chart_display_enabled:
+            return
+        self._chart_display_enabled = enabled
+        if emit:
+            self.chart_display_changed.emit(enabled)
 
     def set_order_flow_snapshot(self, snapshot):
         if not isinstance(snapshot, OrderFlowSnapshot) or snapshot.symbol != self.symbol:
@@ -1184,6 +1217,13 @@ class TradesTapeWidget(QtWidgets.QWidget):
             f"QScrollBar::handle:vertical {{ background: {p['grid']}; min-height: 24px; border-radius: 1px; }}"
             f"QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; }}"
             f"QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{ background: transparent; }}"
+        )
+        self.settings_button.setIcon(line_icon('gear', p['muted'], self.devicePixelRatioF()))
+        self.settings_menu.setStyleSheet(
+            f"QMenu {{ background: {p['bg']}; color: {p['text']}; border: 1px solid {p['grid_strong']}; padding: 5px; }}"
+            f"QMenu::item {{ padding: 6px 24px 6px 12px; border-radius: 4px; }}"
+            f"QMenu::item:selected {{ background: {p['control_hover']}; }}"
+            f"QMenu::separator {{ height: 1px; background: {p['grid']}; margin: 5px 6px; }}"
         )
 
 from ..utilities import line_icon, typography_controller
