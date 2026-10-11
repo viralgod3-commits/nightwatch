@@ -754,6 +754,7 @@ def _apply_typography_if_alive(widget: QtWidgets.QWidget) -> None:
 
         if not shiboken6.isValid(widget):
             return
+        widget._nightwatch_typography_pending = False
         _TYPOGRAPHY_CONTROLLER.apply_widget(widget)
     except RuntimeError as exc:
         message = str(exc)
@@ -766,15 +767,21 @@ class _TypographyRoleFilter(QtCore.QObject):
     """Re-apply semantic roles after Qt/QSS polishes dynamic widgets."""
 
     def eventFilter(self, watched: QtCore.QObject, event: QtCore.QEvent) -> bool:
+        event_type = event.type()
         if (
-            event.type() in (QtCore.QEvent.Type.Polish, QtCore.QEvent.Type.StyleChange)
+            event_type in (QtCore.QEvent.Type.Polish, QtCore.QEvent.Type.StyleChange)
             and isinstance(watched, QtWidgets.QWidget)
         ):
             if (
-                event.type() == QtCore.QEvent.Type.StyleChange
+                event_type == QtCore.QEvent.Type.StyleChange
                 and not watched.testAttribute(QtCore.Qt.WidgetAttribute.WA_WState_Polished)
             ):
                 return False
+            # QSS can repolish the same descendant many times in one turn.
+            # Its final style needs only one deferred semantic-font refresh.
+            if getattr(watched, "_nightwatch_typography_pending", False):
+                return False
+            watched._nightwatch_typography_pending = True
             QtCore.QTimer.singleShot(
                 0,
                 watched,

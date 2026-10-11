@@ -305,10 +305,10 @@ def _install_exception_diagnostics(diagnostics) -> None:
     sys.excepthook = handle_exception
 
 
-def main() -> int:
+def main(*, startup_started: float | None = None) -> int:
     import multiprocessing
     multiprocessing.freeze_support()
-    bootstrap_started = time.monotonic()
+    bootstrap_started = time.monotonic() if startup_started is None else startup_started
     arguments = parse_args()
     diagnostics = None
     if arguments.diagnostics:
@@ -322,6 +322,7 @@ def main() -> int:
         if diagnostics is not None:
             diagnostics.verbose("STARTUP", line)
 
+    startup_mark("bootstrap imports ready")
     _install_exception_diagnostics(diagnostics)
     chart_gl_request = _configure_chart_surface_format()
 

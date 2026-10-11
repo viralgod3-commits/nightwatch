@@ -1027,6 +1027,9 @@ class MainWindow(QtWidgets.QMainWindow):
         available = screen.availableGeometry() if screen else QtCore.QRect(0, 0, 1720, 1040)
         self.setMinimumHeight(min(600, max(320, available.height() - 80)))
         self.resize(min(1720, available.width()), min(1040, available.height()))
+        # Install application defaults before child construction. Applying an
+        # application stylesheet to the finished shell repolishes every widget.
+        self._apply_application_theme()
         self._build_ui()
         self._sync_shell_minimum_width()
         # Synchronize ChartWorkspace with the canonical restored/requested timeframe
@@ -1038,7 +1041,6 @@ class MainWindow(QtWidgets.QMainWindow):
         self._apply_developer_ui_layout()
         self._apply_developer_ui_status()
         QtWidgets.QApplication.instance().installEventFilter(self)
-        self._apply_stylesheet()
         self._reset_top_metrics()
         # Chart interaction priority protects direct manipulation frame time.
         # Geometry stays at display cadence; secondary content is coalesced
@@ -3165,32 +3167,24 @@ class MainWindow(QtWidgets.QMainWindow):
             ):
                 button.setToolTip(text_value)
 
-    def _apply_stylesheet(self) -> None:
+    def _apply_application_theme(self) -> None:
+        """Set process-wide defaults once; unchanged themes must not repolish Qt."""
         t = self.ui_theme
-        set_tooltip_theme(t)
         control_border = t["control_border"]
         surfaces = getattr(self, "developer_ui_surfaces", DEV_UI_SURFACE_DEFAULTS)
         section_radius = f"{int(surfaces['block_radius'])}px"
-        status = getattr(self, "developer_ui_status", None)
-        self.setStyleSheet(build_shell_stylesheet(self.theme_name, t, surfaces, status))
-        if hasattr(self, "main_toolbar"):
-            self.main_toolbar.apply_theme(t)
-        if hasattr(self, "right_rail_controller"):
-            self.right_rail_controller.set_panel_edge_style(
-                radius=int(surfaces["block_radius"]),
-                border_color=str(t.get("border", "#202020")),
-                gap_color=t["bg"],
-            )
         application = QtWidgets.QApplication.instance()
         if application is not None:
             if not hasattr(self, "_native_application_stylesheet"):
                 self._native_application_stylesheet = application.styleSheet()
             dialog_border = f"border: 2px solid {control_border}; border-radius: {section_radius};"
             dialog_bg = t["panel2"]
-            application.setStyleSheet(
+            stylesheet = (
                 self._native_application_stylesheet +
                 f"\nQDialog, QMessageBox {{ background: {dialog_bg}; color: {t['text']}; {dialog_border} }}"
             )
+            if application.styleSheet() != stylesheet:
+                application.setStyleSheet(stylesheet)
         base_palette = (
             QtGui.QPalette(self._native_application_palette)
             if self._native_application_palette is not None
@@ -3226,9 +3220,28 @@ class MainWindow(QtWidgets.QMainWindow):
             QtGui.QPalette.ColorRole.ButtonText,
             QtGui.QColor(t["muted"]),
         )
-        self.setPalette(palette)
-        if application is not None:
+        if self.palette() != palette:
+            self.setPalette(palette)
+        if application is not None and application.palette() != palette:
             application.setPalette(palette)
+
+    def _apply_stylesheet(self) -> None:
+        t = self.ui_theme
+        set_tooltip_theme(t)
+        self._apply_application_theme()
+        surfaces = getattr(self, "developer_ui_surfaces", DEV_UI_SURFACE_DEFAULTS)
+        status = getattr(self, "developer_ui_status", None)
+        stylesheet = build_shell_stylesheet(self.theme_name, t, surfaces, status)
+        if self.styleSheet() != stylesheet:
+            self.setStyleSheet(stylesheet)
+        if hasattr(self, "main_toolbar"):
+            self.main_toolbar.apply_theme(t)
+        if hasattr(self, "right_rail_controller"):
+            self.right_rail_controller.set_panel_edge_style(
+                radius=int(surfaces["block_radius"]),
+                border_color=str(t.get("border", "#202020")),
+                gap_color=t["bg"],
+            )
         # QSS owns color/geometry; semantic typography owns font family, size,
         # weight and raster strategy. Apply it after QSS so pixel-sized legacy
         # selectors cannot silently override the active text role.

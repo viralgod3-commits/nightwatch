@@ -39,10 +39,12 @@ def _set_windows_priority() -> None:
         )
 
 
-from nightwatch.entrypoint import main
-
-
 if __name__ == "__main__":
+    import time
+    startup_started = time.monotonic()
     multiprocessing.freeze_support()
     _set_windows_priority()
-    raise SystemExit(main())
+    # Spawned workers execute this file as __mp_main__. Keep the GUI bootstrap
+    # out of their import path so they load only their own processing modules.
+    from nightwatch.entrypoint import main
+    raise SystemExit(main(startup_started=startup_started))
