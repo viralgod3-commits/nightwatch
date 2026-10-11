@@ -2159,7 +2159,7 @@ class MarketStatsWidget(QtWidgets.QWidget):
                 details.append(("Status", "Last available sample"))
         self.long_short_series = cache
         card = self.cards["long_short"]
-        card.title.setText("L/S" if self.compact else "LONG/SHORT RATIO")
+        card.title.setText("LONG / SHORT" if self.compact else "LONG/SHORT RATIO")
 
 
         samples = cache.get("All accounts", [])
