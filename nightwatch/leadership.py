@@ -1812,9 +1812,10 @@ def _workspace_drawer(owner, detail):
     detail.hide()
     owner.detail_drawer = drawer
     owner.main_content.set_drawer(drawer)
-    owner.context_button.toggled.connect(drawer.setVisible)
-    owner.context_button.toggled.connect(detail.setVisible)
-    owner.context_button.toggled.connect(lambda _visible: owner.main_content._place_drawer())
+    if hasattr(owner, "context_button"):
+        owner.context_button.toggled.connect(drawer.setVisible)
+        owner.context_button.toggled.connect(detail.setVisible)
+        owner.context_button.toggled.connect(lambda _visible: owner.main_content._place_drawer())
 
 
 def _workspace_shell(owner, name: str):
@@ -2008,10 +2009,11 @@ def _workspace_finish(owner):
         widget.verticalHeader().setDefaultSectionSize(40)
         widget.horizontalHeader().setFixedHeight(38)
         widget.setMouseTracking(True)
-    owner.refresh_shortcut = QtGui.QShortcut(QtGui.QKeySequence("F5"), owner)
-    owner.refresh_shortcut.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
-    owner.refresh_shortcut.activated.connect(owner.refresh_button.click)
-    owner.refresh_button.setToolTip(owner.refresh_button.toolTip() or "Update market data (F5)")
+    if hasattr(owner, "refresh_button"):
+        owner.refresh_shortcut = QtGui.QShortcut(QtGui.QKeySequence("F5"), owner)
+        owner.refresh_shortcut.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
+        owner.refresh_shortcut.activated.connect(owner.refresh_button.click)
+        owner.refresh_button.setToolTip(owner.refresh_button.toolTip() or "Update market data (F5)")
     if hasattr(owner, "_open_row"):
         owner.table.setToolTip("Double-click a row or press Enter to open its chart")
         owner.table.setAccessibleDescription(owner.table.toolTip())
@@ -2024,15 +2026,17 @@ def _workspace_finish(owner):
 
 
 def _workspace_restore_chrome(owner, settings, page: str):
-    owner.context_button.setChecked(True if page == "sectors" else
-                                   settings.value(f"markets/{page}/context_visible_v2", False, bool))
+    if hasattr(owner, "context_button"):
+        owner.context_button.setChecked(True if page == "sectors" else
+                                       settings.value(f"markets/{page}/context_visible_v2", False, bool))
     if hasattr(owner, "compare_toggle"):
         owner.compare_toggle.setChecked(settings.value(f"markets/{page}/comparison_visible", False, bool))
     _workspace_sync_reset(owner)
 
 
 def _workspace_save_chrome(owner, settings, page: str):
-    settings.setValue(f"markets/{page}/context_visible_v2", owner.context_button.isChecked())
+    if hasattr(owner, "context_button"):
+        settings.setValue(f"markets/{page}/context_visible_v2", owner.context_button.isChecked())
     if hasattr(owner, "compare_toggle"):
         settings.setValue(f"markets/{page}/comparison_visible", owner.compare_toggle.isChecked())
 
@@ -2466,7 +2470,6 @@ def _build_leader_context(owner):
     owner.context_expiry_timer = QtCore.QTimer(owner)
     owner.context_expiry_timer.setSingleShot(True)
     owner.context_expiry_timer.timeout.connect(lambda: _render_leader_context(owner))
-    owner.context_button.toggled.connect(lambda _checked: _render_leader_context(owner))
 
 
 def _render_leader_context(owner):
@@ -2573,18 +2576,6 @@ def build_leaders(owner) -> None:
     owner.direction_button.clicked.connect(lambda: _toggle_sort(owner))
     display.addWidget(owner.direction_button)
     sidebar.addStretch(1)
-    owner.context_button = QtWidgets.QPushButton("Coin detail")
-    owner.context_button.setCheckable(True)
-    owner.context_button.setToolTip("Show or hide details for the selected coin")
-    owner.actions_layout.addWidget(owner.context_button)
-    owner.refresh_button = QtWidgets.QPushButton()
-    owner.refresh_button.setObjectName("workspaceRefreshButton")
-    owner.refresh_button.setIcon(line_icon("refresh", LEADERS_PALETTE["muted"], owner.devicePixelRatioF()))
-    owner.refresh_button.setIconSize(QtCore.QSize(18, 18))
-    owner.refresh_button.setAccessibleName("Update market data")
-    owner.refresh_button.setToolTip("Update market data")
-    owner.refresh_button.clicked.connect(lambda _checked=False: owner.refresh(force=True))
-    owner.actions_layout.addWidget(owner.refresh_button)
     owner.table = QtWidgets.QTableWidget()
     owner.table.setObjectName("leadershipTable")
     owner.table_empty = QtWidgets.QLabel("Waiting for market history…\nComparable returns appear after data loads.", owner.table.viewport())
@@ -4035,14 +4026,6 @@ class SectorOverviewWidget(QtWidgets.QWidget):
         self.context_button.setCheckable(True)
         self.context_button.setChecked(True)
         self.context_button.hide()
-        self.refresh_button = QtWidgets.QPushButton()
-        self.refresh_button.setObjectName("workspaceRefreshButton")
-        self.refresh_button.setIcon(line_icon("refresh", LEADERS_PALETTE["muted"], self.devicePixelRatioF()))
-        self.refresh_button.setIconSize(QtCore.QSize(18, 18))
-        self.refresh_button.setAccessibleName("Update sector data")
-        self.refresh_button.setToolTip("Update sector data")
-        self.refresh_button.clicked.connect(lambda _checked=False: self.refresh())
-        self.actions_layout.addWidget(self.refresh_button)
         support = QtWidgets.QWidget(self)
         support.hide()
         self.stat_btc = _SectorOverviewStatCard("BTC trend", self.theme)
@@ -5509,16 +5492,6 @@ class RotationScannerWidget(LeadershipTimelineWidget):
                                              (self.candidate_mode, "improving"), (self.spot_confirmation, False),
                                              (self.hide_thin, False), (self.watched_only, False)))
         sidebar.addStretch(1)
-        self.context_button = _rotation_button("Coin detail")
-        self.context_button.setCheckable(True)
-        self.context_button.setToolTip("Show or hide details for the selected coin")
-        self.refresh_button = _rotation_button("")
-        self.refresh_button.setObjectName("workspaceRefreshButton")
-        self.refresh_button.setIcon(line_icon("refresh", LEADERS_PALETTE["muted"], self.devicePixelRatioF()))
-        self.refresh_button.setIconSize(QtCore.QSize(18, 18))
-        self.refresh_button.setAccessibleName("Update market data")
-        self.refresh_button.setToolTip("Load the latest market snapshot (F5)")
-        self.refresh_button.clicked.connect(self._reload_snapshot)
         support = QtWidgets.QWidget(self)
         support.hide()
         for name in ("summary_btc", "summary_breadth", "summary_count", "asof", "coverage"):
@@ -5680,10 +5653,6 @@ class RotationScannerWidget(LeadershipTimelineWidget):
         self.rotation_splitter.setStretchFactor(1, 0)
         self._rotation_layout_horizontal = None
         self.detail_drawer.hide()
-        self.context_button.toggled.connect(self._show_coin_detail)
-        self.actions_layout.addWidget(self.context_button)
-        self.actions_layout.addWidget(self.refresh_button)
-
         # Hidden lifecycle controls preserve Leadership's replay/detail interfaces.
         self.replay = QtWidgets.QSlider(Qt.Orientation.Horizontal, self)
         self.replay.setRange(24, 24)
