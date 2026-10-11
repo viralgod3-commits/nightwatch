@@ -1810,21 +1810,23 @@ class BinanceRest:
         params.setdefault('newOrderRespType', 'RESULT')
         return self.signed_request(api_key, api_secret, '/fapi/v1/order', params, 'POST', order_count=1, before_send=before_send)
 
-    def place_batch_orders(self, api_key: str, api_secret: str, orders: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    def place_batch_orders(self, api_key: str, api_secret: str, orders: list[dict[str, Any]], *, before_send: Callable[[], None] | None = None) -> list[dict[str, Any]]:
         if not orders:
             return []
+        if before_send is not None:
+            before_send()
         if any((str(order.get('type', '')).upper() in CONDITIONAL_ORDER_TYPES for order in orders)):
             results: list[dict[str, Any]] = []
             for index, order in enumerate(orders):
                 try:
-                    results.append(self.place_order(api_key, api_secret, order))
+                    results.append(self.place_order(api_key, api_secret, order, before_send=before_send))
                 except (RuntimeError, TimeoutError, OSError) as exc:
-                    results.append({'code': binance_error_code(exc) or -1, 'msg': str(exc), '_uncertain': execution_outcome_uncertain(exc)})
+                    results.append({'code': binance_error_code(exc) or -1, 'msg': str(exc), '_uncertain': execution_outcome_uncertain(exc), '_notSent': str(exc).startswith('Not sent:')})
                     results.extend(({'code': -1, 'msg': 'Not sent after an earlier conditional-order failure.', '_notSent': True} for _order in orders[index + 1:]))
                     break
             return results
         encoded_orders = [self._encoded_params(order) for order in orders]
-        return self.signed_request(api_key, api_secret, '/fapi/v1/batchOrders', {'batchOrders': encoded_orders}, 'POST', order_count=5)
+        return self.signed_request(api_key, api_secret, '/fapi/v1/batchOrders', {'batchOrders': encoded_orders}, 'POST', order_count=5, before_send=before_send)
 
     def modify_order(self, api_key: str, api_secret: str, changes: dict[str, Any]) -> dict[str, Any]:
         return self.signed_request(api_key, api_secret, '/fapi/v1/order', changes, 'PUT', order_count=1)

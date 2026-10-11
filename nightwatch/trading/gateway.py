@@ -11,6 +11,7 @@ import sqlite3
 import threading
 import time
 from collections import deque
+from collections.abc import Callable
 from dataclasses import asdict
 from decimal import Decimal, InvalidOperation
 from typing import Any
@@ -150,6 +151,7 @@ class TradingGateway(QtCore.QObject):
         self.api_key = os.getenv("BINANCE_API_KEY", "")
         self.api_secret = os.getenv("BINANCE_API_SECRET", "")
         self.armed = False
+        self._arm_generation = 0
         self.stopping = False
         self._lifecycle = 0
         self.trade_socket = QWebSocket()
@@ -173,6 +175,11 @@ class TradingGateway(QtCore.QObject):
         self.task_pool = QtCore.QThreadPool(self)
         self.task_pool.setMaxThreadCount(20)
         self.task_pool.setExpiryTimeout(30_000)
+        # Reconciliation can wait on several exchange reads. Keep those waits
+        # off the workers that transmit new orders, amendments and cancels.
+        self.execution_pool = QtCore.QThreadPool(self)
+        self.execution_pool.setMaxThreadCount(20)
+        self.execution_pool.setExpiryTimeout(30_000)
         self.protection_pool = QtCore.QThreadPool(self)
         self.protection_pool.setMaxThreadCount(4)
         self.account_task: ApiTask | None = None
@@ -846,10 +853,24 @@ class TradingGateway(QtCore.QObject):
         return True
 
     def disarm(self) -> None:
+        self._arm_generation += 1
         if self.armed:
             self.armed = False
             self.armed_changed.emit(False)
         self.state_changed.emit("QUICK KEYS DISARMED · MANUAL TRADING READY")
+
+    def _send_guard(self, context: dict[str, Any]) -> Callable[[], None]:
+        """Recheck queued intent after journal, worker and clock-sync waits."""
+        lifecycle, arm_generation = self._lifecycle, self._arm_generation
+        requires_arm = bool(context.get('requires_arm')) and not context.get('emergency_close')
+
+        def check() -> None:
+            if self.stopping or lifecycle != self._lifecycle:
+                raise RuntimeError('Not sent: trading session stopped or changed.')
+            if requires_arm and (not self.armed or arm_generation != self._arm_generation):
+                raise RuntimeError('Not sent: quick trading was disarmed before transmission.')
+
+        return check
 
     def connect_session(self) -> None:
         """Keep account/order transport independent of quick-key arming."""
@@ -1804,6 +1825,7 @@ class TradingGateway(QtCore.QObject):
             position_intent = "OPEN"
         context: dict[str, Any] = {
             "batch": True,
+            "requires_arm": requires_arm,
             "rules": rules,
             "position_intent": position_intent,
             '_server_time_ms': self.rest.cached_timestamp_ms(),
@@ -1907,6 +1929,7 @@ class TradingGateway(QtCore.QObject):
             "fingerprint": fingerprint,
             "sent": time.monotonic(),
         }
+        before_send = self._send_guard(context)
         task: ApiTask
 
         def done(result: Any) -> None:
@@ -1992,7 +2015,7 @@ class TradingGateway(QtCore.QObject):
                 str(order.get("type", "")).upper() in CONDITIONAL_ORDER_TYPES
                 for order in prepared
             )
-            if uncertain or contains_conditional:
+            if uncertain or (contains_conditional and not message.startswith('Not sent:')):
                 self._begin_batch_reconciliation(request_id, details, message)
             else:
                 self._remember_failure(request_id, message, False, details)
@@ -2001,8 +2024,8 @@ class TradingGateway(QtCore.QObject):
             nonlocal task
             api_key, api_secret = self.api_key, self.api_secret
             task = self._launch_task(
-                lambda: self.rest.place_batch_orders(api_key, api_secret, prepared),
-                done, failed, self.task_pool,
+                lambda: self.rest.place_batch_orders(api_key, api_secret, prepared, before_send=before_send),
+                done, failed, self.execution_pool,
             )
             self.tasks.add(task)
 
@@ -2159,6 +2182,8 @@ class TradingGateway(QtCore.QObject):
         if client_id and self._client_requests.get(client_id, request_id) != request_id:
             self._remember_failure(request_id, "Client order ID already has an unresolved request.", False, metadata)
             return request_id
+        if '_send_guard' not in metadata:
+            metadata['_send_guard'] = self._send_guard(context)
         if method in {"order.place", "algoOrder.place"} and not metadata.get("_journaled"):
             self._queue_placement(
                 request_id, metadata,
@@ -2168,13 +2193,15 @@ class TradingGateway(QtCore.QObject):
         token = self._protection_cancel_tokens.get(client_id) if context.get('protective_leg') else None
 
         def before_send() -> None:
+            metadata['_send_guard']()
             if token is not None and token.is_set():
                 raise RuntimeError('Not sent: protection tranche already exited or closed.')
 
         try:
             before_send()
         except RuntimeError as exc:
-            metadata['context'] = {**context, 'protection_obsolete': True}
+            if token is not None and token.is_set():
+                metadata['context'] = {**context, 'protection_obsolete': True}
             self._remember_failure(request_id, str(exc), False, metadata)
             return request_id
         plans = context.get('protections') or {}
@@ -2276,7 +2303,7 @@ class TradingGateway(QtCore.QObject):
             else:
                 self._handle_transport_failure(request_id, metadata, message)
 
-        pool = self.protection_pool if context.get('protective_leg') or context.get('emergency_close') else self.task_pool
+        pool = self.protection_pool if context.get('protective_leg') or context.get('emergency_close') else self.execution_pool
         task = self._launch_task(execute, done, failed, pool)
         self.admitted_requests.add(request_id)
         metadata["sent"] = time.monotonic()
@@ -2575,7 +2602,7 @@ class TradingGateway(QtCore.QObject):
             lambda: self.rest.cancel_all_orders(self.api_key, self.api_secret, symbol),
             done,
             failed,
-            self.task_pool,
+            self.execution_pool,
         )
         self.tasks.add(task)
         return request_id
