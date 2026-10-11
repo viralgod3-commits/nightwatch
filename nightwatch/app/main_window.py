@@ -2894,6 +2894,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.watchlist.apply_theme(self.ui_theme)
         self.watchlist_sidebar.apply_theme(self.ui_theme)
         self.orderbook.apply_theme(self.orderbook_theme)
+        self.large_trades.apply_theme(self.orderbook_theme)
         if self.market_board is not None:
             self.market_board.apply_theme(self.ui_theme)
         self.rotation_overview.apply_theme(self.ui_theme)
@@ -7263,6 +7264,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.watchlist.apply_theme(self.ui_theme)
         self.watchlist_sidebar.apply_theme(self.ui_theme)
         self.orderbook.apply_theme(self.orderbook_theme)
+        self.large_trades.apply_theme(self.orderbook_theme)
         if self.market_board is not None:
             self.market_board.apply_theme(self.ui_theme)
         self.rotation_overview.apply_theme(self.ui_theme)
