@@ -404,13 +404,12 @@ def _decimal_places_from_step(value: object) -> int:
     return min(16, _decimal_places_from_float(numeric))
 import time
 from collections import OrderedDict, deque
-from datetime import datetime, timezone
 from PySide6 import QtCore, QtWidgets
 from PySide6.QtCore import Qt, Signal
 from .ipc import SnapshotDecoder, SnapshotSeedRequired
 from ..models import human_number
 from ..utilities import (
-    ElidedLabel, TextRole, apply_text_render_hints, device_pixel_value, set_text_role,
+    ElidedLabel, TextRole, apply_text_render_hints, device_pixel_value, format_local_time, set_text_role,
     typography_font, typography_font_at_pixel_size, typography_min_pixel_size,
     typography_state_opacity,
 )
@@ -502,7 +501,7 @@ class _TradesTapeModel(QtCore.QAbstractTableModel):
             if prepared is not None and prepared[0] == trade:
                 return trade, prepared[1]
         self.formatted_rows += 1
-        stamp = datetime.fromtimestamp(trade.event_time_ms / 1000.0, timezone.utc).strftime('%H:%M:%S') if trade.event_time_ms > 0 else '—'
+        stamp = format_local_time(trade.event_time_ms / 1000.0, '%H:%M:%S') if trade.event_time_ms > 0 else '—'
         amount = trade.quantity if self.value_mode == 'base' else trade.notional
         prefix = '' if self.value_mode == 'base' else '$'
         size = prefix + format_book_price(amount, self.amount_decimals[self.value_mode])
@@ -829,7 +828,7 @@ class TradesTapeWidget(QtWidgets.QWidget):
         controls.setSpacing(6)
         self.status = ElidedLabel('Waiting for trades')
         set_text_role(self.status, TextRole.UI_CAPTION)
-        self.status.setToolTip('Large-trade cutoff adapts to activity. Times are UTC.')
+        self.status.setToolTip('Large-trade cutoff adapts to activity. Times use your local timezone.')
         controls.addWidget(self.status, 1)
         self.settings_button = QtWidgets.QToolButton(self)
         self.settings_button.setText('Settings')

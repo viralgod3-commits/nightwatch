@@ -7,9 +7,20 @@ import html
 import math
 import re
 import weakref
+from datetime import datetime
 from typing import Any
 
 from PySide6 import QtCore, QtGui, QtWidgets
+
+
+def local_datetime(timestamp: float) -> datetime:
+    """Convert an epoch timestamp in seconds to the user's local timezone."""
+    return datetime.fromtimestamp(float(timestamp)).astimezone()
+
+
+def format_local_time(timestamp: float, format_string: str) -> str:
+    """Format an epoch timestamp in seconds using the user's local timezone."""
+    return local_datetime(timestamp).strftime(format_string)
 
 # Shared order-book design tokens. The canvas and trade tape use the same
 # directional colors so switching views never changes the meaning of color.

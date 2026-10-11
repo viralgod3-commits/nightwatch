@@ -1777,7 +1777,7 @@ class BinanceRest:
             except (RuntimeError, TimeoutError, OSError):
                 return fallback
         now_ms = int(time.time() * 1000)
-        midnight = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+        midnight = datetime.now().astimezone().replace(hour=0, minute=0, second=0, microsecond=0)
         requests: dict[str, tuple[str, dict[str, Any], Any]] = {'session': ('/fapi/v1/klines', {'symbol': symbol, 'interval': '1m', 'startTime': int(midnight.timestamp() * 1000), 'endTime': now_ms, 'limit': 1500}, []), 'premium': ('/fapi/v1/premiumIndex', {'symbol': symbol}, {}), 'interest': ('/fapi/v1/openInterest', {'symbol': symbol}, {}), 'ticker': ('/fapi/v1/ticker/24hr', {'symbol': symbol}, {}), 'funding_history': ('/fapi/v1/fundingRate', {'symbol': symbol, 'limit': 600}, []), 'interest_detail': ('/futures/data/openInterestHist', {'symbol': symbol, 'period': '5m', 'limit': 49}, []), 'volume_detail': ('/fapi/v1/klines', {'symbol': symbol, 'interval': '1m', 'limit': 242}, []), 'taker_volume': ('/futures/data/takerlongshortRatio', {'symbol': symbol, 'period': '5m', 'limit': 2}, []), 'long_short': ('/futures/data/globalLongShortAccountRatio', {'symbol': symbol, 'period': '5m', 'limit': 30}, []), 'top_long_short_accounts': ('/futures/data/topLongShortAccountRatio', {'symbol': symbol, 'period': '5m', 'limit': 30}, []), 'top_long_short_positions': ('/futures/data/topLongShortPositionRatio', {'symbol': symbol, 'period': '5m', 'limit': 30}, [])}
         for timeframe, limit in (('15m', 600), ('4h', 450), ('1d', 365)):
             if timeframe != interval:

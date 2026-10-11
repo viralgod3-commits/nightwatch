@@ -34,7 +34,7 @@ from .rendering import (
 from .retained import RetainedChartItems
 from .super_trades import SuperTradeOverlay
 from ..orderbook.super_trades import SuperTradeFrame
-from ..utilities import alpha_color, TextRole, set_text_role, typography_controller, typography_font
+from ..utilities import alpha_color, TextRole, format_local_time, set_text_role, typography_controller, typography_font
 from ..utilities import hide_hover_tooltip, show_hover_tooltip
 from ..presentation import (
     PresentationClock,
@@ -69,7 +69,6 @@ from .magnetic_rail import (
 )
 from bisect import bisect_left, bisect_right
 from collections import OrderedDict, deque
-from datetime import datetime, timezone
 from ..constants import (
     DEFAULT_INTERVAL,
     INDICATOR_KEYS,
@@ -3938,8 +3937,7 @@ class ChartWorkspace(QtWidgets.QWidget):
         self._crosshair_axis_text = format_price(price)
         self._crosshair_axis_y_value = float(y_value)
 
-        timestamp = datetime.fromtimestamp(max(0.0, crosshair_x), timezone.utc)
-        time_text = timestamp.strftime("%d %b %Y · %H:%M UTC")
+        time_text = format_local_time(max(0.0, crosshair_x), "%d %b %Y · %H:%M")
         if time_text != getattr(self, "_crosshair_time_text", None):
             self._crosshair_time_text = time_text
             self.crosshair_time_label.setText(time_text)
@@ -7479,9 +7477,7 @@ class ChartWorkspace(QtWidgets.QWidget):
         data = points[0].data()
         if not isinstance(data, dict):
             return
-        stamp = datetime.fromtimestamp(
-            safe_float(data.get("time")), timezone.utc
-        ).strftime("%Y-%m-%d %H:%M:%S UTC")
+        stamp = format_local_time(safe_float(data.get("time")), "%Y-%m-%d %H:%M:%S")
         show_hover_tooltip(
             self,
             f"{data.get('liquidated_position', '')} LIQUIDATION\n"
@@ -8091,7 +8087,7 @@ class ChartWorkspace(QtWidgets.QWidget):
                 text = " · ".join(f"<span style='color:{self.theme[color]}'>EMA {settings[key]}</span>"
                                   for key, color in (("fast", "cyan"), ("medium", "amber"), ("slow", "purple")))
             elif name == "VWAP":
-                text = f"VWAP · {settings['anchor'].upper()} UTC"
+                text = f"VWAP · {settings['anchor'].upper()} LOCAL"
                 if not vwap_supports_interval(self.interval, settings['anchor']):
                     text += " · ANCHOR UNAVAILABLE ON THIS TIMEFRAME"
             else:

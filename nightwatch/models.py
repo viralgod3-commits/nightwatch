@@ -87,7 +87,7 @@ def raw_price(value: float, logarithmic: bool) -> float:
 
 
 def utc_stamp() -> str:
-    return datetime.now(timezone.utc).strftime("%d/%m/%y · %H:%M:%S UTC")
+    return datetime.now().astimezone().strftime("%d/%m/%y · %H:%M:%S")
 
 
 def quantize_step(value: str, step: str, *, rounding: str = ROUND_DOWN, offset: str = '0') -> str:

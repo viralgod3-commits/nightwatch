@@ -3,7 +3,6 @@ from __future__ import annotations
 
 from collections import OrderedDict
 from dataclasses import dataclass
-from datetime import datetime, timezone
 import math
 
 from PySide6 import QtCore, QtGui, QtWidgets
@@ -12,7 +11,7 @@ from PySide6.QtCore import Qt
 from ..models import Candle, chart_y, format_price, human_number
 from ..orderbook.super_trades import SUPER_TRADE_CAPACITY, SuperTradeEvent, SuperTradeFrame
 from ..theme import _ensure_directional_contrast
-from ..utilities import TextRole, hide_hover_tooltip, show_hover_tooltip, typography_font
+from ..utilities import TextRole, format_local_time, hide_hover_tooltip, show_hover_tooltip, typography_font
 
 
 @dataclass(slots=True)
@@ -304,10 +303,10 @@ class SuperTradeOverlay(QtWidgets.QWidget):
         quote = "USDC" if self.symbol.endswith("USDC") else "USDT"
         burst = event.print_count > 1
         title = f"{event.aggressor_side.upper()} {'BURST' if burst else 'LARGE TRADE'} · {self.symbol}"
-        stamp = datetime.fromtimestamp(event.event_time_ms / 1000.0, timezone.utc)
         lines = [title, f"{human_number(event.notional)} {quote} · {event.notional / event.tape_threshold:.1f}× cutoff",
                  f"{'Average price' if burst else 'Price'} {format_price(event.price)}"]
         if burst:
             lines[1] += f" · {event.print_count} prints / {event.event_time_ms - event.start_time_ms} ms"
-        lines.append(stamp.strftime("%d %b %Y · %H:%M:%S.") + f"{event.event_time_ms % 1000:03d} UTC")
+        lines.append(format_local_time(event.event_time_ms / 1000.0, "%d %b %Y · %H:%M:%S.")
+                     + f"{event.event_time_ms % 1000:03d}")
         return "\n".join(lines)

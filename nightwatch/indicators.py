@@ -5,6 +5,7 @@ from __future__ import annotations
 import math
 from collections import deque
 from dataclasses import dataclass
+from datetime import datetime, timedelta
 
 import numpy as np
 
@@ -853,7 +854,7 @@ def rolling_previous_extreme(values: np.ndarray, period: int, maximum: bool) -> 
 
 
 def vwap_supports_interval(interval: str, anchor: str) -> bool:
-    """A candle must fit wholly inside its UTC VWAP anchor period."""
+    """A candle must fit wholly inside its local-time VWAP anchor period."""
     if interval not in INTERVAL_SECONDS or anchor not in {"day", "week", "month"}:
         return False
     return (
@@ -862,16 +863,21 @@ def vwap_supports_interval(interval: str, anchor: str) -> bool:
     )
 
 
+def _local_vwap_anchor(timestamp: float, anchor: str) -> float:
+    local = datetime.fromtimestamp(float(timestamp)).astimezone()
+    date = local.date()
+    if anchor == "week":
+        date -= timedelta(days=date.weekday())
+    elif anchor == "month":
+        date = date.replace(day=1)
+    return datetime(date.year, date.month, date.day, tzinfo=local.tzinfo).timestamp()
+
+
 def _vwap_components(candles, anchor="week"):
     times, _, high, low, close, volume, quote = candle_arrays(candles)
-    if anchor == "month":
-        groups = times.astype("datetime64[s]").astype("datetime64[M]").astype("datetime64[s]").astype(float)
-    elif anchor == "day":
-        groups = np.floor(times / 86400) * 86400
-    else:
-        groups = np.floor((times + 259200) / 604800) * 604800 - 259200
     if not len(times):
-        return times.copy(), groups, volume, quote
+        return times.copy(), times.copy(), volume, quote
+    groups = np.fromiter((_local_vwap_anchor(timestamp, anchor) for timestamp in times), dtype=float, count=len(times))
     volume = np.maximum(volume, 0)
     quote = np.where(quote > 0, quote, (high + low + close) / 3.0 * volume)
     starts = np.flatnonzero(np.r_[True, groups[1:] != groups[:-1]])
@@ -1021,12 +1027,7 @@ class PriceStudyCache:
         elif name == "VWAP":
             groups, volumes, quotes = state
             anchor = settings.get("anchor", "week")
-            if anchor == "month":
-                group = float(np.datetime64(int(last.time), "s").astype("datetime64[M]").astype("datetime64[s]").astype(np.int64))
-            elif anchor == "day":
-                group = math.floor(last.time/86400)*86400
-            else:
-                group = math.floor((last.time+259200)/604800)*604800-259200
+            group = _local_vwap_anchor(last.time, anchor)
             groups[index] = group
             same = index > 0 and group == groups[index-1]
             volume = max(0.0, last.volume)

@@ -6,7 +6,7 @@ from PySide6 import QtCore, QtGui, QtWidgets
 from PySide6.QtCore import Qt
 from ..models import UiTunerHostPort
 from ..constants import DEV_UI_COLOR_FIELDS, DEV_UI_COLOR_PROFILE_FIELDS, DEV_UI_LAYOUT_DEFAULTS, DEV_UI_LAYOUT_PRESETS, DEV_UI_SURFACE_DEFAULTS, DEV_UI_STATUS_COLOR_FIELDS, DEV_UI_STATUS_PRESETS
-from ..utilities import DEV_UI_STATUS_FONT_DEFAULTS, TYPOGRAPHY_DEFAULTS, TYPOGRAPHY_ROLE_LABELS, TextRole, typography_controller, typography_font
+from ..utilities import DEV_UI_STATUS_FONT_DEFAULTS, TYPOGRAPHY_DEFAULTS, TYPOGRAPHY_ROLE_LABELS, TextRole, format_local_time, typography_controller, typography_font
 
 class UiTunerDialog(QtWidgets.QWidget):
     """Live developer-only controls for visual contrast and layout geometry."""
@@ -1339,7 +1339,6 @@ class DeveloperDialog(QtWidgets.QWidget):
 
 import os
 import threading
-from datetime import datetime, timezone
 
 from PySide6.QtCore import QUrl, Signal
 
@@ -1655,7 +1654,7 @@ class MarketHistoryDownloadDialog(QtWidgets.QDialog):
                     )
                     while cursor <= end_ms:
                         self._queue_status(
-                            f"Candles - {datetime.fromtimestamp(cursor / 1000, timezone.utc):%Y-%m-%d} "
+                            f"Candles - {format_local_time(cursor / 1000, '%Y-%m-%d')} "
                             "- Binance-safe background rate"
                         )
                         rows = self.rest.get(
@@ -1691,7 +1690,7 @@ class MarketHistoryDownloadDialog(QtWidgets.QDialog):
                         paused_at = symbol
                         break
                     self._queue_status(
-                        "Deriving UTC-aligned 1h, 4h and 1D candles locally..."
+                        "Deriving exchange-aligned 1h, 4h and 1D candles locally..."
                     )
                     self.database.aggregate_candle_intervals(
                         symbol,

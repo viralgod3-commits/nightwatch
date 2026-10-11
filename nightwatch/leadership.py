@@ -11,7 +11,6 @@ import threading
 import time
 import zlib
 from collections import Counter, OrderedDict, defaultdict
-from datetime import datetime, timezone
 from typing import Any
 
 from PySide6 import QtCore, QtGui, QtWidgets
@@ -28,6 +27,7 @@ from .utilities import (
     coin_icon_bytes,
     coin_name,
     coin_remote_symbol,
+    format_local_time,
     line_icon,
     set_text_role,
     typography_font,
@@ -66,9 +66,7 @@ def _amount(value: float | None) -> str:
 
 
 def _stamp(end: int, full: bool = False) -> str:
-    return datetime.fromtimestamp(end / 1000, timezone.utc).strftime(
-        "%d %b %H:%M UTC" if full else "%H:%M"
-    )
+    return format_local_time(end / 1000, "%d %b %H:%M" if full else "%H:%M")
 
 
 def _window(series: dict[int, Candle], end: int, hours: int) -> list[Candle]:

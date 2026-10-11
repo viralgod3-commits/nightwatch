@@ -367,7 +367,7 @@ class IndicatorSettingsDialog(QtWidgets.QDialog):
             levels: dict[float, QtWidgets.QCheckBox] = {}
             if indicator == "VWAP":
                 anchor = QtWidgets.QComboBox()
-                for label, value in (("Day · UTC", "day"), ("Week · Monday UTC", "week"), ("Month · UTC", "month")):
+                for label, value in (("Day · Local", "day"), ("Week · Local Monday", "week"), ("Month · Local", "month")):
                     anchor.addItem(label, value)
                 anchor.setCurrentIndex(max(0, anchor.findData(current.get("anchor", "week"))))
                 page_layout.addRow("Reset", anchor)
@@ -445,12 +445,12 @@ class IndicatorSettingsDialog(QtWidgets.QDialog):
                 page_layout.addRow("History", history_note)
             explanations = {
                 "EMA Trend": "21 / 50 / 200 by default. Rising, ordered averages help describe trend strength and pullbacks. Periods use the selected timeframe; they are not fixed daily averages.",
-                "VWAP": "Volume-weighted price since the selected UTC boundary. Uses quote/base traded volume; OHLC typical-price approximation only when quote volume is missing. The first incomplete anchor stays blank until more history is loaded. Daily and intraday candles support every anchor; weekly candles require Week, and monthly candles require Month.",
+                "VWAP": "Volume-weighted price since the selected local-time boundary. Uses quote/base traded volume; OHLC typical-price approximation only when quote volume is missing. The first incomplete anchor stays blank until more history is loaded. Daily and intraday candles support every anchor; weekly candles require Week, and monthly candles require Month.",
                 "Donchian Channels": "Breakout context from completed prior candles. A 20-candle channel reacts faster; 55 gives a broader trend range. The current candle cannot move its own breakout threshold.",
                 "RSI": "Momentum, not an automatic sell signal. RSI can remain above 70 during a strong bull trend. Flat prices produce 50.",
                 "ATR": "Displayed as ATR / close × 100, allowing comparison across differently priced pairs. Measures volatility, not direction.",
                 "Visible Volume Profile": "Estimated from OHLCV candle ranges, not exact trades at each price. Changes with the selected visible range by design.",
-                "Session Volume Profile": "Estimated volume distribution for the current UTC day. Not an exact trade-by-price histogram.",
+                "Session Volume Profile": "Estimated volume distribution for the current local day. Not an exact trade-by-price histogram.",
                 "Open Interest": "USD notional OI: changes reflect both positioning and price. Rising OI alone does not tell you whether longs or shorts are entering.",
                 "Liquidations": "Observed forced-order snapshots only. Binance can omit events within its snapshot interval; this is not total exchange liquidation volume.",
                 "Funding Rate History": "Raw rates are per settlement, not annualized. Positive rates mean longs pay shorts. The optional EMA uses actual settlements without clipping spikes.",

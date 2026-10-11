@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import time
 from collections import OrderedDict
-from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 from typing import Any, ClassVar
 
@@ -22,7 +21,7 @@ from ..constants import (
 from ..models import SymbolRules
 from ..models import TradingGatewayPort
 from ..theme import DEFAULT_THEME_NAME, THEMES, ui_palette
-from ..utilities import ElidedLabel, line_icon
+from ..utilities import ElidedLabel, format_local_time, line_icon
 from ..utilities import TextRole, set_text_role, typography_controller, typography_font
 from ..models import format_price, human_number, quantize_step, safe_float, validate_step
 from .orders import (
@@ -3162,7 +3161,7 @@ class _FillAccountModel(QtCore.QAbstractListModel):
             return cached[1]
         timestamp = safe_float(payload.get("time")) / 1000.0
         try:
-            stamp = datetime.fromtimestamp(timestamp, timezone.utc).strftime("%d %b %Y · %H:%M:%S UTC") if timestamp > 0 else "—"
+            stamp = format_local_time(timestamp, "%d %b %Y · %H:%M:%S") if timestamp > 0 else "—"
         except (OverflowError, OSError, ValueError):
             stamp = "—"
         pnl = safe_float(payload.get("realizedPnl"))
@@ -3500,7 +3499,7 @@ class _AccountTableItem(QtWidgets.QTableWidgetItem):
 def _account_sort_value(header, text, payload):
     key = {"PRICE": "price", "SIZE": "qty", "PNL": "realizedPnl", "FEE": "commission",
            "WALLET": "walletBalance", "AVAILABLE": "availableBalance", "UPNL": "unrealizedProfit",
-           "TIME": "time", "TIME UTC": "time"}.get(header)
+           "TIME": "time", "TIME LOCAL": "time"}.get(header)
     if key:
         value = payload.get(key)
         return safe_float(value) if value is not None else None
@@ -4809,7 +4808,7 @@ class TradingWorkspace(QtWidgets.QWidget):
             f"STALE · {int(age)}s" if age >= 30.0
             else f"UPDATED {int(age)}s AGO"
         )
-        scope = f"{self.symbol} · FILLS · UTC" if self.tabs.currentIndex() == 2 else "ALL SYMBOLS"
+        scope = f"{self.symbol} · FILLS · LOCAL TIME" if self.tabs.currentIndex() == 2 else "ALL SYMBOLS"
         self.status.setText(f"{scope} · {freshness}")
 
     def _account_tab_changed(self, tab_index: int) -> None:

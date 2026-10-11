@@ -11,7 +11,7 @@ import time
 import threading
 from collections import deque
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime
 from decimal import Decimal
 from typing import Any
 
@@ -162,6 +162,7 @@ from ..utilities import (
     coin_icon_exists,
     coin_remote_symbol,
     configure_typography,
+    format_local_time,
     line_icon,
     set_tooltip_theme,
     tooltip_stylesheet,
@@ -5769,7 +5770,7 @@ class MainWindow(QtWidgets.QMainWindow):
             funding_rows.append(("Mark basis", f"{(mark_price / index_price - 1.0) * 100:+.4f}%"))
         for item in reversed(funding_history[-8:]):
             timestamp = safe_float(item.get("fundingTime")) / 1000.0
-            label = datetime.fromtimestamp(timestamp, timezone.utc).strftime("%d %b %H:%M UTC") if timestamp else "Past rate"
+            label = format_local_time(timestamp, "%d %b %H:%M") if timestamp else "Past rate"
             funding_rows.append((label, f"{safe_float(item.get('fundingRate')) * 100:+.4f}%"))
         self.stats.cards["funding"].set_detail(
             f"{perpetual_display_symbol(self.current_symbol)} · FUNDING",

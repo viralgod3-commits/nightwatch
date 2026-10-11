@@ -3,11 +3,11 @@ from __future__ import annotations
 
 from collections import OrderedDict
 from dataclasses import dataclass, replace
-from datetime import datetime, timezone
 import math
 import uuid
 
 from ..models import OrderFlowSnapshot, OrderFlowTradePrint
+from ..utilities import format_local_time
 from .revisions import print_revision_key, prints_equal
 from .formatting import format_book_price
 
@@ -302,7 +302,7 @@ class _TapeView:
         outcomes = {'FOLLOW_THROUGH': '✓', 'REJECTED': '×', 'UNRESOLVED': '…'}
         formatted = []
         for _key, trade in rows:
-            stamp = (datetime.fromtimestamp(trade.event_time_ms / 1000.0, timezone.utc).strftime('%H:%M:%S')
+            stamp = (format_local_time(trade.event_time_ms / 1000.0, '%H:%M:%S')
                      if trade.event_time_ms > 0 else '—')
             amount = trade.quantity if mode == 'base' else trade.notional
             cells = (format_book_price(trade.price, decimals),

@@ -7,7 +7,6 @@ import math
 import time
 from bisect import bisect_left, insort_left
 from collections import deque
-from datetime import datetime, timezone
 from typing import Any
 
 import numpy as np
@@ -25,6 +24,7 @@ from ..utilities import (
     coin_icon_bytes,
     coin_icon_exists,
     device_pixel_rect,
+    format_local_time,
     line_icon,
 )
 from ..utilities import (
@@ -361,11 +361,11 @@ def _market_funding_rate(value: float) -> str:
 
 
 def _market_funding_time(next_ms: float, event_ms: float = 0.0) -> tuple[str, str]:
-    """Return a compact countdown and exact UTC time from the exchange schedule."""
+    """Return a compact countdown and exact local time from the exchange schedule."""
     if not math.isfinite(next_ms) or next_ms <= 0:
         return "", "—"
     try:
-        exact = datetime.fromtimestamp(next_ms / 1000, timezone.utc).strftime("%d %b %H:%M UTC")
+        exact = format_local_time(next_ms / 1000, "%d %b %H:%M")
     except (OverflowError, OSError, ValueError):
         return "", "—"
     now_ms = event_ms if math.isfinite(event_ms) and event_ms > 0 else time.time() * 1000
@@ -952,10 +952,7 @@ class MetricHistoryCanvas(QtWidgets.QWidget):
         elif self.price_enabled:
             rows.append(("Price", "—"))
 
-        stamp_text = datetime.fromtimestamp(
-            self.hover_stamp / 1000,
-            timezone.utc,
-        ).strftime("%d %b %Y · %H:%M UTC")
+        stamp_text = format_local_time(self.hover_stamp / 1000, "%d %b %Y · %H:%M")
         note = str(self.details.get(self.hover_stamp, ""))
         self.hover_readout.set_readout(stamp_text, rows[:6], note)
         self._position_hover_readout(self._hover_mouse_x)
@@ -1195,10 +1192,7 @@ class MetricHistoryCanvas(QtWidgets.QWidget):
             (start, Qt.AlignmentFlag.AlignLeft),
             (end, Qt.AlignmentFlag.AlignRight),
         ):
-            label = datetime.fromtimestamp(
-                stamp / 1000,
-                timezone.utc,
-            ).strftime("%d %b %H:%M")
+            label = format_local_time(stamp / 1000, "%d %b %H:%M")
             painter.drawText(
                 device_pixel_rect(
                     self,
@@ -2144,7 +2138,7 @@ class MarketStatsWidget(QtWidgets.QWidget):
                 ("L/S ratio", f"{safe_float(row['longShortRatio']):.3f}"),
                 (f"Long {unit}", share("longAccount")),
                 (f"Short {unit}", share("shortAccount")),
-                ("Updated", datetime.fromtimestamp(stamp / 1000, timezone.utc).strftime("%d %b %H:%M UTC")),
+                ("Updated", format_local_time(stamp / 1000, "%d %b %H:%M")),
             ])
             if not valid or time.time() * 1000 - stamp > 900_000:
                 details.append(("Status", "Last available sample"))
@@ -2219,13 +2213,8 @@ class MarketStatsWidget(QtWidgets.QWidget):
             taker_color if math.isfinite(buy_pct) else None,
         )
         sample_end_ms = safe_float(latest.get("timestamp")) + 300_000
-        sample_end = (
-            datetime.fromtimestamp(sample_end_ms / 1000.0, timezone.utc).strftime(
-                "%d %b %H:%M UTC"
-            )
-            if sample_end_ms > 300_000
-            else "—"
-        )
+        sample_end = (format_local_time(sample_end_ms / 1000.0, "%d %b %H:%M")
+                      if sample_end_ms > 300_000 else "—")
         card.set_detail(
             f"{perpetual_display_symbol(self.symbol)} · TAKER VOLUME",
             [
