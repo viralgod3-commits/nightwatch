@@ -1135,11 +1135,11 @@ class MainToolbar(QtWidgets.QFrame):
         hover = theme.get("control_hover", "#1E1E22")
         active = theme.get("active_line", text)
         background = theme.get("panel", "#10151D")
-        border = theme.get("border", "#273140")
+        app_background = theme.get("bg", background)
         selected = theme.get("active", "#1C3048")
         # Scope all rules locally so the instrument cards retain their styling.
         self.setStyleSheet(f"""
-            QFrame#mainToolbar {{ background: {background}; border: 0; border-bottom: 1px solid {border}; }}
+            QFrame#mainToolbar {{ background: {background}; border: 0; border-bottom: 1px solid {app_background}; }}
             QLabel#terminalBrand {{ background: transparent; color: {text}; border: 0; }}
             QFrame#workspaceNav {{ background: transparent; border: 0; padding: 0; }}
             QPushButton#workspaceNavButton {{ background: transparent; color: {muted};

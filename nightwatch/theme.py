@@ -1664,7 +1664,7 @@ def build_shell_stylesheet(theme_name: str, theme: dict[str, str], surfaces: dic
                 background: {t['header']}; border: 0;
             }}
             QFrame#settingsHeader {{ border-bottom: 1px solid {separator}; }}
-            QFrame#settingsFooter {{ border-top: 1px solid {t['panel']}; }}
+            QFrame#settingsFooter {{ border-top: 1px solid {separator}; }}
             QWidget#settingsHeaderText {{ background: transparent; border: 0; }}
             QLabel#settingsHeading {{ color: {t['text']}; }}
             QLineEdit#settingsSearch {{
