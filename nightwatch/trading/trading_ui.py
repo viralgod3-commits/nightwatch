@@ -21,7 +21,7 @@ from ..constants import (
 )
 from ..models import SymbolRules
 from ..models import TradingGatewayPort
-from ..theme import DEFAULT_THEME_NAME, THEMES, _contrast_ratio_hex, ui_palette
+from ..theme import DEFAULT_THEME_NAME, THEMES, ui_palette
 from ..utilities import ElidedLabel, line_icon
 from ..utilities import TextRole, set_text_role, typography_controller, typography_font
 from ..models import format_price, human_number, quantize_step, safe_float, validate_step
@@ -42,10 +42,6 @@ def _trading_stylesheet(theme: dict[str, str]) -> str:
         color = QtGui.QColor(t[key])
         return f"rgba({color.red()}, {color.green()}, {color.blue()}, {alpha})"
 
-    def foreground(key: str) -> str:
-        candidates = (t['text'], t['bg'])
-        return max(candidates, key=lambda color: _contrast_ratio_hex(color, t[key]))
-
     return f"""
         QWidget#responsiveOrderTicket, QWidget#tradingWorkspace,
         QWidget#accountActivityPanel, QWidget#positionDeskBody,
@@ -55,7 +51,6 @@ def _trading_stylesheet(theme: dict[str, str]) -> str:
         QFrame#positionDeskView, QScrollArea#positionDeskScroll,
         QScrollArea#deskTicketScroll {{ background: {t['panel']}; border: 0; }}
         QFrame#tradingWorkspaceHeader {{ background: {t['panel2']}; border: 0; border-bottom: 1px solid {t['border']}; }}
-        QFrame#ticketActionFooter {{ background: {t['panel2']}; border: 0; border-top: 1px solid {t['border']}; }}
         QTabBar#ticketOrderTypes, QSlider#ticketAllocation,
         QWidget#tradingAdaptiveActivity {{ background: {t['panel']}; border: 0; }}
         QTabBar#tradingViewSwitch {{ background: transparent; border: 0; }}
@@ -88,15 +83,10 @@ def _trading_stylesheet(theme: dict[str, str]) -> str:
         QPushButton:focus, QToolButton:focus {{ border-color: {t['cyan']}; }}
         QPushButton:disabled, QToolButton:disabled {{ color: {t['muted']}; border-color: {t['border']}; background: {t['control']}; }}
         QToolButton#tradeSettingsMini {{ border: 0; background: transparent; padding: 0; min-height: 0; }}
-        QPushButton#buySideButton, QPushButton#sellSideButton {{ color: {t['muted']}; }}
-        QPushButton#buySideButton:checked {{ color: {t['green']}; border-color: {t['green']}; background: {tint('green', 24)}; }}
-        QPushButton#sellSideButton:checked {{ color: {t['red']}; border-color: {t['red']}; background: {tint('red', 24)}; }}
-        QPushButton#ticketSubmit, QPushButton#deskReduceSubmit {{ min-height: 30px; }}
-        QPushButton#ticketSubmit[direction="long"] {{ background: {t['green']}; border-color: {t['green']}; color: {foreground('green')}; }}
-        QPushButton#ticketSubmit[direction="short"] {{ background: {t['red']}; border-color: {t['red']}; color: {foreground('red')}; }}
-        QPushButton#ticketSubmit:hover {{ border: 2px solid {t['text']}; }}
-        QPushButton#ticketSubmit:focus, QPushButton#deskReduceSubmit:focus {{ border: 2px solid {t['text']}; }}
-        QPushButton#ticketSubmit:disabled {{ background: {t['control']}; border-color: {t['border']}; color: {t['muted']}; }}
+        QPushButton#buySideButton {{ color: {t['green']}; border-color: {t['green']}; background: {tint('green', 24)}; }}
+        QPushButton#sellSideButton {{ color: {t['red']}; border-color: {t['red']}; background: {tint('red', 24)}; }}
+        QPushButton#deskReduceSubmit {{ min-height: 30px; }}
+        QPushButton#buySideButton:disabled, QPushButton#sellSideButton:disabled {{ color: {t['muted']}; border-color: {t['border']}; background: {t['control']}; }}
         QPushButton#deskReduceSubmit {{ color: {t['red']}; border-color: {t['red']}; background: {tint('red', 20)}; }}
         QPushButton#deskReduceSubmit:disabled {{ color: {t['muted']}; border-color: {t['border']}; background: {t['control']}; }}
         QPushButton#protectionButton[active="true"] {{ color: {t['cyan']}; border-color: {t['cyan']}; }}
@@ -134,8 +124,8 @@ def _trading_stylesheet(theme: dict[str, str]) -> str:
         QScrollBar::add-page, QScrollBar::sub-page {{ background: transparent; }}
         QLabel#accountCardSide[direction="long"], QLabel[pnl="positive"] {{ color: {t['green']}; }}
         QLabel#accountCardSide[direction="short"], QLabel[pnl="negative"] {{ color: {t['red']}; }}
-        QLabel#accountCardRisk[risk="warning"], QLabel#accountOrderStatus[state="partial"], QLabel#tradeValidation {{ color: {t['amber']}; }}
-        QLabel#accountCardRisk[risk="critical"], QLabel#tradeExecutionState[attention="true"], QLabel#tradeValidation[blocked="true"] {{ color: {t['red']}; }}
+        QLabel#accountCardRisk[risk="warning"], QLabel#accountOrderStatus[state="partial"] {{ color: {t['amber']}; }}
+        QLabel#accountCardRisk[risk="critical"] {{ color: {t['red']}; }}
         QFrame#positionDeskRow, QFrame#workingOrderRow {{ background: {t['panel2']}; border: 1px solid {t['border']}; border-radius: 6px; }}
         QFrame#positionDeskRow[selected="true"], QFrame#workingOrderRow[selected="true"] {{ background: {t['control_hover']}; border-color: {t['cyan']}; }}
         QFrame#positionDeskDetails {{ background: {t['panel2']}; border: 1px solid {t['border']}; border-radius: 8px; }}
@@ -1065,7 +1055,7 @@ class LeverageComboBox(CompactTradeComboBox):
         self._custom_item_value: int | None = None
         self._custom_editor: QtWidgets.QLineEdit | None = None
         for leverage in self.COMMON_VALUES:
-            self.addItem(f"Cross {leverage}×", leverage)
+            self.addItem(f"{leverage}×", leverage)
         self.view().installEventFilter(self)
         self.view().viewport().installEventFilter(self)
         self.currentIndexChanged.connect(self._selection_changed)
@@ -1098,7 +1088,7 @@ class LeverageComboBox(CompactTradeComboBox):
         self._remove_custom_item()
         index = self.findData(value)
         if index < 0:
-            self.addItem(f"Cross {value}×", value)
+            self.addItem(f"{value}×", value)
             self._custom_item_value = value
             index = self.count() - 1
         self.setCurrentIndex(index)
@@ -1270,7 +1260,6 @@ class OrderPanel(QtWidgets.QWidget):
         self._desk_syncing = False
         self._desk_selected_key = None
         self._build_ticket()
-        self.credentials_button.clicked.connect(self.edit_credentials)
         self.quick_settings_button.clicked.connect(self.quick_settings_requested)
         self.type_combo.currentIndexChanged.connect(
             lambda _index: self._type_changed(self.current_order_type())
@@ -1301,7 +1290,8 @@ class OrderPanel(QtWidgets.QWidget):
         self.leverage.valueChanged.connect(self._leverage_value_changed)
         self.buy_button.toggled.connect(lambda _checked: self._sync_auto_position_side())
         self.sell_button.toggled.connect(lambda _checked: self._sync_auto_position_side())
-        self.submit_button.clicked.connect(self.prepare_order)
+        self.buy_button.clicked.connect(lambda: self._submit_from_side(True))
+        self.sell_button.clicked.connect(lambda: self._submit_from_side(False))
         for editor in (self.quantity_edit, self.price_edit, self.trigger_edit, self.activation_edit):
             editor.textChanged.connect(lambda _text: self._update_order_summary())
         self.callback_rate.valueChanged.connect(lambda _value: self._update_order_summary())
@@ -1387,15 +1377,11 @@ class OrderPanel(QtWidgets.QWidget):
         balance_caption.setObjectName("ticketFieldCaption")
         set_text_role(balance_caption, TextRole.UI_CAPTION)
         account_row.addWidget(balance_caption, 1)
-        self.credentials_button = QtWidgets.QPushButton("Connect API")
-        self.credentials_button.setObjectName("tradeConnectButton")
-        set_text_role(self.credentials_button, TextRole.UI_CAPTION)
         self.quick_settings_button = QtWidgets.QToolButton()
         self.quick_settings_button.setObjectName("tradeSettingsMini")
         self.quick_settings_button.setFixedSize(24, 24)
         self.quick_settings_button.setIconSize(QtCore.QSize(16, 16))
         self.quick_settings_button.setAccessibleName("Trading settings")
-        account_row.addWidget(self.credentials_button)
         account_row.addWidget(self.quick_settings_button)
         account_box.addLayout(account_row)
         self.account_summary = ElidedLabel("— USDT")
@@ -1406,10 +1392,11 @@ class OrderPanel(QtWidgets.QWidget):
 
         self.reduce_only = QtWidgets.QCheckBox("Reduce only", self)
         self.reduce_only.setObjectName("ticketReduceOnly")
-        self.reduce_only.setToolTip("Reduce an existing position without increasing or reversing it")
         self.reduce_only.setAccessibleName("Reduce only")
         set_text_role(self.reduce_only, TextRole.UI_CONTROL)
-        content.addWidget(self.reduce_only)
+        mode_row = QtWidgets.QHBoxLayout()
+        mode_row.addWidget(self.reduce_only)
+        content.addLayout(mode_row)
         self.position_side = combo(((side, side) for side in ("BOTH", "LONG", "SHORT")))
         self.position_side.setParent(self)
         self.position_side.hide()
@@ -1418,12 +1405,12 @@ class OrderPanel(QtWidgets.QWidget):
         self.leverage_field.setObjectName("tradingInlineField")
         leverage_row = QtWidgets.QHBoxLayout(self.leverage_field)
         leverage_row.setContentsMargins(0, 0, 0, 0)
-        leverage_row.addWidget(label("Margin / leverage"), 1)
+        leverage_row.addStretch(1)
         self.leverage = LeverageComboBox()
         self.leverage.setAccessibleName("Cross margin leverage")
         set_text_role(self.leverage, TextRole.UI_CONTROL)
         leverage_row.addWidget(self.leverage)
-        content.addWidget(self.leverage_field)
+        mode_row.addWidget(self.leverage_field, 1)
 
         self.side_selector = QtWidgets.QWidget()
         self.side_selector.setObjectName("tradingInlineField")
@@ -1572,8 +1559,6 @@ class OrderPanel(QtWidgets.QWidget):
         content.addWidget(self.reduce_amount_field)
 
         self.preset_section, preset = frame("ticketField", spacing=3)
-        self.allocation_caption = label("Allocate available margin")
-        preset.addWidget(self.allocation_caption)
         self.margin_bar = TicketAllocationControl()
         self.margin_bar.setObjectName("tradingMarginRow")
         self.size_presets = self.margin_bar.buttons
@@ -1597,15 +1582,8 @@ class OrderPanel(QtWidgets.QWidget):
                     "FOK": "Fill or kill", "GTX": "Post only"}
         self.time_in_force = combo(((key, key) for key in tif_help), "timeInForceCycle")
         self.time_in_force.setAccessibleName("Time in force")
-        self.time_in_force.setProperty("essentialToolTip", True)
-        for index, (key, title) in enumerate(tif_help.items()):
-            self.time_in_force.setItemData(index, title, Qt.ItemDataRole.ToolTipRole)
-        self.time_in_force.currentIndexChanged.connect(lambda index:
-            self.time_in_force.setToolTip(tif_help.get(self.time_in_force.itemData(index), "")))
-        self.time_in_force.setToolTip(tif_help["GTC"])
         tif.addWidget(self.time_in_force)
         self.protection_field, protection = frame("ticketField", spacing=5)
-        protection.addWidget(label("Exit protection"))
         self.protection_button = QtWidgets.QPushButton("Add TP / SL")
         self.protection_button.setObjectName("protectionButton")
         self.protection_button.setProperty("active", False)
@@ -1615,21 +1593,11 @@ class OrderPanel(QtWidgets.QWidget):
         options.addWidget(self.protection_field, 1)
         content.addWidget(self.options_bar)
 
-        self.reduce_policy_label = ElidedLabel("")
-        self.reduce_policy_label.setObjectName("ticketContext")
-        set_text_role(self.reduce_policy_label, TextRole.UI_CAPTION)
-        content.addWidget(self.reduce_policy_label)
         self.feedback_box, feedback = frame("ticketFeedback", (10, 8, 10, 8), 5)
-        self.risk_size_hint = label("", name="ticketContext")
         self.protection_summary = label("", name="tradeAccountSummary")
-        self.validation_label = label("", TextRole.UI_CONTROL, "tradeValidation")
-        self.account_problem_label = label("", TextRole.UI_CONTROL, "tradeValidation")
-        self.account_problem_label.setProperty("blocked", True)
-        self.execution_context_label = label("", name="ticketContext")
         self.reconcile_button = QtWidgets.QPushButton("Reconcile unknown orders")
         self.reconcile_button.clicked.connect(self.gateway.reconcile_unknown_orders)
-        for widget in (self.risk_size_hint, self.protection_summary, self.validation_label,
-                       self.account_problem_label, self.execution_context_label, self.reconcile_button):
+        for widget in (self.protection_summary, self.reconcile_button):
             if isinstance(widget, QtWidgets.QLabel):
                 widget.setWordWrap(True)
             widget.hide()
@@ -1661,45 +1629,26 @@ class OrderPanel(QtWidgets.QWidget):
             self.estimate_rows[key], self.estimate_captions[key], self.estimate_values[key] = line, caption, value
         content.addWidget(self._desk_estimates)
 
-        self.desk_footer, footer = frame("ticketActionFooter", (16, 12, 16, 14), 8)
-        self.execution_state_label = ElidedLabel("")
-        self.execution_state_label.setObjectName("tradeExecutionState")
-        self.execution_state_label.setProperty("essentialToolTip", True)
-        set_text_role(self.execution_state_label, TextRole.UI_CAPTION)
-        footer.addWidget(self.execution_state_label)
-        self.open_submit_bar = QtWidgets.QWidget()
-        submit = QtWidgets.QVBoxLayout(self.open_submit_bar)
-        submit.setContentsMargins(0, 0, 0, 0)
-        self.submit_button = QtWidgets.QPushButton("Buy / Long")
-        self.submit_button.setObjectName("ticketSubmit")
-        self.submit_button.setAutoDefault(False)
-        self.submit_button.setDefault(False)
-        self.submit_button.setToolTip("Submit the selected order · Ctrl+Enter")
-        self.submit_button.setProperty("essentialToolTip", True)
-        set_text_role(self.submit_button, TextRole.UI_CONTROL)
-        submit.addWidget(self.submit_button)
-        footer.addWidget(self.open_submit_bar)
         self.reduce_submit = QtWidgets.QPushButton("Close at market")
         self.reduce_submit.setObjectName("deskReduceSubmit")
         self.reduce_submit.setAutoDefault(False)
         set_text_role(self.reduce_submit, TextRole.UI_CONTROL)
         self.reduce_submit.clicked.connect(self._submit_desk_reduce)
-        footer.addWidget(self.reduce_submit)
-        root.addWidget(self.desk_footer)
+        content.addWidget(self.reduce_submit)
         self._ticket_body.installEventFilter(self)
         self._order_card.installEventFilter(self)
         self.ticket_scroll.viewport().installEventFilter(self)
         self._layout_sync_timer = QTimer(self)
         self._layout_sync_timer.setSingleShot(True)
         self._layout_sync_timer.timeout.connect(self._sync_scroll_height)
-        focus_order = (self.credentials_button, self.quick_settings_button, self.reduce_only,
+        focus_order = (self.quick_settings_button, self.reduce_only,
                        self.leverage, self.buy_button, self.sell_button, self.reduce_position_combo,
                        self.order_type_tabs, self.type_combo, self.working_type, self.trigger_edit,
                        self.trigger_mark_button, self.price_edit, self.price_mark_button,
                        self.activation_edit, self.activation_mark_button, self.callback_rate,
                        self.quantity_edit, self.size_mode, self.reduce_amount_edit,
                        self.allocation_slider, *self.size_presets, self.time_in_force,
-                       self.protection_button, self.reconcile_button, self.submit_button, self.reduce_submit)
+                       self.protection_button, self.reconcile_button, self.reduce_submit)
         for previous, following in zip(focus_order, focus_order[1:]):
             QtWidgets.QWidget.setTabOrder(previous, following)
         self.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Expanding)
@@ -1777,7 +1726,7 @@ class OrderPanel(QtWidgets.QWidget):
     def _submit_desk_reduce(self):
         row = self.reduce_position_combo.currentData()
         if not self.reduce_only.isChecked() or not isinstance(row, dict):
-            self._set_validation_message("Select an open position to reduce.")
+            self._show_order_error("Select an open position to reduce.")
             return
         self._submit_from_side(_position_close_side(row) == "BUY")
 
@@ -1792,31 +1741,26 @@ class OrderPanel(QtWidgets.QWidget):
                 self._desk_presentation = presentation
                 self.reduce_context.setVisible(reducing)
                 self.reduce_amount_field.setVisible(reducing)
-                # Hide the old action first: showing both even briefly lets Qt
-                # enlarge the parent to a stale, two-action-row minimum height.
-                (self.open_submit_bar if reducing else self.reduce_submit).hide()
-                (self.reduce_submit if reducing else self.open_submit_bar).show()
-                self.reduce_policy_label.setVisible(reducing)
+                self.reduce_submit.setVisible(reducing)
                 self.leverage_field.setVisible(not reducing)
                 self.protection_field.setVisible(not reducing)
                 self.allocation_slider.setAccessibleName(
                     "Position close percentage" if reducing else "Available margin percentage")
                 self.side_selector.setVisible(not reducing)
-                self.allocation_caption.setText("Close a percentage of this position" if reducing else "Allocate available margin")
                 self.mark_row.setVisible(self.current_order_type() == "MARKET")
                 self.options_bar.setVisible(not reducing or self.current_order_type() in {"LIMIT", "STOP"})
                 for key, estimate_row in self.estimate_rows.items():
                     estimate_row.setVisible(key == "value" or not reducing)
                 self.estimate_captions["value"].setText("Estimated value")
-            usable = self.gateway.has_credentials() and not self.gateway.stopping
-            self.submit_button.setEnabled(usable)
+            usable = not self.gateway.stopping
+            self.buy_button.setEnabled(usable)
+            self.sell_button.setEnabled(usable)
             base = self.symbol.removesuffix(self.rules.quote_asset)
             _set_text_if_changed(self.reduce_unit, base)
             mark = f"{format_price(self.mark_price)} {self.rules.quote_asset}" if self.mark_price > 0 else "—"
             _set_text_if_changed(self.mark_value, mark)
             self.feedback_box.setVisible(any(not w.isHidden() for w in
-                                             (self.validation_label, self.account_problem_label, self.risk_size_hint, self.protection_summary,
-                                              self.execution_context_label, self.reconcile_button)))
+                                             (self.protection_summary, self.reconcile_button)))
             row = self.reduce_position_combo.currentData()
             self.reduce_position_combo.setVisible(reducing and self.reduce_position_combo.count() > 1)
             has_position = isinstance(row, dict)
@@ -1826,7 +1770,6 @@ class OrderPanel(QtWidgets.QWidget):
             _set_repolished_property(self.reduce_direction_label, "direction", direction.lower())
             amount = abs(safe_float(row.get("positionAmt"))) if has_position else 0
             _set_text_if_changed(self.reduce_position_label, f"Current position {_quantity_text(amount)} {base}" if has_position else f"No {self.symbol} position available to reduce")
-            _set_text_if_changed(self.reduce_policy_label, f"Reduce only · {'Hedge mode' if self.hedge_mode else 'One-way mode' if self.hedge_mode is False else 'Account mode unknown'}")
             mode = str(self.size_mode.currentData())
             raw = self.quantity_edit.text().strip()
             if quantity is None:
@@ -1884,7 +1827,7 @@ class OrderPanel(QtWidgets.QWidget):
 
     def compact_required_height(self) -> int:
         """Natural ticket height, independent of the scroll viewport's height."""
-        return self._desk_layout.sizeHint().height() + self.desk_footer.sizeHint().height()
+        return self._desk_layout.sizeHint().height()
 
     def _publish_compact_minimum_height(self) -> None:
         if not self.compact:
@@ -1906,13 +1849,6 @@ class OrderPanel(QtWidgets.QWidget):
         if wide == self._wide_ticket:
             return
         self._wide_ticket = wide
-        footer = self.desk_footer.layout()
-        footer.setDirection(QtWidgets.QBoxLayout.Direction.LeftToRight if wide
-                            else QtWidgets.QBoxLayout.Direction.TopToBottom)
-        footer.setStretch(0, 1 if wide else 0)
-        for action in (self.open_submit_bar, self.reduce_submit):
-            action.setMinimumWidth(300 if wide else 0)
-            action.setMaximumWidth(340 if wide else 16777215)
         self._desk_layout.setDirection(QtWidgets.QBoxLayout.Direction.LeftToRight if wide
                                        else QtWidgets.QBoxLayout.Direction.TopToBottom)
         for index in range(3):
@@ -1948,8 +1884,7 @@ class OrderPanel(QtWidgets.QWidget):
             button.setFixedWidth(button.fontMetrics().horizontalAdvance("Mark") + 20)
         for button in (self.buy_button, self.sell_button):
             button.setFixedHeight(height)
-        for button in (self.submit_button, self.reduce_submit):
-            button.setFixedHeight(height + 6)
+        self.reduce_submit.setFixedHeight(height)
         self.margin_bar.sync_geometry()
         self._sync_field_widths()
         self._update_submit_text()
@@ -1962,14 +1897,7 @@ class OrderPanel(QtWidgets.QWidget):
         available = self._ticket_columns[1].width()
         desired = self.size_mode.fontMetrics().horizontalAdvance(self.size_mode.currentText()) + 64
         self.size_mode.setFixedWidth(max(80, min(desired, max(80, available // 2))))
-        self.leverage.setFixedWidth(self.leverage.fontMetrics().horizontalAdvance("Cross 125×") + 64)
-        leverage_row = self.leverage_field.layout()
-        caption_width = leverage_row.itemAt(0).widget().sizeHint().width()
-        stack_leverage = self._wide_ticket or (caption_width + self.leverage.width() + leverage_row.spacing()
-                                               > self.ticket_scroll.viewport().width() - 32)
-        leverage_row.setDirection(QtWidgets.QBoxLayout.Direction.TopToBottom if stack_leverage
-                                  else QtWidgets.QBoxLayout.Direction.LeftToRight)
-        leverage_row.setStretch(0, 0 if stack_leverage else 1)
+        self.leverage.setFixedWidth(self.leverage.fontMetrics().horizontalAdvance("125×") + 48)
         self.reduce_unit.setFixedWidth(min(100, self.reduce_unit.fontMetrics().horizontalAdvance(self.reduce_unit.text()) + 8))
 
     def _typography_changed(self) -> None:
@@ -2100,6 +2028,7 @@ class OrderPanel(QtWidgets.QWidget):
             self._update_execution_state()
         elif message:
             self._leverage_problem = f"Leverage change failed: {message}"
+            QtWidgets.QMessageBox.warning(self, "Leverage unavailable", self._leverage_problem)
             self._update_account_problem()
             confirmed = self.gateway.current_leverage(symbol) or self._last_confirmed_leverage
             if not self._leverage_edit_pending():
@@ -2111,7 +2040,7 @@ class OrderPanel(QtWidgets.QWidget):
 
     def _copy_mark_to(self, target: QtWidgets.QLineEdit) -> None:
         if not self._mark_is_fresh():
-            self._set_validation_message(
+            self._show_order_error(
                 "MARK PRICE UNAVAILABLE" if self.mark_price <= 0 else "MARK PRICE STALE"
             )
             return
@@ -2120,7 +2049,6 @@ class OrderPanel(QtWidgets.QWidget):
         except ValueError:
             text = format_price(self.mark_price).replace(",", "")
         target.setText(text)
-        self._set_validation_message("")
         self._update_order_summary()
 
     def current_time_in_force(self) -> str:
@@ -2282,22 +2210,15 @@ class OrderPanel(QtWidgets.QWidget):
         self._update_execution_state()
 
     def _update_submit_text(self) -> None:
-        """Side controls select a draft. Only the footer submits it."""
-        buying = self.buy_button.isChecked()
-        for button, text in ((self.buy_button, "Buy / Long"), (self.sell_button, "Sell / Short")):
-            _set_text_if_changed(button, text)
-            button.setAccessibleName(f"Select {text.lower()} side")
-        direction = "long" if buying else "short"
-        _set_repolished_property(self.submit_button, "direction", direction)
-        action = "Buy / Long" if buying else "Sell / Short"
+        """Keep the two execution actions concise and accessible."""
         kind = dict((value, title.lower()) for title, value in self.ORDER_TYPES)[self.current_order_type()]
-        text = f"{action} · {kind}"
-        self.submit_button.setAccessibleName(f"Submit {kind} {'buy' if buying else 'sell'} order for {self.symbol}")
-        width = max(0, self.width() - 48)
-        _set_text_if_changed(self.submit_button, text if self.submit_button.fontMetrics().horizontalAdvance(text) <= width else action)
+        for button, text, side in ((self.buy_button, "Buy / Long", "buy"),
+                                   (self.sell_button, "Sell / Short", "sell")):
+            _set_text_if_changed(button, text)
+            button.setAccessibleName(f"Submit {kind} {side} order for {self.symbol}")
 
     def _submit_from_side(self, buying: bool) -> None:
-        """Submit the selected reduction through the canonical order builder."""
+        """Submit either side through the canonical order builder."""
         target = self.buy_button if buying else self.sell_button
         if not target.isChecked():
             target.setChecked(True)
@@ -2393,9 +2314,6 @@ class OrderPanel(QtWidgets.QWidget):
         self._update_account_problem()
 
     def _update_account_problem(self) -> None:
-        text = "\n".join(value for value in (self._account_problem, self._leverage_problem) if value)
-        _set_text_if_changed(self.account_problem_label, text)
-        self.account_problem_label.setVisible(bool(text))
         self._sync_position_desk()
 
     def _size_mode_changed(self, mode: str) -> None:
@@ -2494,16 +2412,11 @@ class OrderPanel(QtWidgets.QWidget):
         self._protection_lifecycle = str(text or "").upper()
         self._update_protection_label()
 
-    def _set_validation_message(self, text: str, *, blocked: bool = True) -> None:
-        text = str(text or "")
-        _set_repolished_property(self.validation_label, "blocked", bool(text) and blocked)
-        changed = _set_text_if_changed(self.validation_label, text)
-        if self.validation_label.isHidden() == bool(text):
-            self.validation_label.setVisible(bool(text))
-            changed = True
-        self._sync_position_desk()
-        if self.compact and changed:
-            QTimer.singleShot(0, self, self._publish_compact_minimum_height)
+    def _show_order_error(self, text: str) -> None:
+        # Validation is actionable only after a user asks to place/copy an order.
+        # Preview updates leave unavailable estimates blank instead of adding warnings.
+        if text:
+            QtWidgets.QMessageBox.warning(self, "Order unavailable", str(text))
 
     def _mark_is_fresh(self) -> bool:
         return bool(
@@ -2531,83 +2444,19 @@ class OrderPanel(QtWidgets.QWidget):
         self.trigger_mark_button.setEnabled(fresh and conditional and not trailing)
         self.activation_mark_button.setEnabled(fresh and trailing)
 
-    def _leverage_state_text(self) -> str:
-        requested = int(self.leverage.value())
-        confirmed = int(self.gateway.current_leverage(self.symbol))
-        if self._leverage_apply_timer.isActive() or self.symbol in self.gateway.cross_pending:
-            return f"CROSS {requested}× APPLYING"
-        if confirmed <= 0:
-            return "LEVERAGE UNKNOWN"
-        if requested != confirmed:
-            return f"CROSS {confirmed}× · REQUEST {requested}×"
-        return f"CROSS {confirmed}× CONFIRMED"
-
     def _execution_request_changed(self, *_args: object) -> None:
         self._update_execution_state()
 
     def _update_execution_state(self) -> None:
-        venue = "TESTNET" if self.testnet else "LIVE"
-        if not self._market_live:
-            market = "MARKET OFFLINE"
-        elif not self._book_valid:
-            market = "BOOK SYNCING"
-        elif self.mark_price <= 0:
-            market = "MARK UNAVAILABLE"
-        elif not self._mark_is_fresh():
-            market = "MARK STALE"
-        else:
-            market = "MARKET LIVE"
-        used, capacity, unknown = self.gateway.placement_status()
-        submission = self._submission_state if self._submission_state not in {"", "IDLE"} else "READY"
-        if unknown:
-            submission = "OUTCOME UNKNOWN"
-        elif used and submission == "READY":
-            submission = "SENDING"
-        parts = [submission, f"PLACEMENTS {used}/{capacity}", f"UNKNOWN {unknown}"]
-        parts.extend((market, self._leverage_state_text()))
-        detail = self._market_reason
-        if self._submission_detail:
-            detail = (detail + " · " if detail else "") + self._submission_detail
-        if self._submission_request_id:
-            detail = (detail + " · " if detail else "") + self._submission_request_id
-        quick = "QUICK ORDERS UNLOCKED" if self.gateway.armed else "QUICK ORDERS LOCKED"
-        gateway_detail = self._gateway_state_text.strip()
-        tooltip = f"{venue} · {quick} · {' · '.join(parts)}"
-        if detail:
-            tooltip += f" · {detail}"
-        if gateway_detail:
-            tooltip += f" · {gateway_detail}"
-        visible = f"{submission} · {venue}"
-        leverage = self.gateway.current_leverage(self.symbol)
-        if leverage > 0:
-            visible += f" · CROSS {leverage}×"
-        if unknown:
-            visible += f" · {unknown} UNKNOWN"
-        elif self._submission_state == "SENDING" and self._submission_detail:
-            visible += f"\n{self._submission_detail}"
-        if not self.gateway.has_credentials():
-            visible = "CONNECT API TO TRADE"
-        elif self.symbol in self.gateway.cross_pending or self._leverage_apply_timer.isActive():
-            visible += " · APPLYING LEVERAGE"
-        self.credentials_button.setVisible(not self.gateway.has_credentials())
-        _set_text_if_changed(self.execution_context_label,
-                             f"{market} · {used}/{capacity} placements · "
-                             f"Quick {'unlocked' if self.gateway.armed else 'locked'}")
-        self.execution_context_label.setVisible(bool(used or unknown))
-        if submission == "READY" and self.gateway.has_credentials() and market != "MARKET LIVE":
-            visible = f"{market} · {venue}"
-        state_changed = _set_text_if_changed(self.execution_state_label, visible)
-        self.execution_state_label.setToolTip(tooltip)
-        self.execution_state_label.setVisible(True)
-        uncertain = submission == "OUTCOME UNKNOWN"
-        _set_repolished_property(self.execution_state_label, "attention",
-                                uncertain or self._submission_state in {"REJECTED", "FAILED"})
+        # An unknown outcome needs a recovery action; routine readiness belongs
+        # to the gateway and is checked again by the canonical order builder.
+        _used, _capacity, unknown = self.gateway.placement_status()
+        uncertain = bool(unknown) or self._submission_state == "OUTCOME UNKNOWN"
         reconcile_changed = self.reconcile_button.isHidden() == uncertain
-        if reconcile_changed:
-            self.reconcile_button.setVisible(uncertain)
-        if self.compact and (state_changed or reconcile_changed):
-            QTimer.singleShot(0, self, self._publish_compact_minimum_height)
+        self.reconcile_button.setVisible(uncertain)
         self.reconcile_button.setEnabled(self.gateway.has_credentials() and not self.gateway.stopping)
+        if self.compact and reconcile_changed:
+            QTimer.singleShot(0, self, self._publish_compact_minimum_height)
         self._sync_position_desk()
 
     def _manual_market_block_reason(self, order_type: str, reducing: bool) -> str:
@@ -2628,16 +2477,7 @@ class OrderPanel(QtWidgets.QWidget):
         return ""
 
     def _update_order_summary(self) -> None:
-        risk_mode = self.size_mode.currentData() == "RISK %"
-        stops = self.protection_plans.get("sl", [])
-        risk_text = (f"RISK % USES FIRST STOP · {format_price(safe_float(stops[0].get('price')))}"
-                     if stops else "RISK % REQUIRES A FIRST STOP-LOSS TARGET")
-        _set_text_if_changed(self.risk_size_hint, risk_text if risk_mode else "")
-        self.risk_size_hint.setVisible(risk_mode)
-        reducing = self.reduce_only.isChecked()
-        buying = self.buy_button.isChecked()
         order_type = self.current_order_type()
-        preview_error = ""
         quantity = ""
         try:
             if order_type in {"LIMIT", "STOP"} and self.price_edit.text().strip():
@@ -2648,23 +2488,9 @@ class OrderPanel(QtWidgets.QWidget):
                 self._validated_price(self.activation_edit.text().replace(",", "").strip(), "Activation price")
             if self.quantity_edit.text().strip():
                 quantity = self._quantity(order_type)
-            elif reducing:
-                available = self._reduced_position_size()
-                if available <= 0 and getattr(self.gateway, "account_loaded", False):
-                    target = "SHORT" if buying else "LONG"
-                    preview_error = f"NO {target} POSITION AVAILABLE TO REDUCE"
-        except (ValueError, TypeError) as exc:
-            preview_error = str(exc)
+        except (ValueError, TypeError):
+            pass
         self._update_ticket_estimates(quantity, order_type)
-        block = self._manual_market_block_reason(order_type, reducing)
-        if block:
-            self._set_validation_message(block)
-        elif preview_error:
-            self._set_validation_message(preview_error)
-        elif order_type == "LIMIT" and not reducing and not self._mark_is_fresh():
-            self._set_validation_message("LIMIT READY TO DRAFT · MARK STALE · PRICE BAND NOT VERIFIED", blocked=False)
-        elif self.validation_label.text():
-            self._set_validation_message("")
 
     def _update_ticket_estimates(self, quantity: str, order_type: str) -> None:
         self._desk_preview_quantity = quantity
@@ -2703,7 +2529,6 @@ class OrderPanel(QtWidgets.QWidget):
             self.type_combo.setCurrentIndex(self.type_combo.findData("LIMIT"))
         if target.hasFocus():
             target.selectAll()
-        self._set_validation_message("")
         self._update_order_summary()
         return True, label
 
@@ -2931,10 +2756,9 @@ class OrderPanel(QtWidgets.QWidget):
                         direction = "below" if side == "BUY" else "above"
                         raise ValueError(f"Stop-loss prices for this {side} entry must be {direction} {format_price(reference)}.")
         except ValueError as exc:
-            self._set_validation_message(str(exc))
+            self._show_order_error(str(exc))
             self._update_execution_state()
             return
-        self._set_validation_message("")
         request = {
             "order": order,
             "protections": active_protections,
