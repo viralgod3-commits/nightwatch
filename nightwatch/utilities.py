@@ -1217,6 +1217,9 @@ class InstrumentBar(QtWidgets.QFrame):
                 QtWidgets.QSizePolicy.Policy.Fixed, QtWidgets.QSizePolicy.Policy.Fixed)
             self.market_row.addWidget(self.identity_control)
             self.identity_control.width_changed.connect(self._apply_responsive_layout)
+        # Keep the market metrics as one compact group against the right edge
+        # of the instrument bar, rather than distributing them across it.
+        self.market_row.addStretch(1)
         self._metric_minimum_widths = []
         self.metric_separators = []
         for card in self.metric_controls:
@@ -1230,9 +1233,9 @@ class InstrumentBar(QtWidgets.QFrame):
             self._metric_minimum_widths.append(minimum)
             card.setMaximumWidth(16777215)
             card.setMinimumWidth(minimum)
-            card.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding,
+            card.setSizePolicy(QtWidgets.QSizePolicy.Policy.Fixed,
                                QtWidgets.QSizePolicy.Policy.Fixed)
-            self.market_row.addWidget(card, 1)
+            self.market_row.addWidget(card)
             width_changed = getattr(card, "width_changed", None)
             if width_changed is not None:
                 width_changed.connect(self._apply_responsive_layout)
@@ -1340,7 +1343,7 @@ class InstrumentBar(QtWidgets.QFrame):
             if self.identity_control is not None:
                 self.identity_control.setVisible(identity_visible)
             for index, card in enumerate(self.metric_controls):
-                card.setMinimumWidth(metric_widths[index] - 1)
+                card.setFixedWidth(metric_widths[index] - 1)
                 card.setVisible(index < count)
                 self.metric_separators[index].setVisible(index < count)
             self.row.invalidate()
