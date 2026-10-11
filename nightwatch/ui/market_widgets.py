@@ -1678,7 +1678,7 @@ class MetricCard(QtWidgets.QFrame):
         )
         set_text_role(
             self.title,
-            TextRole.TOP_TICKER_SYMBOL if self.identity else TextRole.UI_CAPTION if compact else TextRole.UI_LABEL,
+            TextRole.TOP_TICKER_SYMBOL if self.identity else TextRole.TOP_MARKET_TITLE if compact else TextRole.UI_LABEL,
         )
 
 
@@ -1953,7 +1953,7 @@ class MarketStatsWidget(QtWidgets.QWidget):
             card.metric_owner = self
         if compact:
             compact_titles = {
-                "volume": "24H VOL",
+                "volume": "24H VOLUME",
                 "taker": "Taker volume",
                 "oi": "OPEN INTEREST",
                 "long_short": "LONG / SHORT",

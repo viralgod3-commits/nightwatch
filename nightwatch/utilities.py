@@ -38,6 +38,7 @@ class TextRole:
     UI_GLYPH = "ui_glyph"
     INSTRUMENT_SYMBOL = "instrument_symbol"
     TOP_TICKER_SYMBOL = "top_ticker_symbol"
+    TOP_MARKET_TITLE = "top_market_title"
     TOP_MARKET_VALUE = "top_market_value"
     MARKET_VALUE = "market_value"
     MARKET_VALUE_EMPHASIZED = "market_value_emphasized"
@@ -87,6 +88,7 @@ TYPOGRAPHY_ROLE_LABELS: dict[str, str] = {
     TextRole.UI_GLYPH: "UI glyph controls",
     TextRole.INSTRUMENT_SYMBOL: "Instrument / symbol identifiers",
     TextRole.TOP_TICKER_SYMBOL: "Top-bar ticker identifier",
+    TextRole.TOP_MARKET_TITLE: "Top-bar market metric titles",
     TextRole.TOP_MARKET_VALUE: "Top-bar market values",
     TextRole.MARKET_VALUE: "Market / execution values",
     TextRole.MARKET_VALUE_EMPHASIZED: "Emphasized market values",
@@ -169,6 +171,7 @@ TYPOGRAPHY_DEFAULTS: dict[str, dict[str, Any]] = {
     # can make glyphs such as uppercase T appear disproportionately heavy.
     TextRole.INSTRUMENT_SYMBOL: _font_profile("ui", 9.5, 500, hinting="vertical"),
     TextRole.TOP_TICKER_SYMBOL: _font_profile("ui", 9.5, 500, hinting="vertical"),
+    TextRole.TOP_MARKET_TITLE: _font_profile("ui", 7.0, 400, hinting="vertical"),
     TextRole.TOP_MARKET_VALUE: _font_profile("ui", 8.5, 500, hinting="vertical"),
     TextRole.MARKET_VALUE: _font_profile("numeric", 9.0, 500, hinting="full", fixed_pitch=True),
     TextRole.MARKET_VALUE_EMPHASIZED: _font_profile("numeric", 9.0, 600, hinting="full", fixed_pitch=True),
@@ -258,7 +261,7 @@ TYPOGRAPHY_FONT_FILES: dict[str, str] = {
 
 
 _LEGACY_TEXT_ROLES: dict[str, str] = {
-    "topMetricTitle": TextRole.UI_CAPTION,
+    "topMetricTitle": TextRole.TOP_MARKET_TITLE,
     "metricTitle": TextRole.UI_LABEL,
     "tradeFieldLabel": TextRole.UI_LABEL,
     "tradingSectionLabel": TextRole.UI_LABEL,
