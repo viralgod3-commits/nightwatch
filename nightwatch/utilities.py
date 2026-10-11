@@ -1103,16 +1103,19 @@ class MainToolbar(QtWidgets.QFrame):
 
     HEIGHT = 42
 
-    def __init__(self, navigation: QtWidgets.QWidget, layout_control: QtWidgets.QWidget,
-                 settings_control: QtWidgets.QWidget, fullscreen_control: QtWidgets.QWidget,
+    def __init__(self, navigation: QtWidgets.QWidget, theme_control: QtWidgets.QWidget,
+                 layout_control: QtWidgets.QWidget, settings_control: QtWidgets.QWidget,
+                 fullscreen_control: QtWidgets.QWidget,
                  parent: QtWidgets.QWidget | None = None):
         super().__init__(parent)
         self.setObjectName("mainToolbar")
         self.setAttribute(QtCore.Qt.WidgetAttribute.WA_StyledBackground, True)
         self.setFixedHeight(self.HEIGHT)
         row = QtWidgets.QHBoxLayout(self)
-        row.setContentsMargins(12, 0, 8, 0)
-        row.setSpacing(8)
+        # Navigation needs its own breathing room, while utility controls are a
+        # contiguous, edge-aligned group in the top-right corner.
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(0)
         brand = QtWidgets.QLabel("NIGHTWATCH", self)
         brand.setObjectName("terminalBrand")
         set_text_role(brand, TextRole.UI_LABEL)
@@ -1123,7 +1126,7 @@ class MainToolbar(QtWidgets.QFrame):
             button.setFixedHeight(self.HEIGHT - 1)
         row.addWidget(navigation)
         row.addStretch(1)
-        for control in (layout_control, settings_control, fullscreen_control):
+        for control in (theme_control, layout_control, settings_control, fullscreen_control):
             control.setFixedSize(self.HEIGHT, self.HEIGHT - 1)
             row.addWidget(control)
         self.apply_theme({})
@@ -1830,6 +1833,12 @@ def line_icon_pixmap(
                 center.y() + math.sin(angle) * 7.3,
             )
             painter.drawLine(inner, outer)
+    elif kind == 'theme':
+        painter.drawEllipse(QtCore.QRectF(2.5, 2.5, 13.0, 13.0))
+        path = QtGui.QPainterPath(QtCore.QPointF(9.0, 2.5))
+        path.cubicTo(5.4, 5.0, 5.4, 13.0, 9.0, 15.5)
+        path.cubicTo(13.8, 13.4, 13.8, 4.6, 9.0, 2.5)
+        painter.drawPath(path)
     painter.end()
     return pixmap
 

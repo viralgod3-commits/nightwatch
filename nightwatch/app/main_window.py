@@ -1399,7 +1399,18 @@ class MainWindow(QtWidgets.QMainWindow):
         news_ribbon_height = 40
         self._news_ribbon_height = news_ribbon_height
 
-        # One-click panel layouts sit immediately to the left of Settings.
+        # The top-right utility controls are contiguous and flush with the
+        # toolbar edge: theme, layout, settings, then full screen.
+        self.theme_button = QtWidgets.QPushButton()
+        self.theme_button.setObjectName("topUtilityButton")
+        self.theme_button.setFixedSize(toolbar_height, toolbar_height)
+        self.theme_button.setIconSize(QtCore.QSize(18, 18))
+        self.theme_button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.theme_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.theme_button.setAccessibleName("Switch application theme")
+        self.theme_button.setProperty("informationalToolTip", True)
+        self.theme_button.clicked.connect(self._cycle_theme)
+
         self.panel_layout_button = QtWidgets.QPushButton()
         self.panel_layout_button.setObjectName("topUtilityButton")
         self.panel_layout_button.setFixedSize(toolbar_height, toolbar_height)
@@ -1571,7 +1582,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.clear_drawings_action = QtGui.QAction("Clear drawings", self)
 
         self.main_toolbar = MainToolbar(
-            workspace_nav, self.panel_layout_button, self.settings_button,
+            workspace_nav, self.theme_button, self.panel_layout_button, self.settings_button,
             self.fullscreen_button, central
         )
         self.main_toolbar.apply_theme(self.ui_theme)
@@ -6243,6 +6254,10 @@ class MainWindow(QtWidgets.QMainWindow):
             del blocker
 
     def _update_toolbar_icons(self) -> None:
+        theme_button = getattr(self, "theme_button", None)
+        if theme_button is not None:
+            theme_button.setIcon(line_icon("theme", self.ui_theme["muted"], self.devicePixelRatioF()))
+            self._sync_theme_toolbar_button()
         layout_button = getattr(self, "panel_layout_button", None)
         if layout_button is not None:
             layout_button.setIcon(line_icon("panels", self.ui_theme["muted"], self.devicePixelRatioF()))
@@ -6272,6 +6287,35 @@ class MainWindow(QtWidgets.QMainWindow):
         label = "Exit full screen" if enabled else "Enter full screen"
         button.setAccessibleName(label)
         button.setToolTip(label)
+
+    def _sync_theme_toolbar_button(self) -> None:
+        button = getattr(self, "theme_button", None)
+        if button is None:
+            return
+        names = tuple(THEMES)
+        if not names:
+            button.setEnabled(False)
+            return
+        try:
+            current_index = names.index(self.theme_name)
+        except ValueError:
+            current_index = 0
+        current = THEME_DISPLAY_NAMES.get(names[current_index], names[current_index])
+        following_name = names[(current_index + 1) % len(names)]
+        following = THEME_DISPLAY_NAMES.get(following_name, following_name)
+        button.setEnabled(len(names) > 1)
+        button.setToolTip(f"Theme: {current}\nClick for {following}")
+        button.setAccessibleName(f"Application theme: {current}. Next: {following}")
+
+    def _cycle_theme(self, _checked: bool = False) -> None:
+        names = tuple(THEMES)
+        if len(names) < 2:
+            return
+        try:
+            current_index = names.index(self.theme_name)
+        except ValueError:
+            current_index = -1
+        self.apply_theme(names[(current_index + 1) % len(names)])
 
     def _sync_fullscreen_controls(self, enabled: bool) -> None:
         enabled = bool(enabled)
