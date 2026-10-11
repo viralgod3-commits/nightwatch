@@ -302,19 +302,12 @@ class SuperTradeOverlay(QtWidgets.QWidget):
 
     def tooltip_text(self, event: SuperTradeEvent) -> str:
         quote = "USDC" if self.symbol.endswith("USDC") else "USDT"
-        base = self.symbol.removesuffix(quote)
         burst = event.print_count > 1
         title = f"{event.aggressor_side.upper()} {'BURST' if burst else 'LARGE TRADE'} · {self.symbol}"
-        quantity = f"{event.quantity:,.8f}".rstrip("0").rstrip(".")
         stamp = datetime.fromtimestamp(event.event_time_ms / 1000.0, timezone.utc)
-        lines = [title, f"Total {human_number(event.notional)} {quote} · {quantity} {base}",
+        lines = [title, f"{human_number(event.notional)} {quote} · {event.notional / event.tape_threshold:.1f}× cutoff",
                  f"{'Average price' if burst else 'Price'} {format_price(event.price)}"]
         if burst:
-            lines.extend((f"{event.print_count} prints · {event.event_time_ms - event.start_time_ms} ms",
-                          f"Range {format_price(event.low_price)} – {format_price(event.high_price)}"))
-        lines.append(f"{event.notional / event.tape_threshold:.1f}× tape threshold "
-                     f"({human_number(event.tape_threshold)} {quote} at detection)")
+            lines[1] += f" · {event.print_count} prints / {event.event_time_ms - event.start_time_ms} ms"
         lines.append(stamp.strftime("%d %b %Y · %H:%M:%S.") + f"{event.event_time_ms % 1000:03d} UTC")
-        if burst:
-            lines.append("Inferred same-side sweep; participant identity is unavailable.")
         return "\n".join(lines)

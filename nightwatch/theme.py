@@ -1211,13 +1211,7 @@ def build_shell_stylesheet(theme_name: str, theme: dict[str, str], surfaces: dic
             border: 0;
         }}
 
-        QToolTip {{
-            background: {t['header']};
-            color: {t['text']};
-            border: 1px solid {t['control_border']};
-            border-radius: {radius};
-            padding: 4px 5px;
-        }}
+        {tooltip_stylesheet(t)}
         QStatusBar {{
             background: {t['topbar']};
             color: {t['muted']};
@@ -1611,10 +1605,7 @@ def build_shell_stylesheet(theme_name: str, theme: dict[str, str], surfaces: dic
             QScrollBar::handle:horizontal {{ background: {t['border']}; min-width: 24px; border-radius: {radius}; }}
             QScrollBar::handle:horizontal:hover {{ background: {t['muted']}; }}
             QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{ width: 0; }}
-            QToolTip {{
-                background: {t['panel2']}; color: {t['text']}; border: 1px solid {control_border};
-                padding: 5px;
-            }}
+            {tooltip_stylesheet(t)}
             QStatusBar {{ background: {t['panel']}; color: {t['muted']}; border-top: 1px solid {t['border']}; padding: 0 5px; }}
             QStatusBar::item {{ border: 0; }}
             QStatusBar#terminalStatusBar {{

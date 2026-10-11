@@ -48,11 +48,11 @@ class PriceAlertDialog(QtWidgets.QDialog):
             QtWidgets.QSizePolicy.Policy.Expanding,
             QtWidgets.QSizePolicy.Policy.Fixed,
         )
-        self.price.setToolTip("The exact price level monitored against the live last-traded price.")
+        self.price.setToolTip('Triggers when the last-traded price crosses this level.')
         self.direction = QtWidgets.QComboBox()
         self.direction.addItems(("Any crossing", "Crossing up", "Crossing down"))
         self.direction.setToolTip(
-            "Any crossing triggers from either side. Crossing up only triggers from below; crossing down only from above."
+            'Up: crosses from below. Down: crosses from above. Any: either direction.'
         )
         buttons = QtWidgets.QDialogButtonBox(
             QtWidgets.QDialogButtonBox.StandardButton.Ok
@@ -91,7 +91,7 @@ class AlertSettingsDialog(QtWidgets.QDialog):
             checkbox.setChecked(center.destinations[key])
             self.checks[key] = checkbox
             destination_layout.addWidget(checkbox)
-        self.checks["sound"].setToolTip("Play the Windows notification sound when an alert fires.")
+        self.checks["sound"].setToolTip('Play a sound when the alert triggers.')
         self.checks["telegram"].setToolTip(
             "Send the alert through the Telegram bot token and chat ID entered below."
         )
@@ -156,14 +156,14 @@ class AlertsPanel(QtWidgets.QWidget):
         controls = QtWidgets.QHBoxLayout()
         controls.setSpacing(6)
         self.add_button = QtWidgets.QPushButton("+ ALERT")
-        self.add_button.setToolTip("Create a one-time alert when the active symbol crosses a price.")
+        self.add_button.setToolTip('Create a one-time price alert for this symbol.')
         self.settings_button = QtWidgets.QPushButton("DELIVERY")
-        self.settings_button.setToolTip("Choose in-app, sound and Telegram alert delivery.")
+        self.settings_button.setToolTip('Choose how alerts are delivered.')
         self.cancel_button = QtWidgets.QPushButton("CANCEL ALL")
         self.cancel_button.setToolTip("Cancel every active custom price alert.")
         self.clear_button = QtWidgets.QToolButton()
         self.clear_button.setText("CLEAR")
-        self.clear_button.setToolTip("Clear fired and status messages without cancelling active alerts.")
+        self.clear_button.setToolTip('Clear messages; keep active alerts.')
         self.active_count = QtWidgets.QLabel("ARMED 0")
         self.active_count.setObjectName("tradeFieldLabel")
         set_text_role(self.active_count, TextRole.UI_LABEL)

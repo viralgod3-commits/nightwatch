@@ -490,10 +490,10 @@ class _TradesTapeModel(QtCore.QAbstractTableModel):
         if role == Qt.ItemDataRole.ToolTipRole:
             outcome = self.OUTCOMES.get(trade.outcome, ('—', 'unknown'))[1]
             direction = 'up' if trade.outcome_direction > 0 else 'down' if trade.outcome_direction < 0 else 'flat'
-            movement = f"\nPrice direction: {direction}" if trade.outcome in {'FOLLOW_THROUGH', 'REJECTED'} else ''
-            return (f"{trade.aggressor_side.upper()} aggressor\nPrice: {cells[0]}\n"
-                    f"Quantity: {format_book_price(trade.quantity)}\nValue: {_format_tape_quote(trade.notional)}\n"
-                    f"UTC time: {cells[3]}\nRelative size: {trade.relative_size:.1f}×\n500 ms outcome: {outcome}{movement}")
+            if column != 2:
+                return None
+            return (f"500 ms outcome: {outcome} · {direction}\n"
+                    f"Relative size: {trade.relative_size:.1f}× usual")
         return None
 
     def _row(self, trade):
@@ -829,7 +829,7 @@ class TradesTapeWidget(QtWidgets.QWidget):
         controls.setSpacing(6)
         self.status = ElidedLabel('Waiting for trades')
         set_text_role(self.status, TextRole.UI_CAPTION)
-        self.status.setToolTip('Adaptive minimum value from the existing trade analyzer. Times are UTC. History retains up to 500 prints per mode for the current market session.')
+        self.status.setToolTip('Large-trade cutoff adapts to activity. Times are UTC.')
         controls.addWidget(self.status, 1)
         self.settings_button = QtWidgets.QToolButton(self)
         self.settings_button.setText('Settings')

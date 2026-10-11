@@ -955,16 +955,14 @@ class LeadershipTimelineWidget(QtWidgets.QWidget):
         self.coverage.setText(f"{covered}/{len(self.symbols)} histories · {self.eligible_count} liquid pairs"
                               + (f" · {unavailable} unavailable" if unavailable else "")
                               + (" · BTC pending" if not btc_ready else ""))
-        self.coverage.setToolTip("\n".join(f"{symbol}: {error}" for symbol, error in self.errors.items()
-                                          if symbol in {*self.symbols, BENCHMARK}) or "All displayed values use completed hourly candles.")
+        self.coverage.setToolTip("Some market data is unavailable. Refresh to retry." if self.errors else "Completed hourly candles only.")
         self.asof.setText(("Latest completed hour · " if self.replay.value() == 24 else "Replay · ")
                           + (_stamp(end, True) if self.end else "Waiting for history"))
         self.scope.setText(f"Current liquid universe · 4H volume shares: {prepared['cohort_count']} comparable pairs · Volume baseline: prior 24H median · Tags: reference labels / Binance")
-        self.scope.setToolTip("Replay keeps today's selected liquid universe. Volume shares compare two consecutive 4H windows using exactly the same covered pairs; BTC is the benchmark and is excluded from this altcoin turnover total.")
+        self.scope.setToolTip('Replay uses today’s selected pairs. Volume share compares consecutive 4H windows; BTC is excluded.')
         self.sample_caption.setText(f"{len(ordered)} of {len(self.symbols)} coins · Returns in USD · RS score vs BTC · Click a header to sort")
         self.latest.setText(_stamp(end) if self.end else "—")
-        self.latest.setToolTip(("Latest completed close: " if self.replay.value() == 24 else "Replay: ")
-                               + (_stamp(end, True) if self.end else "Waiting for history") + "\nClick to return to the latest completed hour.")
+        self.latest.setToolTip("Return to the latest completed hour")
         self.replay.setToolTip(_stamp(end, True) if self.end else "Waiting for history")
 
         headers = _LEADER_HEADERS
@@ -1072,7 +1070,7 @@ class LeadershipTimelineWidget(QtWidgets.QWidget):
                                 0.10 + 0.24 * strength,
                             )
                             detail["foreground"] = state_color
-                        item.setToolTip("Display-only relative-strength score (0–100) derived from 1H/4H/24H BTC-relative return, acceleration and relative volume. It is not a forecast probability.")
+                        item.setToolTip('Strength score, 0–100: return vs BTC, momentum and volume. Not a probability.')
                     elif column == 8:
                         detail.update(role="state", foreground=_leader_color(state, self.theme))
                     elif column == 10:
@@ -1093,7 +1091,7 @@ class LeadershipTimelineWidget(QtWidgets.QWidget):
                     else:
                         detail["numeric"] = column in (0, 3)
                     if column not in (7, 10) and column not in _LEADER_CONTEXT_COLUMNS:
-                        item.setToolTip(f"{symbol} · {name} · {category}\nDouble-click to open chart\n4H vs BTC: {_pct(metrics.get('rs4'))} · 24H vs BTC: {_pct(metrics.get('rs24'))}")
+                        item.setToolTip("Double-click to open chart" if column == 0 else "")
                     item.setData(DETAIL_ROLE, detail)
                     item.setForeground(QtGui.QColor(detail.get("foreground", self.theme.get("text", "#EDEDED"))))
 
@@ -1136,7 +1134,7 @@ class LeadershipTimelineWidget(QtWidgets.QWidget):
     def _render_changes(self, events) -> None:
         text = "Recent changes: " + "  ·  ".join(f"{_stamp(at)} {symbol.removesuffix('USDT')} {state}" for at, symbol, state in events[:5])
         self.changes.setText(text if events else "Recent changes: no new leadership changes in the last four completed hours")
-        self.changes.setToolTip("\n".join(f"{_stamp(at, True)} {symbol} {state}" for at, symbol, state in events[:30]))
+        self.changes.setToolTip("")
 
     def _select_row(self, row: int, column: int) -> None:
         if 0 <= row < len(self.row_symbols):
@@ -1231,14 +1229,14 @@ class LeadershipTimelineWidget(QtWidgets.QWidget):
 
     def _fact(self, name: str, text: str, tooltip: str = "", passed: bool = False) -> None:
         self.facts[name].setText(text)
-        self.facts[name].setToolTip(tooltip or text)
+        self.facts[name].setToolTip(tooltip)
         if name in self.fact_marks:
             mark = self.fact_marks[name]
             mark.setText("✓" if passed else "")
             mark.setStyleSheet("QLabel { border: 1.5px solid " + ("#22D27A" if passed else "#8E8E96")
                               + "; border-radius: 8px; background: " + ("#22D27A" if passed else "transparent")
                               + "; color: #000000; }")
-            mark.setToolTip(tooltip or text)
+            mark.setToolTip(tooltip)
             mark.setAccessibleName(text)
 
     def _render_facts(self) -> None:
@@ -1252,13 +1250,12 @@ class LeadershipTimelineWidget(QtWidgets.QWidget):
         distance = item.get("high_distance")
         position = "—" if distance is None else "cleared" if distance < 0 else "nearby" if distance <= 1 else "distant"
         self._fact("range", f"4H range high: {position}",
-                   "Highest high of the four complete hours preceding the selected candle.\n"
-                   "Nearby means the selected close is within 1% below the prior high; cleared means above it.\n"
+                   "Nearby: within 1% of the previous 4H high. Cleared: above it.\n"
                    + (f"High is {abs(distance):.2f}% {'above' if distance >= 0 else 'below'} price." if distance is not None else "Four comparable candles unavailable."),
                    distance is not None and distance <= 1)
         rvol = item.get("rvol")
         self._fact("volume", "1H volume: " + (f"{rvol:.2f}× baseline" if rvol is not None else "—"),
-                   "Latest completed hour's USDT quote volume / median of the preceding 24 completed hours; calibrated threshold ≥1.30×.", rvol is not None and rvol >= 1.3)
+                   "Last hour’s volume / median of the previous 24 hours. Passes at 1.30×.", rvol is not None and rvol >= 1.3)
         live = self.replay.value() == 24
         result = self.details.get((symbol, end, live), {})
         for key, title in (("spot", "Spot participation"), ("funding", "Funding"), ("oi", "OI 1H")):
@@ -1278,9 +1275,9 @@ class LeadershipTimelineWidget(QtWidgets.QWidget):
             neutral = rate8 is not None and -0.005 <= rate8 <= 0.015
             label = "neutral" if neutral else "crowded" if rate8 is not None and rate8 > 0.03 else "positive" if rate8 is not None and rate8 > 0 else "negative" if rate8 is not None else _pct(rate * 100, 3)
             self._fact("funding", f"Funding: {label}",
-                       f"Last settled rate: {_pct(rate * 100, 4)} at {_stamp(at, True)}.\n"
-                       + (f"Observed settlement interval: {interval:g}H; 8H equivalent {_pct(rate8, 4)}.\n" if rate8 is not None else "Settlement interval or freshness is unavailable; no neutral classification.\n")
-                       + "Calibrated band: −0.005% to +0.015% per 8H; >+0.030% is crowded. This is settled funding, not a forecast.", neutral)
+                       (f"Settled funding, 8H equivalent: {_pct(rate8, 4)}.\n"
+                        "Neutral: −0.005% to +0.015%. Crowded: above +0.030%."
+                        if rate8 is not None else "Latest funding interval or freshness is unavailable."), neutral)
         oi = sorted((row for row in result.get("oi", []) if 0 < int(row.get("timestamp", 0)) <= end),
                     key=lambda row: int(row["timestamp"]))
         if len(oi) >= 2:
@@ -1292,7 +1289,7 @@ class LeadershipTimelineWidget(QtWidgets.QWidget):
                     and abs(at - before_at - HOUR) <= 5000 and end - at <= HOUR):
                 value = (current_quantity / before - 1) * 100
                 interpretation = ("expansion" if value > 0 else "short covering" if value < 0 else "unchanged") if (item.get("usd1") or 0) > 0 else ("short pressure" if value > 0 else "deleveraging" if value < 0 else "unchanged")
-                self._fact("oi", f"OI 1H: {_pct(value)} · {interpretation}", "Change in open-interest quantity, not USD valuation. Price/OI interpretation is context, not proof of participant intent.", value > 0 and (item.get("usd1") or 0) > 0)
+                self._fact("oi", f"OI 1H: {_pct(value)} · {interpretation}", "Change in contract quantity. Price/OI readings suggest, but do not prove, trader intent.", value > 0 and (item.get("usd1") or 0) > 0)
         spot = self.spot_series.get(symbol, {}) or {int(round(row.time * 1000)) + HOUR: row for row in result.get("spot", [])}
         future = self.series.get(symbol, {})
         windows = [_window(source, at, 4) for source in (spot, future) for at in (end, end - 4 * HOUR)]
@@ -1304,7 +1301,7 @@ class LeadershipTimelineWidget(QtWidgets.QWidget):
                 trend = "rising" if share > old else "falling" if share < old else "flat"
                 self._fact("spot", f"Spot participation: {trend}",
                            f"Spot share {share:.1f}% ({share - old:+.2f} pp).\n"
-                           "Spot / (spot + perpetual) USDT turnover over 4H; change versus the preceding 4H. Exact-symbol matches only.", share > old)
+                           "Spot share of combined spot and futures volume; change vs the previous 4H.", share > old)
         self._fact("liquidity", "Liquidity: —" if live else "Liquidity: unavailable in replay",
                    result.get("errors", {}).get("book", "Current book liquidity is never substituted for an unrecorded historical book."))
         book = result.get("book", {})
@@ -1321,13 +1318,10 @@ class LeadershipTimelineWidget(QtWidgets.QWidget):
             sufficient = spread <= 0.10 and min(bid_depth, ask_depth) >= 25_000 and age <= 90
             state = "snapshot stale" if age > 90 else "sufficient" if sufficient else "below screen threshold"
             self._fact("liquidity", f"Liquidity: {state}",
-                       f"Spread {spread:.3f}% · bid / ask within ±0.5%: {_amount(bid_depth)} / {_amount(ask_depth)}.\n"
-                       f"Up to 1000 levels per side; snapshot {age}s old. More depth may exist outside those levels.\n"
-                       "Screen threshold: spread ≤0.10%, at least $25K displayed on EACH side within ±0.5%, snapshot ≤90s old.\n"
-                       "This is a screening condition, not an estimate that a particular order can fill without slippage.", sufficient)
-        self.confirmation.setToolTip(self.confirmation.toolTip() + "\n" + self.facts["oi"].text())
-        self.confirmation.spark.setToolTip("\n\n".join(self.facts[key].text() + "\n" + self.facts[key].toolTip()
-                                                       for key in ("volume", "oi", "range", "spot", "funding", "liquidity")))
+                       f"Spread {spread:.3f}% · depth ±0.5%: {_amount(bid_depth)} bid / {_amount(ask_depth)} ask.\n"
+                       f"{age}s old. Pass: spread ≤0.10%, ≥$25K each side, age ≤90s. Not a fill guarantee.", sufficient)
+        self.confirmation.setToolTip("")
+        self.confirmation.spark.setToolTip("Recent confirmation strength")
         _render_leader_context(self)
 
     def apply_theme(self, theme: dict[str, str]) -> None:
@@ -5490,7 +5484,7 @@ class RotationScannerWidget(LeadershipTimelineWidget):
         for caption, hours in (("1H", 1), ("4H", 4), ("12H", 12), ("24H", 24)):
             self.span.addItem(caption, hours)
         self.span.setCurrentIndex(1)
-        self.span.setToolTip("Return vs BTC over completed hourly candles; momentum is its change since the previous hour.")
+        self.span.setToolTip('Return vs BTC; momentum is the change over the last completed hour.')
         self.limit = _workspace_combo([("40", 40), ("80", 80), ("160", 160), ("All", 0)], 3)
         self.limit.setToolTip("USDT perpetuals ranked by completed 24H turnover. BTC is excluded.")
         self.liquidity = _workspace_combo([("$5M+", 5_000_000), ("$20M+", 20_000_000),
@@ -5503,7 +5497,7 @@ class RotationScannerWidget(LeadershipTimelineWidget):
         self.spot_confirmation = QtWidgets.QCheckBox("Spot confirmation")
         self.spot_confirmation.setToolTip("Require rising spot share over consecutive 4H windows. Unavailable history does not pass.")
         self.hide_thin = QtWidgets.QCheckBox("Hide thin books")
-        self.hide_thin.setToolTip("Hide verified spreads above 0.15% or combined ±0.5% depth below $25K. Unknown or stale books stay visible.")
+        self.hide_thin.setToolTip('Hide spreads >0.15% or depth <$25K within ±0.5%. Unknown or stale books stay visible.')
         self.watched_only = QtWidgets.QCheckBox("Watchlist only")
         for checkbox in (self.spot_confirmation, self.hide_thin, self.watched_only):
             filters.addWidget(checkbox)
@@ -5862,7 +5856,7 @@ class RotationScannerWidget(LeadershipTimelineWidget):
         self.summary_breadth.setText(f"Alts beating BTC  {prepared['beating'] / covered * 100:.0f}%" if covered else "Alts beating BTC  —")
         self.summary_count.setText(f"Bubbles  {len(self.bubbles.points)} · Candidates  {len(self._filtered_points)}")
         self.coverage.setText(f"{len(self.symbols)} liquid pairs\n{len(self._filtered_points)} showing · {covered} comparable")
-        self.coverage.setToolTip("\n".join(f"{s}: {e}" for s, e in self.errors.items()) or "Only comparable completed hourly candles are plotted.")
+        self.coverage.setToolTip("Some market data is unavailable. Refresh to retry." if self.errors else "Completed hourly candles only.")
         self.asof.setText(("Latest completed hour · " if self.replay.value() == 24 else "Replay · ") + (_stamp(prepared["end"], True) if prepared["end"] else "Waiting for history"))
         self._populate_candidates()
         self._render_facts()
@@ -5910,13 +5904,12 @@ class RotationScannerWidget(LeadershipTimelineWidget):
                     elif col == 3 and rvol is not None and rvol >= 1:
                         color = QUADRANT_COLORS["Leading"]
                     item.setForeground(QtGui.QColor(color))
-                    tooltip = f"{symbol} · {self.identity(symbol)[0]}\n{hours}H vs BTC: {_pct(point['x'])}\nHourly change in {hours}H RS: {point['y']:+.2f} pp\nDouble-click to open chart"
-                    if col == 3:
-                        tooltip += "\nLatest completed hourly turnover / median of the prior 24 completed hours."
-                    elif col in (4, 5):
-                        tooltip += "\nReuses details already loaded by Leaders. Spread is live and expires after 90 seconds."
-                    elif col == 6:
-                        tooltip += "\nNear range high: within 1% of the prior four-hour high, with positive RS acceleration."
+                    tooltip = {
+                        1: "Double-click to open chart",
+                        3: "Last hour’s volume / median of the previous 24 hours.",
+                        5: "Live spread; unavailable after 90 seconds without an update.",
+                        6: "Within 1% of the previous 4H high, with rising relative strength.",
+                    }.get(col, "")
                     item.setToolTip(tooltip)
             table.setSortingEnabled(True)
             table.sortItems(self._sort_column, self._sort_order)
@@ -6019,12 +6012,12 @@ class RotationScannerWidget(LeadershipTimelineWidget):
         for key, label in self.fact_values.items():
             label.setText(facts[key])
             label.setStyleSheet("color: " + (QUADRANT_COLORS["Leading"] if key == "spot" and spot is not None and spot > 0 or key == "oi" and (numbers["oi"] or 0) > 0 else self.theme["text"]))
-        self.fact_values["spot"].setToolTip("Rising spot share: spot / (spot + perpetual) 4H turnover, compared with the preceding 4H window.")
-        self.fact_values["funding"].setToolTip("Most recent settled funding rate normalized to 8H using the observed settlement interval. Missing/stale intervals stay unavailable.")
-        self.fact_values["range"].setToolTip("Distance from the selected completed close to the prior four-hour high. Negative values indicate a breakout above that high.")
-        self.fact_values["book"].setToolTip("Observed live best bid/ask spread, younger than 90 seconds. No historical book is substituted during replay.")
+        self.fact_values["spot"].setToolTip('Spot share of combined spot and futures volume, compared with the previous 4H.')
+        self.fact_values["funding"].setToolTip('Latest settled funding, adjusted to 8H. Blank when unavailable or stale.')
+        self.fact_values["range"].setToolTip('Distance to the previous 4H high. Negative means the close broke above it.')
+        self.fact_values["book"].setToolTip('Live spread, updated within 90 seconds. Not historical replay data.')
         errors = self.details.get((symbol, self.cursor_end(), live), {}).get("errors", {})
-        self.fact_values["oi"].setToolTip(errors.get("oi", "Change in open-interest quantity over consecutive hourly observations. Reuses details already loaded by Leaders."))
+        self.fact_values["oi"].setToolTip(errors.get("oi", 'Hourly change in open-interest quantity.'))
         leaders = [p for p in self._filtered_points if p["symbol"] != symbol and p["quadrant"] == "Leading"]
         if not leaders:
             leaders = [p for p in self._filtered_points if p["symbol"] != symbol]

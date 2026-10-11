@@ -447,7 +447,7 @@ class TimeframeStrip(QtWidgets.QWidget):
         button.setCheckable(True)
         button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         button.setFixedSize(self.BUTTON_WIDTH, self.BUTTON_HEIGHT)
-        button.setToolTip(f"{text} · Shortcut {index + 1}")
+        button.setToolTip(f"Shortcut: {index + 1}")
         button.setAccessibleName(f"{text} chart timeframe, shortcut {index + 1}")
         button.setProperty("informationalToolTip", True)
         set_text_role(button, TextRole.UI_CONTROL_COMPACT)
@@ -1814,14 +1814,6 @@ class MetricCard(QtWidgets.QFrame):
     def set_detail(self, _title: str, rows: list[tuple[str, str]]) -> None:
         rows = [(label, value) for label, value in rows if label or value]
         self.detail_title, self.detail_rows = _title, rows
-        body = "".join(
-            f"<tr><td style='padding-right:18px'>{html.escape(str(label))}</td>"
-            f"<td align='right'>{html.escape(str(value))}</td></tr>"
-            for label, value in rows
-        )
-        tooltip = f"<table cellspacing='0' cellpadding='0'>{body}</table>"
-
-
         actionable = (not self.identity) or bool(COMPACT_SECONDARY_METRICS)
         self.setCursor(
             Qt.CursorShape.PointingHandCursor
@@ -1829,8 +1821,7 @@ class MetricCard(QtWidgets.QFrame):
             else Qt.CursorShape.ArrowCursor
         )
         for widget in (self, self.title, self.value):
-            widget.setToolTip(tooltip)
-            widget.setToolTipDuration(8_000)
+            widget.setToolTip("Click for details" if actionable else "")
         self._refresh_popup()
 
     def set_history(self, points, caption, *, percent=False, bars=False, ratio=False):
@@ -3091,7 +3082,7 @@ class WatchlistSidebarWidget(QtWidgets.QWidget):
             QtWidgets.QAbstractItemView.DragDropMode.InternalMove
         )
         self.table.setToolTip(
-            "Double-click to open · right-click to remove · drag rows to reorder · header + toggles the current pair"
+            'Double-click to open · right-click to remove\nDrag rows to reorder'
         )
         self.table.width_environment_changed.connect(self._width_environment_changed)
         self.watchlist_header.width_environment_changed.connect(
@@ -3451,17 +3442,11 @@ class WatchlistSidebarWidget(QtWidgets.QWidget):
                 self._icon_refresh_after[symbol] = float("inf") if found else now + 60.0
                 if not found:
                     self.source.request_icon(symbol)
-                icon_item.setToolTip(f"{symbol} · right-click row to remove")
+                icon_item.setToolTip("Right-click to remove from watchlist")
             icon_item.setBackground(
                 current_bg if symbol == active_symbol else QtGui.QBrush()
             )
 
-            tooltip = (
-                f"{display} · Last {format_price(price) if price else '—'} · "
-                f"1h {change_1h:+.2f}% · 24h {change_24h:+.2f}%"
-                if ticker and change_1h is not None
-                else f"{display}"
-            )
             for column, value in enumerate(values, start=1):
                 item = self.table.item(row, column)
                 if item is None:
@@ -3473,8 +3458,8 @@ class WatchlistSidebarWidget(QtWidgets.QWidget):
                     if column in (2, 3, 4):
                         dirty_columns.add(column)
                         self._numeric_cell_advances.pop((row, column), None)
-                if item.toolTip() != tooltip:
-                    item.setToolTip(tooltip)
+                if item.toolTip():
+                    item.setToolTip("")
                 item.setBackground(
                     current_bg
                     if symbol == active_symbol
@@ -3486,7 +3471,7 @@ class WatchlistSidebarWidget(QtWidgets.QWidget):
                     ]
                     item.setBackground(alpha_color(signal_color, 46))
                     item.setToolTip(
-                        f"{tooltip} · unusual five-minute move detected"
+                        "Unusual five-minute move"
                     )
                 if column == 1:
                     item.setData(Qt.ItemDataRole.UserRole, symbol)

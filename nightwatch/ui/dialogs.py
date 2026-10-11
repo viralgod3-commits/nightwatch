@@ -36,7 +36,6 @@ class MicrostructureNewsCard(QtWidgets.QFrame):
         self._copies_started = 0
         self._color = QtGui.QColor("#f0a020")
         self._pending: deque[tuple[str, str]] = deque(maxlen=4)
-        self._hover_html = ""
         self._scroll_speed = 45.0
         self._last_frame = time.monotonic()
         self._timer = QTimer(self)
@@ -152,10 +151,6 @@ class MicrostructureNewsCard(QtWidgets.QFrame):
     def discard_pending(self) -> None:
         """Drop queued signals without disturbing the item currently scrolling."""
         self._pending.clear()
-
-    def set_detail_html(self, detail: str) -> None:
-        self._hover_html = str(detail)
-        self.setToolTip(self._hover_html)
 
     def leaveEvent(self, event: QtCore.QEvent) -> None:
         QtWidgets.QToolTip.hideText()
@@ -382,7 +377,7 @@ class IndicatorSettingsDialog(QtWidgets.QDialog):
                 for label, value in (("Right", "right"), ("Center", "center"), ("Left", "left")):
                     label_position.addItem(label, value)
                 label_position.setCurrentIndex(max(0, label_position.findData(current.get("label_position", "right"))))
-                label_position.setToolTip("Place every Fibonacci ratio/price label at the left, center, or right of its line.")
+                label_position.setToolTip('')
                 page_layout.addRow("Value position", label_position)
                 choices["label_position"] = label_position
 
@@ -390,7 +385,7 @@ class IndicatorSettingsDialog(QtWidgets.QDialog):
                 for label, value in (("Swing to right edge", "right_edge"), ("Between anchors", "anchors"), ("Full visible chart", "full")):
                     line_extent.addItem(label, value)
                 line_extent.setCurrentIndex(max(0, line_extent.findData(current.get("line_extent", "right_edge"))))
-                line_extent.setToolTip("Choose how far each automatic Fibonacci level extends horizontally.")
+                line_extent.setToolTip('Horizontal length of each Fibonacci level.')
                 page_layout.addRow("Line extent", line_extent)
                 choices["line_extent"] = line_extent
 
@@ -418,7 +413,7 @@ class IndicatorSettingsDialog(QtWidgets.QDialog):
                 for index, ratio in enumerate(INDICATOR_SETTING_DEFAULTS[indicator]["levels"]):
                     check = QtWidgets.QCheckBox(f"{float(ratio):.3f}")
                     check.setChecked(round(float(ratio), 6) in selected_levels)
-                    check.setToolTip("Negative values are extensions above the impulse high in the existing 0-at-high / 1-at-low convention.")
+                    check.setToolTip('0 = impulse high; 1 = impulse low. Negative levels extend above the high.')
                     level_grid.addWidget(check, index // 3, index % 3)
                     levels[float(ratio)] = check
                 page_layout.addRow("Levels", level_box)
@@ -435,7 +430,7 @@ class IndicatorSettingsDialog(QtWidgets.QDialog):
             if indicator == "Liquidations":
                 history_button = QtWidgets.QPushButton("LOAD RECORDED HISTORY")
                 history_button.setToolTip(
-                    "Load liquidation snapshots previously captured by Nightwatch for the active pair and visible chart range."
+                    'Load saved liquidations for this pair and chart range.'
                 )
                 history_button.clicked.connect(
                     lambda _checked=False: self.history_requested.emit("Liquidations")
@@ -1822,7 +1817,7 @@ class NightwatchSettingsDialog(QtWidgets.QDialog):
         self._settings_search.setPlaceholderText("Search settings…")
         self._settings_search.setClearButtonEnabled(True)
         self._settings_search.setAccessibleName("Search settings")
-        self._settings_search.setToolTip("Find a setting by name, description, or option. Ctrl+F")
+        self._settings_search.setToolTip('Search settings · Ctrl+F')
         header_layout.addWidget(self._settings_search, 0, Qt.AlignmentFlag.AlignVCenter)
         root.addWidget(header)
 
@@ -2447,7 +2442,7 @@ class NightwatchSettingsDialog(QtWidgets.QDialog):
         self.volume_height_spin.setSingleStep(1)
         self.volume_height_spin.setSuffix(" %")
         self.volume_height_spin.setToolTip(
-            "Maximum volume-bar height as a percentage of the main price viewport."
+            'Maximum bar height as a share of the price chart.'
         )
         self.volume_height_spin.valueChanged.connect(self._volume_height_changed)
         volume_row.addWidget(self.volume_height_spin)

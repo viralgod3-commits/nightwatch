@@ -164,6 +164,7 @@ from ..utilities import (
     configure_typography,
     line_icon,
     set_tooltip_theme,
+    tooltip_stylesheet,
     tooltips_allowed,
     typography_controller,
     write_coin_icon,
@@ -1491,7 +1492,7 @@ class MainWindow(QtWidgets.QMainWindow):
             QtWidgets.QSizePolicy.Policy.Expanding,
             QtWidgets.QSizePolicy.Policy.Fixed,
         )
-        self.microstructure_card.setToolTip("Click to open recent short-term buy and sell signals")
+        self.microstructure_card.setToolTip('View recent buy and sell signals')
         self.microstructure_card.clicked.connect(self._open_microstructure_signals)
         self._reset_microstructure_card()
         # Keep signal collection/detail state alive, but the news/alerts ribbon
@@ -1522,18 +1523,15 @@ class MainWindow(QtWidgets.QMainWindow):
             action.setChecked(enabled)
             if name == "Funding Rate History":
                 action.setToolTip(
-                    "Historical Binance funding settlements in a resizable lower pane. "
-                    "Positive funding means longs paid shorts; negative means shorts paid longs. "
-                    "Drag the pane's right axis vertically to scale it."
+                    'Funding paid at settlement. Positive: longs pay shorts. Negative: shorts pay longs.'
                 )
             elif name == "Liquidations":
                 action.setToolTip(
-                    "Red down = forced long close; green up = forced short close. Arrow size follows liquidation value."
+                    'Red: liquidated longs. Green: liquidated shorts. Larger arrows mean larger trades.'
                 )
             elif name == "Major Price Levels":
                 action.setToolTip(
-                    "Shows a configurable number of high-confidence support/resistance zones. Confirmed multi-timeframe "
-                    "price reactions carry most of the score; volume-at-price and retests add confirmation."
+                    'Support and resistance zones ranked by confirmed price reactions.'
                 )
             action.toggled.connect(
                 lambda state, value=name: self._set_indicator_enabled(value, state)
@@ -1542,9 +1540,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self.auto_fibonacci_action = QtGui.QAction("Auto Fibonacci cycle · Alt+F", self)
         self.auto_fibonacci_action.setToolTip(
-            "Cycle through the configured number of high-confidence automatic Fibonacci anchor interpretations. "
-            "Alt+F moves forward; Shift+Alt+F moves backward; the cycle includes OFF. "
-            "Display and levels are configured in Indicator settings."
+            'Cycle Fibonacci setups, including Off.\nAlt+F: next · Shift+Alt+F: previous'
         )
         self.auto_fibonacci_action.triggered.connect(
             lambda: self._cycle_auto_fibonacci(1)
@@ -1563,7 +1559,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.ruler_action = QtGui.QAction("Ruler", self)
         self.ruler_action.setCheckable(True)
         self.ruler_action.setToolTip(
-            "Measure price change, percentage, elapsed time and bars · select, then click two chart points"
+            'Click two chart points to measure price change and time.'
         )
         self.ruler_action.toggled.connect(
             lambda checked: self._toggle_drawing_tool("ruler", checked)
@@ -1571,7 +1567,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.fibonacci_action = QtGui.QAction("Fibonacci retracement", self)
         self.fibonacci_action.setCheckable(True)
         self.fibonacci_action.setToolTip(
-            "Draw 0, .236, .382, .5, .618, .786 and 1 levels · select, then click two chart points"
+            'Click two chart points to draw Fibonacci levels.'
         )
         self.fibonacci_action.toggled.connect(
             lambda checked: self._toggle_drawing_tool("fibonacci", checked)
@@ -1580,8 +1576,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.horizontal_action.setCheckable(True)
         self.horizontal_action.setVisible(self.testing_flags["magnetic_order_rail"])
         self.horizontal_action.setToolTip(
-            "Place one tick-snapped magnetic order rail with a chart click · "
-            "hover the rail body to configure and explicitly submit through the normal trading gateway"
+            'Click the chart to place an order rail, then configure and submit it.'
         )
         self.horizontal_action.toggled.connect(self._toggle_order_rail_tool)
         self.clear_drawings_action = QtGui.QAction("Clear drawings", self)
@@ -3189,6 +3184,7 @@ class MainWindow(QtWidgets.QMainWindow):
             stylesheet = (
                 self._native_application_stylesheet +
                 f"\nQDialog, QMessageBox {{ background: {dialog_bg}; color: {t['text']}; {dialog_border} }}"
+                + tooltip_stylesheet(t)
             )
             if application.styleSheet() != stylesheet:
                 application.setStyleSheet(stylesheet)
@@ -5596,9 +5592,6 @@ class MainWindow(QtWidgets.QMainWindow):
             self.microstructure_card.discard_pending()
         else:
             self.microstructure_card.clear_signal()
-        self.microstructure_card.set_detail_html(
-            "No high-confidence short-term signal has triggered for this symbol."
-        )
 
     def _update_microstructure_card(self, snapshot: MicrostructureSnapshot) -> None:
         if snapshot.symbol != self.current_symbol:
@@ -5620,28 +5613,6 @@ class MainWindow(QtWidgets.QMainWindow):
         bullish = snapshot.signal_key in {"BID ABSORPTION", "BULLISH BREAKOUT"}
         color = self.ui_theme["green" if bullish else "red"]
         self.microstructure_card.show_signal(snapshot.signal_sentence, color)
-        rows = (
-            ("Signal", snapshot.signal_sentence),
-            ("Market buys · 5s", human_number(snapshot.buy_notional, money=True)),
-            ("Market sells · 5s", human_number(snapshot.sell_notional, money=True)),
-            ("Buy vs sell", f"{snapshot.imbalance_pct:+.1f}%"),
-            ("Activity", f"{snapshot.flow_intensity:.2f}× usual"),
-            ("Price move · 5s", f"{snapshot.price_change_bps / 100.0:+.3f}%"),
-            ("Bid absorption", f"{snapshot.bid_absorption}/100"),
-            ("Ask absorption", f"{snapshot.ask_absorption}/100"),
-            ("Bid refill", f"{snapshot.bid_replenishment_pct:.0f}%"),
-            ("Ask refill", f"{snapshot.ask_replenishment_pct:.0f}%"),
-            ("Bid depth", f"{snapshot.bid_depth_change_pct:+.1f}%"),
-            ("Ask depth", f"{snapshot.ask_depth_change_pct:+.1f}%"),
-        )
-        detail = "".join(
-            f"<tr><td>{html.escape(label)}</td><td>&nbsp;&nbsp;{html.escape(value)}</td></tr>"
-            for label, value in rows
-        )
-        self.microstructure_card.set_detail_html(
-            f'<b style="color:{color}">{html.escape(stamp)} · '
-            f'{html.escape(snapshot.signal_key)}</b><table>{detail}</table>'
-        )
 
     def _open_microstructure_signals(self) -> None:
         menu = QtWidgets.QMenu(self.microstructure_card)
@@ -5658,7 +5629,7 @@ class MainWindow(QtWidgets.QMainWindow):
                     menu,
                 )
                 row.setCursor(Qt.CursorShape.PointingHandCursor)
-                row.setToolTip("Open the execution, price-response and depth evidence")
+                row.setToolTip('View trade, price and depth details')
                 row.setStyleSheet(
                     "QPushButton {"
                     "border: 0; background: transparent; text-align: left;"
@@ -6325,7 +6296,7 @@ class MainWindow(QtWidgets.QMainWindow):
         following_name = names[(current_index + 1) % len(names)]
         following = THEME_DISPLAY_NAMES.get(following_name, following_name)
         button.setEnabled(len(names) > 1)
-        button.setToolTip(f"Theme: {current}\nClick for {following}")
+        button.setToolTip(f"Switch to {following} theme")
         button.setAccessibleName(f"Application theme: {current}. Next: {following}")
 
     def _cycle_theme(self, _checked: bool = False) -> None:
@@ -7127,7 +7098,7 @@ class MainWindow(QtWidgets.QMainWindow):
         index = self._quick_panel_layout_index()
         current = "Custom" if index is None else layouts[index]
         following = layouts[0 if index is None else (index + 1) % len(layouts)]
-        button.setToolTip(f"Layout: {current}\nClick for {following}\nIndividual panels and presets: Settings → Workspace")
+        button.setToolTip(f"Switch to {following} layout\nMore layouts: Settings → Workspace")
         button.setAccessibleName(f"Panel layout: {current}. Next: {following}")
 
     def _quick_panel_layout_index(self) -> int | None:

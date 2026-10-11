@@ -33,6 +33,12 @@ from .account_state import exchange_bool
 
 
 _ACCOUNT_POLL_MINIMUM_INTERVAL = 8.0
+_TIME_IN_FORCE_HINTS = {
+    "GTC": "Stays open until filled or canceled.",
+    "IOC": "Fills immediately; cancels any remainder.",
+    "FOK": "Fills completely now or cancels the entire order.",
+    "GTX": "Post only; cancels if it would fill immediately.",
+}
 
 
 def _trading_stylesheet(theme: dict[str, str]) -> str:
@@ -458,8 +464,6 @@ class QuickTradingSettingsDialog(QtWidgets.QDialog):
             description_label = QtWidgets.QLabel(description)
             description_label.setObjectName("subtleLabel")
             description_label.setWordWrap(True)
-            command_label.setToolTip(description)
-            description_label.setToolTip(description)
             fixed_grid.addWidget(command_label, row, 0)
             fixed_grid.addWidget(description_label, row, 1)
         fixed_grid.setColumnStretch(1, 1)
@@ -477,14 +481,14 @@ class QuickTradingSettingsDialog(QtWidgets.QDialog):
         self.collateral_percent.setSuffix("%")
         self.collateral_percent.setValue(safe_float(merged["collateral_percent"]))
         self.collateral_percent.setToolTip(
-            "Share of currently available margin allocated before leverage. Example: 10% at 5× targets order notional equal to 50% of available margin."
+            'Share of available margin used before leverage.'
         )
         self.leverage = QtWidgets.QSpinBox()
         self.leverage.setRange(1, 125)
         self.leverage.setSuffix("×")
         self.leverage.setValue(int(safe_float(merged["leverage"])))
         self.leverage.setToolTip(
-            "Cross leverage required before an OPEN shortcut can run. Saving attempts to apply it to the active symbol immediately."
+            'Saving applies this leverage to the active symbol before entry shortcuts can run.'
         )
         leverage_box = QtWidgets.QWidget()
         leverage_layout = QtWidgets.QHBoxLayout(leverage_box)
@@ -498,7 +502,6 @@ class QuickTradingSettingsDialog(QtWidgets.QDialog):
             button.setCheckable(True)
             button.setProperty("leverageValue", value)
             button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-            button.setToolTip(f"Use {value}× leverage for OPEN trading shortcuts.")
             button.clicked.connect(
                 lambda _checked=False, target=value: self.leverage.setValue(target)
             )
@@ -508,7 +511,7 @@ class QuickTradingSettingsDialog(QtWidgets.QDialog):
         self.order_mode.addItems(("MARKET", "LIMIT"))
         self.order_mode.setCurrentText(str(merged["order_mode"]).upper())
         self.order_mode.setToolTip(
-            "MARKET executes immediately. LIMIT posts at the current best same-side price and may remain unfilled."
+            'Market buys or sells now. Limit uses the same-side best price and may not fill.'
         )
         self.time_in_force = QtWidgets.QComboBox()
         self.time_in_force.addItem("IOC", "IOC")
@@ -518,13 +521,14 @@ class QuickTradingSettingsDialog(QtWidgets.QDialog):
         self.time_in_force.setCurrentIndex(
             max(0, self.time_in_force.findData(str(merged["time_in_force"]).upper()))
         )
-        self.time_in_force.setToolTip(
-            "GTC stays active; IOC fills available size then cancels; FOK requires a complete immediate fill; GTX is post-only. Used only by limit-style shortcuts."
-        )
+        for index in range(self.time_in_force.count()):
+            self.time_in_force.setItemData(index, _TIME_IN_FORCE_HINTS[self.time_in_force.itemData(index)], Qt.ItemDataRole.ToolTipRole)
+        self.time_in_force.setToolTip(_TIME_IN_FORCE_HINTS[self.time_in_force.currentData()])
+        self.time_in_force.currentIndexChanged.connect(lambda _index: self.time_in_force.setToolTip(_TIME_IN_FORCE_HINTS[self.time_in_force.currentData()]))
         self.slippage_enabled = QtWidgets.QCheckBox("Cap market slippage")
         self.slippage_enabled.setChecked(bool(merged["slippage_enabled"]))
         self.slippage_enabled.setToolTip(
-            "Turns a MARKET shortcut into an aggressive IOC/FOK/GTC limit whose price cannot exceed the selected percentage from the live book."
+            'Use a limit order to cap the execution price. A fill is not guaranteed.'
         )
         self.max_slippage = QtWidgets.QDoubleSpinBox()
         self.max_slippage.setRange(0.01, 10.0)
@@ -532,7 +536,7 @@ class QuickTradingSettingsDialog(QtWidgets.QDialog):
         self.max_slippage.setSuffix("%")
         self.max_slippage.setValue(safe_float(merged["max_slippage_percent"]))
         self.max_slippage.setToolTip(
-            "Maximum distance from the current best ask for BUY or best bid for SELL. Smaller caps reduce bad fills but increase non-fills."
+            'Price limit from the best ask for buys or best bid for sells. A tighter cap may not fill.'
         )
         slippage_box = QtWidgets.QWidget()
         slippage_layout = QtWidgets.QHBoxLayout(slippage_box)
@@ -542,12 +546,11 @@ class QuickTradingSettingsDialog(QtWidgets.QDialog):
         self.reduce_only = QtWidgets.QCheckBox("Reduce existing position only")
         self.reduce_only.setChecked(bool(merged["reduce_only"]))
         self.reduce_only.setToolTip(
-            "One-way mode only: BUY reduces a short and SELL reduces a long. It cannot open or reverse a position. Close hotkeys are safer in hedge mode."
+            'Only reduces a position; cannot open or reverse it. One-way mode only.'
         )
 
         def add_row(label_text: str, field: QtWidgets.QWidget, tooltip: str) -> None:
             label = QtWidgets.QLabel(label_text)
-            label.setToolTip(tooltip)
             field.setToolTip(field.toolTip() or tooltip)
             form.addRow(label, field)
 
@@ -560,7 +563,7 @@ class QuickTradingSettingsDialog(QtWidgets.QDialog):
 
         self.take_profit_enabled = QtWidgets.QCheckBox("Enabled")
         self.take_profit_enabled.setChecked(bool(merged["take_profit_enabled"]))
-        self.take_profit_enabled.setToolTip("After an OPEN shortcut fills, place a reduce-only take-profit at the configured move.")
+        self.take_profit_enabled.setToolTip('Place a take-profit after the entry fills.')
         self.take_profit_percent = QtWidgets.QDoubleSpinBox()
         self.take_profit_percent.setRange(0.01, 100.0)
         self.take_profit_percent.setDecimals(2)
@@ -571,7 +574,7 @@ class QuickTradingSettingsDialog(QtWidgets.QDialog):
         self.take_profit_close.setRange(1, 100)
         self.take_profit_close.setSuffix("% close")
         self.take_profit_close.setValue(int(safe_float(merged["take_profit_close_percent"])))
-        self.take_profit_close.setToolTip("Percentage of the filled entry quantity closed at the take-profit.")
+        self.take_profit_close.setToolTip('Share of the filled entry to close at take-profit.')
         tp_box = QtWidgets.QWidget()
         tp_layout = QtWidgets.QHBoxLayout(tp_box)
         tp_layout.setContentsMargins(0, 0, 0, 0)
@@ -582,7 +585,7 @@ class QuickTradingSettingsDialog(QtWidgets.QDialog):
 
         self.stop_loss_enabled = QtWidgets.QCheckBox("Enabled")
         self.stop_loss_enabled.setChecked(bool(merged["stop_loss_enabled"]))
-        self.stop_loss_enabled.setToolTip("After an OPEN shortcut fills, place a reduce-only stop-loss at the configured adverse move.")
+        self.stop_loss_enabled.setToolTip('Place a stop-loss after the entry fills.')
         self.stop_loss_percent = QtWidgets.QDoubleSpinBox()
         self.stop_loss_percent.setRange(0.01, 100.0)
         self.stop_loss_percent.setDecimals(2)
@@ -593,7 +596,7 @@ class QuickTradingSettingsDialog(QtWidgets.QDialog):
         self.stop_loss_close.setRange(1, 100)
         self.stop_loss_close.setSuffix("% close")
         self.stop_loss_close.setValue(int(safe_float(merged["stop_loss_close_percent"])))
-        self.stop_loss_close.setToolTip("Percentage of the filled entry quantity closed at the stop-loss.")
+        self.stop_loss_close.setToolTip('Share of the filled entry to close at stop-loss.')
         sl_box = QtWidgets.QWidget()
         sl_layout = QtWidgets.QHBoxLayout(sl_box)
         sl_layout.setContentsMargins(0, 0, 0, 0)
@@ -635,8 +638,8 @@ class QuickTradingSettingsDialog(QtWidgets.QDialog):
         hotkey_form.addRow(hotkey_note)
         self.hotkey_editors: dict[str, QtWidgets.QKeySequenceEdit] = {}
         hotkey_help = {
-            "place_buy": "Submit BUY using the saved shortcut order preset. In one-way reduce mode this reduces a short.",
-            "place_sell": "Submit SELL using the saved shortcut order preset. In one-way reduce mode this reduces a long.",
+            "place_buy": 'Buy with the saved preset. Reduce only closes a short.',
+            "place_sell": 'Sell with the saved preset. Reduce only closes a long.',
             "close_1": "Close the selected position using close percentage preset 1.",
             "close_2": "Close the selected position using close percentage preset 2.",
             "close_3": "Close the selected position using close percentage preset 3.",
@@ -653,7 +656,6 @@ class QuickTradingSettingsDialog(QtWidgets.QDialog):
                 editor.setMaximumSequenceLength(1)
             editor.setToolTip(hotkey_help[key])
             label_widget = QtWidgets.QLabel(label)
-            label_widget.setToolTip(hotkey_help[key])
             self.hotkey_editors[key] = editor
             hotkey_form.addRow(label_widget, editor)
         tabs.addTab(hotkey_page, "HOTKEYS")
@@ -1289,7 +1291,6 @@ class OrderPanel(QtWidgets.QWidget):
         self.protection_plans: dict[str, list[dict[str, float]]] = {"tp": [], "sl": []}
         self.hedge_mode: bool | None = None
         self.setObjectName("responsiveOrderTicket")
-        self.setProperty("suppressNonessentialTooltips", True)
         self._published_compact_minimum_height = 0
 
 
@@ -1415,16 +1416,15 @@ class OrderPanel(QtWidgets.QWidget):
         leverage_row = QtWidgets.QHBoxLayout(self.leverage_field)
         leverage_row.setContentsMargins(0, 0, 0, 0)
         leverage_row.setSpacing(6)
-        leverage_row.addWidget(label("Cross"))
         self.leverage = LeverageComboBox()
         self.leverage.setAccessibleName("Cross margin leverage")
+        self.leverage.setToolTip("Uses cross margin.")
         set_text_role(self.leverage, TextRole.UI_CONTROL)
         leverage_row.addWidget(self.leverage)
         header.addWidget(self.leverage_field, 0, Qt.AlignmentFlag.AlignLeft)
         self.account_summary = ElidedLabel("— USDT")
         self.account_summary.setObjectName("tradeAccountSummary")
         self.account_summary.setAccessibleName("Available margin")
-        self.account_summary.setToolTip("Available margin")
         set_text_role(self.account_summary, TextRole.UI_CAPTION)
         self.account_summary.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         header.addWidget(self.account_summary, 1)
@@ -1433,12 +1433,14 @@ class OrderPanel(QtWidgets.QWidget):
         self.quick_settings_button.setFixedSize(24, 24)
         self.quick_settings_button.setIconSize(QtCore.QSize(16, 16))
         self.quick_settings_button.setAccessibleName("Trading settings")
+        self.quick_settings_button.setToolTip("Trading settings")
         header.addWidget(self.quick_settings_button)
         content.addWidget(self._ticket_header, 0, Qt.AlignmentFlag.AlignLeft)
 
         self.reduce_only = QtWidgets.QCheckBox("Reduce only", self)
         self.reduce_only.setObjectName("ticketReduceOnly")
         self.reduce_only.setAccessibleName("Reduce only")
+        self.reduce_only.setToolTip("Can reduce or close a position; never opens or reverses it.")
         set_text_role(self.reduce_only, TextRole.UI_CONTROL)
         self.position_side = combo(((side, side) for side in ("BOTH", "LONG", "SHORT")))
         self.position_side.setParent(self)
@@ -1493,11 +1495,14 @@ class OrderPanel(QtWidgets.QWidget):
         self.quantity_edit = QtWidgets.QLineEdit()
         self.quantity_edit.setPlaceholderText("Size")
         self.price_edit = TicketPriceEdit("Limit price")
-        self.price_edit.setPlaceholderText("Price")
+        self.price_edit.setPlaceholderText("Limit price")
+        self.price_edit.setToolTip("Maximum buy price or minimum sell price.")
         self.trigger_edit = TicketPriceEdit("Trigger price")
         self.trigger_edit.setPlaceholderText("Trigger price")
+        self.trigger_edit.setToolTip("Starts the order when the selected price source reaches this level.")
         self.activation_edit = TicketPriceEdit("Activation price")
         self.activation_edit.setPlaceholderText("Activation (optional)")
+        self.activation_edit.setToolTip("Leave blank to activate at the current price.")
         for editor in (self.quantity_edit, self.price_edit, self.trigger_edit, self.activation_edit):
             set_text_role(editor, TextRole.TRADING_DESK_VALUE)
             editor.setMinimumWidth(0)
@@ -1507,16 +1512,20 @@ class OrderPanel(QtWidgets.QWidget):
         self.callback_rate.setSingleStep(0.1)
         self.callback_rate.setValue(0.5)
         self.callback_rate.setSuffix(" %")
+        self.callback_rate.setPrefix("Trail ")
+        self.callback_rate.setToolTip("Price reversal that triggers the trailing stop.")
         self.callback_rate.setAccessibleName("Trailing callback rate")
         set_text_role(self.callback_rate, TextRole.TRADING_DESK_VALUE)
         self.working_type = combo((("Mark price", "MARK_PRICE"), ("Last price", "CONTRACT_PRICE")))
         self.working_type.setAccessibleName("Trigger source")
+        self.working_type.setToolTip("Price used to trigger conditional orders.")
 
         def mark_field(edit):
             mark = QtWidgets.QToolButton()
             mark.setText("Mark")
             mark.setObjectName("tradeMarkButton")
             mark.setAccessibleName(f"Use mark price for {edit.accessibleName().lower()}")
+            mark.setToolTip("Copy the current mark price")
             set_text_role(mark, TextRole.UI_CAPTION)
             return TicketInputGroup(edit, mark), mark
 
@@ -1533,43 +1542,22 @@ class OrderPanel(QtWidgets.QWidget):
             self._order_form.setColumnStretch(column, 1)
         self._order_card_layout.addLayout(self._order_form)
         self._field_rows = {}
-        self._price_captions = []
-        for name, caption, control in (
-            ("type", "Order", self.type_combo), ("source", "Trigger source", self.working_type),
-            ("price", "Limit", price), ("trigger", "Trigger", trigger),
-            ("activation", "Activation", activation),
-            ("callback", "Callback", self.callback_rate), ("amount", "Amount", amount),
+        for name, control in (
+            ("type", self.type_combo), ("source", self.working_type),
+            ("price", price), ("trigger", trigger), ("activation", activation),
+            ("callback", self.callback_rate), ("amount", amount),
         ):
-            if name in {"price", "trigger", "activation", "callback"}:
-                field = QtWidgets.QFrame()
-                field.setObjectName("ticketField")
-                box = QtWidgets.QHBoxLayout(field)
-                box.setContentsMargins(0, 0, 0, 0)
-                box.setSpacing(8)
-                caption_label = label(caption)
-                caption_label.setBuddy({"price": self.price_edit, "trigger": self.trigger_edit,
-                                        "activation": self.activation_edit, "callback": self.callback_rate}[name])
-                self._price_captions.append(caption_label)
-                box.addWidget(caption_label)
-            else:
-                field, box = frame("ticketField", spacing=3)
+            field, box = frame("ticketField", spacing=3)
             field.setParent(self._order_card)
             if name == "amount":
-                self.amount_caption = label("Size")
                 self.order_cost = ElidedLabel("")
                 self.order_cost.setObjectName("ticketFieldCaption")
                 self.order_cost.setAccessibleName("Estimated order cost")
                 self.order_cost.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
                 set_text_role(self.order_cost, TextRole.UI_CAPTION)
                 self.order_cost.hide()
-                amount_heading = QtWidgets.QHBoxLayout()
-                amount_heading.setSpacing(8)
-                amount_heading.addWidget(self.amount_caption)
-                amount_heading.addWidget(self.order_cost, 1)
-                box.addLayout(amount_heading)
+                box.addWidget(self.order_cost)
             box.addWidget(control)
-            if name == "callback":
-                box.addStretch(1)
             self._field_rows[name] = field
         self._sizing_card, sizing = frame("tradingPanelCard", spacing=8)
         self._ticket_sections.addWidget(self._sizing_card, 1, 0)
@@ -1601,15 +1589,19 @@ class OrderPanel(QtWidgets.QWidget):
         options.addWidget(self.reduce_only, 0, 0, Qt.AlignmentFlag.AlignLeft)
         options.addWidget(self._execution_options, 0, 1, Qt.AlignmentFlag.AlignRight)
         self.time_in_force_field, tif = frame("ticketField", spacing=5)
-        tif_help = {"GTC": "Good till canceled", "IOC": "Immediate or cancel",
-                    "FOK": "Fill or kill", "GTX": "Post only"}
+        tif_help = _TIME_IN_FORCE_HINTS
         self.time_in_force = combo(((key, key) for key in tif_help), "timeInForceCycle")
         self.time_in_force.setAccessibleName("Time in force")
+        for index, description in enumerate(tif_help.values()):
+            self.time_in_force.setItemData(index, description, Qt.ItemDataRole.ToolTipRole)
+        self.time_in_force.setToolTip(tif_help[self.time_in_force.currentText()])
+        self.time_in_force.currentTextChanged.connect(lambda key: self.time_in_force.setToolTip(tif_help.get(key, "")))
         tif.addWidget(self.time_in_force)
         self.protection_field, protection = frame("ticketField", spacing=5)
         self.protection_button = QtWidgets.QPushButton("TP / SL")
         self.protection_button.setObjectName("protectionButton")
         self.protection_button.setProperty("active", False)
+        self.protection_button.setToolTip("Set take-profit and stop-loss targets.")
         set_text_role(self.protection_button, TextRole.UI_CONTROL)
         protection.addWidget(self.protection_button)
         execution.addWidget(self.time_in_force_field)
@@ -1773,10 +1765,7 @@ class OrderPanel(QtWidgets.QWidget):
         height = max(30, max(widget.fontMetrics().height() for widget in controls) + 10)
         for widget in controls:
             widget.setFixedHeight(height)
-        caption_width = max(label.fontMetrics().horizontalAdvance(label.text()) for label in self._price_captions)
-        for label in self._price_captions:
-            label.setFixedWidth(caption_width)
-        self.callback_rate.setFixedWidth(self.callback_rate.fontMetrics().horizontalAdvance("10.0 %") + 40)
+        self.callback_rate.setFixedWidth(self.callback_rate.fontMetrics().horizontalAdvance("Trail 10.0 %") + 40)
         for button in (self.price_mark_button, self.trigger_mark_button, self.activation_mark_button):
             button.setFixedWidth(button.fontMetrics().horizontalAdvance("Mark") + 16)
         for button in (self.buy_button, self.sell_button):
@@ -2264,7 +2253,6 @@ class OrderPanel(QtWidgets.QWidget):
             "POSITION %": ("Position size · %", "Size · 1–100"),
         }.get(mode, ("Amount", "0.00"))
         self.quantity_edit.setAccessibleName(label)
-        self.amount_caption.setToolTip(label)
         units = {
             "CONTRACTS": base_asset,
             "QUOTE NOTIONAL": self.rules.quote_asset,
@@ -2885,8 +2873,8 @@ class ModifyOrderDialog(QtWidgets.QDialog):
         set_text_role(self.quantity, TextRole.MARKET_VALUE)
         set_text_role(self.price, TextRole.MARKET_VALUE)
         self.quantity.setToolTip(
-            f"New TOTAL order quantity, including fills. Already filled: {_quantity_text(executed)}. "
-            f"Step: {_exchange_step_text(rules.lot_step)}. Remaining = total minus filled."
+            f"Total size includes {_quantity_text(executed)} already filled. "
+            f"Quantity step: {_exchange_step_text(rules.lot_step)}."
         )
         form.addRow("New total quantity", self.quantity)
         form.addRow("Price", self.price)
@@ -3197,7 +3185,7 @@ class _FillAccountModel(QtCore.QAbstractListModel):
         if role == Qt.ItemDataRole.UserRole:
             return dict(self.rows[index.row()])
         if role not in (self.CardRole, Qt.ItemDataRole.DisplayRole,
-                        Qt.ItemDataRole.ToolTipRole, Qt.ItemDataRole.AccessibleTextRole):
+                        Qt.ItemDataRole.AccessibleTextRole):
             return None
         card = self._card(index.row())
         if role == self.CardRole:
@@ -3834,7 +3822,6 @@ class PositionDeskRow(QtWidgets.QFrame):
         quote = str(payload.get('_quote_asset') or ('USDC' if str(payload.get('symbol', '')).endswith('USDC') else 'USDT'))
         _set_text_if_changed(self.pnl_label, f"{_signed_money(pnl).replace('$', '')} {quote}")
         _set_repolished_property(self.pnl_label, "pnl", _pnl_state(pnl))
-        self.setToolTip(f"{payload.get('symbol')} · {direction} · UPNL {_signed_money(pnl).replace("$", "")}")
 
     def update_mark_price(self, mark):
         pnl = _update_position_mark(self.payload, mark)
@@ -3926,7 +3913,7 @@ class PositionDeskDetails(QtWidgets.QFrame):
         actions.setSpacing(8)
         self.trade_button = QtWidgets.QPushButton("Order ticket")
         self.trade_button.setAccessibleName("Prepare a reduce-only order for this position")
-        self.trade_button.setToolTip("Open this position in the order ticket with Reduce only checked")
+        self.trade_button.setToolTip('Open the ticket to reduce this position.')
         self.trade_button.setObjectName("deskTradePosition")
         set_text_role(self.trade_button, TextRole.UI_CONTROL)
         self.trade_button.clicked.connect(lambda: self.trade_requested.emit(dict(self.payload)) if self.payload else None)
@@ -4014,7 +4001,6 @@ class PositionDeskDetails(QtWidgets.QFrame):
         }
         for key, text in values.items():
             _set_text_if_changed(self.values[key], text)
-            self.values[key].setToolTip(text)
         for key in ("liquidation", "distance"):
             _set_repolished_property(self.values[key], "risk", "critical" if distance is not None and distance < 5 else "warning")
 
@@ -4148,7 +4134,6 @@ class WorkingOrderRow(QtWidgets.QFrame):
         identifier = payload.get("algoId") if payload.get("_source") == "ALGO" else payload.get("orderId")
         self.cancel_button.setEnabled(identifier not in (None, ""))
         self.cancel_button.setAccessibleName(f"Cancel {payload.get('symbol', '')} {kind} order {identifier or ''}")
-        self.setToolTip(f"{payload.get('symbol')} · {side} · {kind} · {price_text} · Qty {self.quantity_label.full_text()} · {text}")
 
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
@@ -4535,7 +4520,6 @@ class TradingWorkspace(QtWidgets.QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
         self.setObjectName("tradingWorkspace")
-        self.setProperty("suppressNonessentialTooltips", True)
         header = QtWidgets.QFrame()
         header.setObjectName("tradingWorkspaceHeader")
         header_layout = QtWidgets.QHBoxLayout(header)
@@ -4853,9 +4837,9 @@ class TradingWorkspace(QtWidgets.QWidget):
         reducing = bool(self.ticket.reduce_only.isChecked())
         self.batch_button.setEnabled(not reducing and self.gateway.has_credentials())
         self.batch_button.setToolTip(
-            "Batch limits are entry orders; uncheck Reduce only in the order ticket."
+            'Turn off Reduce only to create batch entries.'
             if reducing
-            else "Create up to five standard LIMIT / GTC entry orders for the current side."
+            else 'Create up to five Limit / GTC entries for this side.'
         )
 
     def set_close_presets(self, preset: dict[str, Any]) -> None:

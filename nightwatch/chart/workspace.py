@@ -354,7 +354,7 @@ class ScalableStudyAxisItem(pg.AxisItem):
         super().__init__(*args, **kwargs)
         self._drag_range: tuple[float, float] | None = None
         self.setCursor(Qt.CursorShape.SizeVerCursor)
-        self.setToolTip("Drag vertically to scale this pane · double-click to reset auto scale")
+        self.setToolTip('Drag to scale · double-click to reset')
 
     def mouseDragEvent(self, event: Any) -> None:
         view = self.linkedView()
@@ -1938,7 +1938,7 @@ class ChartWorkspace(QtWidgets.QWidget):
         self.liquidation_points = pg.ScatterPlotItem(hoverable=True, hoverSize=3)
         self.liquidation_points.setZValue(30)
         self.liquidation_points.setToolTip(
-            "Red down arrow: a long position was force-sold · Green up arrow: a short position was force-bought · Larger arrow: larger notional"
+            'Red: liquidated longs. Green: liquidated shorts. Larger arrows mean larger trades.'
         )
         self.price_plot.addItem(self.liquidation_points)
         self.liquidation_points.sigHovered.connect(self._liquidation_hovered)
@@ -1968,9 +1968,7 @@ class ChartWorkspace(QtWidgets.QWidget):
         self.funding_plot.addItem(self.funding_negative_bars)
         self.funding_plot.addItem(self.funding_zero_line, ignoreBounds=True)
         self.funding_plot.setToolTip(
-            "Historical Binance funding settlements · bars are exact raw rates · line is robust EMA-smoothed · "
-            "drag inside the pane to move vertically · drag the right axis to scale · "
-            "double-click the right axis to reset"
+            'Bars: settled funding rates. Line: smoothed trend.\nDrag the right axis to scale; double-click to reset.'
         )
         self.rsi_curve = self.rsi_plot.plot(pen=pg.mkPen(theme["cyan"], width=1.35))
         self.rsi_upper_line = pg.InfiniteLine(

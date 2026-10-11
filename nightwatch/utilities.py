@@ -809,7 +809,7 @@ class _TooltipStyle(QtWidgets.QProxyStyle):
 
     def styleHint(self, hint, option=None, widget=None, return_data=None):
         if hint == QtWidgets.QStyle.StyleHint.SH_ToolTip_WakeUpDelay:
-            return 150
+            return 400
         if hint == QtWidgets.QStyle.StyleHint.SH_ToolTip_FallAsleepDelay:
             return 0  # Disable Qt's nearly instant second-tooltip grace period.
         return super().styleHint(hint, option, widget, return_data)
@@ -826,10 +826,9 @@ class _TooltipController(QtCore.QObject):
         self._text = ""
         self._position = QtCore.QPoint()
         self._rect = QtCore.QRect()
-        self._stylesheet = ""
         self._timer = QtCore.QTimer(self)
         self._timer.setSingleShot(True)
-        self._timer.setInterval(150)
+        self._timer.setInterval(400)
         self._timer.timeout.connect(self._show_pending)
         application.aboutToQuit.connect(self.hide)
         application.setStyle(_TooltipStyle(application.style().objectName()))
@@ -841,21 +840,39 @@ class _TooltipController(QtCore.QObject):
         # cannot accidentally interpret an exchange symbol as HTML.
         if re.match(r"\s*<(?:qt|html|p|b|strong|table|div|span|font|pre|ul)\b", text, re.IGNORECASE):
             return text
-        return "<qt>" + html.escape(text).replace("\n", "<br>") + "</qt>"
+        metrics = QtGui.QFontMetrics(typography_font(TextRole.UI_BODY))
+        whitespace = "pre" if all(metrics.horizontalAdvance(line) <= 280 for line in text.splitlines()) else "normal"
+        return f'<qt><p style="white-space:{whitespace}; margin:0">' + html.escape(text).replace("\n", "<br>") + "</p></qt>"
 
     @staticmethod
-    def _redundant(widget: QtWidgets.QWidget, text: str) -> bool:
+    def _plain(text: str) -> str:
+        if re.match(r"\s*<(?:qt|html|p|b|strong|table|div|span|font|pre|ul)\b", text, re.IGNORECASE):
+            document = QtGui.QTextDocument()
+            document.setHtml(text)
+            text = document.toPlainText()
+        return re.sub(r"\s+", " ", text).strip().rstrip(".").casefold()
+
+    @classmethod
+    def _redundant(cls, widget: QtWidgets.QWidget, text: str) -> bool:
+        if isinstance(widget, QtWidgets.QToolButton) and widget.toolButtonStyle() == QtCore.Qt.ToolButtonStyle.ToolButtonIconOnly:
+            return False
+        width = widget.contentsRect().width() - 12
         if isinstance(widget, (QtWidgets.QAbstractButton, QtWidgets.QLabel)):
             visible = widget.text().replace("&", "").strip()
-            return bool(
-                visible and text.strip() == visible
-                and widget.fontMetrics().horizontalAdvance(visible) <= widget.contentsRect().width() - 6
-            )
-        return False
+        elif isinstance(widget, QtWidgets.QLineEdit):
+            visible = widget.displayText() or widget.placeholderText()
+            width -= widget.textMargins().left() + widget.textMargins().right()
+        elif isinstance(widget, QtWidgets.QComboBox):
+            visible = widget.currentText()
+            width -= 20
+        else:
+            return False
+        return bool(visible and cls._plain(text) == cls._plain(visible)
+                    and widget.fontMetrics().horizontalAdvance(visible) <= width)
 
     def request(self, widget: QtWidgets.QWidget, text: str, position: QtCore.QPoint,
                 rect: QtCore.QRect | None = None) -> None:
-        if not text or not tooltips_allowed(widget):
+        if not text or not tooltips_allowed(widget) or self._redundant(widget, text):
             self.hide(widget)
             return
         owner = self._owner() if self._owner is not None else None
@@ -897,8 +914,6 @@ class _TooltipController(QtCore.QObject):
             and isinstance(watched, QtWidgets.QWidget)
             and watched.windowType() == QtCore.Qt.WindowType.ToolTip
         ):
-            if watched.styleSheet() != self._stylesheet:
-                watched.setStyleSheet(self._stylesheet)
             set_text_role(watched, TextRole.UI_BODY)
         if event_type == QtCore.QEvent.Type.ToolTip and isinstance(watched, QtWidgets.QWidget):
             if not tooltips_allowed(watched):
@@ -906,12 +921,21 @@ class _TooltipController(QtCore.QObject):
                 event.accept()
                 return True
             text = watched.toolTip()
+            if isinstance(watched, QtWidgets.QTabBar):
+                tab = watched.tabAt(event.pos())
+                if tab >= 0:
+                    text = watched.tabToolTip(tab)
+                    title = watched.tabText(tab).replace("&", "")
+                    if self._plain(text) == self._plain(title) and watched.fontMetrics().horizontalAdvance(title) <= watched.tabRect(tab).width() - 24:
+                        self.hide()
+                        event.accept()
+                        return True
             if isinstance(watched, QtWidgets.QMenu):
                 action = watched.actionAt(event.pos())
                 if action is not None:
                     text = action.toolTip()
-                    if text == action.text().replace("&", ""):
-                        QtWidgets.QToolTip.hideText()
+                    if self._plain(text) == self._plain(action.text().replace("&", "")):
+                        self.hide()
                         return True
             view = watched.parentWidget()
             if isinstance(view, QtWidgets.QAbstractItemView) and watched is view.viewport():
@@ -921,12 +945,12 @@ class _TooltipController(QtCore.QObject):
                     text = str(item_tip)
                     value_data = index.data(QtCore.Qt.ItemDataRole.DisplayRole)
                     value = "" if value_data is None else str(value_data)
-                    if text == value and watched.fontMetrics().horizontalAdvance(value) <= view.visualRect(index).width() - 10:
-                        QtWidgets.QToolTip.hideText()
+                    if self._plain(text) == self._plain(value) and watched.fontMetrics().horizontalAdvance(value) <= view.visualRect(index).width() - 10:
+                        self.hide()
                         return True
             if text:
                 if self._redundant(watched, text):
-                    QtWidgets.QToolTip.hideText()
+                    self.hide()
                 else:
                     self.hide()
                     QtWidgets.QToolTip.showText(event.globalPos(), self._formatted(text),
@@ -964,19 +988,18 @@ def hide_hover_tooltip(widget: QtWidgets.QWidget) -> None:
 
 def tooltip_stylesheet(theme: dict[str, str]) -> str:
     return f"""QToolTip {{ background: {theme['panel2']}; color: {theme['text']};
-        border: 1px solid {theme['control_border']}; border-radius: 4px;
-        padding: 6px 8px; max-width: 420px; }}"""
+        border: 1px solid {theme['control_border']}; border-radius: 5px;
+        padding: 5px 8px; max-width: 320px; font-weight: 400; }}"""
 
 
 def set_tooltip_theme(theme: dict[str, str]) -> None:
-    application = QtWidgets.QApplication.instance()
-    controller = tooltip_controller()
-    # An application stylesheet can interrupt existing parent-widget styles.
-    # Style Qt's native popup label directly, including detached-window tips.
-    controller._stylesheet = tooltip_stylesheet(theme).replace("QToolTip", "QLabel")
-    for window in application.topLevelWidgets():
-        if window.windowType() == QtCore.Qt.WindowType.ToolTip:
-            window.setStyleSheet(controller._stylesheet)
+    tooltip_controller()
+    # The application stylesheet styles popups before Qt measures them.
+    # Keep a themed native fallback for widgets outside the main window.
+    palette = QtGui.QPalette(QtWidgets.QToolTip.palette())
+    palette.setColor(QtGui.QPalette.ColorRole.ToolTipBase, QtGui.QColor(theme['panel2']))
+    palette.setColor(QtGui.QPalette.ColorRole.ToolTipText, QtGui.QColor(theme['text']))
+    QtWidgets.QToolTip.setPalette(palette)
     QtWidgets.QToolTip.setFont(typography_font(TextRole.UI_BODY))
 
 
@@ -1503,18 +1526,15 @@ class TerminalStatusBar(QtWidgets.QStatusBar):
         self.orderbook_latency.setObjectName("statusOrderbookLatency")
         self.orderbook_latency.setProperty("stale", True)
         self.orderbook_latency.setToolTip(
-            "OB Net: Binance depth event → local WebSocket arrival, using the synchronized Binance clock.\n"
-            "Render: orderbook snapshot arrival → painted rows in the isolated renderer, including its queue and preparation."
+            'Net: exchange event to arrival.\nRender: arrival to visible orderbook.'
         )
         self.fps = QtWidgets.QLabel("FPS idle")
         self.fps.setObjectName("statusFrameRate")
         self.fps.setToolTip(
-            "Recent dirty-driven Nightwatch presentation transactions / active display refresh. "
-            "Idle means no visual transaction was needed in the last second."
+            'App updates per second / display refresh rate. Idle means no redraw was needed.'
         )
         self.latency.setToolTip(
-            "Feed: Binance event → local WebSocket arrival, corrected with the synchronized Binance clock.\n"
-            "App: local WebSocket arrival → GUI depth handler. Not ping RTT."
+            'Feed: exchange event to arrival.\nApp: arrival to processing. Not network ping.'
         )
         self.message_label = ElidedLabel()
         self.message_label.setObjectName("statusMessage")
@@ -1687,60 +1707,9 @@ class TerminalStatusBar(QtWidgets.QStatusBar):
             or (bool(clock) and not clock_fresh)
         )
 
-        enqueue_mono_ms = float(telemetry.get("enqueue_mono_ms") or 0.0)
-        worker_start_mono_ms = float(telemetry.get("worker_start_mono_ms") or 0.0)
-        worker_resume_mono_ms = float(telemetry.get("worker_resume_mono_ms") or 0.0)
-        gui_dispatch_mono_ms = float(telemetry.get("gui_dispatch_mono_ms") or 0.0)
-        callback_to_enqueue: float | None = None
-        worker_queue: float | None = None
-        worker_processing: float | None = None
-        worker_to_gui: float | None = None
-        gui_to_status: float | None = None
-        if enqueue_mono_ms >= socket_mono_ms > 0.0:
-            callback_to_enqueue = enqueue_mono_ms - socket_mono_ms
-        if worker_start_mono_ms >= enqueue_mono_ms > 0.0:
-            worker_queue = worker_start_mono_ms - enqueue_mono_ms
-        processing_start = max(worker_start_mono_ms, worker_resume_mono_ms)
-        if parser_done_mono_ms >= processing_start > 0.0:
-            worker_processing = parser_done_mono_ms - processing_start
-        if gui_dispatch_mono_ms >= parser_done_mono_ms > 0.0:
-            worker_to_gui = gui_dispatch_mono_ms - parser_done_mono_ms
-        if gui_mono_ms >= gui_dispatch_mono_ms > 0.0:
-            gui_to_status = gui_mono_ms - gui_dispatch_mono_ms
-
-        detail = [
-            "Feed = Binance event timestamp → Nightwatch's Qt WebSocket callback,",
-            "using the cached Binance clock estimate. This is not a raw network RTT.",
-            "App = Qt WebSocket callback → status/depth handler, using monotonic time.",
-        ]
-        for label, value in (
-            ("Callback → worker enqueue", callback_to_enqueue),
-            ("Worker queue", worker_queue),
-            ("Worker processing/publish", worker_processing),
-            ("Worker → GUI dispatch", worker_to_gui),
-            ("GUI dispatch → status handler", gui_to_status),
-        ):
-            if value is not None:
-                detail.append(f"{label}: {value:,.2f} ms")
-
-        if clock:
-            age_s = clock.get("age_s")
-            offset_ms = clock.get("offset_ms")
-            rtt_ms = clock.get("rtt_ms")
-            if offset_ms is not None:
-                detail.append(f"Binance clock offset: {float(offset_ms):,.1f} ms")
-            if age_s is not None:
-                detail.append(f"Clock sync age: {float(age_s):,.1f} s")
-            if rtt_ms is not None:
-                detail.append(f"Last clock-sync RTT: {float(rtt_ms):,.1f} ms")
-            if rtt_ms is not None:
-                detail.append("Clock estimate assumes approximately symmetric request/response path delay.")
-            last_error = str(clock.get("last_error") or "")
-            if last_error:
-                detail.append(f"Last clock-sync error: {last_error}")
+        detail_text = "Feed: exchange event to arrival.\nApp: arrival to processing. Not network ping."
         if feed_delay is None:
-            detail.append("Feed timing is unavailable until the Binance clock estimate is fresh.")
-        detail_text = "\n".join(detail)
+            detail_text += "\nFeed timing needs a fresh exchange clock sync."
         if self.latency.toolTip() != detail_text:
             self.latency.setToolTip(detail_text)
 
