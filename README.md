@@ -97,9 +97,12 @@ order. Account and leverage errors remain visible until resolved, and a failed
 order-history request does not hide a successfully loaded balance. Position
 reductions do not require fresh collateral for a new entry.
 
-The trading panel separates **Open position** and **Reduce position**. Select
-Buy / Long or Sell / Short, choose an order type and size, then use the fixed
-submit button (or **Ctrl+Enter**). Selecting a side never submits an order.
-The form scrolls in short panels and switches to columns in wide panels.
-Reduce mode sizes against the selected position; TP/SL, conditional orders,
-account activity and execution status remain available in the same workspace.
+The trading panel keeps order entry compact, with the available balance beside
+leverage and sizing controls alongside the form in wide panels. Choose an order
+type and size, then use **Buy / Long** or **Sell / Short** to submit. **Reduce
+only** sizes against the selected position. The form scrolls in short panels.
+Spare height below the ticket shows live unrealized P&L and active orders, with
+position and order lists stacked in narrow panels or side by side in wide ones.
+Current-pair activity appears first; click a position for its controls or use
+an order's cancel button. The account view retains fills, balances, and full
+position controls.
