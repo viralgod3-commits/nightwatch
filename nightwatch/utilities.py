@@ -1165,7 +1165,10 @@ class InstrumentBar(QtWidgets.QFrame):
         self.row.setContentsMargins(0, 0, 0, 0)
         self.row.setSpacing(0)
         self.row.setAlignment(QtCore.Qt.AlignmentFlag.AlignVCenter)
-        self._normal_horizontal_margins = (8, 8)
+        # The chart host can have a wider external right reserve, but the
+        # market-bar contents themselves stay visually balanced.
+        self._content_horizontal_margins = (8, 8)
+        self._plot_horizontal_margins = (8, 8)
         self._chart_context_visible = True
         self._responsive_layout_active = False
         self._responsive_state = None
@@ -1278,7 +1281,7 @@ class InstrumentBar(QtWidgets.QFrame):
             return
         self._responsive_layout_active = True
         try:
-            left, right = self._normal_horizontal_margins
+            left, right = self._content_horizontal_margins
             available_width = self.contentsRect().width()
             for index in range(2, self.row.count()):
                 control = self.row.itemAt(index).widget()
@@ -1395,7 +1398,7 @@ class InstrumentBar(QtWidgets.QFrame):
         if host is None:
             return
         margins = host_layout.contentsMargins()
-        left, right = self._normal_horizontal_margins
+        left, right = self._plot_horizontal_margins
         if margins.left() != left or margins.right() != right:
             host_layout.setContentsMargins(left, margins.top(), right, margins.bottom())
 
@@ -1410,7 +1413,9 @@ class InstrumentBar(QtWidgets.QFrame):
     def set_developer_geometry(self, *, left=7, top=4, right=7, bottom=4,
                                spacing=4, height=INSTRUMENT_BAR_HEIGHT) -> None:
         # Keep card height and adjacency stable while retaining tuner margins.
-        self._normal_horizontal_margins = (max(0, int(left)), max(0, int(right)))
+        content_left = max(0, int(left))
+        self._content_horizontal_margins = (content_left, content_left)
+        self._plot_horizontal_margins = (content_left, max(0, int(right)))
         self._responsive_state = None
         self._apply_responsive_layout()
         self._queue_plot_alignment()
