@@ -48,6 +48,14 @@ LEADERS_PALETTE: dict[str, str] = dict(NIGHTWATCH_COLORS)
 SECTORS_PALETTE = dict(LEADERS_PALETTE)
 
 
+def _workspace_palette(theme: dict[str, str] | None = None) -> dict[str, str]:
+    """Resolve a complete workspace palette from the active application theme."""
+    palette = dict(NIGHTWATCH_COLORS)
+    if isinstance(theme, dict):
+        palette.update({key: str(value) for key, value in theme.items()})
+    return palette
+
+
 def _amount(value: float | None) -> str:
     if value is None or not math.isfinite(value):
         return "—"
@@ -396,14 +404,14 @@ class LeadershipTimelineWidget(QtWidgets.QWidget):
 
     def __init__(
         self,
-        _ignored_theme: dict[str, str] | None = None,
+        theme: dict[str, str] | None = None,
         parent: QtWidgets.QWidget | None = None,
     ):
 
 
         super().__init__(parent)
         self.setObjectName("leadershipTimeline")
-        self.theme = dict(LEADERS_PALETTE)
+        self.theme = _workspace_palette(theme)
         self.rest = self.db = self.watchlist = None
         self.can_load = lambda: True
         self.active = self.closing = False
@@ -459,7 +467,7 @@ class LeadershipTimelineWidget(QtWidgets.QWidget):
         self.detail_timer.setSingleShot(True)
         self.detail_timer.setInterval(450)
         self.detail_timer.timeout.connect(self._request_details)
-        self._apply_fixed_palette()
+        self._apply_palette(self.theme)
     def _build_ui(self):
         build_leaders(self)
 
@@ -1322,13 +1330,15 @@ class LeadershipTimelineWidget(QtWidgets.QWidget):
                                                        for key in ("volume", "oi", "range", "spot", "funding", "liquidity")))
         _render_leader_context(self)
 
-    def apply_theme(self, _theme: dict[str, str]) -> None:
-        self._apply_fixed_palette()
+    def apply_theme(self, theme: dict[str, str]) -> None:
+        self._apply_palette(theme)
 
-    def _apply_fixed_palette(self) -> None:
-        palette = dict(LEADERS_PALETTE)
+    def _apply_palette(self, theme: dict[str, str] | None) -> None:
+        palette = _workspace_palette(theme)
         self.theme = palette
-        self.setStyleSheet(leaders_stylesheet(palette) + _workspace_stylesheet("leadershipTimeline"))
+        self.setStyleSheet(leaders_stylesheet(palette) + _workspace_stylesheet("leadershipTimeline", palette))
+        if hasattr(self, "refresh_button"):
+            self.refresh_button.setIcon(line_icon("refresh", palette["muted"], self.devicePixelRatioF()))
         self.render()
 
 
@@ -2033,8 +2043,8 @@ def _workspace_save_chrome(owner, settings, page: str):
         settings.setValue(f"markets/{page}/comparison_visible", owner.compare_toggle.isChecked())
 
 
-def _workspace_stylesheet(name: str) -> str:
-    p = LEADERS_PALETTE
+def _workspace_stylesheet(name: str, theme: dict[str, str] | None = None) -> str:
+    p = _workspace_palette(theme)
     scope = f"QWidget#{name}"
     return f"""
         {scope} QWidget[workspaceTransparent="true"] {{ background: transparent; border: 0; }}
@@ -2849,8 +2859,8 @@ def leaders_stylesheet(theme: dict[str, str] | None = None) -> str:
         }}
         QTableWidget#leadershipTable QHeaderView::section:hover {{ color: {text}; background: {hover}; }}
 
-        QComboBox#leadersCombo {{ background: #000000; color: {text}; border: 1px solid {border}; border-radius: 5px; min-height: 30px; padding: 0 10px; }}
-        QComboBox#leadersCombo QAbstractItemView {{ background: #000000; color: {text}; selection-background-color: #000000; selection-color: {active_line}; border: 1px solid {border}; }}
+        QComboBox#leadersCombo {{ background: {control}; color: {text}; border: 1px solid {border}; border-radius: 5px; min-height: 30px; padding: 0 10px; }}
+        QComboBox#leadersCombo QAbstractItemView {{ background: {control}; color: {text}; selection-background-color: {active}; selection-color: {active_line}; border: 1px solid {border}; }}
         QComboBox#leadersCombo:focus, QLineEdit#leadersSearch:focus {{ border-color: {active_line}; }}
         QPushButton#leadersToolbarButton:focus, QToolButton#leadersToolbarButton:focus, QPushButton#leadersStateTab:focus {{ border-color: {active_line}; }}
         QPushButton#leadersToolbarButton:disabled {{ color: {muted}; border-color: {separator}; }}
@@ -3938,14 +3948,14 @@ class SectorOverviewWidget(QtWidgets.QWidget):
 
     def __init__(
         self,
-        _ignored_theme: dict[str, str] | None = None,
+        theme: dict[str, str] | None = None,
         parent: QtWidgets.QWidget | None = None,
     ):
 
 
         super().__init__(parent)
         self.setObjectName("sectorOverview")
-        self.theme = dict(SECTORS_PALETTE)
+        self.theme = _workspace_palette(theme)
         self.rest = self.db = self.leadership = None
         self.can_load = lambda: True
         self.valid_symbols: set[str] = set()
@@ -3994,7 +4004,7 @@ class SectorOverviewWidget(QtWidgets.QWidget):
         self.render_timer.setTimerType(Qt.TimerType.PreciseTimer)
         self.render_timer.setInterval(display_frame_interval_ms(self))
         self.render_timer.timeout.connect(self.render)
-        self._apply_fixed_palette()
+        self._apply_palette(self.theme)
 
     def _build_ui(self) -> None:
         sidebar, layout = _workspace_shell(self, "sectorBody")
@@ -4657,11 +4667,11 @@ class SectorOverviewWidget(QtWidgets.QWidget):
             self.tile_layout.addWidget(tile, index // columns, index % columns)
             self.tile_layout.setRowStretch(index // columns, 1)
 
-    def apply_theme(self, _theme: dict[str, str]) -> None:
-        self._apply_fixed_palette()
+    def apply_theme(self, theme: dict[str, str]) -> None:
+        self._apply_palette(theme)
 
-    def _apply_fixed_palette(self) -> None:
-        palette = dict(SECTORS_PALETTE)
+    def _apply_palette(self, theme: dict[str, str] | None) -> None:
+        palette = _workspace_palette(theme)
         self.theme = palette
         for tile in getattr(self, "tiles", {}).values():
             tile.apply_theme(palette)
@@ -4713,7 +4723,9 @@ class SectorOverviewWidget(QtWidgets.QWidget):
             QTableWidget#sectorTable {{ background: {palette['panel']}; alternate-background-color: {palette['panel2']}; color: {palette['text']}; border: 0; }}
             QTableWidget#sectorTable::item {{ border-bottom: 1px solid {palette['border']}; padding: 4px 8px; }}
             QHeaderView::section {{ background: {palette['panel2']}; color: {palette['muted']}; border: 0; border-bottom: 1px solid {palette['border']}; padding: 7px 8px; }}
-        """ + _workspace_stylesheet("sectorOverview"))
+        """ + _workspace_stylesheet("sectorOverview", palette))
+        if hasattr(self, "refresh_button"):
+            self.refresh_button.setIcon(line_icon("refresh", palette["muted"], self.devicePixelRatioF()))
         if hasattr(self, "render_timer"):
             self.render()
 
@@ -5445,7 +5457,7 @@ def _rotation_button(text, name="rotationButton"):
 class RotationScannerWidget(LeadershipTimelineWidget):
     """Rotation workspace with Leadership-compatible host interfaces."""
 
-    def __init__(self, _ignored_theme=None, parent=None):
+    def __init__(self, theme=None, parent=None):
         self.leadership = None
         self._rotation_revision = None
         self._rotation_view_dirty = False
@@ -5458,12 +5470,12 @@ class RotationScannerWidget(LeadershipTimelineWidget):
         self._filtered_points = []
         self._sort_column = 2
         self._sort_order = Qt.SortOrder.DescendingOrder
-        super().__init__(_ignored_theme, parent)
+        super().__init__(theme, parent)
         self.detail_freshness_timer = QtCore.QTimer(self)
         self.detail_freshness_timer.setInterval(30_000)
         self.detail_freshness_timer.timeout.connect(self._refresh_detail_view)
         self.setObjectName("rotationScanner")
-        self._apply_fixed_palette()
+        self._apply_rotation_palette(self.theme)
 
     def _build_ui(self):
         self.setObjectName("rotationScanner")
@@ -5722,9 +5734,22 @@ class RotationScannerWidget(LeadershipTimelineWidget):
         if hasattr(self, "rotation_splitter"):
             self._arrange_rotation_detail()
 
-    def _apply_fixed_palette(self):
-        self.theme = dict(ROTATION_PALETTE)
-        self.setStyleSheet(rotation_stylesheet() + _workspace_stylesheet("rotationScanner"))
+    def apply_theme(self, theme: dict[str, str]) -> None:
+        self._apply_rotation_palette(theme)
+
+    def _apply_rotation_palette(self, theme: dict[str, str] | None) -> None:
+        palette = _workspace_palette(theme)
+        self.theme = palette
+        ROTATION_PALETTE.clear()
+        ROTATION_PALETTE.update(palette)
+        QUADRANT_COLORS.update({
+            "Improving": palette["cyan"], "Leading": palette["green"],
+            "Lagging": palette["red"], "Weakening": palette["amber"],
+            "Neutral": palette["muted"],
+        })
+        self.setStyleSheet(rotation_stylesheet(palette) + _workspace_stylesheet("rotationScanner", palette))
+        if hasattr(self, "refresh_button"):
+            self.refresh_button.setIcon(line_icon("refresh", palette["muted"], self.devicePixelRatioF()))
         if hasattr(self, "bubbles"):
             self.bubbles.update()
 
@@ -6256,8 +6281,8 @@ class RotationScannerWidget(LeadershipTimelineWidget):
         _workspace_save_chrome(self, settings, "rotation")
 
 
-def rotation_stylesheet():
-    p = ROTATION_PALETTE
+def rotation_stylesheet(theme: dict[str, str] | None = None):
+    p = _workspace_palette(theme)
     return f"""
     QWidget#rotationScanner, QWidget#rotationBody {{ background: {p['bg']}; color: {p['text']}; }}
     QWidget#rotationScanner QLabel {{ border: 0; background: transparent; color: {p['text']}; }}
@@ -6269,35 +6294,35 @@ def rotation_stylesheet():
     QFrame#rotationPanel {{ background: {p['panel']}; border: 1px solid {p['border']}; border-radius: 5px; }}
     QFrame#rotationMapPanel {{ border: 0; }}
     QFrame#rotationFact {{ border-bottom: 1px solid {p['separator']}; }}
-    QWidget#rotationScanner QScrollArea {{ border: 0; background: #000000; }}
+    QWidget#rotationScanner QScrollArea {{ border: 0; background: {p['panel']}; }}
     QWidget#rotationScanner QComboBox, QWidget#rotationScanner QLineEdit {{
-        background: #000000; color: {p['text']}; border: 1px solid {p['control_border']}; border-radius: 4px; padding: 4px 8px;
+        background: {p['control']}; color: {p['text']}; border: 1px solid {p['control_border']}; border-radius: 4px; padding: 4px 8px;
     }}
     QWidget#rotationScanner QComboBox:hover, QWidget#rotationScanner QLineEdit:hover {{ border-color: {p['muted']}; }}
     QWidget#rotationScanner QComboBox:focus, QWidget#rotationScanner QLineEdit:focus {{ border-color: {p['active_line']}; }}
-    QWidget#rotationScanner QComboBox QAbstractItemView {{ background: #000000; selection-background-color: #000000; selection-color: {p['active_line']}; border: 1px solid {p['border']}; }}
+    QWidget#rotationScanner QComboBox QAbstractItemView {{ background: {p['control']}; selection-background-color: {p['active']}; selection-color: {p['active_line']}; border: 1px solid {p['border']}; }}
     QPushButton#rotationButton, QPushButton#rotationPrimary {{
-        background: #000000; color: {p['text']}; border: 1px solid {p['control_border']}; border-radius: 4px; padding: 2px 10px;
+        background: {p['control']}; color: {p['text']}; border: 1px solid {p['control_border']}; border-radius: 4px; padding: 2px 10px;
     }}
     QPushButton#rotationButton:hover, QPushButton#rotationButton:focus {{ border-color: {p['active_line']}; color: {p['active_line']}; }}
     QPushButton#rotationButton:checked {{ border-color: {p['active_line']}; color: {p['active_line']}; }}
     QPushButton#rotationPrimary {{ border-color: {p['active_line']}; color: {p['active_line']}; }}
-    QPushButton#rotationPrimary:hover, QPushButton#rotationPrimary:focus {{ border-color: #FFFFFF; }}
+    QPushButton#rotationPrimary:hover, QPushButton#rotationPrimary:focus {{ border-color: {p['text']}; }}
     QPushButton#rotationButton:disabled, QPushButton#rotationPrimary:disabled {{ color: {p['muted']}; border-color: {p['separator']}; }}
     QWidget#rotationScanner QCheckBox {{ color: {p['text']}; spacing: 8px; padding: 4px 0; }}
-    QWidget#rotationScanner QCheckBox::indicator {{ width: 17px; height: 17px; background: #000000; border: 1px solid {p['control_border']}; border-radius: 3px; }}
+    QWidget#rotationScanner QCheckBox::indicator {{ width: 17px; height: 17px; background: {p['control']}; border: 1px solid {p['control_border']}; border-radius: 3px; }}
     QWidget#rotationScanner QCheckBox::indicator:checked {{ background: {p['active_line']}; border-color: {p['active_line']}; }}
     QWidget#rotationScanner QCheckBox::indicator:focus {{ border-color: #FFFFFF; }}
-    QTableWidget#rotationCandidates {{ border: 0; background: {p['panel']}; gridline-color: {p['separator']}; selection-background-color: #000000; selection-color: {p['text']}; outline: 0; }}
+    QTableWidget#rotationCandidates {{ border: 0; background: {p['panel']}; gridline-color: {p['separator']}; selection-background-color: {p['active']}; selection-color: {p['text']}; outline: 0; }}
     QTableWidget#rotationCandidates::item {{ border-bottom: 1px solid {p['separator']}; padding: 5px; }}
     QTableWidget#rotationCandidates::item:selected {{ border-top: 1px solid {p['active_line']}; border-bottom: 1px solid {p['active_line']}; }}
     QTableWidget#rotationCandidates QHeaderView::section {{ background: {p['header']}; color: {p['muted']}; border: 0; border-bottom: 1px solid {p['border']}; padding: 4px; }}
     QTableWidget#rotationCandidates QHeaderView::section:hover {{ color: {p['text']}; }}
-    QWidget#rotationScanner QScrollBar:vertical {{ background: #000000; width: 7px; margin: 0; }}
-    QWidget#rotationScanner QScrollBar:horizontal {{ background: #000000; height: 7px; margin: 0; }}
+    QWidget#rotationScanner QScrollBar:vertical {{ background: {p['panel']}; width: 7px; margin: 0; }}
+    QWidget#rotationScanner QScrollBar:horizontal {{ background: {p['panel']}; height: 7px; margin: 0; }}
     QWidget#rotationScanner QScrollBar::handle {{ background: {p['control_border']}; min-width: 24px; min-height: 24px; border-radius: 3px; }}
     QWidget#rotationScanner QScrollBar::add-line, QWidget#rotationScanner QScrollBar::sub-line {{ width: 0; height: 0; }}
-    QWidget#rotationScanner QScrollBar::add-page, QWidget#rotationScanner QScrollBar::sub-page {{ background: #000000; }}
+    QWidget#rotationScanner QScrollBar::add-page, QWidget#rotationScanner QScrollBar::sub-page {{ background: {p['panel']}; }}
     """
 
 
