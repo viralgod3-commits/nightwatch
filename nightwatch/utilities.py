@@ -1112,15 +1112,10 @@ class MainToolbar(QtWidgets.QFrame):
         self.setAttribute(QtCore.Qt.WidgetAttribute.WA_StyledBackground, True)
         self.setFixedHeight(self.HEIGHT)
         row = QtWidgets.QHBoxLayout(self)
-        # Navigation needs its own breathing room, while utility controls are a
-        # contiguous, edge-aligned group in the top-right corner.
+        # Utility controls form a contiguous, edge-aligned group in the
+        # top-right corner; workspace navigation begins directly at the left.
         row.setContentsMargins(0, 0, 0, 0)
         row.setSpacing(0)
-        brand = QtWidgets.QLabel("NIGHTWATCH", self)
-        brand.setObjectName("terminalBrand")
-        set_text_role(brand, TextRole.UI_LABEL)
-        brand.setContentsMargins(0, 0, 16, 0)
-        row.addWidget(brand)
         navigation.setFixedHeight(self.HEIGHT - 1)
         for button in navigation.findChildren(QtWidgets.QPushButton):
             button.setFixedHeight(self.HEIGHT - 1)

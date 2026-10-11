@@ -7138,7 +7138,7 @@ class MainWindow(QtWidgets.QMainWindow):
         preset = self.right_layout_presets.get(name)
         if preset is None:
             return
-        self.right_rail_controller.apply_preset(name, preset)
+        self.right_rail_controller.apply_preset(name, preset, minimum_width=True)
         self.trading_workspace.set_page(0)
         self.settings.setValue("right_layout_preset", name)
         self._sync_right_panel_alignment()

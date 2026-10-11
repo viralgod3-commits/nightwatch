@@ -1786,7 +1786,8 @@ if QtWidgets is not None:
                 self._outer_pending = True
                 self._changed()
 
-        def apply_preset(self, name, preset, *, reset_geometry=False, column_mode=None):
+        def apply_preset(self, name, preset, *, reset_geometry=False, column_mode=None,
+                         minimum_width=False):
             tree = decode_tree(preset.get("tree"))
             validate_tree(tree)
             visible = valid_panel_names(preset.get("visible", ()), self.model.panel_names)
@@ -1801,6 +1802,11 @@ if QtWidgets is not None:
             self.model.apply_preset(name, visible, sizes, reset_geometry=reset_geometry, tree=tree)
             if "rail_width" in preset:
                 self.model.state.set_rail_width(_safe_int(preset["rail_width"], 660))
+            if minimum_width:
+                # A preset change should never retain the previous wider rail.
+                # Resolve from the new tree so each visible column gets only
+                # the width it needs, subject to the chart's minimum width.
+                self.model.state.set_rail_width(self._required_rail_width())
             self._outer_pending = True
             self._changed()
 
