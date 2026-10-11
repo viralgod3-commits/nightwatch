@@ -1956,7 +1956,7 @@ class MarketStatsWidget(QtWidgets.QWidget):
                 "volume": "24H VOL",
                 "taker": "Taker volume",
                 "oi": "OPEN INTEREST",
-                "long_short": "LONG/SHORT",
+                "long_short": "LONG / SHORT",
                 "funding": "FUNDING",
             }
             for name, title in compact_titles.items():
