@@ -1552,6 +1552,10 @@ class TerminalStatusBar(QtWidgets.QStatusBar):
         self.message_label.setMinimumWidth(0)
         self.market = QtWidgets.QLabel("Market: —")
         self.market.setObjectName("statusMarket")
+        self.clock = QtWidgets.QLabel()
+        self.clock.setObjectName("statusClock")
+        self.clock.setToolTip("Current local time")
+        self.clock.setAccessibleName("Current local time")
         self._separators: list[QtWidgets.QFrame] = []
         for widget in (self.connection, self.venue, self.latency, self.orderbook_latency, self.fps):
             row.addWidget(widget)
@@ -1562,6 +1566,7 @@ class TerminalStatusBar(QtWidgets.QStatusBar):
             row.addWidget(divider)
         row.addWidget(self.message_label, 1)
         row.addWidget(self.market)
+        row.addWidget(self.clock)
         self.addPermanentWidget(surface, 1)
         self.messageChanged.connect(self.message_label.setText)
         self._last_latency_update = 0.0
@@ -1571,10 +1576,23 @@ class TerminalStatusBar(QtWidgets.QStatusBar):
         set_text_role(self.connection, TextRole.STATUS_TEXT)
         set_text_role(self.venue, TextRole.STATUS_TEXT)
         set_text_role(self.market, TextRole.STATUS_TEXT)
+        set_text_role(self.clock, TextRole.STATUS_TEXT)
         set_text_role(self.message_label, TextRole.STATUS_MESSAGE)
         set_text_role(self.latency, TextRole.STATUS_LATENCY)
         set_text_role(self.orderbook_latency, TextRole.STATUS_LATENCY)
         set_text_role(self.fps, TextRole.STATUS_LATENCY)
+        self.set_latency_visible(False)
+        self.update_clock()
+
+    def set_latency_visible(self, enabled: bool) -> None:
+        """Show latency labels and their separators only when opted in."""
+        for widget in (self.latency, self.orderbook_latency, *self._separators[2:4]):
+            widget.setVisible(bool(enabled))
+
+    def update_clock(self) -> None:
+        text = datetime.now().astimezone().strftime("%H:%M:%S")
+        if self.clock.text() != text:
+            self.clock.setText(text)
 
     def apply_tuning(self, values: dict[str, object]) -> None:
         """Apply validated developer geometry and semantic font roles live."""
@@ -1588,7 +1606,7 @@ class TerminalStatusBar(QtWidgets.QStatusBar):
         for divider in self._separators:
             divider.setFixedHeight(separator_height)
         text_role = str(values["text_font_role"])
-        for widget in (self.connection, self.venue, self.market):
+        for widget in (self.connection, self.venue, self.market, self.clock):
             set_text_role(widget, text_role)
         set_text_role(self.message_label, str(values["message_font_role"]))
         set_text_role(self.latency, str(values["latency_font_role"]))

@@ -1373,6 +1373,7 @@ class MainWindow(QtWidgets.QMainWindow):
         bar = getattr(self, "_terminal_status_bar", None)
         if bar is None:
             return
+        bar.update_clock()
         actual, target, active = self.presentation_clock.frame_rate(1.0)
         bar.set_fps(actual, target, active=active)
         canvas = self.orderbook.canvas
@@ -1385,6 +1386,10 @@ class MainWindow(QtWidgets.QMainWindow):
         )
         bar.set_orderbook_latency(render_ms, available=available)
         self._sync_execution_ticket_state()
+
+    def _set_status_latency_visible(self, enabled: bool) -> None:
+        self.settings.setValue("status/show_latency", bool(enabled))
+        self.statusBar().set_latency_visible(enabled)
 
     def _build_ui(self) -> None:
         central = QtWidgets.QWidget()
@@ -1844,6 +1849,9 @@ class MainWindow(QtWidgets.QMainWindow):
         left_layout.addWidget(self.workspace_stack, 1)
 
         self._terminal_status_bar = TerminalStatusBar(self.left_workspace)
+        self._terminal_status_bar.set_latency_visible(
+            self.settings.value("status/show_latency", False, bool)
+        )
         self._terminal_status_bar.venue.setText(
             "Binance Testnet" if self.testnet else "Binance"
         )
@@ -2000,6 +2008,11 @@ class MainWindow(QtWidgets.QMainWindow):
         self.fit_chart_action.setShortcutContext(Qt.ShortcutContext.WindowShortcut)
         self.addAction(self.fit_chart_action)
         self.fit_chart_action.triggered.connect(self._fit_chart)
+        self.show_latency_action = view_menu.addAction("Show status bar latency")
+        self.show_latency_action.setCheckable(True)
+        self.show_latency_action.setToolTip("Show feed, app, and order book latency in the status bar")
+        self.show_latency_action.setChecked(self.settings.value("status/show_latency", False, bool))
+        self.show_latency_action.toggled.connect(self._set_status_latency_visible)
         self.fullscreen_action = view_menu.addAction("Full screen")
         self.fullscreen_action.setCheckable(True)
         # The bootstrap-level application event filter owns the physical F11 key.

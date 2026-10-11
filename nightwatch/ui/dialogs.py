@@ -2115,6 +2115,7 @@ class NightwatchSettingsDialog(QtWidgets.QDialog):
         parts = [self.PAGE_SEARCH_TERMS[index]]
         actions: list[QtGui.QAction] = []
         if index == 0:
+            actions.append(self.host.show_latency_action)
             actions.extend(self.host.theme_actions.values())
             actions.extend(self.host.candle_style_actions.values())
             parts.extend(label for _mode, label in DIRECTIONAL_COLOR_MODE_OPTIONS)
@@ -2324,6 +2325,9 @@ class NightwatchSettingsDialog(QtWidgets.QDialog):
             buttons.append(button)
         candle_layout.addWidget(_SettingsChoiceGrid(buttons))
         layout.addWidget(candle_box)
+        status_box, status_layout = self._group("Status bar")
+        self._bind_action(status_layout, self.host.show_latency_action)
+        layout.addWidget(status_box)
         layout.addStretch(1)
         return page
 
