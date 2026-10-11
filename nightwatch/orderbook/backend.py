@@ -18,6 +18,7 @@ from .tape import (
     TapePublisher, TapeSeedRequired, TapeStateDecoder, TapeStateEncoder,
     TradeTapeHistory,
 )
+from .super_trades import SuperTradeDetector
 
 def _number(value: Any) -> float:
     try:
@@ -287,6 +288,7 @@ class OrderFlowAnalyzer:
         self._quote_volume_24h = 0.0
         self._print_sequence = 0
         self.tape_history = TradeTapeHistory(symbol)
+        self.super_trades = SuperTradeDetector(symbol)
         self._recent_prints: deque[OrderFlowTradePrint] = deque(maxlen=self.PRINT_HISTORY_CAPACITY)
         self._price_prints: dict[int | float, deque[OrderFlowTradePrint]] = {}
         self._price_activity: dict[int | float, deque[_PriceExecutionBucket]] = {}
@@ -419,6 +421,7 @@ class OrderFlowAnalyzer:
         self._snapshot_base_levels.clear()
         self._snapshot_base_indices_by_price.clear()
         self._print_sequence = 0
+        self.super_trades.reset(self.symbol)
         self._recent_prints.clear()
         self._price_prints.clear()
         self._price_activity.clear()
@@ -1208,6 +1211,7 @@ class OrderFlowAnalyzer:
         trade_print = OrderFlowTradePrint(sequence=self._print_sequence, event_time_ms=event_time_ms, received_monotonic=current, price=price, quantity=total_quantity, notional=total_notional, aggressor_side=aggressor_side, normal_notional=normal_notional, rpi_notional=rpi_notional, relative_size=relative_size, salience_class=salience_class, reference_midpoint=reference_midpoint, outcome_threshold=outcome_threshold)
         self._recent_prints.append(trade_print)
         self.tape_history.add(trade_print)
+        self.super_trades.record(trade_print, threshold, self.tick_size)
         if salience_class >= 1:
             self._queue_unresolved_print(trade_print)
         price_key = self._price_key(price)
@@ -3660,6 +3664,8 @@ class _OrderFlowAnalysisProcess:
         self._latest_snapshot = None
         self._tape_encoder = TapeStateEncoder()
         self._tape_publisher = TapePublisher()
+        self._super_trade_version = None
+        self._super_trade_publish_at = 0.0
         for name in ('snapshot_ready', 'microstructure_ready', 'diagnostic_ready', 'failed'):
             getattr(self.runtime, name).connect(
                 lambda generation, value, name=name: self.events.append((name, generation, value)))
@@ -3699,6 +3705,14 @@ class _OrderFlowAnalysisProcess:
         analyzer.tape_history.set_threshold(analyzer._large_trade_threshold)
         tape_state = analyzer.tape_history.state()
         now = time.monotonic()
+        super_trades = analyzer.super_trades
+        super_version = (self.runtime._generation, super_trades.stream, super_trades.revision)
+        super_pending = super_version != self._super_trade_version
+        if super_pending and now >= self._super_trade_publish_at:
+            events.append(('super_trades_ready', self.runtime._generation, super_trades.frame()))
+            self._super_trade_version = super_version
+            self._super_trade_publish_at = now + 0.1
+            super_pending = False
         events.extend(('tape_ready', self.runtime._generation, frame)
                       for frame in self._tape_publisher.publish(tape_state, now))
         if (seed_requested and self._latest_snapshot is not None
@@ -3721,7 +3735,8 @@ class _OrderFlowAnalysisProcess:
         return {'events': encoded,
                 'tape_state': self._tape_encoder.encode(tape_state, seed=tape_seed_requested),
                 'next_at': min(time.monotonic() + min(due, default=float('inf')) / 1000.0,
-                               self._tape_publisher.next_at(tape_state))}
+                               self._tape_publisher.next_at(tape_state),
+                               self._super_trade_publish_at if super_pending else math.inf)}
 
     def close(self):
         self.runtime.shutdown()
@@ -3739,7 +3754,7 @@ class _OrderFlowPresentationMailbox(QtCore.QObject):
     wake = QtCore.Signal()
     MAX_FAILURES_PER_DRAIN = 32
     PRESENTATION_SIGNALS = frozenset(
-        {"snapshot_ready", "microstructure_ready", "diagnostic_ready", "tape_ready"}
+        {"snapshot_ready", "microstructure_ready", "diagnostic_ready", "tape_ready", "super_trades_ready"}
     )
 
     def __init__(self, runtime: "OrderFlowRuntime") -> None:
@@ -3912,6 +3927,7 @@ class OrderFlowRuntime(QtCore.QObject):
     """
     snapshot_ready = QtCore.Signal(int, object)
     tape_ready = QtCore.Signal(int, object)
+    super_trades_ready = QtCore.Signal(int, object)
     microstructure_ready = QtCore.Signal(int, object)
     diagnostic_ready = QtCore.Signal(int, object)
     failed = QtCore.Signal(int, str)

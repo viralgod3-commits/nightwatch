@@ -797,6 +797,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self._order_flow_runtime.snapshot_ready.connect(
             self._on_order_flow_runtime_snapshot, QtCore.Qt.ConnectionType.QueuedConnection
         )
+        self._order_flow_runtime.super_trades_ready.connect(
+            self._on_super_trades, QtCore.Qt.ConnectionType.QueuedConnection
+        )
         self._order_flow_runtime.microstructure_ready.connect(
             self._on_microstructure_runtime_snapshot, QtCore.Qt.ConnectionType.QueuedConnection
         )
@@ -7803,15 +7806,13 @@ class MainWindow(QtWidgets.QMainWindow):
 
 
     def _market_depth_should_stream(self) -> bool:
-        """The DOM and trade history share one depth/BBO/trade transport."""
+        """The price chart, DOM and tape share the depth/BBO/trade transport."""
         if not hasattr(self, "orderbook") or not hasattr(self, "workspace_stack"):
             return False
         if self.workspace_stack.currentIndex() != 0:
             return False
-        controller = getattr(self, "right_rail_controller", None)
-        if controller is not None:
-            return controller.panel_active("depth") or controller.panel_active("trades")
-        return bool(self.orderbook.isVisible())
+        # Exceptional chart trades must keep arriving when the tape is hidden.
+        return True
 
     def _set_order_flow_depth_capacity(self, limit_per_side: int) -> None:
         resolved = max(1, min(1000, int(limit_per_side)))
@@ -7827,11 +7828,14 @@ class MainWindow(QtWidgets.QMainWindow):
         )
 
     def _set_market_depth_active(self, active: bool) -> None:
-        """Keep shared transport alive until both order-flow panels are hidden."""
+        """Keep shared transport alive for the chart and visible order-flow panels."""
         controller = getattr(self, "right_rail_controller", None)
         active = self._market_depth_should_stream() if controller is not None else bool(active)
         self._market_depth_active = active
-        self._set_order_flow_snapshot_active(active)
+        # Chart badges have their own bounded worker publication. Hidden DOM
+        # panels do not need expensive level snapshots just to feed the chart.
+        self._set_order_flow_snapshot_active(active and (
+            controller.panel_active("depth") if controller is not None else self.orderbook.isVisible()))
         if not active:
             # Never leave a stale BBO available to execution helpers while the
             # depth transport is intentionally asleep.
@@ -7881,6 +7885,14 @@ class MainWindow(QtWidgets.QMainWindow):
         self._order_flow_active_requested.emit(
             self._order_flow_generation, self._order_flow_snapshot_active
         )
+
+    @QtCore.Slot(int, object)
+    def _on_super_trades(self, generation: int, frame: object) -> None:
+        from ..orderbook.super_trades import SuperTradeFrame
+        if (self._closing or int(generation) != self._order_flow_generation
+                or not isinstance(frame, SuperTradeFrame) or frame.symbol != self.current_symbol):
+            return
+        self.chart.add_super_trades(frame)
 
     @QtCore.Slot(int, object)
     def _on_order_flow_runtime_snapshot(self, generation: int, payload: object) -> None:

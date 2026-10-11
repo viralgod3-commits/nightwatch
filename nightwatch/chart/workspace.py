@@ -32,6 +32,8 @@ from .rendering import (
     NativeAreaItem, NativeBandItem,
 )
 from .retained import RetainedChartItems
+from .super_trades import SuperTradeOverlay
+from ..orderbook.super_trades import SuperTradeFrame
 from ..utilities import alpha_color, TextRole, set_text_role, typography_controller, typography_font
 from ..utilities import hide_hover_tooltip, show_hover_tooltip
 from ..presentation import (
@@ -1849,6 +1851,8 @@ class ChartWorkspace(QtWidgets.QWidget):
         self.trend_label.setVisible(False)
         self.price_plot.addItem(self.trend_label, ignoreBounds=True)
         self.current_price_line_overlay = CurrentPriceLineOverlay(self.graphics)
+        self.super_trade_overlay = SuperTradeOverlay(self.graphics, theme)
+        self.super_trade_overlay.set_market(self.order_rail_market_symbol)
         self._live_data_revision = 0
         self._committed_live_render_key: tuple[int, str, bool] | None = None
         self._committed_volume_live_render_key: tuple[int, str] | None = None
@@ -2123,6 +2127,7 @@ class ChartWorkspace(QtWidgets.QWidget):
             self.order_rail_hud.update()
         if self.order_rail_visual is not None:
             self.order_rail_visual.update()
+        self._position_super_trades()
         self.graphics.request_redraw()
 
     def _configure_chart_viewport(self, viewport: QtWidgets.QWidget) -> None:
@@ -2138,6 +2143,7 @@ class ChartWorkspace(QtWidgets.QWidget):
 
 
         for overlay in (
+            getattr(self, "super_trade_overlay", None),
             getattr(self, "current_price_line_overlay", None),
             getattr(self, "order_rail_visual", None),
             getattr(self, "order_rail_hud", None),
@@ -2217,6 +2223,7 @@ class ChartWorkspace(QtWidgets.QWidget):
         return over_price_chart
 
     def _clear_chart_pointer_locator(self) -> None:
+        self.super_trade_overlay.clear_hover()
         self._pointer_over_price_plot = False
         self._pending_crosshair_position = None
         self._navigation_deferred_crosshair = False
@@ -2737,6 +2744,7 @@ class ChartWorkspace(QtWidgets.QWidget):
 
 
         if not self._scene_position_is_main_price_chart(position):
+            self.super_trade_overlay.clear_hover()
             self._pointer_over_price_plot = False
             self._pending_crosshair_position = None
             self._navigation_deferred_crosshair = False
@@ -2760,6 +2768,8 @@ class ChartWorkspace(QtWidgets.QWidget):
 
 
     def prepare_market(self, interval: str, reset_analysis: bool) -> None:
+        self.super_trade_overlay.clear_hover()
+        self.super_trade_overlay.hide()
         self._pending_zoom_range = None
         self.graphics._pending_pointer = None
         self._market_generation += 1
@@ -3897,6 +3907,8 @@ class ChartWorkspace(QtWidgets.QWidget):
             self._set_crosshair_visible(False)
             return
 
+        viewport_point = self.graphics.viewportTransform().map(position)
+        self.super_trade_overlay.hover_at(viewport_point + QtCore.QPointF(self.graphics.viewport().pos()))
         point = self.price_plot.getViewBox().mapSceneToView(position)
         raw_x = point.x()
         y_value = point.y()
@@ -4016,6 +4028,8 @@ class ChartWorkspace(QtWidgets.QWidget):
             return
         self._presentation_active = active
         if not active:
+            self.super_trade_overlay.clear_hover()
+            self.super_trade_overlay.hide()
             self._resize_expensive_deferred = False
             self._set_bar_resize_active(False)
             self._interaction_gc.set_active(self._resize_gc_token, False)
@@ -4212,6 +4226,7 @@ class ChartWorkspace(QtWidgets.QWidget):
             elif event_type == QtCore.QEvent.Type.MouseMove:
                 self._sync_chart_cursor(viewport_position=event.position())
             if event_type == QtCore.QEvent.Type.MouseButtonPress:
+                self.super_trade_overlay.clear_hover()
                 if event.button() == Qt.MouseButton.LeftButton:
                     self._begin_interaction_priority()
             elif event_type == QtCore.QEvent.Type.MouseMove:
@@ -6242,6 +6257,7 @@ class ChartWorkspace(QtWidgets.QWidget):
         corresponding `nwr_…` order is still open when the symbol is shown again.
         """
         symbol = str(symbol or "").upper().strip()
+        self.super_trade_overlay.set_market(symbol)
         if symbol == self.order_rail_market_symbol:
             return
         active_hud = self.order_rail_hud
@@ -7327,10 +7343,26 @@ class ChartWorkspace(QtWidgets.QWidget):
             if self.order_rail_hud is not None and self.order_rail_hud.isVisible():
                 self.order_rail_hud.raise_()
 
+    def add_super_trades(self, frame: SuperTradeFrame) -> None:
+        if not self.super_trade_overlay.set_frame(frame):
+            return
+        if not self._presentation_active:
+            self._hidden_presentation_dirty = True
+            return
+        self._schedule_overlay_frame()
+
+    def _position_super_trades(self) -> None:
+        if not self._presentation_active or not self.candles:
+            self.super_trade_overlay.clear_hover()
+            self.super_trade_overlay.hide()
+            return
+        self.super_trade_overlay.refresh(self.price_plot.getViewBox(), self.logarithmic)
+
     def _position_interaction_overlays(self) -> tuple[float, float]:
         """Move only overlays that must remain attached during camera motion."""
         x_range = self.price_plot.viewRange()[0]
         with self._overlay_geometry_transaction():
+            self._position_super_trades()
             self._position_current_price_line_overlay()
             self._position_order_rail_hud()
         return float(x_range[0]), float(x_range[1])
@@ -7360,6 +7392,7 @@ class ChartWorkspace(QtWidgets.QWidget):
                     (time.perf_counter() - profile_started) * 1000.0,
                 )
             return
+        self._position_super_trades()
         if self.trend_label.isVisible():
             self.trend_label.setPos(
                 view.mapSceneToView(scene_rect.topRight() + QtCore.QPointF(-6, 4))
@@ -9033,6 +9066,7 @@ class ChartWorkspace(QtWidgets.QWidget):
         self._clear_auto_fibonacci_graphics()
         self.cancel_drawing()
         self.logarithmic = enabled
+        self.super_trade_overlay.clear_hover()
         self.price_axis.set_logarithmic(enabled)
         if manual_range is not None:
             self.price_plot.setYRange(*manual_range, padding=0)
@@ -9042,6 +9076,7 @@ class ChartWorkspace(QtWidgets.QWidget):
         self._render_viewport(force=True)
         self._render_liquidations()
         self._render_zones()
+        self._position_super_trades()
         if self.current_price > 0:
             self._set_current_price(self.current_price, self.current_rising)
         if self.working_order_payloads:
@@ -9169,6 +9204,7 @@ class ChartWorkspace(QtWidgets.QWidget):
 
     def apply_theme(self, theme: dict[str, str]) -> None:
         self.theme = theme
+        self.super_trade_overlay.apply_theme(theme)
         if self.price_axis_focus_overlay is not None:
             self.price_axis_focus_overlay.apply_theme(theme)
         self.visible_profile.background = theme["bg"]
