@@ -169,7 +169,7 @@ TYPOGRAPHY_DEFAULTS: dict[str, dict[str, Any]] = {
     # can make glyphs such as uppercase T appear disproportionately heavy.
     TextRole.INSTRUMENT_SYMBOL: _font_profile("ui", 9.5, 500, hinting="vertical"),
     TextRole.TOP_TICKER_SYMBOL: _font_profile("ui", 9.5, 500, hinting="vertical"),
-    TextRole.TOP_MARKET_VALUE: _font_profile("ui", 9.5, 500, hinting="vertical"),
+    TextRole.TOP_MARKET_VALUE: _font_profile("ui", 8.5, 500, hinting="vertical"),
     TextRole.MARKET_VALUE: _font_profile("numeric", 9.0, 500, hinting="full", fixed_pitch=True),
     TextRole.MARKET_VALUE_EMPHASIZED: _font_profile("numeric", 9.0, 600, hinting="full", fixed_pitch=True),
     TextRole.MARKET_VALUE_LARGE: _font_profile("numeric", 13.0, 500, hinting="full", fixed_pitch=True, numeric_width="extended"),

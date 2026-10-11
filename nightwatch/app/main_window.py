@@ -5765,7 +5765,7 @@ class MainWindow(QtWidgets.QMainWindow):
         if next_funding:
             remaining = max(0, int(next_funding - time.time()))
             funding_rows.append(
-                ("Next funding", f"{remaining // 3600:02d}:{(remaining % 3600) // 60:02d}:{remaining % 60:02d}")
+                ("Time remaining", f"{remaining // 3600:02d}:{(remaining % 3600) // 60:02d}:{remaining % 60:02d}")
             )
         mark_price = safe_float(mark_payload.get("p") or premium.get("markPrice"))
         index_price = safe_float(mark_payload.get("i") or premium.get("indexPrice"))

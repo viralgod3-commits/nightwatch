@@ -1955,9 +1955,9 @@ class MarketStatsWidget(QtWidgets.QWidget):
             compact_titles = {
                 "volume": "24H VOL",
                 "taker": "Taker volume",
-                "oi": "OI",
-                "long_short": "L/S",
-                "funding": "FUND.",
+                "oi": "OPEN INTEREST",
+                "long_short": "LONG/SHORT",
+                "funding": "FUNDING",
             }
             for name, title in compact_titles.items():
                 self.cards[name].title.setText(title)
@@ -2328,7 +2328,7 @@ class MarketStatsWidget(QtWidgets.QWidget):
         rate_text = _market_funding_rate(funding)
         countdown, next_funding = _market_funding_time(
             safe_float(payload.get("T")), safe_float(payload.get("E")))
-        funding_text = f"{rate_text} · {countdown}" if self.compact and countdown and math.isfinite(funding) else rate_text
+        funding_text = rate_text
         direction = "—"
         if math.isfinite(funding):
             direction = "Longs pay shorts" if funding > 0 else "Shorts pay longs" if funding < 0 else "No transfer"
@@ -2343,6 +2343,7 @@ class MarketStatsWidget(QtWidgets.QWidget):
                 ("Funding rate", rate_text),
                 ("Mark price", format_price(self.mark) if math.isfinite(self.mark) and self.mark > 0 else "—"),
                 ("Index price", format_price(index_price) if math.isfinite(index_price) and index_price > 0 else "—"),
+                ("Time remaining", countdown or "—"),
                 ("Next funding", next_funding),
                 ("Payment direction", direction),
             ],
