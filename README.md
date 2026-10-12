@@ -72,6 +72,23 @@ for matching before/after runs and target GPU/display validation.
 
 ## Local state and recovery
 
+Leaders loads completed Binance futures and exact-symbol spot histories only
+while Leaders or Rotation is open. Rotation shares that loader and fills in as
+completed histories arrive. Sectors loads its additional intervals only while
+its tab is open and reuses cached hourly data. Returning to Chart cancels pending
+research reads, rate-limit retries and queued analysis. An already running
+analysis or shared HTTP response may finish; it cannot schedule another batch.
+
+Research validates completed candles before use, requests missing history tails,
+and retains valid cached bars through refresh failures. Missing data remains
+unavailable in calculations; failed components retry while their page is active.
+Verified research bars have separate cache entries from live chart bars and CSV
+imports. Existing chart caches are preserved; research rebuilds its verified
+cache on the first visit after this upgrade.
+Spot availability is tracked separately from futures coverage. Prices and volumes
+remain Binance-specific; sector labels use curated membership and exchange tags.
+No extra API key or external data subscription is required.
+
 Application data uses Qt's platform-specific application data directory.
 Mainnet and testnet caches use separate databases: `nightwatch-mainnet.sqlite3`
 and `nightwatch-testnet.sqlite3`. The old `nightwatch.sqlite3` is preserved and

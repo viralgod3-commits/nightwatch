@@ -1035,6 +1035,7 @@ from collections.abc import Awaitable
 import numpy as np
 from ..constants import CONDITIONAL_ORDER_TYPES, HISTORY_PAGE_LIMIT, MAIN_REST, MAX_CHART_CANDLES, TEST_REST
 from ..models import Candle, shift_candle_time
+from ..research_data import parse_completed_candles
 
 
 def api_period(interval: str) -> str:
@@ -1047,6 +1048,7 @@ def api_period(interval: str) -> str:
 
 
 _KLINE_INFLIGHT: dict[tuple[Any, ...], asyncio.Task[Any]] = {}
+_KLINE_WAITERS: dict[asyncio.Task[Any], int] = {}
 _BACKGROUND_GATE: asyncio.Semaphore | None = None
 
 async def _background_fetch(fetch: Callable[[], Awaitable[Any]]) -> Any:
@@ -1073,12 +1075,12 @@ async def _shared_kline_fetch(key: tuple[Any, ...], fetch: Callable[[], Awaitabl
     """Share one in-flight public kline HTTP exchange among exact waiters.
 
     Every waiter shields the shared task, so cancellation of one caller cannot
-    cancel an already-admitted request needed by another caller.  Completed
-    tasks remove themselves from the ledger immediately; this is in-flight
-    coalescing only, not a second response cache.
+    cancel a request needed by another caller. When the last waiter leaves,
+    cancel its orphaned read too, including waits for background admission.
+    This is in-flight coalescing only, not a second response cache.
     """
     task = _KLINE_INFLIGHT.get(key)
-    if task is None or task.done():
+    if task is None or task.done() or task.cancelling():
         task = asyncio.create_task(fetch())
         _KLINE_INFLIGHT[key] = task
 
@@ -1091,9 +1093,17 @@ async def _shared_kline_fetch(key: tuple[Any, ...], fetch: Callable[[], Awaitabl
                 except asyncio.CancelledError:
                     pass
         task.add_done_callback(cleanup)
-    else:
-        pass
-    return await asyncio.shield(task)
+    _KLINE_WAITERS[task] = _KLINE_WAITERS.get(task, 0) + 1
+    try:
+        return await asyncio.shield(task)
+    finally:
+        remaining = _KLINE_WAITERS[task] - 1
+        if remaining:
+            _KLINE_WAITERS[task] = remaining
+        else:
+            _KLINE_WAITERS.pop(task, None)
+            if not task.done():
+                task.cancel()
 
 class _ServerClockState:
 
@@ -1230,7 +1240,7 @@ class BinanceRest:
             weight = 0
         if method.upper() in {'POST', 'PUT', 'DELETE'} and path in {'/fapi/v1/order', '/fapi/v1/algoOrder', '/fapi/v1/batchOrders', '/fapi/v1/allOpenOrders', '/fapi/v1/algoOpenOrders'}:
             buckets += ('WS_REQUEST_WEIGHT',)
-        if path == '/fapi/v1/depth':
+        if path == '/fapi/v1/depth' and priority not in {'background', 'analytics'}:
             priority = 'repair'
         source = REQUEST_SOURCE.get() or ('order execution' if method.upper() != 'GET' else 'account reconciliation' if priority == 'manual' else 'chart history' if path.endswith('/klines') else 'market overview')
         await BINANCE_RATE_LIMITER.acquire_async(weight, order_count, buckets, priority, wait=priority not in {'manual', 'reconciliation'}, ws_request_weight=weight if 'WS_REQUEST_WEIGHT' in buckets else 0, source=source, endpoint=path)
@@ -1433,10 +1443,15 @@ class BinanceRest:
         async def fetch_rows() -> Any:
             spot_symbols = await self._spot_symbols_async()
             if symbol not in spot_symbols:
-                return []
+                return None
             return await self._spot_klines({'symbol': symbol, 'interval': '1h', 'limit': hours, 'startTime': end_ms - hours * 3600000, 'endTime': end_ms - 1})
         rows = run_async(fetch_rows())
-        return [Candle.from_rest(row) for row in rows if len(row) > 7 and int(row[0]) + 3600000 <= end_ms]
+        if rows is None:
+            return []
+        candles = parse_completed_candles(rows, 3600000, end_ms)
+        if not candles:
+            raise ValueError('Completed spot history unavailable')
+        return candles
 
     def sector_snapshot_batch(self, requests: dict[str, dict[str, Any]], end_15m: int, end_hour: int) -> dict[str, dict[str, Any]]:
         """Fetch only Sector components still missing after persistent-cache reads."""
@@ -1460,14 +1475,14 @@ class BinanceRest:
             async def futures_rows(symbol: str, interval: str, limit: int, end_ms: int) -> list[Candle]:
                 async with gate:
                     rows = await self._request_async('/fapi/v1/klines', {'symbol': symbol, 'interval': interval, 'limit': max(1, int(limit)), 'endTime': max(0, int(end_ms) - 1)}, priority='background')
-                return [Candle.from_rest(row) for row in rows if len(row) > 7 and int(row[6]) < int(end_ms) and (safe_float(row[1]) > 0) and (safe_float(row[4]) > 0)]
+                return parse_completed_candles(rows, {'15m': 900000, '1h': 3600000, '1d': 86400000}[interval], end_ms)
 
             async def spot_rows(symbol: str, interval: str, limit: int, end_ms: int) -> list[Candle]:
                 if self.testnet:
                     return []
                 async with gate:
                     rows = await self._spot_klines({'symbol': symbol, 'interval': interval, 'limit': max(1, int(limit)), 'endTime': max(0, int(end_ms) - 1)})
-                return [Candle.from_rest(row) for row in rows if len(row) > 7 and int(row[6]) < int(end_ms) and (safe_float(row[1]) > 0) and (safe_float(row[4]) > 0)]
+                return parse_completed_candles(rows, {'15m': 900000, '1h': 3600000}[interval], end_ms)
 
             async def load_symbol(symbol: str, spec: dict[str, Any]) -> tuple[str, dict[str, Any]]:
                 calls: list[tuple[str, Any]] = []
