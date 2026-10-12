@@ -2956,8 +2956,8 @@ class _DomRasterCanvas(QtWidgets.QWidget):
                 return '<1'
             return f'{value:,.0f}'
         decimals = max(0, min(16, 2 - int(math.floor(math.log10(value)))))
-        text = f'{value:.{decimals}f}'.rstrip('0').rstrip('.')
-        return text
+        text = f'{value:.{decimals}f}'
+        return text.rstrip('0').rstrip('.') if decimals else text
 
     @staticmethod
     def _signed_percent(value: float) -> str:
