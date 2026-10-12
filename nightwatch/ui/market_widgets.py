@@ -1643,9 +1643,9 @@ class MetricCard(QtWidgets.QFrame):
         self.identity = bool(identity and compact)
         self.compact = bool(compact)
         self.setFocusPolicy(
-            Qt.FocusPolicy.StrongFocus
-            if not self.identity or COMPACT_SECONDARY_METRICS
-            else Qt.FocusPolicy.NoFocus
+            Qt.FocusPolicy.NoFocus
+            if self.identity
+            else Qt.FocusPolicy.StrongFocus
         )
         self.setAccessibleName(title)
         self._reported_metric_width = None
@@ -1657,12 +1657,12 @@ class MetricCard(QtWidgets.QFrame):
         if compact:
             self.setProperty("instrumentClickable", not self.identity)
         layout = (QtWidgets.QHBoxLayout if self.identity else QtWidgets.QVBoxLayout)(self)
-        # The instrument row supplies the other 12 px of the 96 px left gap.
-        layout.setContentsMargins(84 if self.identity else 12 if compact else 5,
+        # Keep ticker identity content centered inside its flexible market slot.
+        layout.setContentsMargins(90 if self.identity else 12 if compact else 5,
                                   1 if compact else 5,
-                                  96 if self.identity else 12 if compact else 5,
+                                  90 if self.identity else 12 if compact else 5,
                                   1 if compact else 5)
-        layout.setSpacing(32 if self.identity else 1 if compact else 2)
+        layout.setSpacing(16 if self.identity else 1 if compact else 2)
 
         self.title = QtWidgets.QLabel(title.upper())
         self.title.setObjectName(
@@ -1701,11 +1701,20 @@ class MetricCard(QtWidgets.QFrame):
             )
             self.setFixedHeight(COMPACT_METRIC_HEIGHT)
             self.value.setAlignment(
-                (Qt.AlignmentFlag.AlignLeft)
+                (
+                    Qt.AlignmentFlag.AlignCenter
+                    if self.identity
+                    else Qt.AlignmentFlag.AlignLeft
+                )
                 | Qt.AlignmentFlag.AlignVCenter
             )
             self.title.setAlignment(
-                Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
+                (
+                    Qt.AlignmentFlag.AlignCenter
+                    if self.identity
+                    else Qt.AlignmentFlag.AlignLeft
+                )
+                | Qt.AlignmentFlag.AlignVCenter
             )
             if not self.identity:
 
@@ -1716,7 +1725,11 @@ class MetricCard(QtWidgets.QFrame):
                 QtWidgets.QSizePolicy.Policy.Preferred,
             )
             self.value.setSizePolicy(
-                QtWidgets.QSizePolicy.Policy.Expanding,
+                (
+                    QtWidgets.QSizePolicy.Policy.Minimum
+                    if self.identity
+                    else QtWidgets.QSizePolicy.Policy.Expanding
+                ),
                 QtWidgets.QSizePolicy.Policy.Preferred,
             )
 
@@ -1729,7 +1742,7 @@ class MetricCard(QtWidgets.QFrame):
         if compact:
             alignment = Qt.AlignmentFlag.AlignVCenter
             if self.identity:
-                alignment |= Qt.AlignmentFlag.AlignLeft
+                alignment |= Qt.AlignmentFlag.AlignHCenter
             layout.setAlignment(self.title, alignment)
             layout.setAlignment(self.value, alignment)
         if self.identity:
