@@ -4869,7 +4869,7 @@ def load_leadership_state(db, name):
 
 
 # Rotation consumes the existing Leaders dataset; it owns no backend loader.
-ROTATION_PALETTE = dict(LEADERS_PALETTE)
+ROTATION_PALETTE = {**LEADERS_PALETTE, "active_line": LEADERS_PALETTE.get("cyan", "#7CB8FF")}
 QUADRANT_COLORS = {"Improving": LEADERS_PALETTE["cyan"], "Leading": LEADERS_PALETTE["green"],
                    "Lagging": LEADERS_PALETTE["red"], "Weakening": LEADERS_PALETTE["amber"],
                    "Neutral": LEADERS_PALETTE["muted"]}
