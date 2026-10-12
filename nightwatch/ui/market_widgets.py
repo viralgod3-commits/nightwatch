@@ -1742,20 +1742,19 @@ class MetricCard(QtWidgets.QFrame):
         self.setToolTipDuration(8_000)
         if self.identity:
             self._identity_separators = []
-            layout.addWidget(self.title)
-            separator = QtWidgets.QLabel("|")
-            set_text_role(separator, TextRole.TOP_TICKER_SYMBOL)
-            separator.setStyleSheet("color: palette(mid); margin: 0 4px;")
-            separator.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
-            self._identity_separators.append(separator)
-            layout.addWidget(separator)
-            layout.addWidget(self.value)
-            separator = QtWidgets.QLabel("|")
-            set_text_role(separator, TextRole.TOP_TICKER_SYMBOL)
-            separator.setStyleSheet("color: palette(mid); margin: 0 4px;")
-            separator.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
-            self._identity_separators.append(separator)
-            layout.addWidget(separator)
+            for before, widget in ((True, self.title), (False, self.value)):
+                if before:
+                    divider = QtWidgets.QFrame()
+                    divider.setObjectName("marketBarDivider")
+                    divider.setFixedSize(1, 24)
+                    self._identity_separators.append(divider)
+                    layout.addWidget(divider)
+                layout.addWidget(widget)
+            divider = QtWidgets.QFrame()
+            divider.setObjectName("marketBarDivider")
+            divider.setFixedSize(1, 24)
+            self._identity_separators.append(divider)
+            layout.addWidget(divider)
         else:
             self._identity_separators = []
             layout.addWidget(self.title)
@@ -3079,7 +3078,7 @@ class WatchlistSidebarWidget(QtWidgets.QWidget):
         self.table.setObjectName("sidebarWatchlistTable")
         self.watchlist_header = WatchlistHeaderView(source.theme, self.table)
         self.watchlist_header.setStyleSheet(
-            "QHeaderView::section:first { padding-left: 4px; padding-right: 4px; }"
+            "QHeaderView::section:first { padding-left: 6px; padding-right: 6px; }"
         )
         self.table.setHorizontalHeader(self.watchlist_header)
         self.table.setHorizontalHeaderLabels(("", "PAIR", "LAST", "1H", "24H"))
