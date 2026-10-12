@@ -1,6 +1,3 @@
-Warning: truncated output (original token count: 41333)
-Total output lines: 4061
-
 """Market statistics, metric history, watchlists, and symbol-selection widgets."""
 
 from __future__ import annotations
@@ -1057,7 +1054,2102 @@ class MetricHistoryCanvas(QtWidgets.QWidget):
         for index, (name, points) in enumerate(self.series):
             color = colors[index % len(colors)]
             value_text = self._value(points[-1][1]) if points else "—"
-            …21333 tokens truncated…ource.hour_changes_changed.connect(self._hour_state_changed)
+            painter.setPen(color)
+            painter.setFont(typography_font(TextRole.UI_CAPTION))
+            painter.drawText(QtCore.QPointF(x_label, 19), name)
+            name_width = painter.fontMetrics().horizontalAdvance(name)
+            value_x = x_label + name_width + 7.0
+            painter.setFont(typography_font(TextRole.CHART_AXIS))
+            painter.drawText(QtCore.QPointF(value_x, 19), value_text)
+            x_label = (
+                value_x
+                + painter.fontMetrics().horizontalAdvance(value_text)
+                + 24.0
+            )
+
+        price_color = QtGui.QColor(self.theme.get("reference_price", "#D4A94E"))
+        price_points = (
+            [
+                (stamp, value)
+                for stamp, value in self.price_points
+                if start <= stamp <= end
+            ]
+            if self.price_enabled
+            else []
+        )
+        price_point = None
+        if self.price_enabled:
+            painter.setPen(price_color)
+            painter.setFont(typography_font(TextRole.CHART_AXIS))
+            painter.drawText(
+                QtCore.QPointF(12, 39),
+                (
+                    "PRICE  " + format_price(price_points[-1][1])
+                    if price_points
+                    else self.price_status.upper()
+                ),
+            )
+
+        if price_points:
+            price_low = min(value for _stamp, value in price_points)
+            price_high = max(value for _stamp, value in price_points)
+            price_pad = max(
+                (price_high - price_low) * 0.08,
+                abs(price_high) * 0.001,
+                1e-12,
+            )
+            price_low, price_high = price_low - price_pad, price_high + price_pad
+
+            def price_point(stamp, value):
+                return QtCore.QPointF(
+                    point(stamp, low).x(),
+                    bounds.bottom()
+                    - (value - price_low)
+                    / (price_high - price_low)
+                    * bounds.height(),
+                )
+
+            if self._price_axis_visible():
+                painter.setFont(typography_font(TextRole.CHART_AXIS))
+                for fraction in (0.0, 0.25, 0.5, 0.75, 1.0):
+                    value = price_low + (price_high - price_low) * fraction
+                    y = price_point(start, value).y()
+                    painter.setPen(price_color)
+                    painter.drawText(
+                        device_pixel_rect(self, QtCore.QRectF(0, y - 9, max(20.0, bounds.left() - 8), 18)),
+                        Qt.AlignmentFlag.AlignRight
+                        | Qt.AlignmentFlag.AlignVCenter,
+                        format_price(value),
+                    )
+
+        painter.save()
+        painter.setClipRect(bounds.adjusted(-1, -1, 1, 1))
+        zero = point(start, 0).y() if low <= 0 <= high else bounds.bottom()
+        stamps = [stamp for stamp, _value in self.points]
+        spacing = min(
+            (b - a for a, b in zip(stamps, stamps[1:]) if b > a),
+            default=max(1, end - start),
+        )
+        slot = bounds.width() * spacing / max(1, end - start)
+        width = max(1.0, min(10.0, slot * 0.7)) / max(1, len(self.series))
+
+        for index, (_name, points) in enumerate(self.series):
+            color = colors[index % len(colors)]
+            painter.setPen(QtGui.QPen(color, 1.45))
+            if self.bars:
+                for stamp, value in points:
+                    p = point(stamp, value)
+                    x = p.x() + (index - len(self.series) / 2) * width
+                    painter.fillRect(
+                        QtCore.QRectF(
+                            x,
+                            min(p.y(), zero),
+                            width,
+                            max(1.0, abs(zero - p.y())),
+                        ),
+                        color,
+                    )
+            elif points:
+                path = QtGui.QPainterPath(point(*points[0]))
+                for item in points[1:]:
+                    path.lineTo(point(*item))
+                painter.drawPath(path)
+
+        if price_points and price_point is not None:
+            painter.setPen(QtGui.QPen(price_color, 1.65))
+            path = QtGui.QPainterPath(price_point(*price_points[0]))
+            previous = price_points[0][0]
+            for stamp, value in price_points[1:]:
+                if stamp - previous > self.price_period_ms * 1.5:
+                    path.moveTo(price_point(stamp, value))
+                else:
+                    path.lineTo(price_point(stamp, value))
+                previous = stamp
+            painter.drawPath(path)
+
+        if self.hover_stamp is not None:
+            x = point(self.hover_stamp, low).x()
+            crosshair = QtGui.QColor(muted)
+            crosshair.setAlpha(165)
+            painter.setPen(
+                QtGui.QPen(crosshair, 1, Qt.PenStyle.DashLine)
+            )
+            painter.drawLine(
+                QtCore.QPointF(x, bounds.top()),
+                QtCore.QPointF(x, bounds.bottom()),
+            )
+            for index, (name, _points) in enumerate(self.series):
+                value = self.series_maps.get(name, {}).get(self.hover_stamp)
+                if value is None:
+                    continue
+                color = colors[index % len(colors)]
+                painter.setPen(QtGui.QPen(color, 1))
+                painter.setBrush(color)
+                painter.drawEllipse(point(self.hover_stamp, value), 3.5, 3.5)
+
+            nearest_price = self._nearest_price()
+            if (
+                nearest_price is not None
+                and price_point is not None
+                and abs(nearest_price[0] - self.hover_stamp) < self.price_period_ms
+            ):
+                painter.setPen(QtGui.QPen(price_color, 1))
+                painter.setBrush(price_color)
+                painter.drawEllipse(price_point(*nearest_price), 3.5, 3.5)
+
+        painter.restore()
+
+        painter.setPen(muted)
+        painter.setFont(typography_font(TextRole.CHART_AXIS))
+        for stamp, alignment in (
+            (start, Qt.AlignmentFlag.AlignLeft),
+            (end, Qt.AlignmentFlag.AlignRight),
+        ):
+            label = format_local_time(stamp / 1000, "%d %b %H:%M")
+            painter.drawText(
+                device_pixel_rect(
+                    self,
+                    QtCore.QRectF(
+                        bounds.left(),
+                        self.height() - 22,
+                        bounds.width(),
+                        18,
+                    ),
+                ),
+                alignment,
+                label,
+            )
+
+    def mouseMoveEvent(self, event):
+        bounds = self._bounds()
+        self._hover_mouse_x = float(event.position().x())
+        if self.points and bounds.contains(event.position()):
+            start, end = self.time_range or (
+                self.points[0][0],
+                self.points[-1][0],
+            )
+            target = start + (end - start) * (
+                event.position().x() - bounds.left()
+            ) / max(1, bounds.width())
+            self.hover_stamp = min(
+                self.points,
+                key=lambda point: abs(point[0] - target),
+            )[0]
+            self._update_hover_readout()
+        else:
+            self.hover_stamp = None
+            self.hover_readout.hide()
+        self.update()
+
+    def leaveEvent(self, event):
+        self.hover_stamp = None
+        self._hover_mouse_x = None
+        self.hover_readout.hide()
+        self.update()
+        super().leaveEvent(event)
+
+    def resizeEvent(self, event: QtGui.QResizeEvent) -> None:
+        super().resizeEvent(event)
+        self._position_hover_readout(self._hover_mouse_x)
+
+
+class MetricDetailDialog(QtWidgets.QDialog):
+    """Shared, switchable history shell for the five primary market metrics."""
+
+    def __init__(self, card):
+        super().__init__(
+            card.window(),
+            Qt.WindowType.Dialog | Qt.WindowType.FramelessWindowHint,
+        )
+        self.card = card
+        self.stats_owner = getattr(card, "metric_owner", None)
+        self.metric_key = str(getattr(card, "metric_key", ""))
+        self.period = "5m"
+        self.generation = 0
+        self.cache: dict[tuple, tuple[float, dict[str, Any]]] = {}
+        self.tasks = set()
+        self.series_options = []
+        self.series_format = {}
+        self.setObjectName("metricDetailDialog")
+
+
+        self.setWindowModality(Qt.WindowModality.NonModal)
+        self.setMinimumSize(680, 440)
+        self.resize(760, 500)
+
+        root = QtWidgets.QVBoxLayout(self)
+        root.setContentsMargins(12, 12, 12, 12)
+        root.setSpacing(9)
+
+        header = QtWidgets.QFrame()
+        header.setObjectName("metricDialogHeader")
+        header_row = QtWidgets.QHBoxLayout(header)
+        header_row.setContentsMargins(10, 7, 6, 7)
+        header_row.setSpacing(8)
+
+        title_column = QtWidgets.QVBoxLayout()
+        title_column.setContentsMargins(0, 0, 0, 0)
+        title_column.setSpacing(1)
+        self.heading = QtWidgets.QLabel()
+        self.heading.setObjectName("metricDialogHeading")
+        self.subheading = QtWidgets.QLabel()
+        self.subheading.setObjectName("metricDialogSubheading")
+        title_column.addWidget(self.heading)
+        title_column.addWidget(self.subheading)
+        header_row.addLayout(title_column, 1)
+
+        close = QtWidgets.QPushButton("×")
+        close.setObjectName("framelessCloseButton")
+        set_text_role(close, TextRole.UI_GLYPH)
+        close.setFixedSize(28, 28)
+        close.setAccessibleName("Close · Escape")
+        close.setAutoDefault(False)
+        close.clicked.connect(self.reject)
+        header_row.addWidget(close)
+        root.addWidget(header)
+
+        self.metric_tabs = QtWidgets.QFrame()
+        self.metric_tabs.setObjectName("metricDialogTabs")
+        tabs_row = QtWidgets.QHBoxLayout(self.metric_tabs)
+        tabs_row.setContentsMargins(0, 0, 0, 0)
+        tabs_row.setSpacing(5)
+        self.metric_group = QtWidgets.QButtonGroup(self)
+        self.metric_group.setExclusive(True)
+        self.metric_buttons: dict[str, QtWidgets.QPushButton] = {}
+        for key, label in METRIC_DETAIL_ORDER:
+            button = QtWidgets.QPushButton(label)
+            button.setObjectName("metricDialogTab")
+            button.setCheckable(True)
+            button.setAutoDefault(False)
+            button.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+            button.setStyleSheet("QPushButton#metricDialogTab:focus { border-style: dotted; }")
+            button.clicked.connect(
+                lambda _checked=False, value=key: self._switch_metric(value)
+            )
+            self.metric_group.addButton(button)
+            self.metric_buttons[key] = button
+            tabs_row.addWidget(button, 1)
+        root.addWidget(self.metric_tabs)
+
+        controls = QtWidgets.QFrame()
+        controls.setObjectName("metricDialogControls")
+        toolbar = QtWidgets.QHBoxLayout(controls)
+        toolbar.setContentsMargins(0, 0, 0, 0)
+        toolbar.setSpacing(5)
+
+        self.series_label = QtWidgets.QLabel("SERIES")
+        self.series_label.setObjectName("metricControlLabel")
+        self.series_selector = QtWidgets.QComboBox()
+        self.series_selector.setObjectName("metricSeriesSelector")
+        self.series_selector.setAccessibleName("Metric series")
+        self.series_selector.setMinimumWidth(190)
+        self.series_selector.currentIndexChanged.connect(self._select_series)
+        toolbar.addWidget(self.series_label)
+        toolbar.addWidget(self.series_selector, 1)
+
+        toolbar.addStretch(1)
+        self.period_group = QtWidgets.QButtonGroup(self)
+        self.period_group.setExclusive(True)
+        self.period_buttons: dict[str, QtWidgets.QPushButton] = {}
+        for period, title in (
+            ("5m", "5m"),
+            ("1h", "1h"),
+            ("4h", "4h"),
+            ("1d", "1D"),
+        ):
+            button = QtWidgets.QPushButton(title)
+            button.setObjectName("metricPeriodButton")
+            button.setCheckable(True)
+            button.setAutoDefault(False)
+            button.setFixedWidth(42)
+            button.setChecked(period == self.period)
+            button.clicked.connect(
+                lambda _checked=False, value=period: self._change_period(value)
+            )
+            self.period_group.addButton(button)
+            self.period_buttons[period] = button
+            toolbar.addWidget(button)
+
+        self.price_toggle = QtWidgets.QPushButton("PRICE")
+        self.price_toggle.setObjectName("metricPriceToggle")
+        self.price_toggle.setCheckable(True)
+        self.price_toggle.setAutoDefault(False)
+        self.price_toggle.setAccessibleName(
+            "Overlay price with an independent scale"
+        )
+        self.price_toggle.setFixedWidth(62)
+        self.price_toggle.toggled.connect(lambda _checked: self._load())
+        toolbar.addWidget(self.price_toggle)
+        root.addWidget(controls)
+
+        self.chart = MetricHistoryCanvas()
+        metric_owner = getattr(card, "metric_owner", None)
+        if metric_owner is not None:
+            self.chart.apply_theme(getattr(metric_owner, "theme", {}))
+        root.addWidget(self.chart, 1)
+
+        self.refresh_timer = QtCore.QTimer(self)
+        self.refresh_timer.setInterval(60_000)
+        self.refresh_timer.timeout.connect(lambda: self._load(force=True))
+        self._sync_header()
+
+    def apply_theme(self, theme: dict[str, str]) -> None:
+        self.chart.apply_theme(theme)
+
+    def _metric_label(self) -> str:
+        return dict(METRIC_DETAIL_ORDER).get(
+            self.metric_key,
+            self.card.title.text(),
+        )
+
+    def _sync_header(self) -> None:
+        symbol = perpetual_display_symbol(self.card.history_symbol)
+        self.heading.setText(f"{symbol} · MARKET DATA")
+        self.subheading.setText(self._metric_label())
+        self.setWindowTitle(f"{symbol} · {self._metric_label()}")
+        switchable = (
+            self.stats_owner is not None
+            and self.metric_key in METRIC_DETAIL_KEYS
+        )
+        self.metric_tabs.setVisible(switchable)
+        for key, button in self.metric_buttons.items():
+            blocker = QtCore.QSignalBlocker(button)
+            button.setChecked(switchable and key == self.metric_key)
+            del blocker
+
+    def set_card(self, card, *, load: bool = True) -> None:
+        if card is None:
+            return
+        changed = card is not self.card
+        self.card = card
+        self.stats_owner = getattr(card, "metric_owner", self.stats_owner)
+        self.metric_key = str(getattr(card, "metric_key", self.metric_key))
+        self.generation += 1
+        if changed:
+            with QtCore.QSignalBlocker(self.series_selector):
+                self.series_selector.clear()
+            self.series_options = []
+            self.chart.hover_stamp = None
+            self.chart.hover_readout.hide()
+            self.chart.set_named_series([], empty="Loading…")
+        self._sync_header()
+        if load and self.isVisible():
+            self._load()
+
+    def _switch_metric(self, metric_key: str) -> None:
+        if (
+            metric_key == self.metric_key
+            or self.stats_owner is None
+            or metric_key not in METRIC_DETAIL_KEYS
+        ):
+            return
+        target = self.stats_owner.cards.get(metric_key)
+        if target is not None:
+            self.set_card(target, load=True)
+
+    def set_histories(self, options, *, percent=False, bars=False, ratio=False):
+        self._apply(
+            {
+                "options": [
+                    {"name": name, "series": [(name, points)]}
+                    for name, points, _caption in options
+                ],
+                "percent": percent,
+                "bars": bars,
+                "ratio": ratio,
+            }
+        )
+
+    def _apply(self, payload):
+        self.chart.set_price_series(
+            payload.get("price_points", []),
+            self.price_toggle.isChecked(),
+            self.period,
+            payload.get(
+                "price_unavailable",
+                not bool(payload.get("price_points")),
+            ),
+        )
+        self.series_options = payload.get("options", [])
+        self.series_format = {
+            key: payload[key]
+            for key in ("percent", "bars", "ratio", "money", "time_range")
+            if key in payload
+        }
+        names = [option["name"] for option in self.series_options]
+        selected = self.series_selector.currentText()
+        with QtCore.QSignalBlocker(self.series_selector):
+            self.series_selector.clear()
+            self.series_selector.addItems(names)
+            if selected in names:
+                self.series_selector.setCurrentText(selected)
+        multiple = len(names) > 1
+        self.series_label.setVisible(multiple)
+        self.series_selector.setVisible(multiple)
+        self._select_series(max(0, self.series_selector.currentIndex()))
+
+    def _select_series(self, index):
+        if 0 <= index < len(self.series_options):
+            option = self.series_options[index]
+            self.chart.set_named_series(
+                option.get("series", []),
+                details=option.get("details"),
+                empty=option.get("empty", "No samples in this period"),
+                **self.series_format,
+            )
+
+    def _change_period(self, period):
+        if period != self.period:
+            self.period = period
+            self._load()
+
+    def _load(self, force=False):
+        loader = self.card.history_loader
+        if loader is None:
+            return
+        self.generation += 1
+        generation = self.generation
+        requested_metric = self.metric_key
+        symbol = self.card.history_symbol
+        key = (
+            requested_metric,
+            symbol,
+            self.period,
+            self.price_toggle.isChecked(),
+        )
+        cached = self.cache.get(key)
+        if not force and cached and time.monotonic() - cached[0] < 30:
+            self._apply(cached[1])
+            return
+
+        self.chart.set_named_series([], empty="Loading…")
+        self.chart.set_price_series(
+            [],
+            self.price_toggle.isChecked(),
+            self.period,
+        )
+        period = self.period
+        include_price = self.price_toggle.isChecked()
+
+        def finish(payload):
+            self.tasks.discard(task)
+            if (
+                generation != self.generation
+                or requested_metric != self.metric_key
+                or symbol != self.card.history_symbol
+                or not self.isVisible()
+            ):
+                return
+            if len(self.cache) >= 16:
+                self.cache.pop(next(iter(self.cache)))
+            self.cache[key] = time.monotonic(), payload
+            self._apply(payload)
+
+        def failed(_message):
+            self.tasks.discard(task)
+            if (
+                generation == self.generation
+                and requested_metric == self.metric_key
+                and symbol == self.card.history_symbol
+                and self.isVisible()
+            ):
+                self.chart.set_named_series(
+                    [],
+                    empty="History unavailable · change period or reopen to retry",
+                )
+
+        task = launch_task(
+            lambda: loader(symbol, period, include_price),
+            finish,
+            failed,
+        )
+        self.tasks.add(task)
+
+    def _fit_content(self):
+        owner = self.parentWidget()
+        screen = owner.screen() if owner is not None else self.screen()
+        available = screen.availableGeometry().adjusted(12, 12, -12, -12)
+        width = min(780, available.width())
+        height = min(520, available.height())
+        self.resize(max(680, width), max(440, height))
+
+    def open(self):
+        owner = self.parentWidget()
+        screen = owner.screen() if owner is not None else self.screen()
+        available = screen.availableGeometry().adjusted(12, 12, -12, -12)
+        self._fit_content()
+        center = (
+            owner.frameGeometry().intersected(available).center()
+            if owner is not None
+            else available.center()
+        )
+        self.move(
+            max(
+                available.left(),
+                min(
+                    center.x() - self.width() // 2,
+                    available.right() - self.width() + 1,
+                ),
+            ),
+            max(
+                available.top(),
+                min(
+                    center.y() - self.height() // 2,
+                    available.bottom() - self.height() + 1,
+                ),
+            ),
+        )
+        self._sync_header()
+
+
+        super().show()
+        self.raise_()
+        self.activateWindow()
+        self._load()
+        self.refresh_timer.start()
+
+    def done(self, result):
+        self.generation += 1
+        self.refresh_timer.stop()
+        self.chart.hover_readout.hide()
+        super().done(result)
+
+
+class TickerPriceLabel(QtWidgets.QLabel):
+    """Live top-ticker price label; semantic typography owns its font."""
+
+    pass
+
+
+class MetricCard(QtWidgets.QFrame):
+    width_changed = Signal()
+
+    def __init__(
+        self,
+        title: str,
+        value: str = "—",
+        parent: QtWidgets.QWidget | None = None,
+        compact: bool = False,
+        identity: bool = False,
+    ):
+        super().__init__(parent)
+        self.detail_title = title
+        self.history = []
+        self.history_options = []
+        self.history_loader = None
+        self.history_symbol = DEFAULT_SYMBOL
+        self.history_caption = ""
+        self.history_percent = False
+        self.history_bars = False
+        self.history_ratio = False
+        self.detail_popup = None
+        self.identity = bool(identity and compact)
+        self.compact = bool(compact)
+        self.setFocusPolicy(
+            Qt.FocusPolicy.NoFocus
+            if self.compact
+            else Qt.FocusPolicy.StrongFocus
+        )
+        self.setAccessibleName(title)
+        self._reported_metric_width = None
+        self.setObjectName(
+            "topMarketIdentity"
+            if self.identity
+            else "topMetricChip" if compact else "metricCard"
+        )
+        if compact:
+            self.setProperty("instrumentClickable", not self.identity)
+        layout = (QtWidgets.QHBoxLayout if self.identity else QtWidgets.QVBoxLayout)(self)
+        # Keep ticker identity content centered inside its flexible market slot.
+        layout.setContentsMargins(90 if self.identity else 12 if compact else 5,
+                                  1 if compact else 5,
+                                  90 if self.identity else 12 if compact else 5,
+                                  1 if compact else 5)
+        layout.setSpacing(16 if self.identity else 1 if compact else 2)
+
+        self.title = QtWidgets.QLabel(title.upper())
+        self.title.setObjectName(
+            "topTickerSymbol"
+            if self.identity
+            else "topMetricTitle" if compact else "metricTitle"
+        )
+        self.value = (
+            TickerPriceLabel(value)
+            if self.identity
+            else QtWidgets.QLabel(value)
+        )
+        self.value.setObjectName(
+            "topTickerLast"
+            if self.identity
+            else "topMetricValue" if compact else "metricValue"
+        )
+        set_text_role(
+            self.title,
+            TextRole.TOP_TICKER_SYMBOL if self.identity else TextRole.TOP_MARKET_TITLE if compact else TextRole.UI_LABEL,
+        )
+
+
+        set_text_role(self.value, TextRole.ORDERBOOK_CENTER_PRICE if self.identity else TextRole.TOP_MARKET_VALUE if compact else TextRole.MARKET_VALUE)
+        self.title.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        self.value.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        if compact:
+            self.setMinimumWidth(0)
+            self.setSizePolicy(
+                (
+                    QtWidgets.QSizePolicy.Policy.Fixed
+                    if self.identity
+                    else QtWidgets.QSizePolicy.Policy.Ignored
+                ),
+                QtWidgets.QSizePolicy.Policy.Fixed,
+            )
+            self.setFixedHeight(COMPACT_METRIC_HEIGHT)
+            self.value.setAlignment(
+                (
+                    Qt.AlignmentFlag.AlignCenter
+                    if self.identity
+                    else Qt.AlignmentFlag.AlignLeft
+                )
+                | Qt.AlignmentFlag.AlignVCenter
+            )
+            self.title.setAlignment(
+                (
+                    Qt.AlignmentFlag.AlignCenter
+                    if self.identity
+                    else Qt.AlignmentFlag.AlignLeft
+                )
+                | Qt.AlignmentFlag.AlignVCenter
+            )
+            if not self.identity:
+
+
+                self.title.setWordWrap(False)
+            self.title.setSizePolicy(
+                QtWidgets.QSizePolicy.Policy.Minimum if self.identity else QtWidgets.QSizePolicy.Policy.Expanding,
+                QtWidgets.QSizePolicy.Policy.Preferred,
+            )
+            self.value.setSizePolicy(
+                (
+                    QtWidgets.QSizePolicy.Policy.Minimum
+                    if self.identity
+                    else QtWidgets.QSizePolicy.Policy.Expanding
+                ),
+                QtWidgets.QSizePolicy.Policy.Preferred,
+            )
+
+
+        for widget in (self, self.title, self.value):
+            widget.setProperty("informationalToolTip", True)
+        self.setToolTipDuration(8_000)
+        if self.identity:
+            self._identity_separators = []
+            layout.addWidget(self.title)
+            separator = QtWidgets.QLabel("|")
+            set_text_role(separator, TextRole.TOP_TICKER_SYMBOL)
+            separator.setStyleSheet("color: palette(mid); margin: 0 4px;")
+            separator.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+            self._identity_separators.append(separator)
+            layout.addWidget(separator)
+            layout.addWidget(self.value)
+            separator = QtWidgets.QLabel("|")
+            set_text_role(separator, TextRole.TOP_TICKER_SYMBOL)
+            separator.setStyleSheet("color: palette(mid); margin: 0 4px;")
+            separator.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+            self._identity_separators.append(separator)
+            layout.addWidget(separator)
+        else:
+            self._identity_separators = []
+            layout.addWidget(self.title)
+            layout.addWidget(self.value)
+        if compact:
+            alignment = Qt.AlignmentFlag.AlignVCenter
+            if self.identity:
+                alignment |= Qt.AlignmentFlag.AlignHCenter
+            layout.setAlignment(self.title, alignment)
+            layout.setAlignment(self.value, alignment)
+        if self.identity:
+            QtCore.QTimer.singleShot(0, self._sync_identity_width)
+        elif compact:
+            self.title.installEventFilter(self)
+            self.value.installEventFilter(self)
+            self._sync_metric_width()
+
+    def metric_width(self) -> int:
+        margins = self.layout().contentsMargins()
+        content = max(self.title.fontMetrics().horizontalAdvance(self.title.text()),
+                      self.value.fontMetrics().horizontalAdvance(self.value.text()))
+        return max(COMPACT_EQUAL_METRIC_WIDTH,
+                   content + margins.left() + margins.right() + 2 * self.frameWidth())
+
+    def _sync_metric_width(self) -> None:
+        if not self.compact or self.identity:
+            return
+        width = self.metric_width()
+        if width != self._reported_metric_width:
+            self._reported_metric_width = width
+            self.updateGeometry()
+            self.width_changed.emit()
+
+    def eventFilter(self, watched: QtCore.QObject, event: QtCore.QEvent) -> bool:
+        if event.type() in (QtCore.QEvent.Type.FontChange, QtCore.QEvent.Type.StyleChange):
+            self._sync_metric_width()
+        return super().eventFilter(watched, event)
+
+    def identity_width(self, *, horizontal_margins: tuple[int, int] | None = None) -> int:
+        """Measure ticker content with the requested padding, independent of its current width."""
+        margins = self.layout().contentsMargins()
+        left, right = horizontal_margins if horizontal_margins is not None else (margins.left(), margins.right())
+        return max(COMPACT_IDENTITY_WIDTH,
+                   max(self.title.sizeHint().width(), self.title.fontMetrics().horizontalAdvance(self.title.text()))
+                   + max(self.value.sizeHint().width(), self.value.fontMetrics().horizontalAdvance(self.value.text()))
+                   + sum(label.sizeHint().width() for label in self._identity_separators)
+                   + self.layout().spacing() * (1 + len(self._identity_separators)) + left + right)
+
+    def set_identity_horizontal_margins(self, left: int, right: int) -> None:
+        if not self.identity:
+            return
+        layout = self.layout()
+        margins = layout.contentsMargins()
+        if (margins.left(), margins.right()) == (left, right):
+            return
+        layout.setContentsMargins(left, margins.top(), right, margins.bottom())
+        self._sync_identity_width()
+
+    def _sync_identity_width(self) -> None:
+        if not self.identity:
+            return
+
+
+        if self.compact:
+            width = self.identity_width()
+            if self.property("instrumentFlexOwned"):
+                if self.width() != width or self.minimumWidth() != width:
+                    self.setFixedWidth(width)
+                    self.updateGeometry()
+                    self.width_changed.emit()
+            else:
+                self.setMinimumWidth(width)
+                self.setMaximumWidth(max(width, COMPACT_IDENTITY_WIDTH * 2))
+            return
+        margins = self.layout().contentsMargins()
+        padding = margins.left() + margins.right() + 2
+        content_width = max(
+            self.title.fontMetrics().horizontalAdvance(self.title.text()),
+            self.value.fontMetrics().horizontalAdvance(self.value.text()),
+        )
+        target = max(self.height(), content_width + padding)
+        if self.width() != target:
+            self.setFixedWidth(target)
+            self.updateGeometry()
+
+    def set_value(self, text: str, color: str | None = None) -> None:
+        if self.value.text() != text:
+            self.value.setText(text)
+        stylesheet = f"color: {color};" if color else ""
+        if self.value.styleSheet() != stylesheet:
+            self.value.setStyleSheet(stylesheet)
+        self._sync_identity_width()
+        self._sync_metric_width()
+
+    def set_detail(self, _title: str, rows: list[tuple[str, str]]) -> None:
+        rows = [(label, value) for label, value in rows if label or value]
+        self.detail_title, self.detail_rows = _title, rows
+        actionable = (not self.identity) or bool(COMPACT_SECONDARY_METRICS)
+        self.setCursor(
+            Qt.CursorShape.PointingHandCursor
+            if actionable
+            else Qt.CursorShape.ArrowCursor
+        )
+        for widget in (self, self.title, self.value):
+            widget.setToolTip("Click for details" if actionable else "")
+        self._refresh_popup()
+
+    def set_history(self, points, caption, *, percent=False, bars=False, ratio=False):
+        self.history_options = []
+        self.history, self.history_caption = points, caption
+        self.history_percent, self.history_bars, self.history_ratio = percent, bars, ratio
+        self._refresh_popup()
+
+    def set_histories(self, options, *, ratio=False):
+        self.history_options = options
+        self.history_caption = options[0][2] if options else ""
+        self.history_ratio, self.history_percent, self.history_bars = ratio, False, False
+        self._refresh_popup()
+
+    def _refresh_popup(self):
+        if self.detail_popup is not None and self.history_loader is None:
+            self.detail_popup.set_histories(self.history_options or [(self.detail_title, self.history, self.history_caption)],
+                                           percent=self.history_percent, bars=self.history_bars, ratio=self.history_ratio)
+
+    def _activate_detail(self) -> bool:
+        QtWidgets.QToolTip.hideText()
+        owner = getattr(self, "metric_owner", None)
+        metric_key = str(getattr(self, "metric_key", ""))
+        if self.identity and self.compact and owner is not None and COMPACT_SECONDARY_METRICS:
+            owner.open_compact_secondary_metrics(
+                self.mapToGlobal(QtCore.QPoint(0, self.height()))
+            )
+            return True
+        if not self.identity:
+            if owner is not None and metric_key in METRIC_DETAIL_KEYS:
+                owner.open_metric_detail(metric_key)
+            else:
+                if self.detail_popup is None:
+                    self.detail_popup = MetricDetailDialog(self)
+                self._refresh_popup()
+                self.detail_popup.open()
+            return True
+        return False
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton and self._activate_detail():
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+    def keyPressEvent(self, event: QtGui.QKeyEvent) -> None:
+        if (
+            event.modifiers() == Qt.KeyboardModifier.NoModifier
+            and event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter, Qt.Key.Key_Space)
+        ):
+            if event.isAutoRepeat() or self._activate_detail():
+                event.accept()
+                return
+        super().keyPressEvent(event)
+
+    def paintEvent(self, event: QtGui.QPaintEvent) -> None:
+        super().paintEvent(event)
+        if self.hasFocus():
+            painter = QtGui.QPainter(self)
+            pen = QtGui.QPen(self.title.palette().color(QtGui.QPalette.ColorRole.WindowText))
+            pen.setStyle(Qt.PenStyle.DotLine)
+            pen.setCosmetic(True)
+            painter.setPen(pen)
+            painter.drawRect(QtCore.QRectF(self.rect()).adjusted(3.5, 3.5, -3.5, -3.5))
+
+    def clear_detail(self) -> None:
+        self.history_options = []
+        self.history = []
+        self.history_caption = ""
+        if self.detail_popup is not None:
+            self.detail_popup.reject()
+            self.detail_popup.cache.clear()
+        self.unsetCursor()
+        for widget in (self, self.title, self.value):
+            widget.setToolTip("")
+
+    def leaveEvent(self, event: QtCore.QEvent) -> None:
+        QtWidgets.QToolTip.hideText()
+        super().leaveEvent(event)
+
+
+class MarketStatsWidget(QtWidgets.QWidget):
+    timeframe_selected = Signal(str)
+
+    def __init__(
+        self,
+        theme: dict[str, str],
+        parent: QtWidgets.QWidget | None = None,
+        compact: bool = False,
+    ):
+        super().__init__(parent)
+        self.setObjectName("topMarketStats" if compact else "marketStats")
+        self.theme = theme
+        self.symbol = DEFAULT_SYMBOL
+        self.mark = 0.0
+        self.last_ticker: dict[str, Any] = {}
+        self.last_mark_payload: dict[str, Any] = {}
+        self.last_interest_payload: dict[str, Any] = {}
+        self.last_interest_reference = 0.0
+        self.last_taker_buy_pct = float("nan")
+        self.compact = compact
+        self.cards = {
+            name: MetricCard(
+                title,
+                compact=compact,
+                identity=compact and name == "last",
+            )
+            for name, title in (
+                ("last", perpetual_display_symbol(self.symbol)),
+                ("volume", "24H VOLUME"),
+                ("taker", "TAKER VOLUME"),
+                ("oi", "OPEN INTEREST"),
+                ("long_short", "LONG/SHORT RATIO"),
+                ("funding", "FUNDING RATE"),
+            )
+        }
+        self.metric_detail_popup: MetricDetailDialog | None = None
+        for name, card in self.cards.items():
+            card.metric_key = name
+            card.metric_owner = self
+        if compact:
+            compact_titles = {
+                "volume": "24H VOLUME",
+                "taker": "Taker volume",
+                "oi": "OPEN INTEREST",
+                "long_short": "LONG / SHORT",
+                "funding": "FUNDING",
+            }
+            for name, title in compact_titles.items():
+                self.cards[name].title.setText(title)
+
+            outer = QtWidgets.QHBoxLayout(self)
+            outer.setContentsMargins(0, 0, 0, 0)
+            outer.setSpacing(COMPACT_METRIC_GAP)
+            outer.setAlignment(Qt.AlignmentFlag.AlignVCenter)
+
+            self.cards["last"].setSizePolicy(
+                QtWidgets.QSizePolicy.Policy.Expanding,
+                QtWidgets.QSizePolicy.Policy.Fixed,
+            )
+            self.cards["last"].setMinimumWidth(COMPACT_IDENTITY_WIDTH)
+            self.cards["last"].setMaximumWidth(16777215)
+            self.cards["last"].setProperty("instrumentRole", "identity")
+            outer.addWidget(self.cards["last"])
+
+
+            self.timeframe_selector = TimeframeStrip(self)
+            self.timeframe_selector.setObjectName("topTimeframeStrip")
+            self.timeframe_selector.setFixedHeight(COMPACT_METRIC_HEIGHT)
+            self.timeframe_selector.setAccessibleName("Chart timeframe")
+            self.timeframe_selector.setItems(DEFAULT_MARKET_BAR_TIMEFRAMES)
+            self.timeframe_selector.activated.connect(
+                lambda _index: self.timeframe_selected.emit(
+                    str(self.timeframe_selector.currentData() or "")
+                )
+            )
+
+
+            for name in COMPACT_PRIMARY_METRICS:
+                self.cards[name].setProperty("instrumentGroupStart", name == "volume")
+                self.cards[name].setFixedWidth(COMPACT_EQUAL_METRIC_WIDTH)
+                self.cards[name].setSizePolicy(
+                    QtWidgets.QSizePolicy.Policy.Fixed,
+                    QtWidgets.QSizePolicy.Policy.Fixed,
+                )
+                self.cards[name].setProperty("instrumentRole", "primary")
+                outer.addWidget(self.cards[name])
+            for name in COMPACT_SECONDARY_METRICS:
+                self.cards[name].setSizePolicy(
+                    QtWidgets.QSizePolicy.Policy.Fixed,
+                    QtWidgets.QSizePolicy.Policy.Fixed,
+                )
+                self.cards[name].setProperty("instrumentRole", "secondary")
+                outer.addWidget(self.cards[name])
+                self.cards[name].hide()
+
+            self.setMinimumWidth(0)
+            self.setFixedHeight(COMPACT_METRIC_HEIGHT)
+            self.setSizePolicy(
+                QtWidgets.QSizePolicy.Policy.Fixed,
+                QtWidgets.QSizePolicy.Policy.Fixed,
+            )
+        else:
+            grid = QtWidgets.QGridLayout(self)
+            grid.setContentsMargins(0, 0, 0, 0)
+            grid.setSpacing(5)
+            for index, card in enumerate(self.cards.values()):
+                grid.addWidget(card, index // 4, index % 4)
+        self.reset()
+
+    def set_symbol(self, symbol: str) -> None:
+        new_symbol = str(symbol).upper().strip().removesuffix(".P") or DEFAULT_SYMBOL
+        if (
+            self.metric_detail_popup is not None
+            and new_symbol != self.symbol
+        ):
+            self.metric_detail_popup.reject()
+            self.metric_detail_popup.cache.clear()
+        self.symbol = new_symbol
+        display = perpetual_display_symbol(self.symbol)
+        self.cards["last"].title.setText(display)
+        self.cards["last"].setAccessibleName(f"{display} last price")
+        for card in self.cards.values():
+            if card.history_symbol != self.symbol and card.detail_popup is not None:
+                card.detail_popup.reject()
+                card.detail_popup.cache.clear()
+            card.history_symbol = self.symbol
+        self.cards["last"].show()
+        self.cards["last"]._sync_identity_width()
+
+    def set_interval(self, interval: str) -> None:
+        selector = getattr(self, "timeframe_selector", None)
+        if selector is None:
+            return
+        if str(interval) == selector.currentData():
+            return
+        selector.setCurrentData(str(interval))
+
+    def set_timeframes(self, intervals: object, current: str | None = None) -> None:
+        selector = getattr(self, "timeframe_selector", None)
+        if selector is not None:
+            selector.setItems(normalized_market_bar_timeframes(intervals), current)
+
+    def open_metric_detail(self, metric_key: str) -> None:
+        if metric_key not in METRIC_DETAIL_KEYS:
+            return
+        card = self.cards.get(metric_key)
+        if card is None:
+            return
+        if self.metric_detail_popup is None:
+            self.metric_detail_popup = MetricDetailDialog(card)
+        else:
+            self.metric_detail_popup.set_card(card, load=False)
+        self.metric_detail_popup.open()
+
+    def open_compact_secondary_metrics(self, global_position: QtCore.QPoint) -> None:
+        """Open any metrics intentionally omitted from the permanent compact strip."""
+        if not self.compact or not COMPACT_SECONDARY_METRICS:
+            return
+        labels = {"taker": "Taker volume", "long_short": "Long / short"}
+        menu = QtWidgets.QMenu(self)
+        for key in COMPACT_SECONDARY_METRICS:
+            card = self.cards[key]
+            value = card.value.text().strip() or "—"
+            action = menu.addAction(f"{labels.get(key, key.title())}   {value}")
+            action.triggered.connect(
+                lambda _checked=False, metric=key: self.open_metric_detail(metric)
+            )
+        menu.exec(global_position)
+
+    def sizeHint(self) -> QtCore.QSize:
+        hint = super().sizeHint()
+        if self.compact:
+
+
+            identity_attached = self.cards["last"].parentWidget() is self
+            metric_count = len(COMPACT_PRIMARY_METRICS)
+            total_width = COMPACT_EQUAL_METRIC_WIDTH * metric_count
+            if metric_count > 1:
+                total_width += (metric_count - 1) * COMPACT_METRIC_GAP
+            if identity_attached:
+                total_width += COMPACT_IDENTITY_WIDTH + COMPACT_METRIC_GAP
+            return QtCore.QSize(total_width, COMPACT_METRIC_HEIGHT)
+        return hint
+
+    def reset(self) -> None:
+        self.mark = 0.0
+        self.last_ticker.clear()
+        self.last_mark_payload.clear()
+        self.last_interest_payload.clear()
+        self.last_interest_reference = 0.0
+        self.last_taker_buy_pct = float("nan")
+        self.long_short_series = {}
+        for card in self.cards.values():
+            card.set_value("—")
+            card.clear_detail()
+        self.cards["last"].set_detail(
+            "MARKET PRICE",
+            [("Status", "Waiting for market data…")],
+        )
+        for name in ("volume", "taker", "oi", "long_short", "funding"):
+            self.cards[name].set_detail(self.cards[name].detail_title, [("Status", "Waiting for market data…")])
+
+    def update_long_short(self, rows, top_accounts=None, top_positions=None, requires_key=False):
+        groups = (
+            ("Top trader accounts", top_accounts or [], "Top 20% by margin balance · each account counted once"),
+            ("Top trader positions", top_positions or [], "Top 20% by margin balance · share of open positions"),
+            ("All accounts", rows, "Accounts with net long/short positions"),
+        )
+        details, histories = [], []
+        cache = getattr(self, "long_short_series", {})
+        for name, incoming, meaning in groups:
+            valid = {}
+            for row in incoming:
+                if not isinstance(row, dict):
+                    continue
+                stamp = safe_float(row.get("timestamp"))
+                ratio = safe_float(row.get("longShortRatio"), -1)
+                if math.isfinite(stamp) and math.isfinite(ratio) and stamp > 0 and ratio >= 0:
+                    valid[stamp] = dict(row)
+            if valid:
+                cache[name] = [valid[stamp] for stamp in sorted(valid)][-30:]
+            samples = cache.get(name, [])
+            histories.append((name, [(r["timestamp"], r["longShortRatio"]) for r in samples],
+                              meaning + " · 5-minute samples"))
+            details.append((name.upper(), ""))
+            if not samples:
+                details.append(("Status", "Add Binance API key in Trading settings" if name != "All accounts" and requires_key
+                                else "Not available for this pair"))
+                continue
+            row = samples[-1]
+            def share(key):
+                value = safe_float(row.get(key), -1)
+                return f"{value * 100:.1f}%" if math.isfinite(value) and 0 <= value <= 1 else "—"
+
+
+            unit = "positions" if name == "Top trader positions" else "accounts"
+            stamp = safe_float(row["timestamp"])
+            details.extend([
+                ("L/S ratio", f"{safe_float(row['longShortRatio']):.3f}"),
+                (f"Long {unit}", share("longAccount")),
+                (f"Short {unit}", share("shortAccount")),
+                ("Updated", format_local_time(stamp / 1000, "%d %b %H:%M")),
+            ])
+            if not valid or time.time() * 1000 - stamp > 900_000:
+                details.append(("Status", "Last available sample"))
+        self.long_short_series = cache
+        card = self.cards["long_short"]
+        card.title.setText("LONG / SHORT" if self.compact else "LONG/SHORT RATIO")
+
+
+        samples = cache.get("All accounts", [])
+        ratio = safe_float(samples[-1].get("longShortRatio"), -1) if samples else -1
+        ratio_text = f"{ratio:.2f}" if math.isfinite(ratio) and ratio >= 0 else "—"
+        card.set_value(ratio_text, None)
+        card.set_detail(f"{perpetual_display_symbol(self.symbol)} · LONG / SHORT", details)
+        card.set_histories(histories, ratio=True)
+        if self.compact:
+            self._sync_last_detail()
+
+    def bind_metric_history(self, rest):
+        for name, card in self.cards.items():
+            if name != "last":
+                card.history_loader = lambda symbol, period, include_price=False, metric=name: rest.metric_history(symbol, metric, period, include_price)
+
+    def invalidate_metric_histories(self, *_args):
+        if self.metric_detail_popup is not None:
+            self.metric_detail_popup.cache.clear()
+            self.metric_detail_popup.generation += 1
+            if self.metric_detail_popup.isVisible():
+                self.metric_detail_popup._load(force=True)
+        for card in self.cards.values():
+            if card.detail_popup is not None:
+                card.detail_popup.cache.clear()
+                card.detail_popup.generation += 1
+                if card.detail_popup.isVisible():
+                    card.detail_popup._load(force=True)
+
+    def update_taker_volume(self, rows):
+        now = time.time() * 1000
+        rows = [
+            r
+            for r in (rows or [])
+            if safe_float(r.get("timestamp")) + 300_000 <= now
+        ]
+        card = self.cards["taker"]
+        if not rows:
+            self.last_taker_buy_pct = float("nan")
+            card.set_value("—")
+            card.set_detail(
+                f"{perpetual_display_symbol(self.symbol)} · TAKER VOLUME",
+                [("Status", "No completed 5-minute taker sample available")],
+            )
+            if self.compact:
+                self._sync_last_detail()
+            return
+        latest = max(rows, key=lambda r: safe_float(r.get("timestamp")))
+        buy, sell = safe_float(latest.get("buyVol")), safe_float(latest.get("sellVol"))
+        total = buy + sell
+        buy_pct = (buy / total * 100.0) if total > 0 else float("nan")
+        sell_pct = (sell / total * 100.0) if total > 0 else float("nan")
+        self.last_taker_buy_pct = buy_pct
+
+
+        if math.isfinite(buy_pct) and buy_pct > 65.0:
+            taker_color = self.theme.get("metric_taker_buy", self.theme["green"])
+        elif math.isfinite(buy_pct) and buy_pct < 35.0:
+            taker_color = self.theme.get("metric_taker_sell", self.theme["red"])
+        else:
+            taker_color = self.theme.get("metric_taker_neutral", self.theme["text"])
+
+
+        card.set_value(
+            f"{buy_pct:.1f}%" if math.isfinite(buy_pct) else "—",
+            taker_color if math.isfinite(buy_pct) else None,
+        )
+        sample_end_ms = safe_float(latest.get("timestamp")) + 300_000
+        sample_end = (format_local_time(sample_end_ms / 1000.0, "%d %b %H:%M")
+                      if sample_end_ms > 300_000 else "—")
+        card.set_detail(
+            f"{perpetual_display_symbol(self.symbol)} · TAKER VOLUME",
+            [
+                ("Taker buy share", f"{buy_pct:.1f}%" if math.isfinite(buy_pct) else "—"),
+                ("Taker sell share", f"{sell_pct:.1f}%" if math.isfinite(sell_pct) else "—"),
+                ("Buy volume", human_number(buy)),
+                ("Sell volume", human_number(sell)),
+                ("Window", "Completed 5-minute sample"),
+                ("Updated", sample_end),
+            ],
+        )
+        if self.compact:
+            self._sync_last_detail()
+
+    def _sync_last_detail(self) -> None:
+        ticker = self.last_ticker
+        last = safe_float(ticker.get("c"), float("nan"))
+        change = safe_float(ticker.get("P"), float("nan"))
+        rows = [
+            (
+                "Last price",
+                format_price(last) if math.isfinite(last) and last > 0 else "—",
+            ),
+            (
+                "Mark price",
+                format_price(self.mark) if math.isfinite(self.mark) and self.mark > 0 else "—",
+            ),
+            (
+                "24h change",
+                f"{change:+.2f}%" if math.isfinite(change) else "—",
+            ),
+        ]
+        if self.compact:
+            taker = self.cards["taker"].value.text().strip()
+            long_short = self.cards["long_short"].value.text().strip()
+            if taker and taker != "—":
+                rows.append(("Taker buy share", taker))
+            if long_short and long_short != "—":
+                rows.append(("Long / short", long_short))
+        self.cards["last"].set_detail("MARKET PRICE", rows)
+
+    def update_ticker(self, ticker: dict[str, Any]) -> None:
+        self.last_ticker = dict(ticker)
+        price = safe_float(ticker.get("c"), float("nan"))
+        volume = safe_float(ticker.get("q"), float("nan"))
+        self.cards["last"].set_value(
+            format_price(price) if math.isfinite(price) and price > 0 else "—",
+            None,
+        )
+        self.cards["volume"].set_value(
+            (_compact_market_notional(volume) if self.compact else human_number(volume, money=True))
+            if math.isfinite(volume) and volume >= 0
+            else "—",
+            None,
+        )
+        base_volume = safe_float(ticker.get("v"), float("nan"))
+        high = safe_float(ticker.get("h"), float("nan"))
+        low = safe_float(ticker.get("l"), float("nan"))
+        self.cards["volume"].set_detail(
+            f"{perpetual_display_symbol(self.symbol)} · 24H VOLUME",
+            [
+                (
+                    "Quote volume",
+                    human_number(volume, money=True)
+                    if math.isfinite(volume) and volume >= 0
+                    else "—",
+                ),
+                (
+                    "Base volume",
+                    human_number(base_volume)
+                    if math.isfinite(base_volume) and base_volume >= 0
+                    else "—",
+                ),
+                ("24h high", format_price(high) if math.isfinite(high) and high > 0 else "—"),
+                ("24h low", format_price(low) if math.isfinite(low) and low > 0 else "—"),
+            ],
+        )
+        self._sync_last_detail()
+
+    def update_mark(self, payload: dict[str, Any]) -> None:
+        self.last_mark_payload = dict(payload)
+        self.mark = safe_float(payload.get("p"))
+        funding_rate = safe_float(payload.get("r"), float("nan"))
+        funding = funding_rate * 100.0 if math.isfinite(funding_rate) else float("nan")
+        if math.isfinite(funding) and funding > FUNDING_COLOR_THRESHOLD_PCT:
+            funding_color = self.theme.get("metric_funding_positive", self.theme["green"])
+        elif math.isfinite(funding) and funding < -FUNDING_COLOR_THRESHOLD_PCT:
+            funding_color = self.theme.get("metric_funding_negative", self.theme["red"])
+        else:
+            funding_color = self.theme.get("metric_funding_neutral", self.theme["text"])
+        rate_text = _market_funding_rate(funding)
+        countdown, next_funding = _market_funding_time(
+            safe_float(payload.get("T")), safe_float(payload.get("E")))
+        funding_text = rate_text
+        direction = "—"
+        if math.isfinite(funding):
+            direction = "Longs pay shorts" if funding > 0 else "Shorts pay longs" if funding < 0 else "No transfer"
+        self.cards["funding"].set_value(
+            funding_text if self.compact else f"{funding:+.4f}%" if math.isfinite(funding) else "—",
+            funding_color if math.isfinite(funding) else None,
+        )
+        index_price = safe_float(payload.get("i"))
+        self.cards["funding"].set_detail(
+            f"{perpetual_display_symbol(self.symbol)} · FUNDING",
+            [
+                ("Funding rate", rate_text),
+                ("Mark price", format_price(self.mark) if math.isfinite(self.mark) and self.mark > 0 else "—"),
+                ("Index price", format_price(index_price) if math.isfinite(index_price) and index_price > 0 else "—"),
+                ("Time remaining", countdown or "—"),
+                ("Next funding", next_funding),
+                ("Payment direction", direction),
+            ],
+        )
+        self._sync_last_detail()
+
+    def update_interest(self, payload: dict[str, Any], reference_price: float) -> None:
+        self.last_interest_payload = dict(payload)
+        self.last_interest_reference = reference_price
+        units = safe_float(payload.get("openInterest"), float("nan"))
+        reference = safe_float(reference_price, float("nan"))
+        valid = (
+            math.isfinite(units)
+            and units >= 0
+            and math.isfinite(reference)
+            and reference > 0
+        )
+        notional = units * reference if valid else float("nan")
+        self.cards["oi"].set_value(
+            (_compact_market_notional(notional) if self.compact else human_number(notional, money=True))
+            if math.isfinite(notional) else "—",
+            None,
+        )
+        self.cards["oi"].set_detail(
+            f"{perpetual_display_symbol(self.symbol)} · OPEN INTEREST",
+            [
+                (
+                    "Open interest",
+                    human_number(notional, money=True)
+                    if math.isfinite(notional)
+                    else "—",
+                ),
+                (
+                    "Contracts",
+                    human_number(units)
+                    if math.isfinite(units) and units >= 0
+                    else "—",
+                ),
+                (
+                    "Reference price",
+                    format_price(reference)
+                    if math.isfinite(reference) and reference > 0
+                    else "—",
+                ),
+            ],
+        )
+
+    def apply_theme(self, theme: dict[str, str]) -> None:
+        self.theme = theme
+        if self.metric_detail_popup is not None:
+            self.metric_detail_popup.apply_theme(theme)
+        for card in self.cards.values():
+            if card.detail_popup is not None:
+                card.detail_popup.apply_theme(theme)
+        if self.last_ticker:
+            self.update_ticker(self.last_ticker)
+        if self.last_mark_payload:
+            self.update_mark(self.last_mark_payload)
+        if self.last_interest_payload:
+            self.update_interest(self.last_interest_payload, self.last_interest_reference)
+        if math.isfinite(self.last_taker_buy_pct):
+            if self.last_taker_buy_pct > 65.0:
+                color = self.theme.get("metric_taker_buy", self.theme["green"])
+            elif self.last_taker_buy_pct < 35.0:
+                color = self.theme.get("metric_taker_sell", self.theme["red"])
+            else:
+                color = self.theme.get("metric_taker_neutral", self.theme["text"])
+            self.cards["taker"].set_value(f"{self.last_taker_buy_pct:.1f}%", color)
+        ratio_text = self.cards["long_short"].value.text().strip()
+        if ratio_text and ratio_text != "—":
+            self.cards["long_short"].set_value(ratio_text, None)
+        QtCore.QTimer.singleShot(0, self.cards["last"]._sync_identity_width)
+
+
+class WatchlistWidget(QtWidgets.QWidget):
+    symbol_selected = Signal(str)
+    symbols_changed = Signal(object)
+    tickers_changed = Signal()
+    hour_changes_changed = Signal()
+    current_changed = Signal(str)
+    groups_changed = Signal(object)
+    icon_missing = Signal(str)
+    icon_changed = Signal(str)
+
+    DEFAULTS: ClassVar[tuple[str, ...]] = (
+        "BTCUSDT",
+        "ETHUSDT",
+        "SOLUSDT",
+        "BNBUSDT",
+        "XRPUSDT",
+        "DOGEUSDT",
+        "ADAUSDT",
+        "LINKUSDT",
+        "AVAXUSDT",
+        "SUIUSDT",
+        "LTCUSDT",
+        "1000PEPEUSDT",
+    )
+
+    def __init__(self, theme: dict[str, str], parent: QtWidgets.QWidget | None = None):
+        super().__init__(parent)
+        self.theme = theme
+        self.active_group = "Main"
+        self.groups: dict[str, list[str]] = {self.active_group: list(self.DEFAULTS)}
+        self.symbols = self.groups[self.active_group]
+        self.tickers: dict[str, dict[str, Any]] = {}
+        self.hour_changes: dict[str, float] = {}
+        self.move_samples: dict[str, deque[tuple[float, float]]] = {}
+        self._move_history_cache: dict[str, _WatchlistMoveHistory] = {}
+        self.move_signal_until: dict[str, float] = {}
+        self.move_signal_direction: dict[str, int] = {}
+        self.move_last_trigger: dict[str, float] = {}
+        self.current_symbol = DEFAULT_SYMBOL
+        self._icon_requests_enabled = False
+        self._icon_requests: set[str] = set()
+        self._icon_retry_after: dict[str, float] = {}
+        layout = QtWidgets.QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(4)
+        controls = QtWidgets.QHBoxLayout()
+        self.add_button = QtWidgets.QToolButton()
+        self.add_button.setText("+ CURRENT")
+        self.remove_button = QtWidgets.QToolButton()
+        self.remove_button.setText("− REMOVE")
+        controls.addWidget(self.add_button)
+        controls.addWidget(self.remove_button)
+        controls.addStretch()
+        self.table = QtWidgets.QTableWidget(0, 4)
+        self.table.setHorizontalHeaderLabels(("PAIR", "LAST", "1H", "24H"))
+        self.table.horizontalHeader().setSectionResizeMode(QtWidgets.QHeaderView.ResizeMode.Stretch)
+        self.table.verticalHeader().hide()
+        self.table.setShowGrid(False)
+        self.table.setEditTriggers(QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectionBehavior.SelectRows)
+        self.table.setSelectionMode(QtWidgets.QAbstractItemView.SelectionMode.SingleSelection)
+        self.table.cellDoubleClicked.connect(self._open_row)
+        self.add_button.clicked.connect(self.add_current)
+        self.remove_button.clicked.connect(self.remove_selected)
+        typography_controller().changed.connect(self._typography_changed)
+        layout.addLayout(controls)
+        layout.addWidget(self.table)
+        self.refresh()
+
+    def showEvent(self, event: QtGui.QShowEvent) -> None:
+        super().showEvent(event)
+
+
+        self.refresh(force=True)
+
+    def set_current(self, symbol: str) -> None:
+        self.current_symbol = self._canonical_symbol(symbol)
+        self.refresh()
+        self.current_changed.emit(self.current_symbol)
+
+    @staticmethod
+    def _canonical_symbol(symbol: str) -> str:
+        value = str(symbol).upper().strip().replace("/", "").replace("-", "")
+        return value.removesuffix(".P")
+
+    def set_symbols(self, symbols: list[str], *, emit: bool = True) -> bool:
+        normalized = list(
+            dict.fromkeys(
+                value
+                for value in (self._canonical_symbol(symbol) for symbol in symbols)
+                if value
+            )
+        )
+        if normalized == self.symbols:
+            return False
+        self.symbols = normalized
+        self.groups[self.active_group] = self.symbols
+        self._discard_inactive_move_caches()
+        self.refresh()
+        if emit:
+            self.symbols_changed.emit(list(self.symbols))
+            self.groups_changed.emit(self.group_snapshot())
+        return True
+
+    def group_snapshot(self) -> dict[str, Any]:
+        return {
+            "active": self.active_group,
+            "groups": {name: list(symbols) for name, symbols in self.groups.items()},
+        }
+
+    def set_groups(self, groups: dict[str, list[str]], active: str = "", *, emit: bool = True) -> bool:
+        normalized: dict[str, list[str]] = {}
+        for raw_name, raw_symbols in groups.items():
+            name = str(raw_name).strip()[:32]
+            if not name or name.casefold() in {value.casefold() for value in normalized}:
+                continue
+            normalized[name] = list(dict.fromkeys(
+                value for value in (self._canonical_symbol(symbol) for symbol in raw_symbols)
+                if value
+            ))
+        if not normalized:
+            normalized = {"Main": list(self.DEFAULTS)}
+        selected = next((name for name in normalized if name == active), next(iter(normalized)))
+        changed = normalized != self.groups or selected != self.active_group
+        self.groups = normalized
+        self.active_group = selected
+        self.symbols = self.groups[selected]
+        self._discard_inactive_move_caches()
+        self.refresh()
+        if changed and emit:
+            self.groups_changed.emit(self.group_snapshot())
+            self.symbols_changed.emit(list(self.symbols))
+        return changed
+
+    def set_active_group(self, name: str) -> bool:
+        if name not in self.groups or name == self.active_group:
+            return False
+        self.active_group = name
+        self.symbols = self.groups[name]
+        self._discard_inactive_move_caches()
+        self.refresh()
+        self.groups_changed.emit(self.group_snapshot())
+        self.symbols_changed.emit(list(self.symbols))
+        return True
+
+    def create_group(self, name: str) -> bool:
+        clean = str(name).strip()[:32]
+        if not clean or any(clean.casefold() == value.casefold() for value in self.groups):
+            return False
+        self.groups[clean] = []
+        self.groups_changed.emit(self.group_snapshot())
+        return self.set_active_group(clean)
+
+    def rename_active_group(self, name: str) -> bool:
+        clean = str(name).strip()[:32]
+        if not clean or clean == self.active_group or any(
+            clean.casefold() == value.casefold() for value in self.groups
+        ):
+            return False
+        rebuilt: dict[str, list[str]] = {}
+        for group, symbols in self.groups.items():
+            rebuilt[clean if group == self.active_group else group] = symbols
+        self.groups = rebuilt
+        self.active_group = clean
+        self.symbols = self.groups[clean]
+        self.groups_changed.emit(self.group_snapshot())
+        return True
+
+    def delete_active_group(self) -> bool:
+        if len(self.groups) <= 1:
+            return False
+        del self.groups[self.active_group]
+        self.active_group = next(iter(self.groups))
+        self.symbols = self.groups[self.active_group]
+        self._discard_inactive_move_caches()
+        self.refresh()
+        self.groups_changed.emit(self.group_snapshot())
+        self.symbols_changed.emit(list(self.symbols))
+        return True
+
+    def set_icon_requests_enabled(self, enabled: bool) -> None:
+        self._icon_requests_enabled = bool(enabled)
+        if self._icon_requests_enabled:
+            self.request_missing_icons()
+
+    def request_icon(self, symbol: str) -> None:
+        if not self._icon_requests_enabled:
+            return
+        base = coin_base_symbol(symbol)
+        if not base:
+            return
+        if coin_icon_exists(base):
+            self._icon_requests.discard(base)
+            self._icon_retry_after.pop(base, None)
+            return
+        now = time.monotonic()
+        if base in self._icon_requests or now < self._icon_retry_after.get(base, 0.0):
+            return
+        self._icon_requests.add(base)
+        self.icon_missing.emit(base)
+
+    def request_missing_icons(self) -> None:
+        if not self._icon_requests_enabled:
+            return
+        symbols = dict.fromkeys(
+            symbol
+            for group in self.groups.values()
+            for symbol in group
+        )
+        for symbol in symbols:
+            if not coin_icon_exists(symbol):
+                self.request_icon(symbol)
+
+    def icon_lookup_finished(
+        self,
+        symbol: str,
+        found: bool,
+        *,
+        retry_seconds: float = 3600.0,
+    ) -> None:
+        base = coin_base_symbol(symbol)
+        if not base:
+            return
+        self._icon_requests.discard(base)
+        if found and coin_icon_exists(base):
+            self._icon_retry_after.pop(base, None)
+            invalidate_watchlist_coin_icon(base)
+            self.icon_changed.emit(base)
+            return
+        self._icon_retry_after[base] = time.monotonic() + max(30.0, float(retry_seconds))
+
+    def contains(self, symbol: str) -> bool:
+        return self._canonical_symbol(symbol) in self.symbols
+
+    def set_symbol_watched(self, symbol: str, watched: bool) -> bool:
+        target = self._canonical_symbol(symbol)
+        if not target:
+            return False
+        if (target in self.symbols) == bool(watched):
+            return False
+        updated = [value for value in self.symbols if value != target]
+        if watched:
+            updated.append(target)
+        return self.set_symbols(updated)
+
+    def add_current(self) -> None:
+        self.set_symbol_watched(self.current_symbol, True)
+
+    def remove_selected(self) -> None:
+        row = self.table.currentRow()
+        if 0 <= row < len(self.symbols):
+            self.remove_symbol(self.symbols[row])
+
+    def remove_symbol(self, symbol: str) -> None:
+        self.set_symbol_watched(symbol, False)
+
+    def _open_row(self, row: int, _column: int) -> None:
+        if 0 <= row < len(self.symbols):
+            self.symbol_selected.emit(self.symbols[row])
+
+    def update_tickers(self, updates: list[dict[str, Any]]) -> None:
+        changed = False
+        for ticker in updates:
+            symbol = ticker.get("s")
+            if symbol in self.symbols:
+                self.tickers[symbol] = ticker
+                self._observe_move(symbol, ticker)
+                changed = True
+        if changed:
+            self.refresh()
+            self.tickers_changed.emit()
+
+    def _discard_inactive_move_caches(self) -> None:
+        active = set(self.symbols)
+        for symbol in tuple(self._move_history_cache):
+            if symbol not in active:
+                self._move_history_cache.pop(symbol, None)
+
+    def _observe_move(self, symbol: str, ticker: dict[str, Any]) -> None:
+        """Detect unusual five-minute moves relative to recent behavior/liquidity."""
+        price = safe_float(ticker.get("c"))
+        if price <= 0:
+            return
+        now = time.monotonic()
+        samples = self.move_samples.setdefault(symbol, deque(maxlen=420))
+        sample = (now, price)
+        replace = bool(samples and now - samples[-1][0] < 5.0)
+        cache = self._move_history_cache.get(symbol)
+        if cache is not None and not cache.matches(samples):
+            cache = None
+        incremental = cache is not None and cache.can_update(
+            samples, sample, replace=replace
+        )
+        if replace:
+            samples[-1] = (now, price)
+        else:
+            samples.append(sample)
+        cutoff = now - 1_800.0
+        while samples and samples[0][0] < cutoff:
+            samples.popleft()
+        if cache is None or not incremental:
+            cache = _WatchlistMoveHistory(samples)
+        else:
+            if replace:
+                cache.replace_last(sample)
+            else:
+                cache.append(sample)
+            if not cache.incremental_safe:
+                cache = _WatchlistMoveHistory(samples)
+            else:
+                removed_count = len(cache.rows) - len(samples)
+                if removed_count > 0:
+                    cache.prune_prefix(removed_count)
+        self._move_history_cache[symbol] = cache
+        reference = cache.reference(now)
+        if reference is None:
+            return
+        if now - reference[0] < 270.0 or reference[1] <= 0:
+            return
+        move = (price / reference[1] - 1.0) * 100.0
+        baseline = cache.baseline
+        quote_volume = safe_float(ticker.get("q"))
+        liquidity_floor = (
+            0.7
+            if quote_volume >= 1_000_000_000
+            else 1.1
+            if quote_volume >= 100_000_000
+            else 1.7
+            if quote_volume >= 20_000_000
+            else 2.4
+        )
+        threshold = max(liquidity_floor, baseline * 3.0)
+        if abs(move) < threshold or now - self.move_last_trigger.get(symbol, 0.0) < 30.0:
+            return
+        self.move_last_trigger[symbol] = now
+        self.move_signal_until[symbol] = now + 30.0
+        self.move_signal_direction[symbol] = 1 if move > 0 else -1
+
+    def move_signal(self, symbol: str) -> int:
+        if self.move_signal_until.get(symbol, 0.0) <= time.monotonic():
+            return 0
+        return self.move_signal_direction.get(symbol, 0)
+
+    def set_hour_changes(self, values: dict[str, float]) -> None:
+        changed = False
+        for symbol, value in values.items():
+            if symbol not in self.symbols:
+                continue
+            numeric = safe_float(value)
+            if self.hour_changes.get(symbol) != numeric:
+                self.hour_changes[symbol] = numeric
+                changed = True
+        stale = [symbol for symbol in self.hour_changes if symbol not in self.symbols]
+        for symbol in stale:
+            del self.hour_changes[symbol]
+            changed = True
+        if changed:
+            self.refresh()
+            self.hour_changes_changed.emit()
+
+    def refresh(self, *, force: bool = False) -> None:
+
+
+        if not force and not self.isVisible():
+            return
+        self.table.setUpdatesEnabled(False)
+        self.table.setRowCount(len(self.symbols))
+        current_bg = QtGui.QColor(
+            self.theme.get("active", self.theme.get("panel2", self.theme["bg"]))
+        )
+        for row, symbol in enumerate(self.symbols):
+            ticker = self.tickers.get(symbol, {})
+            price = safe_float(ticker.get("c"))
+            change_1h = self.hour_changes.get(symbol)
+            change_24h = safe_float(ticker.get("P"))
+            values = (
+                symbol.removesuffix("USDT") + " / USDT",
+                format_price(price) if price else "—",
+                f"{change_1h:+.2f}%" if change_1h is not None else "—",
+                f"{change_24h:+.2f}%" if ticker else "—",
+            )
+            for column, value in enumerate(values):
+                item = self.table.item(row, column)
+                if item is None:
+                    item = QtWidgets.QTableWidgetItem()
+                    item.setFont(_watchlist_row_font(TextRole.INSTRUMENT_SYMBOL if column == 0 else TextRole.TABLE_VALUE))
+                    self.table.setItem(row, column, item)
+                if item.text() != value:
+                    item.setText(value)
+                item.setBackground(
+                    current_bg if symbol == self.current_symbol else QtGui.QBrush()
+                )
+                if column == 2 and change_1h is not None:
+                    item.setForeground(
+                        QtGui.QColor(
+                            self.theme["green"] if change_1h >= 0 else self.theme["red"]
+                        )
+                    )
+                elif column == 3 and ticker:
+                    item.setForeground(
+                        QtGui.QColor(
+                            self.theme["green"] if change_24h >= 0 else self.theme["red"]
+                        )
+                    )
+                else:
+                    item.setForeground(QtGui.QBrush())
+                if column > 0:
+                    item.setTextAlignment(
+                        Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+                    )
+            self.table.setRowHeight(row, 24)
+        current_row = next(
+            (
+                row
+                for row, symbol in enumerate(self.symbols)
+                if symbol == self.current_symbol
+            ),
+            -1,
+        )
+        if current_row >= 0:
+            blocker = QtCore.QSignalBlocker(self.table)
+            self.table.selectRow(current_row)
+            del blocker
+        else:
+            self.table.clearSelection()
+        self.table.setUpdatesEnabled(True)
+
+    def apply_theme(self, theme: dict[str, str]) -> None:
+        self.theme = theme
+        self.refresh()
+
+    def _typography_changed(self) -> None:
+        for row in range(self.table.rowCount()):
+            for column in range(self.table.columnCount()):
+                item = self.table.item(row, column)
+                if item is not None:
+                    role = TextRole.INSTRUMENT_SYMBOL if column == 0 else TextRole.TABLE_VALUE
+                    item.setFont(_watchlist_row_font(role))
+        self.refresh(force=True)
+
+
+class WatchlistHeaderView(QtWidgets.QHeaderView):
+    """Watchlist header with a membership toggle in its leading section."""
+
+    toggle_current_requested = Signal()
+    width_environment_changed = Signal()
+
+    def __init__(
+        self,
+        theme: dict[str, str],
+        parent: QtWidgets.QWidget | None = None,
+    ) -> None:
+        super().__init__(Qt.Orientation.Horizontal, parent)
+        self.theme = theme
+        self._toggle_hovered = False
+        self._toggle_pressed = False
+        self.setMouseTracking(True)
+        self.setToolTip("Add or remove the current chart symbol")
+
+    def event(self, event: QtCore.QEvent) -> bool:
+        result = super().event(event)
+        if _watchlist_width_environment_changed(event):
+            self.width_environment_changed.emit()
+        return result
+
+    def _toggle_rect(self) -> QtCore.QRect:
+        position = self.sectionViewportPosition(0)
+        width = self.sectionSize(0)
+        return QtCore.QRect(position, 0, width, self.height())
+
+    def paintSection(
+        self,
+        painter: QtGui.QPainter,
+        rect: QtCore.QRect,
+        logical_index: int,
+    ) -> None:
+        super().paintSection(painter, rect, logical_index)
+        if logical_index != 0:
+            return
+        painter.save()
+        painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing, True)
+        color = self.theme["cyan"] if self._toggle_hovered else self.theme["text"]
+        pen = QtGui.QPen(QtGui.QColor(color), 1.45)
+        pen.setCosmetic(True)
+        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        painter.setPen(pen)
+        center = QtCore.QPointF(rect.center())
+        painter.drawLine(
+            QtCore.QPointF(center.x() - 4.0, center.y()),
+            QtCore.QPointF(center.x() + 4.0, center.y()),
+        )
+        painter.drawLine(
+            QtCore.QPointF(center.x(), center.y() - 4.0),
+            QtCore.QPointF(center.x(), center.y() + 4.0),
+        )
+        painter.restore()
+
+    def mouseMoveEvent(self, event: QtGui.QMouseEvent) -> None:
+        hovered = self._toggle_rect().contains(event.position().toPoint())
+        if hovered != self._toggle_hovered:
+            self._toggle_hovered = hovered
+            self.setCursor(
+                Qt.CursorShape.PointingHandCursor
+                if hovered
+                else Qt.CursorShape.ArrowCursor
+            )
+            self.updateSection(0)
+        super().mouseMoveEvent(event)
+
+    def leaveEvent(self, event: QtCore.QEvent) -> None:
+        self._toggle_hovered = False
+        self._toggle_pressed = False
+        self.setCursor(Qt.CursorShape.ArrowCursor)
+        self.updateSection(0)
+        super().leaveEvent(event)
+
+    def mousePressEvent(self, event: QtGui.QMouseEvent) -> None:
+        if (
+            event.button() == Qt.MouseButton.LeftButton
+            and self._toggle_rect().contains(event.position().toPoint())
+        ):
+            self._toggle_pressed = True
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+    def mouseReleaseEvent(self, event: QtGui.QMouseEvent) -> None:
+        if self._toggle_pressed and event.button() == Qt.MouseButton.LeftButton:
+            self._toggle_pressed = False
+            if self._toggle_rect().contains(event.position().toPoint()):
+                self.toggle_current_requested.emit()
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
+
+    def apply_theme(self, theme: dict[str, str]) -> None:
+        self.theme = theme
+        self.updateSection(0)
+
+
+class WatchlistTableWidget(QtWidgets.QTableWidget):
+    """Table whose internal row drag delegates ordering to canonical state."""
+
+    row_move_requested = Signal(int, int)
+    row_remove_requested = Signal(int)
+    width_environment_changed = Signal()
+
+    def event(self, event: QtCore.QEvent) -> bool:
+        result = super().event(event)
+        if _watchlist_width_environment_changed(event):
+            self.width_environment_changed.emit()
+        return result
+
+    def mousePressEvent(self, event: QtGui.QMouseEvent) -> None:
+        if event.button() == Qt.MouseButton.RightButton:
+            index = self.indexAt(event.position().toPoint())
+            if index.isValid():
+                self.row_remove_requested.emit(index.row())
+                event.accept()
+                return
+        super().mousePressEvent(event)
+
+    def dropEvent(self, event: QtGui.QDropEvent) -> None:
+        source_row = self.currentRow()
+        target_index = self.indexAt(event.position().toPoint())
+        target_row = target_index.row() if target_index.isValid() else self.rowCount()
+        if (
+            target_index.isValid()
+            and self.dropIndicatorPosition()
+            == QtWidgets.QAbstractItemView.DropIndicatorPosition.BelowItem
+        ):
+            target_row += 1
+        if source_row < target_row:
+            target_row -= 1
+        target_row = max(0, min(self.rowCount() - 1, target_row))
+        if source_row >= 0 and target_row != source_row:
+            self.row_move_requested.emit(source_row, target_row)
+        event.acceptProposedAction()
+
+
+class WatchlistSidebarWidget(QtWidgets.QWidget):
+    """Compact sidebar view backed by the canonical watchlist."""
+
+    symbol_selected = Signal(str)
+    toggle_current_requested = Signal()
+
+    def __init__(
+        self,
+        source: WatchlistWidget,
+        parent: QtWidgets.QWidget | None = None,
+    ):
+        super().__init__(parent)
+        self.source = source
+        self._sort_column: int | None = None
+        self._sort_descending = False
+        self._sorting = False
+        self._row_display_signatures = {}
+        self._row_source_signatures = {}
+        self._icon_refresh_after = {}
+        self._theme_revision = 0
+        self._last_size_style_key = None
+        self._pending_numeric_resizes: set[int] = set()
+        self._width_environment_refresh_pending = False
+        self._numeric_cell_advances: dict[tuple[int, int], float] = {}
+        self._numeric_column_advances: dict[int, float] = {}
+        self._numeric_text_advances: dict[tuple[str, str], float] = {}
+        self._numeric_font_metrics: dict[str, QtGui.QFontMetricsF] = {}
+        layout = QtWidgets.QVBoxLayout(self)
+        layout.setContentsMargins(3, 3, 3, 3)
+        layout.setSpacing(0)
+
+        group_bar = QtWidgets.QHBoxLayout()
+        group_bar.setContentsMargins(0, 0, 0, 3)
+        group_bar.setSpacing(4)
+        self.group_selector = QtWidgets.QComboBox()
+        self.group_selector.setObjectName("watchlistGroupSelector")
+        self.group_selector.currentTextChanged.connect(self._select_group)
+        self.group_menu_button = QtWidgets.QToolButton()
+        self.group_menu_button.setObjectName("watchlistGroupMenu")
+        set_text_role(self.group_menu_button, TextRole.UI_GLYPH)
+        self.group_menu_button.setText("⋯")
+        self.group_menu_button.setPopupMode(QtWidgets.QToolButton.ToolButtonPopupMode.InstantPopup)
+        self.group_menu_button.setToolTip("Manage watchlist groups")
+        group_menu = QtWidgets.QMenu(self.group_menu_button)
+        group_menu.addAction("New group…", self._new_group)
+        group_menu.addAction("Rename group…", self._rename_group)
+        group_menu.addAction("Delete group", self._delete_group)
+        self.group_menu_button.setMenu(group_menu)
+        group_bar.addWidget(self.group_selector, 1)
+        group_bar.addWidget(self.group_menu_button)
+        layout.addLayout(group_bar)
+
+        self.table = WatchlistTableWidget(0, 5)
+        self.table.setObjectName("sidebarWatchlistTable")
+        self.watchlist_header = WatchlistHeaderView(source.theme, self.table)
+        self.watchlist_header.setStyleSheet(
+            "QHeaderView::section:first { padding-left: 4px; padding-right: 4px; }"
+        )
+        self.table.setHorizontalHeader(self.watchlist_header)
+        self.table.setHorizontalHeaderLabels(("", "PAIR", "LAST", "1H", "24H"))
+        self.table.setIconSize(QtCore.QSize(14, 14))
+        header = self.table.horizontalHeader()
+        header.setSectionResizeMode(0, QtWidgets.QHeaderView.ResizeMode.Fixed)
+        header.setMinimumSectionSize(20)
+        header.resizeSection(0, 20)
+        header.setSectionResizeMode(1, QtWidgets.QHeaderView.ResizeMode.Stretch)
+        for column in (2, 3, 4):
+            header.setSectionResizeMode(column, QtWidgets.QHeaderView.ResizeMode.Fixed)
+        header.setMinimumSectionSize(15)
+        header.setSectionsClickable(True)
+        header.setSortIndicatorShown(False)
+        header.setDefaultAlignment(
+            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+        )
+        pair_header = self.table.horizontalHeaderItem(1)
+        if pair_header is not None:
+            pair_header.setTextAlignment(
+                Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
+            )
+        self.table.verticalHeader().hide()
+        self.table.setShowGrid(False)
+        self.table.setAlternatingRowColors(False)
+        self.table.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
+        self.table.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.table.setMinimumHeight(0)
+        self.table.setSizePolicy(
+            QtWidgets.QSizePolicy.Policy.Expanding,
+            QtWidgets.QSizePolicy.Policy.Ignored,
+        )
+        self.table.setEditTriggers(
+            QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers
+        )
+        self.table.setSelectionBehavior(
+            QtWidgets.QAbstractItemView.SelectionBehavior.SelectRows
+        )
+        self.table.setSelectionMode(
+            QtWidgets.QAbstractItemView.SelectionMode.SingleSelection
+        )
+        self.table.setDragEnabled(True)
+        self.table.setAcceptDrops(True)
+        self.table.setDropIndicatorShown(True)
+        self.table.setDragDropOverwriteMode(False)
+        self.table.setDefaultDropAction(Qt.DropAction.MoveAction)
+        self.table.setDragDropMode(
+            QtWidgets.QAbstractItemView.DragDropMode.InternalMove
+        )
+        self.table.setToolTip(
+            'Double-click to open · right-click to remove\nDrag rows to reorder'
+        )
+        self.table.width_environment_changed.connect(self._width_environment_changed)
+        self.watchlist_header.width_environment_changed.connect(
+            self._width_environment_changed
+        )
+
+        layout.addWidget(self.table, 1)
+        self.watchlist_header.toggle_current_requested.connect(
+            self.toggle_current_requested.emit
+        )
+        self.table.row_move_requested.connect(self._move_row)
+        self.table.row_remove_requested.connect(self._remove_row)
+        self.table.cellDoubleClicked.connect(self._open_row)
+        header.sectionClicked.connect(self._sort_clicked)
+        self._ticker_refresh_pending = False
+
+        self.source.symbols_changed.connect(self._source_symbols_changed)
+        self.source.tickers_changed.connect(self._schedule_ticker_refresh)
+        self.source.hour_changes_changed.connect(self._hour_state_changed)
         self.source.current_changed.connect(self._sync_current_symbol)
         self.source.groups_changed.connect(self._groups_changed)
         self.source.icon_changed.connect(self._icon_changed)
