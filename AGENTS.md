@@ -9,6 +9,14 @@
 - Do not make changes that negatively impact performance
 - in code reviews focus first on UI & performance optimization. Also the quality of the application from trader perspective and trading execution integrity.
 
+## Trading UI preferences
+
+- Keep the trading UI compact and useful to a crypto trader. Omit redundant titles, subtitles, explanatory labels and dedicated rows for them.
+- Do not repeat the current ticker inside the orderbook; it is already shown in the market bar.
+- Do not show routine status badges such as LIVE or headings such as ORDER BOOK and VISIBLE DEPTH. Reclaim their space for prices and trading data.
+- Grouping controls must display the actual price step (exchange tick size times grouping multiplier) with its quote unit, rather than an opaque group number or multiplier.
+- Reserve exception indicators for conditions that affect trading, such as stale data. Keep stale-price selection safeguards even when normal-state badges are omitted.
+
 ## Commits and pushes
 
 - Always use the connected GitHub account route to publish changes directly to main. Local Git CLI credentials are not required; do not stop or ask for credentials when that connection is available.

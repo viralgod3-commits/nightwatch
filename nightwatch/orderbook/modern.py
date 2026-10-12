@@ -116,8 +116,9 @@ def _geometry(width, height, density, price_width, totals):
     # Grow whitespace gradually. A larger panel must never suddenly show fewer
     # levels because it crossed a typography/density breakpoint.
     space = min(1., max(0., (height-340)/320))
-    header, labels, center, footer = (round(a+(b-a)*space)
-        for a, b in ((38, 52), (26, 32), (54, 62), (48, 64)))
+    header = 0
+    labels, center, footer = (round(a+(b-a)*space)
+        for a, b in ((24, 28), (54, 62), (28, 34)))
     available = max(0, height - header - labels - center - footer)
     count = min(120, int(available // (2 * row_height)))
     # Spare height stays in the header/footer, never stretches rows on a feed update.
@@ -196,7 +197,6 @@ class _PrismRenderer(QtWidgets.QWidget):
         self.surface = _mix(p['bg'], p['text'], .035)
         self.spine = _mix(p['bg'], p['mid'], .045)
         self.accent = QtGui.QColor(p['mid'])
-        self.warning = QtGui.QColor(p['amber'])
         self.side_colors = {s: QtGui.QColor(p[s]) for s in ('bid', 'ask')}
         self.fills = {s: _mix(p['bg'], p[s], .48) for s in ('bid', 'ask')}
         self.tracks = {s: _mix(p['bg'], p[s], .055) for s in ('bid', 'ask')}
@@ -209,7 +209,6 @@ class _PrismRenderer(QtWidgets.QWidget):
         # A deliberate readable default while honoring custom font-family profiles.
         if self.price_font.pixelSize() == 11:
             self.price_font.setPixelSize(13)
-        self.symbol_font = typography_font(TextRole.ORDERBOOK_SYMBOL)
         self.hero_font = typography_font(TextRole.ORDERBOOK_CENTER_PRICE)
         self.metrics = QtGui.QFontMetricsF(self.price_font)
         self._text_cache.clear()
@@ -399,30 +398,6 @@ class _PrismRenderer(QtWidgets.QWidget):
     def _rect(self, x, y, w, h):
         return QtCore.QRectF(x, y, max(0, w), max(0, h))
 
-    def _paint_header(self, p):
-        g = self.geometry
-        w, m = g['width'], g['margin']
-        base, quote = _assets(self.config['symbol'])
-        status_color = self.side_colors['bid'] if self.status == 'LIVE' else self.warning
-        self._text(p, self._rect(m, 5, w-105-m, 25), f'{base} / {quote}', self.ink,
-                   self.symbol_font, _ALIGN.AlignLeft)
-        if g['header'] >= 52:
-            self._text(p, self._rect(m, 30, w-105-m, 15), 'ORDER BOOK', self.muted,
-                       self.label_font, _ALIGN.AlignLeft)
-        badge_width = 96 if self.status == 'TRADES OFF' else 72
-        badge = self._rect(w-m-badge_width, 8, badge_width, 23)
-        p.setPen(QtGui.QPen(_mix(self._bg, status_color, .28), 1))
-        p.setBrush(_mix(self._bg, status_color, .06))
-        p.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing, True)
-        p.drawRoundedRect(badge, 5, 5)
-        p.setPen(Qt.PenStyle.NoPen)
-        p.setBrush(status_color)
-        p.drawEllipse(QtCore.QPointF(badge.left()+10, badge.center().y()), 2, 2)
-        p.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing, False)
-        self._text(p, badge.adjusted(20, 0, -8, 0), self.status, status_color, self.label_font)
-
-        p.fillRect(QtCore.QRectF(m, g['header']-1, w-m*2, 1), self.line)
-
     def _paint_labels(self, p):
         g = self.geometry
         m, left, right, w = g['margin'], g['price_left'], g['price_right'], g['width']
@@ -509,15 +484,12 @@ class _PrismRenderer(QtWidgets.QWidget):
     def _paint_footer(self, p):
         g = self.geometry
         m, y, w = g['margin'], g['footer_top'], g['width']
-        short = g['footer_height'] < 64
-        amount_y = y + (17 if short else 23)
-        bar_y = y + (37 if short else 49)
+        amount_y = y + 3
+        bar_y = y + g['footer_height'] - 7
         ask, bid = self.side_totals
         total = ask+bid
         ratio = bid/total if total > 0 else .5
         p.fillRect(self._rect(m, y, w-m*2, 1), self.line)
-        self._text(p, self._rect(m, y+2, w-m*2, 13 if short else 18), 'VISIBLE DEPTH', self.muted,
-                   self.label_font, _ALIGN.AlignHCenter)
         bid_label = f'{_amount(bid)} · {ratio*100:.0f}%' if total else '—'
         ask_label = f'{(1-ratio)*100:.0f}% · {_amount(ask)}' if total else '—'
         self._text(p, self._rect(m, amount_y, w/2-m-6, 19), bid_label, self.side_colors['bid'],
@@ -533,14 +505,11 @@ class _PrismRenderer(QtWidgets.QWidget):
         g = self.geometry
         if not g['depth_limited']:
             return
-        bands = (
-            ('asks', g['ask_rows'], g['header']+g['labels'], g['table_top']),
-            ('bids', g['bid_rows'], g['table_bottom'], g['footer_top']),
-        )
-        for side, count, top, bottom in bands:
-            if count < g['rows'] and bottom-top >= 20:
-                self._text(p, self._rect(g['margin'], top, g['width']-g['margin']*2, bottom-top),
-                           f'End of loaded {side}', self.muted, self.label_font, _ALIGN.AlignHCenter)
+        # Quiet caps mark the loaded price range without explanatory text.
+        for count, y in ((g['ask_rows'], g['table_top']),
+                         (g['bid_rows'], g['table_bottom'])):
+            if count < g['rows']:
+                p.fillRect(self._rect(g['price_left'], y, g['price_right']-g['price_left'], 1), self.line)
 
     def paint(self, target, dirty, now):
         start = time.perf_counter()
@@ -549,7 +518,6 @@ class _PrismRenderer(QtWidgets.QWidget):
         p.setRenderHint(QtGui.QPainter.RenderHint.TextAntialiasing)
         p.fillRect(self.rect(), self._bg)
         g = self.geometry
-        self._paint_header(p)
         self._paint_labels(p)
         bars = self._bar_values(now)
         for row in self.rows:
@@ -930,7 +898,9 @@ class PrismCanvas(QtWidgets.QWidget):
 
     def _expire_freshness(self):
         self._clear_pointer()
-        self.update(QtCore.QRect(0, 0, self.width(), 52))
+        g = self._geometry
+        if g:
+            self.update(QtCore.QRect(0, g['center_top'], self.width(), g['center_height']))
 
     def paintEvent(self, event):
         started = time.perf_counter()
@@ -961,12 +931,15 @@ class PrismCanvas(QtWidgets.QWidget):
                     p.fillRect(QtCore.QRectF(4, top, self.width()-8, g['row_height']), fill)
                     p.setPen(QtGui.QPen(accent, 1))
                     p.drawRect(QtCore.QRectF(4.5, top+.5, self.width()-9, g['row_height']-1))
-            # Locally expire the LIVE indicator if worker scheduling is delayed.
+            # Label last-known prices immediately if worker scheduling is delayed.
             if frame['status'] in {'LIVE', 'TRADES OFF'} and time.monotonic() >= frame['prices_valid_until']:
-                p.fillRect(QtCore.QRect(self.width()-99, 5, 95, 31), QtGui.QColor(self.theme['bg']))
-                p.setPen(QtGui.QColor(self.theme['amber']))
+                g = frame['geometry']
+                label_rect = QtCore.QRect(g['margin'], g['center_top']+4,
+                    max(1, int(self.width()*.5)-g['margin']), 17)
+                p.fillRect(label_rect, _mix(self.theme['bg'], self.theme['text'], .035))
+                p.setPen(QtGui.QColor(self.theme['muted']))
                 p.setFont(typography_font(TextRole.ORDERBOOK_LABEL))
-                p.drawText(QtCore.QRect(self.width()-90, 5, 78, 31), _ALIGN.AlignRight | _ALIGN.AlignVCenter, 'STALE')
+                p.drawText(label_rect, _ALIGN.AlignLeft | _ALIGN.AlignVCenter, 'LAST KNOWN')
             if frame['sequence'] != self._last_painted_sequence and frame['generated_monotonic']:
                 self._last_latency_ms = max(0., (time.monotonic()-frame['generated_monotonic'])*1000)
                 self._latency_samples += 1
@@ -1147,8 +1120,8 @@ class OrderBookWidget(QtWidgets.QWidget):
         toolbar.setSpacing(6)
         self.grouping = QtWidgets.QToolButton(self.controls)
         self.grouping.setPopupMode(QtWidgets.QToolButton.ToolButtonPopupMode.InstantPopup)
-        self.grouping.setAccessibleName('Price grouping')
-        self.grouping.setToolTip('Price grouping. Wheel over the book: up = finer, down = coarser. Keyboard: + / −')
+        self.grouping.setAccessibleName('Price step')
+        self.grouping.setToolTip('Price step. Wheel over the book: up = finer, down = coarser. Keyboard: + / −')
         self._group_menu = QtWidgets.QMenu(self.grouping)
         self._group_actions = {}
         group = QtGui.QActionGroup(self._group_menu)
@@ -1213,12 +1186,13 @@ class OrderBookWidget(QtWidgets.QWidget):
         base, quote = _assets(self.symbol)
         tick = self.price_tick_size
         multiplier = self.canvas.aggregation_multiplier
-        step = format_book_price(tick*multiplier, _decimal_places_from_step(tick, multiplier)) if tick else f'{multiplier}×'
-        self.grouping.setText(f'Group  {step}')
+        step = format_book_price(tick*multiplier, _decimal_places_from_step(tick, multiplier)) if tick else '—'
+        self.grouping.setText(f'{step} {quote}')
+        self.grouping.setEnabled(tick > 0)
         self.unit.setText(quote if self.canvas.values == 'quote' else base)
         for value, action in self._group_actions.items():
             self._checked(action, value == multiplier)
-            action.setText(f'{format_book_price(tick*value, _decimal_places_from_step(tick, value))}  ·  {value}×' if tick else f'{value}× ticks')
+            action.setText(f'{format_book_price(tick*value, _decimal_places_from_step(tick, value))} {quote}' if tick else '—')
         for action, checked in ((self._compact_action, self.canvas.density == 'compact'),
                 (self._totals_action, self.canvas.totals), (self._motion_action, self.canvas.motion),
                 (self._tape_action, self._tape_enabled), (self._tape_mode_action, self._tape_mode == 'ALL')):
@@ -1233,6 +1207,8 @@ class OrderBookWidget(QtWidgets.QWidget):
             self.presentation_changed.emit(self.presentation_state())
 
     def _step_grouping(self, step):
+        if self.price_tick_size <= 0:
+            return
         values = ORDER_FLOW_AGGREGATION_MULTIPLIERS
         index = values.index(self.canvas.aggregation_multiplier)
         target = values[max(0, min(len(values)-1, index+step))]
