@@ -64,6 +64,9 @@ and an explicit spread. Visible-depth totals compare only the rows on screen.
 The bottom controls change tick grouping and base/quote size units; the display
 menu offers compact rows, cumulative totals on wide panels, reduced motion and
 an optional trade tape. Existing color presets and app theme overrides apply.
+The mouse wheel over the book changes grouping: up for finer price detail,
+down for coarser buckets. At large grouping, the ladder fits the real loaded
+buckets and marks their depth boundary; unavailable depth is not zero liquidity.
 
 The new view consumes the same immutable order-flow snapshots and aggregation
 as the market backend. Grouping rounds bids down and asks up. Selecting a live

@@ -132,6 +132,27 @@ def _geometry(width, height, density, price_width, totals):
                 header=header, labels=labels, center_height=center, footer_height=footer)
 
 
+def _fit_depth_geometry(geometry, ask_rows, bid_rows, *, grouped):
+    """Fit known buckets without treating the source-depth horizon as zero depth.
+
+    Keep ``rows`` as the requested capacity, independent of how many buckets
+    arrived. Otherwise sparse grouping would reduce the next depth request and
+    progressively starve the view. Only the drawn/hit-tested bands are fitted.
+    """
+    g = dict(geometry)
+    g['ask_rows'], g['bid_rows'] = ask_rows, bid_rows
+    capacity = g['rows']
+    if grouped and 0 < max(ask_rows, bid_rows) < capacity:
+        band_height = capacity * g['row_height']
+        # Modest extra breathing room, not giant rows for one coarse bucket.
+        g['row_height'] = min(40, band_height // max(ask_rows, bid_rows))
+    g['table_top'] = g['center_top'] - ask_rows * g['row_height']
+    g['table_bottom'] = g['center_bottom'] + bid_rows * g['row_height']
+    g['depth_limited'] = bool(grouped and capacity and
+                              (ask_rows < capacity or bid_rows < capacity))
+    return g
+
+
 class _PrismRenderer(QtWidgets.QWidget):
     """Offscreen painter. No model resets, child row widgets or GUI-thread scans."""
 
@@ -258,15 +279,20 @@ class _PrismRenderer(QtWidgets.QWidget):
         price_width = max((self.metrics.horizontalAdvance('8' * len(t)) for t in examples), default=84)
         g = _geometry(self.width(), self.height(), self.config.get('density'), price_width,
                       self.config.get('totals', True))
-        layout = (tuple(g.items()), self.config.get('values'), self.config.get('tick'),
-                  self.config.get('aggregation'), self.config.get('symbol'), self._raster_dpr)
-        full = self._last_layout != layout
-        self.geometry = g
         count = g['rows']
         visible = [tuple(level for level in side[:count]
                          if math.isfinite(level.price) and level.price > 0
                          and math.isfinite(level.quantity) and level.quantity >= 0
                          and math.isfinite(level.notional) and level.notional >= 0) for side in levels]
+        if snapshot is not None and snapshot.ready and any(visible):
+            g = _fit_depth_geometry(g, len(visible[0]), len(visible[1]),
+                                    grouped=self.config.get('aggregation', 1) > 1)
+        else:
+            g.update(ask_rows=0, bid_rows=0, table_bottom=g['center_bottom'], depth_limited=False)
+        layout = (tuple(g.items()), self.config.get('values'), self.config.get('tick'),
+                  self.config.get('aggregation'), self.config.get('symbol'), self._raster_dpr)
+        full = self._last_layout != layout
+        self.geometry = g
         quote = self.config.get('values') == 'quote'
         value = lambda l: l.notional if quote else l.quantity
         scale = max((value(l) for side in visible for l in side), default=0.)
@@ -503,6 +529,19 @@ class _PrismRenderer(QtWidgets.QWidget):
             p.fillRect(self._rect(m, bar_y, max(0, span*ratio-1), 3), self.side_colors['bid'])
             p.fillRect(self._rect(m+span*ratio+1, bar_y, max(0, span*(1-ratio)-1), 3), self.side_colors['ask'])
 
+    def _paint_depth_limits(self, p):
+        g = self.geometry
+        if not g['depth_limited']:
+            return
+        bands = (
+            ('asks', g['ask_rows'], g['header']+g['labels'], g['table_top']),
+            ('bids', g['bid_rows'], g['table_bottom'], g['footer_top']),
+        )
+        for side, count, top, bottom in bands:
+            if count < g['rows'] and bottom-top >= 20:
+                self._text(p, self._rect(g['margin'], top, g['width']-g['margin']*2, bottom-top),
+                           f'End of loaded {side}', self.muted, self.label_font, _ALIGN.AlignHCenter)
+
     def paint(self, target, dirty, now):
         start = time.perf_counter()
         p = QtGui.QPainter(target)
@@ -518,6 +557,7 @@ class _PrismRenderer(QtWidgets.QWidget):
                 self._paint_row(p, row, bars)
         self._paint_center(p, now)
         self._paint_footer(p)
+        self._paint_depth_limits(p)
         if not self.rows and g['rows'] >= 2:
             message = 'Synchronizing order book…' if self.status == 'SYNCING' else 'No depth available'
             self._text(p, self._rect(12, g['table_top'], self.width()-24, max(28, g['center_top']-g['table_top'])),
@@ -700,6 +740,9 @@ class PrismCanvas(QtWidgets.QWidget):
         self._latency_samples = 0
         self._last_latency_ms = 0.
         self._last_painted_sequence = -1
+        self._wheel_angle_remainder = 0
+        self._wheel_pixel_remainder = 0
+        self._last_wheel_time = 0.
         from .backend import _OrderBookProcessLink
         self._process_link = _OrderBookProcessLink(_PrismProcess,
             {'theme': dict(self.theme), 'dpi': self.logicalDpiX()}, self)
@@ -779,6 +822,7 @@ class PrismCanvas(QtWidgets.QWidget):
         self._latest_received_sequence = -1
         self._last_painted_sequence = -1
         self._freshness_timer.stop()
+        self._reset_wheel()
         self._clear_pointer()
         self._queue_configuration()
         self.update()
@@ -949,7 +993,7 @@ class PrismCanvas(QtWidgets.QWidget):
             return None
         if g['table_top'] <= y < g['center_top']:
             side, index = 'ask', int((g['center_top']-y-1e-7)//g['row_height'])
-        elif g['center_bottom'] <= y < g['center_bottom']+g['rows']*g['row_height']:
+        elif g['center_bottom'] <= y < g['table_bottom']:
             side, index = 'bid', int((y-g['center_bottom'])//g['row_height'])
         else:
             return None
@@ -984,6 +1028,7 @@ class PrismCanvas(QtWidgets.QWidget):
 
     def leaveEvent(self, event):
         self._clear_pointer()
+        self._reset_wheel()
         super().leaveEvent(event)
 
     def mousePressEvent(self, event):
@@ -1013,6 +1058,39 @@ class PrismCanvas(QtWidgets.QWidget):
             event.accept()
         else:
             super().keyPressEvent(event)
+
+    def _reset_wheel(self):
+        self._wheel_angle_remainder = self._wheel_pixel_remainder = 0
+        self._last_wheel_time = 0.
+
+    def wheelEvent(self, event):
+        # Zoom-in means finer grouping. Accumulate high-resolution wheel and
+        # trackpad samples; one gesture must not jump to the largest multiplier.
+        now = time.monotonic()
+        if event.phase() == Qt.ScrollPhase.ScrollBegin or now-self._last_wheel_time > .5:
+            self._reset_wheel()
+        self._last_wheel_time = now
+        angle, pixels = event.angleDelta().y(), event.pixelDelta().y()
+        if angle:
+            if angle * self._wheel_angle_remainder < 0:
+                self._wheel_angle_remainder = 0
+            self._wheel_angle_remainder += angle
+            steps = math.trunc(self._wheel_angle_remainder / 120)
+            self._wheel_angle_remainder -= steps * 120
+        elif pixels:
+            if pixels * self._wheel_pixel_remainder < 0:
+                self._wheel_pixel_remainder = 0
+            self._wheel_pixel_remainder += pixels
+            steps = math.trunc(self._wheel_pixel_remainder / 40)
+            self._wheel_pixel_remainder -= steps * 40
+        else:
+            steps = 0
+        if steps:
+            self.grouping_step_requested.emit(-steps)
+        if event.phase() == Qt.ScrollPhase.ScrollEnd:
+            self._reset_wheel()
+        # Do not pass vertical wheel gestures through to the chart/parent.
+        event.accept()
 
     def visible_rows_per_side(self):
         return _geometry(self.width(), self.height(), self.density, 84, self.totals)['rows']
@@ -1070,7 +1148,7 @@ class OrderBookWidget(QtWidgets.QWidget):
         self.grouping = QtWidgets.QToolButton(self.controls)
         self.grouping.setPopupMode(QtWidgets.QToolButton.ToolButtonPopupMode.InstantPopup)
         self.grouping.setAccessibleName('Price grouping')
-        self.grouping.setToolTip('Price grouping. Bids round down and asks round up. Keyboard: + / −')
+        self.grouping.setToolTip('Price grouping. Wheel over the book: up = finer, down = coarser. Keyboard: + / −')
         self._group_menu = QtWidgets.QMenu(self.grouping)
         self._group_actions = {}
         group = QtGui.QActionGroup(self._group_menu)
@@ -1157,7 +1235,9 @@ class OrderBookWidget(QtWidgets.QWidget):
     def _step_grouping(self, step):
         values = ORDER_FLOW_AGGREGATION_MULTIPLIERS
         index = values.index(self.canvas.aggregation_multiplier)
-        self.set_aggregation_multiplier(values[max(0, min(len(values)-1, index+step))], emit=True)
+        target = values[max(0, min(len(values)-1, index+step))]
+        if target != self.canvas.aggregation_multiplier:
+            self.set_aggregation_multiplier(target, emit=True)
 
     def _reset_display(self):
         self.restore_presentation_state({}, emit=True)
@@ -1343,6 +1423,9 @@ class OrderBookWidget(QtWidgets.QWidget):
     def resizeEvent(self, event):
         super().resizeEvent(event)
         self._sync_tape_visibility()
+
+    def wheelEvent(self, event):
+        self.canvas.wheelEvent(event)
 
     def reset(self):
         self._latest_snapshot = None
