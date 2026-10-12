@@ -1797,11 +1797,13 @@ class MetricCard(QtWidgets.QFrame):
         """Measure ticker content with the requested padding, independent of its current width."""
         margins = self.layout().contentsMargins()
         left, right = horizontal_margins if horizontal_margins is not None else (margins.left(), margins.right())
+        # Reserve a full trailing market-bar gutter after the price.  The divider
+        # must never share a pixel with a rapidly changing price label.
         return max(COMPACT_IDENTITY_WIDTH,
                    max(self.title.sizeHint().width(), self.title.fontMetrics().horizontalAdvance(self.title.text()))
                    + max(self.value.sizeHint().width(), self.value.fontMetrics().horizontalAdvance(self.value.text()))
                    + sum(label.sizeHint().width() for label in self._identity_separators)
-                   + self.layout().spacing() * (1 + len(self._identity_separators)) + left + right)
+                   + self.layout().spacing() * (2 + len(self._identity_separators)) + left + right)
 
     def set_identity_horizontal_margins(self, left: int, right: int) -> None:
         if not self.identity:
