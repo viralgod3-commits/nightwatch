@@ -1652,6 +1652,7 @@ class PreparedDomRow:
     profile_amount_text_offset: float = 0.0
     profile_cumulative: float = 0.0
     profile_in_range: bool = True
+    profile_text_layout: QtGui.QStaticText | None = None
 
 def _compute_order_flow_dom_geometry(width: float, height: float, font_height: float=13.0, price_font_height: float | None=None, label_font_height: float | None=None, *, column_preferences: dict[str, object] | None=None, presentation_preset: str='execution', essential_only: bool=False, previous_mode: str | None=None, previous_bbo_only: bool | None=None, price_min_width: float=90.0, amount_min_width: float=36.0, state_expanded_width: float | None=None, column_width_overrides: dict[str, float] | None=None, book_depth: bool=False) -> dict[str, object]:
     """Compute a deterministic width-driven DOM composition.
@@ -1670,7 +1671,7 @@ def _compute_order_flow_dom_geometry(width: float, height: float, font_height: f
     inner_width = max(1.0, width - margin * 2.0)
     if book_depth:
         # Keep market context and the midpoint out of the price/quantity rows.
-        row_height = max(24.0,
+        row_height = max(18.0,
                          float(math.ceil(max(font_height, price_font_height or font_height) + 4.0)))
         price_width = min(width, max(42.0, float(price_min_width)))
         heat_width = min(8.0, max(0.0, width - price_width))
@@ -1680,8 +1681,7 @@ def _compute_order_flow_dom_geometry(width: float, height: float, font_height: f
                             float(label_font_height or 11.0) + 6.0 if width < 280.0 else 0.0)
         header_height = market_height + totals_height
         center_height = min(max(0.0, height - header_height),
-                            max(24.0, font_height + float(label_font_height or 11.0) + 8.0
-                                if width < 240.0 else font_height + 8.0))
+                            max(38.0, font_height + float(label_font_height or 11.0) + 10.0))
         body_height = max(0.0, height - header_height - center_height)
         center_top = header_height + math.floor(body_height * 0.5)
         center_bottom = center_top + center_height
@@ -2046,6 +2046,9 @@ class _DomRasterCanvas(QtWidgets.QWidget):
         self._prepared_header_layout: dict[str, object] = {}
         self._profile_header_key = None
         self._profile_header_items = ()
+        self._profile_center_key = None
+        self._profile_center_items = ()
+        self._profile_text_layouts = OrderedDict()
         self._footer_depth_summary = (0.5, '—', '—', False)
         self._prepared_column_labels: dict[str, str] = {}
         self._prepared_metric_draw_items: tuple[tuple[str, str, QtGui.QColor], ...] = ()
@@ -2202,6 +2205,8 @@ class _DomRasterCanvas(QtWidgets.QWidget):
         self._label_font_key = self._label_font.toString()
         self._text_layout_cache.clear()
         self._profile_amount_text_widths.clear()
+        self._profile_text_layouts.clear()
+        self._profile_center_key = None
         self._price_metrics_cache.clear()
         self._price_fit_cache.clear()
         self._amount_width_cache_key = None
@@ -3276,6 +3281,12 @@ class _DomRasterCanvas(QtWidgets.QWidget):
         level = row.level
         if not isinstance(level, OrderFlowDisplayLevel):
             return ()
+        if self._book_depth:
+            # Analytics, state latches and trade cues are not drawn in this view.
+            return (level.side, level.price, row.notional_text,
+                    row.profile_size, row.profile_depth, row.profile_cumulative,
+                    row.profile_in_range, row.profile_amount_text_offset,
+                    self._profile_amount_width)
         columns = self._geometry.get('columns', {})
         memory_signature = (
             tuple(level.liquidity_history_30s[-8:])
@@ -3306,13 +3317,6 @@ class _DomRasterCanvas(QtWidgets.QWidget):
             row.is_native_touch, round(row.native_touch_fraction, 6),
             row.is_ltp_row, round(row.ltp_fraction, 6),
         )
-        if self._book_depth:
-            signature += (
-                round(row.profile_size, 6), round(row.profile_depth, 6),
-                round(row.profile_previous_depth, 6),
-                round(row.profile_amount, 8), round(row.profile_cumulative, 8), row.profile_in_range,
-                round(row.profile_amount_text_offset, 4), round(self._profile_amount_width, 4),
-            )
         return signature
 
     def _snapshot_chrome_signature(self) -> tuple[tuple[object, ...], ...]:
@@ -3328,7 +3332,8 @@ class _DomRasterCanvas(QtWidgets.QWidget):
                 (self.symbol, self._market_status, self._profile_header_key,
                  round(self._profile_amount_width, 4),
                  self._profile_ruler_totals if self._geometry.get('profile_totals_height') else ()), (),
-                (self._last_trade_price, self.snapshot.midpoint if self.snapshot is not None else 0.0,
+                (self._last_trade_price, self._last_trade_side,
+                 self.snapshot.midpoint if self.snapshot is not None else 0.0,
                  self._profile_ruler_totals),
                 (self._profile_anchor_price, self._geometry.get('profile_ask_anchor'),
                  self._geometry.get('profile_rulers')),
@@ -4107,6 +4112,15 @@ class _DomRasterCanvas(QtWidgets.QWidget):
         delta = level.delta_notional_5s
         price_left, price_right = self._geometry['columns']['price']
         price_text = self._fitted_price_text(level.price, self._effective_price_metrics, float(price_right) - float(price_left))
+        if self._book_depth:
+            # Keep the complete immutable level for inspection; only prepare
+            # price and size for the profile. Ladder analytics stay in the
+            # analyzer and are prepared when the user switches to that view.
+            return PreparedDomRow(
+                level=level, display_state='NORMAL', liquidity_visual=0.0,
+                price_text=price_text,
+                notional_text=self._row_amount(level.notional, level.price, quantity=level.quantity),
+            )
         display_state = self._display_state(
             level, now, allow_transition=allow_state_transition,
             inference_allowed=inference_allowed,
@@ -4292,6 +4306,9 @@ class _DomRasterCanvas(QtWidgets.QWidget):
                 status_width = min(max(0.0, width - 8.0), self._label_metrics.horizontalAdvance(status) + 4.0)
                 status_left = width - 4.0 - status_width
                 pair = self.symbol.removesuffix('USDT') + ' / USDT' if self.symbol.endswith('USDT') else self.symbol
+                venue_pair = f'Binance · {pair}'
+                if self._label_metrics.horizontalAdvance(venue_pair) <= status_left - 16.0:
+                    pair = venue_pair
                 pair = self._label_metrics.elidedText(pair, Qt.TextElideMode.ElideRight, max(0, int(status_left - 16.0)))
                 pair_width = min(max(0.0, status_left - 12.0), self._label_metrics.horizontalAdvance(pair) + 4.0)
                 items = [(QtCore.QRectF(4.0, 0.0, pair_width, height), pair, self._text),
@@ -4431,7 +4448,7 @@ class _DomRasterCanvas(QtWidgets.QWidget):
             reuse_rows = False
         now = time.monotonic()
         scale_changed = False
-        if snapshot is not None:
+        if snapshot is not None and not self._book_depth:
             scale_changed = self._update_visual_scales(snapshot)
         if snapshot is None:
             status_text, health_reason = self._feed_health_status(None)
@@ -4460,13 +4477,14 @@ class _DomRasterCanvas(QtWidgets.QWidget):
         )
         rows = int(self._geometry['rows_per_side'])
         visible_levels = tuple(snapshot.bid_levels[:rows]) + tuple(snapshot.ask_levels[:rows])
-        active_state_keys = self._advance_state_latches(
-            visible_levels, now, inference_allowed=state_inference_allowed
-        )
-        self._prune_state_latches(now, active_state_keys)
+        if not self._book_depth:
+            active_state_keys = self._advance_state_latches(
+                visible_levels, now, inference_allowed=state_inference_allowed
+            )
+            self._prune_state_latches(now, active_state_keys)
         if not reuse_rows:
             previous_metrics: dict[tuple[str, int | float], tuple[float, float]] = {}
-            if not self._suppress_change_cues_once:
+            if not self._book_depth and not self._suppress_change_cues_once:
                 for prepared in (*self._bid_rows, *self._ask_rows):
                     previous_level = prepared.level
                     if isinstance(previous_level, OrderFlowDisplayLevel):
@@ -4487,7 +4505,8 @@ class _DomRasterCanvas(QtWidgets.QWidget):
                 )
                 for level in snapshot.ask_levels[:rows]
             ]
-            self._sparsify_prepared_events()
+            if not self._book_depth:
+                self._sparsify_prepared_events()
             self._suppress_change_cues_once = False
         elif scale_changed:
             self._refresh_row_visual_scales()
@@ -4495,7 +4514,8 @@ class _DomRasterCanvas(QtWidgets.QWidget):
             self._refresh_prepared_row_levels(
                 inference_allowed=state_inference_allowed
             )
-            self._refresh_row_market_anchors()
+            if not self._book_depth:
+                self._refresh_row_market_anchors()
         source = str(snapshot.bbo_source or 'LOCAL BOOK').replace('_', ' ').upper()
         elapsed = max(0.0, now - snapshot.generated_monotonic)
         freshness_parts = tuple(
@@ -4608,6 +4628,12 @@ class _DomRasterCanvas(QtWidgets.QWidget):
         if snapshot is None:
             return
         rows = max(0, int(self._geometry.get('rows_per_side', 0)))
+        if self._book_depth:
+            for prepared, level in zip(self._bid_rows, snapshot.bid_levels[:rows]):
+                prepared.level = level
+            for prepared, level in zip(self._ask_rows, snapshot.ask_levels[:rows]):
+                prepared.level = level
+            return
         now = time.monotonic()
         threshold = max(1.0, float(snapshot.large_trade_threshold or 1.0))
         for prepared, level in zip(self._bid_rows[:rows], snapshot.bid_levels[:rows]):
@@ -4672,7 +4698,8 @@ class _DomRasterCanvas(QtWidgets.QWidget):
         depth_targets: dict[tuple[str, float], float],
     ) -> None:
         now = time.monotonic()
-        self._sample_profile_animation(now)
+        # Retarget from the last presented values. Sampling here could advance
+        # a settled animation without producing damage or another timer tick.
 
         previous_size_targets = self._profile_size_targets
         previous_depth_targets = self._profile_depth_targets
@@ -4715,14 +4742,6 @@ class _DomRasterCanvas(QtWidgets.QWidget):
 
         self._rebuild_profile_paths_from_current()
 
-    def _profile_ladder_rect(self) -> QtCore.QRect:
-        top = max(0, int(math.floor(float(self._geometry.get('table_top', 0.0)))) - 1)
-        bottom = min(
-            self.height(),
-            int(math.ceil(float(self._geometry.get('footer_top', self.height())))) + 1,
-        )
-        return QtCore.QRect(0, top, self.width(), max(1, bottom - top))
-
     def _advance_profile_animation(self) -> None:
         if not self._book_depth or not self.isVisible():
             self._profile_size_current = dict(self._profile_size_targets)
@@ -4731,15 +4750,34 @@ class _DomRasterCanvas(QtWidgets.QWidget):
             self._rebuild_profile_paths_from_current()
             return
 
+        previous_size = self._profile_size_current.copy()
+        previous_depth = self._profile_depth_current.copy()
         moving = self._sample_profile_animation(time.monotonic())
         if not moving:
             self._profile_size_current = dict(self._profile_size_targets)
             self._profile_depth_current = dict(self._profile_depth_targets)
             self._profile_animation_timer.stop()
         self._rebuild_profile_paths_from_current()
-        rect = self._profile_ladder_rect()
-        if not rect.isNull():
-            self.update(rect)
+        # Only heat/bar pixels move. Leave the exact price lane, market header
+        # and current-price band in the retained raster surface untouched.
+        g = self._geometry
+        left = int(g.get('heat_left', self.width()))
+        region = QtGui.QRegion()
+        for row in (*self._ask_rows, *self._bid_rows):
+            key = (row.level.side, float(row.level.price))
+            if (previous_size.get(key) == self._profile_size_current.get(key)
+                    and previous_depth.get(key) == self._profile_depth_current.get(key)):
+                continue
+            top = math.floor(self._profile_row_top(row)) - 1
+            region += QtCore.QRect(left, top, self.width() - left,
+                                  math.ceil(g['row_height']) + 3)
+        bands = (QtGui.QRegion(0, math.ceil(g['table_top']), self.width(),
+                              max(0, math.floor(g['center_top']) - math.ceil(g['table_top'])))
+                 | QtGui.QRegion(0, math.ceil(g['center_bottom']), self.width(),
+                                 max(0, self.height() - math.ceil(g['center_bottom']))))
+        region &= bands
+        if not region.isEmpty():
+            self.update(region)
 
     def _rebuild_profile_paths_from_current(self) -> None:
         self._profile_paths = {}
@@ -4907,6 +4945,17 @@ class _DomRasterCanvas(QtWidgets.QWidget):
                 else:
                     self._profile_amount_text_widths.move_to_end(text)
                 measured_amount = max(measured_amount, width + row.profile_amount_text_offset)
+                layout = self._profile_text_layouts.get(text)
+                if layout is None:
+                    layout = QtGui.QStaticText(text)
+                    layout.setTextFormat(Qt.TextFormat.PlainText)
+                    layout.prepare(QtGui.QTransform(), self._row_font)
+                    if len(self._profile_text_layouts) >= self.TEXT_LAYOUT_CACHE_CAPACITY:
+                        self._profile_text_layouts.popitem(last=False)
+                    self._profile_text_layouts[text] = layout
+                else:
+                    self._profile_text_layouts.move_to_end(text)
+                row.profile_text_layout = layout
         self._profile_amount_width = max(32.0, measured_amount + 8.0)
         self._profile_scale_text = (
             f'Depth ruler range · {unit}\n'
@@ -4929,6 +4978,7 @@ class _DomRasterCanvas(QtWidgets.QWidget):
                 depth_targets[key] = row.profile_depth
 
         self._set_profile_animation_targets(size_targets, depth_targets)
+        self._prepare_profile_center()
 
     def _rebuild_hit_rows(self) -> None:
         if self._book_depth:
@@ -5691,9 +5741,20 @@ class _DomRasterCanvas(QtWidgets.QWidget):
             font = self._row_font
             amount_width = min(lane.right() - amount_left, self._profile_amount_width)
             amount_rect = QtCore.QRectF(amount_left, top, max(0.0, amount_width), height)
-            self._draw_numeric_text(painter, amount_rect, row.notional_text, text_color,
-                                    Qt.AlignmentFlag.AlignLeft, font=font, pad=4.0, bar_contrast=True,
-                                    text_offset=row.profile_amount_text_offset)
+            # Reuse shaped glyphs across animation frames. Sizes change on
+            # snapshots; moving bars must not reshape the same text at 60 Hz.
+            if row.profile_text_layout is not None and amount_rect.width() > 8.0:
+                painter.save()
+                painter.setClipRect(device_pixel_rect(self, amount_rect), Qt.ClipOperation.IntersectClip)
+                painter.setFont(font)
+                origin = device_pixel_rect(self, amount_rect.adjusted(4.0, 0.0, -4.0, 0.0))
+                x = origin.left() + row.profile_amount_text_offset
+                y = device_pixel_value(self, origin.center().y() - row.profile_text_layout.size().height() * 0.5)
+                painter.setPen(self._bar_text_shadow)
+                painter.drawStaticText(QtCore.QPointF(x, y + self._physical_pixel_width()), row.profile_text_layout)
+                painter.setPen(text_color)
+                painter.drawStaticText(QtCore.QPointF(x, y), row.profile_text_layout)
+                painter.restore()
             if self._hover_price == row.level.price:
                 cumulative = self._bar_amount_text(
                     row.profile_cumulative, row.level.price
@@ -5736,7 +5797,8 @@ class _DomRasterCanvas(QtWidgets.QWidget):
             painter.fillRect(QtCore.QRectF(left, 0.0, right - left, max(0.0, ruler_top)), shade)
             painter.fillRect(QtCore.QRectF(left, ruler_bottom, right - left,
                                            max(0.0, height - ruler_bottom)), shade)
-        if ready:
+        if ready and dirty.intersects(QtCore.QRect(0, int(g['table_top']),
+                                                  math.ceil(g['heat_left']), int(height))):
             step = float(g['profile_step'])
             for side, anchor, start, direction, available in (
                 ('ask', float(g['profile_ask_anchor']), float(g['center_top']) - row_height,
@@ -5756,10 +5818,12 @@ class _DomRasterCanvas(QtWidgets.QWidget):
                                           self._price_text(price), color, Qt.AlignmentFlag.AlignRight, pad=4.0)
         rows_rendered = False
         if ready:
+            visible_rows = []
             for row in (*self._ask_rows, *self._bid_rows):
                 top = self._profile_row_top(row)
                 if dirty.intersects(QtCore.QRect(0, int(top), int(width), int(row_height) + 1)):
                     self._draw_profile_row(painter, row, top, row_height)
+                    visible_rows.append((row, top))
                     rows_rendered = True
             for side, (_area, outline) in self._profile_paths.items():
                 for top, bottom, pen in (
@@ -5778,11 +5842,11 @@ class _DomRasterCanvas(QtWidgets.QWidget):
             painter.setPen(QtGui.QPen(self._grid_strong, self._physical_pixel_width()))
             for y in (ruler_top, ruler_bottom):
                 self._draw_snapped_line(painter, 0.0, y, width - 3.0, y)
+                # A small grip makes the symmetric range control discoverable.
+                painter.fillRect(QtCore.QRectF(max(0.0, width - 12.0), y - 2.0, 9.0, 4.0), self._grid_strong)
             # Values are the last row layer so depth outlines cannot cross digits.
-            for row in (*self._ask_rows, *self._bid_rows):
-                top = self._profile_row_top(row)
-                if dirty.intersects(QtCore.QRect(0, int(top), int(width), int(row_height) + 1)):
-                    self._draw_profile_row_values(painter, row, top, row_height)
+            for row, top in visible_rows:
+                self._draw_profile_row_values(painter, row, top, row_height)
             if not g['profile_totals_height']:
                 self._draw_profile_totals(painter, ruler_top, ruler_bottom)
             if self._last_trade_price > 0.0:
@@ -5793,18 +5857,21 @@ class _DomRasterCanvas(QtWidgets.QWidget):
                 # The print marker stays in the heat strip, clear of all digits.
                 painter.fillRect(QtCore.QRectF(float(g['heat_left']), top + 2.0,
                                                2.0, max(1.0, row_height - 4.0)), self._profile_last)
-            self._draw_profile_midpoint(painter)
+            if dirty.intersects(QtCore.QRect(0, math.floor(g['center_top']) - 1,
+                                            int(width), math.ceil(g['center_height']) + 2)):
+                self._draw_profile_midpoint(painter)
         else:
             message = self._syncing_message() if self._book_validity_known and not self._book_valid else 'Waiting for market data'
             self._draw_text(painter, QtCore.QRectF(4.0, height * 0.4, max(0.0, width - 8), 40.0),
                             message, self._profile_price, Qt.AlignmentFlag.AlignHCenter, font=self._label_font)
         painter.restore()
-        painter.fillRect(QtCore.QRectF(0.0, 0.0, width, float(g['table_top'])), self._profile_bg)
-        for rect, text, color in self._profile_header_items:
-            self._draw_text(painter, rect, text, color, Qt.AlignmentFlag.AlignLeft,
-                            font=self._label_font, pad=0.0)
-        if ready and g['profile_totals_height']:
-            self._draw_profile_totals(painter, ruler_top, ruler_bottom)
+        if dirty.intersects(QtCore.QRect(0, 0, int(width), math.ceil(g['table_top']))):
+            painter.fillRect(QtCore.QRectF(0.0, 0.0, width, float(g['table_top'])), self._profile_bg)
+            for rect, text, color in self._profile_header_items:
+                self._draw_text(painter, rect, text, color, Qt.AlignmentFlag.AlignLeft,
+                                font=self._label_font, pad=0.0)
+            if ready and g['profile_totals_height']:
+                self._draw_profile_totals(painter, ruler_top, ruler_bottom)
         return rows_rendered
 
     def _draw_profile_totals(self, painter: QtGui.QPainter, ruler_top: float, ruler_bottom: float) -> None:
@@ -5842,8 +5909,62 @@ class _DomRasterCanvas(QtWidgets.QWidget):
             self._draw_numeric_text(painter, rect, text, self._profile_bar_text[side],
                                     Qt.AlignmentFlag.AlignRight, font=self._profile_annotation_font, pad=3.0)
 
+    def _prepare_profile_center(self) -> None:
+        """Prepare exact last price and resting-depth delta once per change."""
+        snapshot, g = self.snapshot, self._geometry
+        if snapshot is None or not snapshot.ready:
+            self._profile_center_key = None
+            self._profile_center_items = ()
+            return
+        last = self._last_trade_price > 0.0
+        value = self._last_trade_price if last else snapshot.midpoint or snapshot.microprice
+        bid, ask = self._profile_ruler_totals
+        delta = bid - ask
+        key = (value, last, self._last_trade_side, delta, snapshot.midpoint, self.price_tick_size, self.price_decimals,
+               self._value_mode, self.symbol, g['width'], g['center_top'], g['center_height'],
+               self._effective_price_font_key, self._profile_bg.rgba(), self._text.rgba(),
+               self._muted.rgba(), self._bid.rgba(), self._ask.rgba())
+        if key == self._profile_center_key:
+            return
+        self._profile_center_key = key
+        precision = min(16, self.price_decimals + (0 if last else 1)) if self.price_tick_size > 0 else None
+        price_text = format_book_price(value, precision)
+        delta_text = ('↑ ' if delta > 0 else '↓ ' if delta < 0 else '') + (self._bar_amount_text(abs(delta), snapshot.midpoint or 0.0) or '0')
+        unit = 'USDT' if self._value_mode == 'quote' else self.symbol.removesuffix('USDT')
+        width, top, height = float(g['width']), float(g['center_top']), float(g['center_height'])
+        label = 'Last' if last else 'Mid'
+        caption_width = self._label_metrics.horizontalAdvance(label) + 12.0
+        price_rect = QtCore.QRectF(4.0, top, max(1.0, width - caption_width - 8.0), height * .54)
+        delta_rect = QtCore.QRectF(4.0, top + height * .54, max(1.0, width - 8.0), height * .46)
+        font = QtGui.QFont(self._effective_price_font)
+        while (font.pixelSize() > typography_min_pixel_size(TextRole.ORDERBOOK_PRICE)
+               and QtGui.QFontMetricsF(font).horizontalAdvance(price_text) > price_rect.width()):
+            font = typography_font_at_pixel_size(font, font.pixelSize() - 1)
+        if QtGui.QFontMetricsF(font).horizontalAdvance(price_text) > price_rect.width():
+            # Drop the caption before ever clipping a price into a plausible
+            # but incorrect value on extremely narrow panels.
+            label = ''
+            price_rect.setWidth(max(1.0, width - 8.0))
+        if QtGui.QFontMetricsF(font).horizontalAdvance(price_text) > price_rect.width():
+            price_text = '—'
+        color = self._text
+        if last and self._last_trade_side in ('buy', 'sell'):
+            color = self._profile_colors['bid' if self._last_trade_side == 'buy' else 'ask']
+        delta_color = self._profile_colors['bid' if delta >= 0 else 'ask']
+        self._profile_center_items = (
+            (price_rect, price_text, color, Qt.AlignmentFlag.AlignLeft, font),
+            (QtCore.QRectF(width - caption_width, top, caption_width - 4.0, height * .54),
+             label, self._muted, Qt.AlignmentFlag.AlignRight, self._label_font),
+            (delta_rect, delta_text, delta_color, Qt.AlignmentFlag.AlignRight, self._profile_annotation_font),
+        )
+        metrics = QtGui.QFontMetricsF(self._profile_annotation_font)
+        caption = f'Depth Δ · {unit}'
+        if self._label_metrics.horizontalAdvance(caption) + metrics.horizontalAdvance(delta_text) + 12.0 <= delta_rect.width():
+            self._profile_center_items += ((delta_rect, caption, self._muted,
+                                           Qt.AlignmentFlag.AlignLeft, self._label_font),)
+
     def _draw_profile_midpoint(self, painter: QtGui.QPainter) -> None:
-        """Give exact midpoint and imbalance digits their own protected space."""
+        """Last trade (or labeled midpoint fallback) above resting-depth delta."""
         g = self._geometry
         top, bottom = float(g['center_top']), float(g['center_bottom'])
         width, height = float(g['width']), max(0.0, float(g['center_height']))
@@ -5851,44 +5972,8 @@ class _DomRasterCanvas(QtWidgets.QWidget):
         painter.setPen(QtGui.QPen(self._grid_strong, self._physical_pixel_width()))
         for y in (top, bottom):
             self._draw_snapped_line(painter, 0.0, y, width, y)
-        midpoint = self.snapshot.midpoint or self.snapshot.microprice
-        precision = min(16, self.price_decimals + 1) if self.price_tick_size > 0.0 else None
-        price_text = format_book_price(midpoint, precision)
-        bid, ask = self._profile_ruler_totals
-        delta = bid - ask
-        delta_text = (
-            ('+' if delta > 0.0 else '−' if delta < 0.0 else '')
-            + (self._bar_amount_text(abs(delta), midpoint) or '0')
-        )
-        delta_font = self._profile_annotation_font
-        delta_width = QtGui.QFontMetricsF(delta_font).horizontalAdvance(delta_text) + 14.0
-        stacked = width < 240.0
-        available = max(1.0, width - 8.0 if stacked else width - delta_width - 16.0)
-        font = QtGui.QFont(self._effective_price_font)
-        pixel_size = font.pixelSize()
-        while pixel_size > typography_min_pixel_size(TextRole.ORDERBOOK_PRICE) and QtGui.QFontMetricsF(font).horizontalAdvance(price_text) > available:
-            pixel_size -= 1
-            font = typography_font_at_pixel_size(self._effective_price_font, pixel_size)
-        if stacked:
-            price_rect = QtCore.QRectF(4.0, top, width - 8.0, height * 0.55)
-            delta_rect = QtCore.QRectF(max(4.0, width - delta_width - 4.0), top + height * 0.55,
-                                      min(delta_width, width - 8.0), height * 0.45)
-        else:
-            price_rect = QtCore.QRectF(4.0, top, available, height)
-            delta_rect = QtCore.QRectF(max(4.0, width - delta_width - 4.0), top,
-                                      min(delta_width, width - 8.0), height)
-        self._draw_numeric_text(painter, price_rect, price_text, self._text,
-                                Qt.AlignmentFlag.AlignLeft, font=font, pad=0.0)
-        delta_color = self._profile_colors['bid' if delta >= 0.0 else 'ask']
-        self._draw_numeric_text(painter, delta_rect.adjusted(10.0, 0.0, 0.0, 0.0),
-                                delta_text, delta_color, Qt.AlignmentFlag.AlignRight,
-                                font=delta_font, pad=0.0)
-        if delta != 0.0:
-            x, y = delta_rect.left() + 4.0, delta_rect.center().y()
-            points = ((x - 3, y - 2), (x + 3, y - 2), (x, y + 3)) if delta < 0 else ((x - 3, y + 2), (x + 3, y + 2), (x, y - 3))
-            painter.setPen(Qt.PenStyle.NoPen)
-            painter.setBrush(delta_color)
-            painter.drawPolygon(QtGui.QPolygonF([QtCore.QPointF(a, b) for a, b in points]))
+        for rect, text, color, alignment, font in self._profile_center_items:
+            self._draw_numeric_text(painter, rect, text, color, alignment, font=font, pad=0.0)
 
     def _draw_center_price_clipped(
         self,

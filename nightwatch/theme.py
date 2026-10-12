@@ -4,7 +4,7 @@ from __future__ import annotations
 from typing import Final
 from .constants import ORDERBOOK_FIXED_PALETTE
 
-DEFAULT_ORDERBOOK_THEME_NAME = 'Nightwatch'
+DEFAULT_ORDERBOOK_THEME_NAME = 'TapeSurf'
 _ORDERBOOK_BASE = {
     **ORDERBOOK_FIXED_PALETTE,
     'bg': '#000000', 'surface_top': '#000000', 'surface_raised': '#000000',
@@ -108,9 +108,9 @@ def orderbook_palette(source: object = None, theme: dict[str, object] | None = N
         'orderflow_wall': 'orderflow_wall',
     }
     palette.update({key: str(resolved[token]) for key, token in mapping.items()})
-    # Named accent presets remain selectable. The default book follows the app's
+    # Named accent presets remain selectable. Nightwatch follows the app's
     # directional tokens, including color-tuner overrides and light themes.
-    if palette['orderbook_style'] == DEFAULT_ORDERBOOK_THEME_NAME:
+    if palette['orderbook_style'] == 'Nightwatch':
         def blend(first: str, second: str, amount: float) -> str:
             return '#' + ''.join(f'{round(int(first[i:i + 2], 16) * (1 - amount) + int(second[i:i + 2], 16) * amount):02X}'
                                  for i in (1, 3, 5))

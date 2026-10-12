@@ -58,6 +58,16 @@ Older history is fetched and adopted during held pans. The order-book rendering
 process retains shared pixel-buffer capacity across panel resizes, growing it
 only when necessary while keeping the displayed buffer leased until painting.
 
+The order book opens in a compact TapeSurf-style heatmap with paired depth
+rulers, cumulative liquidity and a last-trade price above the resting-depth
+delta. Before the first trade, that band explicitly shows the midpoint. Drag
+the rulers or use Range to change the shared liquidity scale; drag prices to
+change grouping. Grouped rows remain display-only and cannot select an order
+price. TapeSurf is the default color preset; saved preset choices are retained.
+Bar animation reuses shaped quantity text and repaints only moving liquidity
+regions. Market ingestion and the native price ladder remain independent of
+this visual interpolation.
+
 During chart gestures, panel geometry and secondary updates join the active
 chart's presentation clock before chart preparation. Moving between chart panes
 hands that clock over to the newly manipulated pane. Panel-only resizes retain
