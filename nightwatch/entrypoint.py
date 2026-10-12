@@ -336,7 +336,7 @@ def main(*, startup_started: float | None = None) -> int:
     )
     if bootstrap_theme_name not in THEMES:
         bootstrap_theme_name = DEFAULT_THEME_NAME
-    bootstrap_theme = chart_palette(ui_palette(THEMES[bootstrap_theme_name]))
+    bootstrap_theme = chart_palette(ui_palette(THEMES[bootstrap_theme_name]), bootstrap_theme_name)
     pg.setConfigOptions(
         antialias=True,
         background=bootstrap_theme["bg"],

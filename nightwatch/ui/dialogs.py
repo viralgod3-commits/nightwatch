@@ -2318,7 +2318,10 @@ class NightwatchSettingsDialog(QtWidgets.QDialog):
         color_row.addStretch(1)
         candle_layout.addLayout(color_row)
         buttons = []
-        palette = candle_directional_palette(chart_palette(self.host.ui_theme), self.host.directional_color_mode("candles"))
+        palette = candle_directional_palette(
+            chart_palette(self.host.ui_theme, self.host.theme_name),
+            self.host.directional_color_mode("candles"),
+        )
         for name, action in self.host.candle_style_actions.items():
             button = _SettingsPreviewChoice(name, palette, self.host.ui_theme, kind="candles", style=name)
             self._bind_appearance_action(action, button)
@@ -2915,7 +2918,8 @@ class NightwatchSettingsDialog(QtWidgets.QDialog):
                 self._sync_action_widget(action)
             self._sync_directional_modes()
             candle_palette = candle_directional_palette(
-                chart_palette(self.host.ui_theme), self.host.directional_color_mode("candles")
+                chart_palette(self.host.ui_theme, self.host.theme_name),
+                self.host.directional_color_mode("candles"),
             )
             for action, button in self._appearance_actions.items():
                 self._sync_appearance_action(action, button)

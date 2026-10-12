@@ -254,29 +254,41 @@ def ui_palette(theme: dict[str, object], overrides: dict[str, object] | None=Non
 # The chart is a working surface, not a themed panel: it deliberately stays
 # neutral so that price action and indicators retain the same visual context
 # while the surrounding application theme changes.
-_DARK_CHART_SURFACE: Final[dict[str, str]] = {
-    'bg': '#080A0C', 'grid': '#252A30', 'border': '#30363D',
-    'panel2': '#12171C', 'control': '#161C23', 'control_border': '#303841',
-    'text': '#E5E7EB', 'muted': '#9CA3AF',
+_GRAY_CHART_SURFACE: Final[dict[str, str]] = {
+    'bg': '#131722', 'grid': '#2A2E39', 'border': '#363A45',
+    'panel2': '#1E222D', 'control': '#2A2E39', 'control_border': '#434651',
+    'text': '#D1D4DC', 'muted': '#9598A1',
+}
+_BLACK_CHART_SURFACE: Final[dict[str, str]] = {
+    'bg': '#000000', 'grid': '#252525', 'border': '#3A3A3A',
+    'panel2': '#101010', 'control': '#1A1A1A', 'control_border': '#444444',
+    'text': '#D1D4DC', 'muted': '#9598A1',
 }
 _LIGHT_CHART_SURFACE: Final[dict[str, str]] = {
-    'bg': '#FFFFFF', 'grid': '#D1D5DB', 'border': '#C5CBD3',
-    'panel2': '#F6F7F9', 'control': '#EEF0F3', 'control_border': '#C5CBD3',
-    'text': '#111827', 'muted': '#4B5563',
+    'bg': '#FFFFFF', 'grid': '#E0E3EB', 'border': '#D1D4DC',
+    'panel2': '#F8F9FD', 'control': '#F0F3FA', 'control_border': '#B2B5BE',
+    'text': '#131722', 'muted': '#5D606B',
 }
 
-def chart_palette(resolved: dict[str, object]) -> dict[str, object]:
+def chart_palette(resolved: dict[str, object], theme_name: str | None=None) -> dict[str, object]:
     """Adapt one resolved palette to chart/research legacy key names.
 
     Chart surfaces are intentionally independent of the application theme.
-    They use only a neutral dark or light treatment selected from the shell's
-    luminance; price, indicator, and directional colors still come from the
-    resolved application palette.
+    They use only a neutral black, classic charcoal, or white treatment. Price,
+    indicator, and directional colors still come from the resolved application
+    palette.
     """
     chart = dict(resolved)
-    shell_background = _normalize_hex_color(resolved.get('bg'), '#080A0C')
-    is_light = _relative_luminance_rgb(_hex_rgb(shell_background, '#080A0C')) >= 0.45
-    chart.update(_LIGHT_CHART_SURFACE if is_light else _DARK_CHART_SURFACE)
+    mode = chart_surface_mode(theme_name) if theme_name is not None else None
+    if mode is None:
+        shell_background = _normalize_hex_color(resolved.get('bg'), '#131722')
+        mode = ('white' if _relative_luminance_rgb(
+            _hex_rgb(shell_background, '#131722')) >= 0.45 else 'gray')
+    chart.update({
+        'black': _BLACK_CHART_SURFACE,
+        'gray': _GRAY_CHART_SURFACE,
+        'white': _LIGHT_CHART_SURFACE,
+    }[mode])
     for runtime_key, source_key in {
         'green': 'chart_green', 'red': 'chart_red', 'cyan': 'chart_cyan',
         'amber': 'chart_amber', 'purple': 'chart_purple',
@@ -304,10 +316,15 @@ NIGHTWATCH_COLORS: Final[dict[str, str]] = {
     'rail_secondary': '#B49AF4', 'rail_warning': '#E8BA69',
 }
 THEMES: dict[str, dict[str, object]] = {'Nightwatch': dict(NIGHTWATCH_COLORS), 'Obsidian Signal': {'bg': '#0B0B0D', 'panel': '#121215', 'panel2': '#17171B', 'grid': '#24242A', 'border': '#2D2D33', 'control': '#1F2026', 'control_top': '#282A31', 'control_hover': '#32343D', 'control_border': '#3A3A42', 'text': '#F1E7DA', 'muted': '#B4A89B', 'green': '#4CBB17', 'red': '#880808', 'cyan': '#C88A4A', 'info': '#7DB0D6', 'amber': '#F0C86A', 'purple': '#9A88C9', 'take_profit': '#79C6D9', 'risk': '#E7885E', 'chart_bg': '#0B0B0D', 'chart_grid': '#25262B', 'chart_border': '#34343A', 'chart_panel2': '#141417', 'chart_control': '#1F2026', 'chart_control_border': '#3A3A42', 'chart_text': '#D2C7BA', 'chart_muted': '#8B837A', 'reference_price': '#D4C0A3', 'series_1': '#7DB0D6', 'series_2': '#9A88C9', 'series_3': '#C88A4A', 'series_4': '#6FB497', 'orderbook_bg': '#101012', 'book_grid': '#2D2D33', 'orderbook_muted': '#8B837A', 'orderbook_value_text': '#DDD5CA', 'orderbook_badge_text': '#FFF7EC', }, 'Neon Reactor': {'bg': '#07040D', 'panel': '#0F0A18', 'panel2': '#151126', 'grid': '#241B42', 'border': '#2A2350', 'control': '#1C1633', 'control_top': '#261F45', 'control_hover': '#32265C', 'control_border': '#45366E', 'text': '#F3F7FF', 'muted': '#A39BC6', 'green': '#29F28A', 'red': '#FF4F9A', 'cyan': '#42E8FF', 'info': '#78B8FF', 'amber': '#FFC44D', 'purple': '#A05CFF', 'take_profit': '#39F0C8', 'risk': '#FF8A54', 'chart_bg': '#07040D', 'chart_grid': '#221A3A', 'chart_border': '#34285A', 'chart_panel2': '#120E20', 'chart_control': '#1C1633', 'chart_control_border': '#45366E', 'chart_text': '#D7D1EA', 'chart_muted': '#817A9F', 'reference_price': '#C8B7FF', 'series_1': '#42E8FF', 'series_2': '#A05CFF', 'series_3': '#FFC44D', 'series_4': '#78B8FF', 'orderbook_bg': '#0B0712', 'book_grid': '#2A2350', 'orderbook_muted': '#817A9F', 'orderbook_value_text': '#E4E8FA', 'orderbook_badge_text': '#FFFFFF', }, 'Arctic Terminal': {'bg': '#071017', 'panel': '#0C1620', 'panel2': '#12202C', 'grid': '#1A2F3E', 'border': '#1A3444', 'control': '#172A39', 'control_top': '#213749', 'control_hover': '#29475D', 'control_border': '#2F536A', 'text': '#EAF6FF', 'muted': '#9CB3C3', 'green': '#37D28A', 'red': '#FF6176', 'cyan': '#77E3FF', 'info': '#82AFFF', 'amber': '#F1C15B', 'purple': '#90A2FF', 'take_profit': '#4FD1C5', 'risk': '#FF9463', 'chart_bg': '#071017', 'chart_grid': '#173043', 'chart_border': '#25465A', 'chart_panel2': '#0F1B26', 'chart_control': '#172A39', 'chart_control_border': '#2F536A', 'chart_text': '#CBDCE8', 'chart_muted': '#71899A', 'reference_price': '#B8D8EA', 'series_1': '#77E3FF', 'series_2': '#82AFFF', 'series_3': '#90A2FF', 'series_4': '#4FD1C5', 'orderbook_bg': '#09131B', 'book_grid': '#1A3444', 'orderbook_muted': '#71899A', 'orderbook_value_text': '#DCEAF3', 'orderbook_badge_text': '#F5FDFF', }, 'Pulse Light': {'bg': '#F4F7FB', 'panel': '#FFFFFF', 'panel2': '#F7F9FC', 'grid': '#D8E0E9', 'border': '#CBD5E1', 'control': '#DCE4EE', 'control_top': '#E7ECF3', 'control_hover': '#D0DAE6', 'control_border': '#B8C5D3', 'text': '#16202B', 'muted': '#556373', 'green': '#137A4A', 'red': '#B72E41', 'cyan': '#1967B3', 'info': '#1967B3', 'amber': '#8B5D00', 'purple': '#5749C6', 'take_profit': '#08788F', 'risk': '#B24A18', 'chart_bg': '#FFFFFF', 'chart_grid': '#D9E1EA', 'chart_border': '#C2CEDA', 'chart_panel2': '#F7F9FC', 'chart_control': '#EEF2F7', 'chart_control_border': '#B8C5D3', 'chart_text': '#334155', 'chart_muted': '#64748B', 'reference_price': '#64748B', 'series_1': '#1967B3', 'series_2': '#5749C6', 'series_3': '#8B5D00', 'series_4': '#08796D', 'orderbook_bg': '#FAFCFE', 'book_grid': '#D8E0E9', 'orderbook_muted': '#687482', 'orderbook_value_text': '#243447', 'orderbook_badge_text': '#16202B', }}
-THEME_METADATA: dict[str, dict[str, str]] = {'Nightwatch': {'style_family': 'dark_terminal', 'identity': 'nightwatch_core'}, 'Obsidian Signal': {'style_family': 'dark_terminal', 'identity': 'obsidian_signal'}, 'Neon Reactor': {'style_family': 'dark_terminal', 'identity': 'neon_reactor'}, 'Arctic Terminal': {'style_family': 'dark_terminal', 'identity': 'arctic_terminal'}, 'Pulse Light': {'style_family': 'light_terminal', 'identity': 'pulse_light'}}
+THEME_METADATA: dict[str, dict[str, str]] = {'Nightwatch': {'style_family': 'dark_terminal', 'identity': 'nightwatch_core', 'chart_surface': 'gray'}, 'Obsidian Signal': {'style_family': 'dark_terminal', 'identity': 'obsidian_signal', 'chart_surface': 'black'}, 'Neon Reactor': {'style_family': 'dark_terminal', 'identity': 'neon_reactor', 'chart_surface': 'black'}, 'Arctic Terminal': {'style_family': 'dark_terminal', 'identity': 'arctic_terminal', 'chart_surface': 'gray'}, 'Pulse Light': {'style_family': 'light_terminal', 'identity': 'pulse_light', 'chart_surface': 'white'}}
 
 def theme_style_family(name: str) -> str:
     return THEME_METADATA.get(str(name), THEME_METADATA[DEFAULT_THEME_NAME]).get('style_family', 'dark_terminal')
+
+def chart_surface_mode(name: str | None) -> str:
+    """Return the neutral chart canvas assigned to an application theme."""
+    metadata = THEME_METADATA.get(str(name), THEME_METADATA[DEFAULT_THEME_NAME])
+    return metadata.get('chart_surface', 'gray')
 
 def is_nightwatch_dark_theme(name: str) -> bool:
     """Compatibility helper for the dense dark-terminal shell family."""

@@ -2636,7 +2636,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._sync_settings_window()
 
     def _refresh_directional_surface_palettes(self) -> None:
-        chart_base = chart_palette(self.ui_theme)
+        chart_base = chart_palette(self.ui_theme, self.theme_name)
         self.chart_theme = candle_directional_palette(
             chart_base, self.directional_color_modes.get("candles", "theme")
         )
