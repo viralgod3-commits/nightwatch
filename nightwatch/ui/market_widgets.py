@@ -2984,6 +2984,24 @@ class WatchlistHeaderView(QtWidgets.QHeaderView):
         self.updateSection(0)
 
 
+class WatchlistIconDelegate(QtWidgets.QStyledItemDelegate):
+    """Center row icons on the header toggle without style decoration insets."""
+
+    def paint(self, painter, option, index):
+        opt = QtWidgets.QStyleOptionViewItem(option)
+        self.initStyleOption(opt, index)
+        icon = opt.icon
+        opt.icon = QtGui.QIcon()
+        opt.features &= ~QtWidgets.QStyleOptionViewItem.ViewItemFeature.HasDecoration
+        style = opt.widget.style() if opt.widget else QtWidgets.QApplication.style()
+        style.drawControl(QtWidgets.QStyle.ControlElement.CE_ItemViewItem, opt, painter, opt.widget)
+        size = option.decorationSize.boundedTo(option.rect.size())
+        rect = QtCore.QRect(QtCore.QPoint(), size)
+        rect.moveCenter(option.rect.center())
+        mode = QtGui.QIcon.Mode.Normal if opt.state & QtWidgets.QStyle.StateFlag.State_Enabled else QtGui.QIcon.Mode.Disabled
+        icon.paint(painter, rect, Qt.AlignmentFlag.AlignCenter, mode)
+
+
 class WatchlistTableWidget(QtWidgets.QTableWidget):
     """Table whose internal row drag delegates ordering to canonical state."""
 
@@ -3085,6 +3103,7 @@ class WatchlistSidebarWidget(QtWidgets.QWidget):
         self.table.setHorizontalHeader(self.watchlist_header)
         self.table.setHorizontalHeaderLabels(("", "PAIR", "LAST", "1H", "24H"))
         self.table.setIconSize(QtCore.QSize(14, 14))
+        self.table.setItemDelegateForColumn(0, WatchlistIconDelegate(self.table))
         header = self.table.horizontalHeader()
         header.setSectionResizeMode(0, QtWidgets.QHeaderView.ResizeMode.Fixed)
         header.setMinimumSectionSize(20)

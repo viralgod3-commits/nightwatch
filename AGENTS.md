@@ -11,6 +11,9 @@
 
 ## Commits and pushes
 
+- Keep repository work to pulling current source and pushing task changes directly to main. Do not add PR workflows or GitHub Actions integrations.
+- Do not run integration tests unless the task involves a large code change. Do not add automated GitHub integration checks.
+
 Use direct main pushes. This repo has standing user approval to push task commits to `origin/main` after validation; do not skip pushing because the current prompt did not repeat approval. Do not create feature branches or PRs unless the user explicitly asks.
 
 Stop after pushing to `origin/main`.
