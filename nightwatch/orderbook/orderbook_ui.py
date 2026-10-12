@@ -1681,7 +1681,7 @@ def _compute_order_flow_dom_geometry(width: float, height: float, font_height: f
                             float(label_font_height or 11.0) + 6.0 if width < 280.0 else 0.0)
         header_height = market_height + totals_height
         center_height = min(max(0.0, height - header_height),
-                            max(38.0, font_height + float(label_font_height or 11.0) + 10.0))
+                            max(46.0, font_height + float(label_font_height or 11.0) + 10.0))
         body_height = max(0.0, height - header_height - center_height)
         center_top = header_height + math.floor(body_height * 0.5)
         center_bottom = center_top + center_height
@@ -5922,7 +5922,7 @@ class _DomRasterCanvas(QtWidgets.QWidget):
         delta = bid - ask
         key = (value, last, self._last_trade_side, delta, snapshot.midpoint, self.price_tick_size, self.price_decimals,
                self._value_mode, self.symbol, g['width'], g['center_top'], g['center_height'],
-               self._effective_price_font_key, self._profile_bg.rgba(), self._text.rgba(),
+               self._center_price_font.toString(), self._profile_bg.rgba(), self._text.rgba(),
                self._muted.rgba(), self._bid.rgba(), self._ask.rgba())
         if key == self._profile_center_key:
             return
@@ -5936,7 +5936,9 @@ class _DomRasterCanvas(QtWidgets.QWidget):
         caption_width = self._label_metrics.horizontalAdvance(label) + 12.0
         price_rect = QtCore.QRectF(4.0, top, max(1.0, width - caption_width - 8.0), height * .54)
         delta_rect = QtCore.QRectF(4.0, top + height * .54, max(1.0, width - 8.0), height * .46)
-        font = QtGui.QFont(self._effective_price_font)
+        # Match the top-market ticker's center-price role (20 px by default).
+        # Shrink only when needed to preserve every digit on a narrow ladder.
+        font = QtGui.QFont(self._center_price_font)
         while (font.pixelSize() > typography_min_pixel_size(TextRole.ORDERBOOK_PRICE)
                and QtGui.QFontMetricsF(font).horizontalAdvance(price_text) > price_rect.width()):
             font = typography_font_at_pixel_size(font, font.pixelSize() - 1)
