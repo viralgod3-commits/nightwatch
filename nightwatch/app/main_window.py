@@ -158,6 +158,7 @@ from ..utilities import (
     MainToolbar,
     TerminalStatusBar,
     apply_typography,
+    asset_svg_icon,
     coin_base_symbol,
     coin_icon_exists,
     coin_remote_symbol,
@@ -6262,7 +6263,7 @@ class MainWindow(QtWidgets.QMainWindow):
     def _update_toolbar_icons(self) -> None:
         theme_button = getattr(self, "theme_button", None)
         if theme_button is not None:
-            theme_button.setIcon(line_icon("theme", self.ui_theme["muted"], self.devicePixelRatioF()))
+            theme_button.setIcon(asset_svg_icon("theme-droplet.svg", self.ui_theme["muted"], self.devicePixelRatioF()))
             self._sync_theme_toolbar_button()
         layout_button = getattr(self, "panel_layout_button", None)
         if layout_button is not None:

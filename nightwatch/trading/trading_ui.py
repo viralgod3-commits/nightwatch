@@ -21,7 +21,7 @@ from ..constants import (
 from ..models import SymbolRules
 from ..models import TradingGatewayPort
 from ..theme import DEFAULT_THEME_NAME, THEMES, ui_palette
-from ..utilities import ElidedLabel, format_local_time, line_icon
+from ..utilities import ElidedLabel, asset_svg_icon, format_local_time, line_icon
 from ..utilities import TextRole, set_text_role, typography_controller, typography_font
 from ..models import format_price, human_number, quantize_step, safe_float, validate_step
 from .orders import (
@@ -4538,7 +4538,7 @@ class TradingWorkspace(QtWidgets.QWidget):
         self.view_tabs.addTab(line_icon("trade", self.theme['muted'], self.devicePixelRatioF()), "")
         self.view_tabs.setTabToolTip(0, "Order entry")
         self.view_tabs.setTabWhatsThis(0, "Order entry and position controls")
-        self.view_tabs.addTab(line_icon("account", self.theme['muted'], self.devicePixelRatioF()), "")
+        self.view_tabs.addTab(asset_svg_icon("trading-account.svg", self.theme['muted'], self.devicePixelRatioF()), "")
         self.view_tabs.setTabToolTip(1, "Positions and balances")
         self.view_tabs.setTabWhatsThis(1, "Positions, working orders, fills and balances")
         self.refresh_button = QtWidgets.QPushButton()
@@ -4591,6 +4591,9 @@ class TradingWorkspace(QtWidgets.QWidget):
         layout.addWidget(self.adaptive_activity_frame, 1)
 
         self.account_frame = PositionDeskView(self._position_card, self._order_card)
+        self.account_frame.tabs.setTabIcon(
+            1, asset_svg_icon("trading-open-orders.svg", self.theme['muted'], self.devicePixelRatioF())
+        )
         self.account_frame.symbol_rules = self.symbol_rules
         self.positions = self.account_frame.positions
         self.orders = self.account_frame.orders
@@ -5251,6 +5254,10 @@ class TradingWorkspace(QtWidgets.QWidget):
         self.fills.apply_theme(self.theme)
         ratio = self.devicePixelRatioF()
         self.refresh_button.setIcon(line_icon('refresh', self.theme['muted'], ratio))
-        for index, kind in enumerate(('trade', 'account')):
-            self.view_tabs.setTabIcon(index, line_icon(kind, self.theme['muted'], ratio))
+        self.view_tabs.setTabIcon(
+            1, asset_svg_icon("trading-account.svg", self.theme['muted'], ratio)
+        )
+        self.tabs.setTabIcon(
+            1, asset_svg_icon("trading-open-orders.svg", self.theme['muted'], ratio)
+        )
         QTimer.singleShot(0, self, self._sync_view_tabs_geometry)
