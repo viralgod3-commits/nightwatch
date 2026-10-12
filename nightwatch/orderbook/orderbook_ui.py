@@ -5947,20 +5947,20 @@ class _DomRasterCanvas(QtWidgets.QWidget):
         self._profile_center_items = (
             (price_rect, price_text, self._text, Qt.AlignmentFlag.AlignHCenter, font),
         )
-        # Put side totals in the unused wings without moving the focal price.
+        # Put each side's visible depth in its own wing without moving the focal price.
         price_width = QtGui.QFontMetricsF(font).horizontalAdvance(price_text)
         wing_width = max(0.0, (width - price_width) * .5 - inset - 12.0)
         side_font = self._profile_annotation_font
         side_metrics = QtGui.QFontMetricsF(side_font)
-        side_texts = tuple(
-            f'{side.title()} {self._compact_scalar(total) if total else "0"}'
-            for side, total in (('bid', bid), ('ask', ask))
-        )
-        if all(side_metrics.horizontalAdvance(text) <= wing_width for text in side_texts):
-            for side, text, left, alignment in (
-                ('bid', side_texts[0], inset, Qt.AlignmentFlag.AlignLeft),
-                ('ask', side_texts[1], width - inset - wing_width, Qt.AlignmentFlag.AlignRight),
-            ):
+        for side, total, left, alignment in (
+            ('bid', bid, inset, Qt.AlignmentFlag.AlignLeft),
+            ('ask', ask, width - inset - wing_width, Qt.AlignmentFlag.AlignRight),
+        ):
+            amount = self._bar_amount_text(total, snapshot.midpoint or value) or '0'
+            text = next((candidate for candidate in (
+                f'{side.title()} depth {amount}', f'{side.title()} {amount}', amount,
+            ) if side_metrics.horizontalAdvance(candidate) <= wing_width), '')
+            if text:
                 self._profile_center_items += ((
                     QtCore.QRectF(left, price_rect.top(), wing_width, price_rect.height()),
                     text, self._profile_colors[side], alignment, side_font),)
