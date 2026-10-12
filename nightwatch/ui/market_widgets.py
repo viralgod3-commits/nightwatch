@@ -3048,11 +3048,11 @@ class WatchlistSidebarWidget(QtWidgets.QWidget):
         self.table.setIconSize(QtCore.QSize(18, 18))
         header = self.table.horizontalHeader()
         header.setSectionResizeMode(0, QtWidgets.QHeaderView.ResizeMode.Fixed)
-        header.resizeSection(0, 26)
+        header.resizeSection(0, 18)
         header.setSectionResizeMode(1, QtWidgets.QHeaderView.ResizeMode.Stretch)
         for column in (2, 3, 4):
             header.setSectionResizeMode(column, QtWidgets.QHeaderView.ResizeMode.Fixed)
-        header.setMinimumSectionSize(26)
+        header.setMinimumSectionSize(18)
         header.setSectionsClickable(True)
         header.setSortIndicatorShown(False)
         header.setDefaultAlignment(
