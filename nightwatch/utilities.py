@@ -1280,14 +1280,15 @@ class InstrumentBar(QtWidgets.QFrame):
         self.market_row.setSizeConstraint(QtWidgets.QLayout.SizeConstraint.SetNoConstraint)
         self.row.setSpacing(12)
         self.row.addWidget(self.market_group, 1)
+        # Balance the free space on either side of the ticker while the
+        # secondary metrics stay grouped against the right edge.
+        self.market_row.addStretch(1)
         if self.identity_control is not None:
             self.identity_control.setProperty("instrumentFlexOwned", True)
             self.identity_control.setSizePolicy(
                 QtWidgets.QSizePolicy.Policy.Fixed, QtWidgets.QSizePolicy.Policy.Fixed)
             self.market_row.addWidget(self.identity_control)
             self.identity_control.width_changed.connect(self._apply_responsive_layout)
-        # Keep the market metrics as one compact group against the right edge
-        # of the instrument bar, rather than distributing them across it.
         self.market_row.addStretch(1)
         self._metric_minimum_widths = []
         self.metric_separators = []

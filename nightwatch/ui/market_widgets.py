@@ -1644,7 +1644,7 @@ class MetricCard(QtWidgets.QFrame):
         self.compact = bool(compact)
         self.setFocusPolicy(
             Qt.FocusPolicy.NoFocus
-            if self.identity
+            if self.compact
             else Qt.FocusPolicy.StrongFocus
         )
         self.setAccessibleName(title)
