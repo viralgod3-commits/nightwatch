@@ -250,11 +250,37 @@ def ui_palette(theme: dict[str, object], overrides: dict[str, object] | None=Non
     """Compatibility wrapper for the canonical Nightwatch color resolver."""
     return resolve_theme(theme, overrides)
 
+
+# The chart is a working surface, not a themed panel: it deliberately stays
+# neutral so that price action and indicators retain the same visual context
+# while the surrounding application theme changes.
+_DARK_CHART_SURFACE: Final[dict[str, str]] = {
+    'bg': '#080A0C', 'grid': '#252A30', 'border': '#30363D',
+    'panel2': '#12171C', 'control': '#161C23', 'control_border': '#303841',
+    'text': '#E5E7EB', 'muted': '#9CA3AF',
+}
+_LIGHT_CHART_SURFACE: Final[dict[str, str]] = {
+    'bg': '#FFFFFF', 'grid': '#D1D5DB', 'border': '#C5CBD3',
+    'panel2': '#F6F7F9', 'control': '#EEF0F3', 'control_border': '#C5CBD3',
+    'text': '#111827', 'muted': '#4B5563',
+}
+
 def chart_palette(resolved: dict[str, object]) -> dict[str, object]:
-    """Adapt one resolved palette to chart/research legacy key names."""
+    """Adapt one resolved palette to chart/research legacy key names.
+
+    Chart surfaces are intentionally independent of the application theme.
+    They use only a neutral dark or light treatment selected from the shell's
+    luminance; price, indicator, and directional colors still come from the
+    resolved application palette.
+    """
     chart = dict(resolved)
-    mapping = {'bg': 'chart_bg', 'grid': 'chart_grid', 'border': 'chart_border', 'panel2': 'chart_panel2', 'control': 'chart_control', 'control_border': 'chart_control_border', 'text': 'chart_text', 'muted': 'chart_muted', 'green': 'chart_green', 'red': 'chart_red', 'cyan': 'chart_cyan', 'amber': 'chart_amber', 'purple': 'chart_purple'}
-    for runtime_key, source_key in mapping.items():
+    shell_background = _normalize_hex_color(resolved.get('bg'), '#080A0C')
+    is_light = _relative_luminance_rgb(_hex_rgb(shell_background, '#080A0C')) >= 0.45
+    chart.update(_LIGHT_CHART_SURFACE if is_light else _DARK_CHART_SURFACE)
+    for runtime_key, source_key in {
+        'green': 'chart_green', 'red': 'chart_red', 'cyan': 'chart_cyan',
+        'amber': 'chart_amber', 'purple': 'chart_purple',
+    }.items():
         chart[runtime_key] = str(resolved[source_key])
     return chart
 DEFAULT_THEME_NAME = 'Nightwatch'
