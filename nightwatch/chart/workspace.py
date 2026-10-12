@@ -879,6 +879,7 @@ class _IndicatorAnalysisWorker(QtCore.QRunnable):
                 self.pixel_width,
                 self.logarithmic,
                 cache_affinity=True,
+                cache_key=id(self.state),
             )
             if isinstance(prepared, dict):
                 prepared["__transport_epoch__"] = self.transport_epoch
@@ -1321,8 +1322,10 @@ class ChartWorkspace(QtWidgets.QWidget):
 
         self._analysis_pool = QtCore.QThreadPool(self)
         self._analysis_pool.setMaxThreadCount(analysis_worker_count())
-
-
+        # Waiting for profiles/levels must not hold up dispatch of the chart's
+        # next incremental indicator update to its resident process.
+        self._indicator_pool = QtCore.QThreadPool(self)
+        self._indicator_pool.setMaxThreadCount(1)
         self._render_pool = QtCore.QThreadPool(self)
         self._render_pool.setMaxThreadCount(1)
         self._preparation_pool = QtCore.QThreadPool(self)
@@ -7890,7 +7893,7 @@ class ChartWorkspace(QtWidgets.QWidget):
         )
         self._indicator_display_worker = worker
         worker.signals.finished.connect(self._indicator_display_worker_finished)
-        self._analysis_pool.start(worker)
+        self._indicator_pool.start(worker)
 
     def _request_indicator_display_worker(
         self,

@@ -1,7 +1,7 @@
 """Headless analysis process. Python indicator loops cannot monopolize Qt's GIL."""
 from __future__ import annotations
 
-from collections import OrderedDict
+from collections import Counter, OrderedDict
 import numpy as np
 
 from ..models import Candle, chart_y_array
@@ -176,6 +176,8 @@ import threading
 
 _lock = threading.Lock()
 _executors = {}
+_affinity_routes = OrderedDict()
+_lane_load = Counter()
 _closed = False
 
 
@@ -206,23 +208,45 @@ def _initialize_analysis_worker():
         threadpool_limits(limits=1)
 
 
-def run_analysis(function, *args, cache_affinity=False):
+def _analysis_lane(cache_affinity, cache_key):
+    """Assign resident datasets to lightly loaded workers without moving them.
+
+    Called under _lock. Each cached lane owns one process; random dispatch in a
+    multi-process executor would repeatedly lose incremental history caches.
+    New panes balance both outstanding work and the number of resident owners.
+    """
+    from ..compute import cpu_budget
+    budget = cpu_budget()
+    if not cache_affinity or not budget.indicator_workers:
+        return ("general", 0), budget.general_workers
+    family = "research" if cache_affinity == "research" else "cached"
+    lane_name = "research" if family == "research" and budget.research_workers else "cached"
+    count = budget.research_workers if lane_name == "research" else budget.indicator_workers
+    if cache_key is None:
+        return (lane_name, 0), 1
+    owner = (family, cache_key)
+    lane = _affinity_routes.pop(owner, None)
+    if lane is None:
+        residents = Counter(_affinity_routes.values())
+        lane = min(((lane_name, index) for index in range(count)),
+                   key=lambda candidate: (_lane_load[candidate], residents[candidate], candidate[1]))
+    _affinity_routes[owner] = lane
+    # Closed panes must not leave an unbounded registry. An evicted owner uses
+    # the existing cache-miss/full-seed recovery if it is opened again.
+    while len(_affinity_routes) > 256:
+        _affinity_routes.popitem(last=False)
+    return lane, 1
+
+
+def run_analysis(function, *args, cache_affinity=False, cache_key=None):
     with _lock:
         if _closed:
             raise RuntimeError("Chart analysis is shutting down")
-        count = analysis_worker_count()
-        # Keep resident research out of the chart-indicator affinity lane while
-        # respecting one total CPU budget. Small hosts share an affinity worker.
-        lane = ("research" if cache_affinity == "research" and count > 2 else
-                "cached" if cache_affinity and count > 1 else "general")
+        lane, workers = _analysis_lane(cache_affinity, cache_key)
         executor = _executors.get(lane)
         if executor is None:
-
-
-
-
             executor = ProcessPoolExecutor(
-                max_workers=1 if lane != "general" else max(1, count - min(2, count - 1)),
+                max_workers=workers,
                 mp_context=multiprocessing.get_context("spawn"),
                 initializer=_initialize_analysis_worker,
             )
@@ -236,6 +260,7 @@ def run_analysis(function, *args, cache_affinity=False):
                 _executors.pop(lane)
             executor.shutdown(wait=False, cancel_futures=True)
             raise
+        _lane_load[lane] += 1
     try:
         return future.result()
     except BrokenProcessPool:
@@ -244,6 +269,11 @@ def run_analysis(function, *args, cache_affinity=False):
                 _executors.pop(lane)
         executor.shutdown(wait=False, cancel_futures=True)
         raise
+    finally:
+        with _lock:
+            _lane_load[lane] -= 1
+            if not _lane_load[lane]:
+                del _lane_load[lane]
 
 
 def shutdown_analysis():
@@ -252,6 +282,7 @@ def shutdown_analysis():
         _closed = True
         executors = tuple(_executors.values())
         _executors.clear()
+        _affinity_routes.clear()
     for executor in executors:
         executor.shutdown(wait=False, cancel_futures=True)
 

@@ -119,10 +119,10 @@ class WorkspaceHistory:
                 previous = None
             patch = history_update(histories, previous)
             result = run_analysis(resident_analysis, self.token, function, patch, view,
-                                  cache_affinity="research")
+                                  cache_affinity="research", cache_key=self.token)
             if result.get("__history_cache_miss__"):
                 patch = history_update(histories)
                 result = run_analysis(resident_analysis, self.token, function, patch, view,
-                                      cache_affinity="research")
+                                      cache_affinity="research", cache_key=self.token)
             self._previous = histories
             return result

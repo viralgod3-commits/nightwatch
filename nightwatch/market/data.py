@@ -1126,6 +1126,8 @@ def _market_parser_main(connection, chart_only):
     """
     import signal
     signal.signal(signal.SIGINT, signal.SIG_IGN)
+    from ..compute import configure_worker
+    configure_worker()
     application = QtCore.QCoreApplication([])
     socket = _SocketParserWorker()
     depth = None if chart_only else _DepthParserWorker()

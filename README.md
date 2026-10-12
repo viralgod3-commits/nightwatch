@@ -52,6 +52,17 @@ The analysis pool reserves capacity for the GUI and both live workers, with a
 minimum of one analysis worker. CPU topology or affinity restrictions fall back
 to inherited placement. Trading transport stays in the main process.
 
+Analysis scales to twelve processes on larger CPUs. Chart panes keep their
+incremental indicator caches on stable workers (up to four), while market
+overviews use a separate group (up to two). New panes choose the least busy
+worker; repeated updates stay with their cached history. Profiles, price levels
+and chart-cache merges share the remaining processes. For example, eight
+available physical cores use 2 indicator / 1 overview / 2 general workers;
+twelve cores use 3 / 2 / 4. Workers start on demand. Indicator dispatch has its
+own thread so a queue of profile calculations cannot delay a live study update.
+The feed parser observes the same GUI-core reservation as the other workers.
+GPU chart drawing and display pacing are unchanged.
+
 Chart preparation workers build an immutable multiresolution candle index for
 wide zooms and live aggregate updates (about 2 MB for 250,000 contiguous candles).
 Older history is fetched and adopted during held pans. The order-book rendering

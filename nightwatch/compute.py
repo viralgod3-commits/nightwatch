@@ -17,7 +17,21 @@ class CpuBudget:
     @property
     def analysis_workers(self) -> int:
         # GUI, live order-flow analysis and DOM rendering each need CPU time.
-        return max(1, min(6, self.capacity - 3))
+        return max(1, min(12, self.capacity - 3))
+
+    @property
+    def indicator_workers(self) -> int:
+        count = self.analysis_workers
+        return min(4, max(1, (count + 1) // 3)) if count > 1 else 0
+
+    @property
+    def research_workers(self) -> int:
+        count = self.analysis_workers
+        return (2 if count >= 7 else 1) if count > 2 else 0
+
+    @property
+    def general_workers(self) -> int:
+        return self.analysis_workers - self.indicator_workers - self.research_workers
 
     @property
     def worker_cpus(self) -> tuple[int, ...]:
