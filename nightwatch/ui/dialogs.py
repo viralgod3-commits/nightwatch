@@ -234,7 +234,7 @@ from typing import Any
 
 from ..constants import DEFAULT_INDICATOR_SHORTCUTS, INDICATOR_SETTING_DEFAULTS
 from ..theme import (
-    RIGHT_LAYOUT_PRESETS, THEMES, ORDERBOOK_THEMES,
+    RIGHT_LAYOUT_PRESETS, THEMES,
     candle_directional_palette, chart_palette,
 )
 from ..models import SettingsHostPort
@@ -1768,7 +1768,7 @@ class NightwatchSettingsDialog(QtWidgets.QDialog):
         self._settings_search: QtWidgets.QLineEdit | None = None
         self._directional_mode_combos: dict[str, QtWidgets.QComboBox] = {}
         self._appearance_actions: dict[QtGui.QAction, _SettingsPreviewChoice] = {}
-        self._orderbook_theme_buttons: dict[str, _SettingsPreviewChoice] = {}
+        self._orderbook_nightwatch_toggle: QtWidgets.QCheckBox | None = None
         self.volume_height_spin: QtWidgets.QSpinBox | None = None
         self._timeframe_buttons: dict[str, QtWidgets.QPushButton] = {}
         self._timeframe_presets: dict[str, QtWidgets.QPushButton] = {}
@@ -2119,7 +2119,7 @@ class NightwatchSettingsDialog(QtWidgets.QDialog):
             actions.extend(self.host.theme_actions.values())
             actions.extend(self.host.candle_style_actions.values())
             parts.extend(label for _mode, label in DIRECTIONAL_COLOR_MODE_OPTIONS)
-            parts.extend(ORDERBOOK_THEMES)
+            parts.append("Nightwatch orderbook ladder depth heatmap tape colors override")
         elif index == 1:
             for mapping in (self.host.chart_layout_actions, self.host.chart_visibility_actions,
                             self.host.indicator_actions):
@@ -2291,18 +2291,13 @@ class NightwatchSettingsDialog(QtWidgets.QDialog):
         theme_layout.addWidget(_SettingsChoiceGrid(buttons))
         layout.addWidget(theme_box)
 
-        book_box, book_layout = self._group("Order book theme")
-        note = QtWidgets.QLabel("Independent colors for the ladder, heatmap, and embedded tape.")
-        note.setObjectName("subtleLabel")
-        note.setWordWrap(True)
-        book_layout.addWidget(note)
-        buttons = []
-        for name, palette in ORDERBOOK_THEMES.items():
-            button = _SettingsPreviewChoice(name, palette, self.host.ui_theme, kind="orderbook")
-            button.clicked.connect(lambda _checked=False, value=name: self.host.set_orderbook_theme(value))
-            self._orderbook_theme_buttons[name] = button
-            buttons.append(button)
-        book_layout.addWidget(_SettingsChoiceGrid(buttons))
+        book_box, book_layout = self._group("Order book colors")
+        self._orderbook_nightwatch_toggle = QtWidgets.QCheckBox("Use Nightwatch order book colors")
+        self._orderbook_nightwatch_toggle.setToolTip(
+            "Override application theme colors for the ladder, depth, and tape with the default Nightwatch palette."
+        )
+        self._orderbook_nightwatch_toggle.toggled.connect(self.host.set_orderbook_nightwatch_override)
+        book_layout.addWidget(self._orderbook_nightwatch_toggle)
         layout.addWidget(book_box)
 
         candle_box, candle_layout = self._group("Candles")
@@ -2927,11 +2922,9 @@ class NightwatchSettingsDialog(QtWidgets.QDialog):
                 if button.kind == "candles":
                     button.preview = dict(candle_palette)
                 button.update()
-            for name, button in self._orderbook_theme_buttons.items():
-                with QtCore.QSignalBlocker(button):
-                    button.setChecked(name == self.host.orderbook_theme_name)
-                button.chrome = dict(self.host.ui_theme)
-                button.update()
+            if self._orderbook_nightwatch_toggle is not None:
+                with QtCore.QSignalBlocker(self._orderbook_nightwatch_toggle):
+                    self._orderbook_nightwatch_toggle.setChecked(self.host.orderbook_nightwatch_override)
             self._sync_timeframes()
 
             if self.volume_height_spin is not None:
@@ -2994,3 +2987,4 @@ class NightwatchSettingsDialog(QtWidgets.QDialog):
     def hideEvent(self, event: QtGui.QHideEvent) -> None:
         self._settings_search_timer.stop()
         super().hideEvent(event)
+

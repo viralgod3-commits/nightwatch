@@ -1331,7 +1331,7 @@ class OrderBookControlBar(QtWidgets.QFrame):
             self._view_action_group.addAction(action)
             action.triggered.connect(lambda checked=False, value=enabled: self.book_depth_toggled.emit(value) if checked else None)
             self._view_actions[enabled] = action
-        self.view_button = self._plain_button('Heatmap ▾', 'Choose orderbook view')
+        self.view_button = self._plain_button('Heatmap', 'Choose orderbook view')
         self.view_button.clicked.connect(lambda: self._popup(self._view_menu, self.view_button))
         self._top_layout.addWidget(self.view_button)
         self.value_mode_button = self._plain_button('Qty', 'Switch between base quantity and USDT value')
@@ -1355,7 +1355,7 @@ class OrderBookControlBar(QtWidgets.QFrame):
             self._aggregation_action_group.addAction(action)
             action.triggered.connect(lambda checked=False, selected=value: self.aggregation_selected.emit(selected) if checked else None)
             self._aggregation_actions[value] = action
-        self.aggregation_button = self._plain_button('1× ▾', 'Choose the price step')
+        self.aggregation_button = self._plain_button('1×', 'Choose the price step')
         self.aggregation_button.setAccessibleName('Choose price grouping')
         self.aggregation_button.clicked.connect(lambda: self._popup(self._aggregation_menu, self.aggregation_button))
         self._top_layout.addWidget(self.aggregation_button)
@@ -1486,7 +1486,7 @@ class OrderBookControlBar(QtWidgets.QFrame):
         settings_width = self.settings_button.sizeHint().width()
         expanded_view = available >= view_width + step_width + units_width + settings_width + 18
         short_view = width < 200
-        self.view_button.setText('View ▾' if short_view else 'Heatmap ▾' if self._book_depth else 'Ladder ▾')
+        self.view_button.setText('View' if short_view else 'Heatmap' if self._book_depth else 'Ladder')
         view_width = view_width if expanded_view else self.view_button.sizeHint().width()
         show_view = available >= view_width + settings_width + 6
         required = settings_width + (view_width + 6 if show_view else 0)
@@ -1549,14 +1549,14 @@ class OrderBookControlBar(QtWidgets.QFrame):
         del blockers
         for enabled, action in self._view_actions.items():
             self._set_checked_without_signal(action, enabled == self._book_depth)
-        self.view_button.setText('Heatmap ▾' if self._book_depth else 'Ladder ▾')
+        self.view_button.setText('Heatmap' if self._book_depth else 'Ladder')
         automatic = self._book_depth and self._auto_grouping
         for multiplier, action in self._aggregation_actions.items():
             effective = format_book_price(self._tick_size * multiplier) if self._tick_size else 'exchange tick'
             self._set_checked_without_signal(action, not automatic and multiplier == self._aggregation)
             action.setText(f'{effective} · {multiplier}×')
         effective = format_book_price(self._tick_size * self._aggregation) if self._tick_size else f'{self._aggregation}×'
-        self.aggregation_button.setText(f'Auto · {effective} ▾' if automatic else f'{effective} ▾')
+        self.aggregation_button.setText(f'Auto · {effective}' if automatic else f'{effective}')
         self.aggregation_button.setAccessibleDescription(f'Current price step: {effective}; automatic' if automatic
                                                        else f'Current price step: {effective}; manual')
         self.value_mode_button.setText('Qty' if self._value_mode == 'base' else 'USDT')
@@ -7962,3 +7962,4 @@ class OrderBookWidget(QtWidgets.QWidget):
         state['value_mode'] = self.canvas.value_mode()
         state['book_depth'] = int(bool(self.canvas.presentation_state().get('book_depth', False)))
         return state
+

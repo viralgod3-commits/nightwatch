@@ -88,9 +88,10 @@ def _trading_stylesheet(theme: dict[str, str]) -> str:
         QToolButton#tradeMarkButton:hover, QToolButton#tradeMarkButton:focus {{ color: {t['text']}; background: {t['control_hover']}; }}
         QToolButton#tradeMarkButton:disabled {{ color: {t['muted']}; background: transparent; }}
         QFrame#ticketExecutionOptions {{ background: transparent; border: 0; border-top: 1px solid {t['border']}; }}
-        QComboBox {{ padding-right: 26px; }}
+        QComboBox {{ padding-left: 8px; padding-right: 8px; }}
         QWidget#responsiveOrderTicket QComboBox {{ padding-right: 4px; }}
-        QComboBox::drop-down {{ border: 0; width: 24px; }}
+        QComboBox::drop-down {{ border: 0; width: 0; }}
+        QComboBox::down-arrow, QToolButton::menu-indicator, QPushButton::menu-indicator {{ image: none; width: 0; height: 0; }}
         QDoubleSpinBox::up-arrow, QDoubleSpinBox::down-arrow {{ image: none; width: 0; height: 0; }}
         QComboBox QAbstractItemView, QMenu {{ background: {t['panel2']}; color: {t['text']}; selection-background-color: {t['control_hover']}; border: 1px solid {t['control_border']}; padding: 6px; }}
         QMenu::item:selected {{ background: {t['control_hover']}; }}
@@ -111,7 +112,7 @@ def _trading_stylesheet(theme: dict[str, str]) -> str:
         QPushButton#protectionButton[active="true"] {{ color: {t['cyan']}; border-color: {t['cyan']}; }}
         QTabBar#tradingViewSwitch::tab {{
             background: {t['control']}; color: {t['muted']}; border: 1px solid {t['border']};
-            border-radius: 3px; padding: 4px 5px; margin: 0;
+            border-radius: 3px; padding: 5px; margin: 0; min-width: 16px; max-width: 16px; min-height: 16px; max-height: 16px;
         }}
         QTabBar#tradingViewSwitch::tab:selected {{
             color: {t['text']}; background: {t['control_hover']}; border-color: {t['muted']};
@@ -1065,18 +1066,6 @@ class CompactTradeComboBox(QtWidgets.QComboBox):
         else:
             event.ignore()
 
-    def paintEvent(self, event: QtGui.QPaintEvent) -> None:
-        super().paintEvent(event)
-        option = QtWidgets.QStyleOptionComboBox()
-        self.initStyleOption(option)
-        arrow = self.style().subControlRect(
-            QtWidgets.QStyle.ComplexControl.CC_ComboBox, option,
-            QtWidgets.QStyle.SubControl.SC_ComboBoxArrow, self,
-        )
-        rect = QtCore.QRect(0, 0, 12, 12)
-        rect.moveCenter(arrow.center())
-        painter = QtGui.QPainter(self)
-        _paint_trade_arrow(self, painter, rect)
 
 
 class LeverageComboBox(CompactTradeComboBox):
@@ -3915,15 +3904,22 @@ class PositionDeskDetails(QtWidgets.QFrame):
         self.trade_button.setObjectName("deskTradePosition")
         set_text_role(self.trade_button, TextRole.UI_CONTROL)
         self.trade_button.clicked.connect(lambda: self.trade_requested.emit(dict(self.payload)) if self.payload else None)
-        self.close_button = QtWidgets.QToolButton()
-        self.close_button.setText("Close…")
-        self.close_button.setPopupMode(QtWidgets.QToolButton.ToolButtonPopupMode.InstantPopup)
+        self.close_button = QtWidgets.QPushButton("Market close")
+        self.close_button.setToolTip("Close 100% of this position at market")
         set_text_role(self.close_button, TextRole.UI_CONTROL)
-        self.close_menu = QtWidgets.QMenu(self.close_button)
-        self.close_button.setMenu(self.close_menu)
+        self.close_button.clicked.connect(
+            lambda: self.close_requested.emit(dict(self.payload), 100) if self.payload else None
+        )
+        self.limit_close_button = QtWidgets.QToolButton()
+        self.limit_close_button.setText("Limit close…")
+        self.limit_close_button.setPopupMode(QtWidgets.QToolButton.ToolButtonPopupMode.InstantPopup)
+        set_text_role(self.limit_close_button, TextRole.UI_CONTROL)
+        self.close_menu = QtWidgets.QMenu(self.limit_close_button)
+        self.limit_close_button.setMenu(self.close_menu)
         self.set_close_percentages([25, 50, 100])
         actions.addWidget(self.trade_button)
         actions.addWidget(self.close_button)
+        actions.addWidget(self.limit_close_button)
         actions.addStretch(1)
         layout.addWidget(self._detail_actions)
         self._wide = None
@@ -3932,12 +3928,10 @@ class PositionDeskDetails(QtWidgets.QFrame):
 
     def set_close_percentages(self, values):
         self.close_menu.clear()
-        for caption, signal in (("Market close", self.close_requested), ("Limit close…", self.close_limit_requested)):
-            menu = self.close_menu.addMenu(caption)
-            for percent in values:
-                action = menu.addAction(f"{percent}%")
-                action.triggered.connect(lambda _checked=False, p=int(percent), s=signal:
-                                         s.emit(dict(self.payload), p) if self.payload else None)
+        for percent in values:
+            action = self.close_menu.addAction(f"{percent}%")
+            action.triggered.connect(lambda _checked=False, p=int(percent):
+                                     self.close_limit_requested.emit(dict(self.payload), p) if self.payload else None)
 
     def set_presentation_width(self, width):
         columns = 2 if width >= 520 else 1
@@ -4534,10 +4528,10 @@ class TradingWorkspace(QtWidgets.QWidget):
         self.view_tabs.setAccessibleName("Trading panel view")
         set_text_role(self.view_tabs, TextRole.UI_CONTROL)
         self.view_tabs.setIconSize(QtCore.QSize(16, 16))
-        self.view_tabs.addTab(line_icon("trade", self.theme['muted'], self.devicePixelRatioF()), "")
+        self.view_tabs.addTab(asset_svg_icon("trading-account.svg", self.theme['muted'], self.devicePixelRatioF()), "")
         self.view_tabs.setTabToolTip(0, "Order entry")
         self.view_tabs.setTabWhatsThis(0, "Order entry and position controls")
-        self.view_tabs.addTab(asset_svg_icon("trading-account.svg", self.theme['muted'], self.devicePixelRatioF()), "")
+        self.view_tabs.addTab(asset_svg_icon("trading-open-orders.svg", self.theme['muted'], self.devicePixelRatioF()), "")
         self.view_tabs.setTabToolTip(1, "Positions and balances")
         self.view_tabs.setTabWhatsThis(1, "Positions, working orders, fills and balances")
         self.refresh_button = QtWidgets.QPushButton()
@@ -5254,9 +5248,13 @@ class TradingWorkspace(QtWidgets.QWidget):
         ratio = self.devicePixelRatioF()
         self.refresh_button.setIcon(line_icon('refresh', self.theme['muted'], ratio))
         self.view_tabs.setTabIcon(
-            1, asset_svg_icon("trading-account.svg", self.theme['muted'], ratio)
+            0, asset_svg_icon("trading-account.svg", self.theme['muted'], ratio)
+        )
+        self.view_tabs.setTabIcon(
+            1, asset_svg_icon("trading-open-orders.svg", self.theme['muted'], ratio)
         )
         self.tabs.setTabIcon(
             1, asset_svg_icon("trading-open-orders.svg", self.theme['muted'], ratio)
         )
         QTimer.singleShot(0, self, self._sync_view_tabs_geometry)
+

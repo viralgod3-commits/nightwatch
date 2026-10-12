@@ -43,16 +43,16 @@ from ..models import (
 )
 
 
-_WATCHLIST_ICON_CACHE: dict[tuple[str, int, str, str, str], QtGui.QIcon] = {}
+_WATCHLIST_ICON_CACHE: dict[tuple[str, int, str, str, str, int], QtGui.QIcon] = {}
 
 
 def _watchlist_row_font(role: str) -> QtGui.QFont:
     """Use a dense row face without changing the app-wide typography roles."""
     font = typography_font(role)
-    if font.pixelSize() > 0:
-        font.setPixelSize(max(1, font.pixelSize() - 1))
-    else:
-        font.setPointSizeF(max(1.0, font.pointSizeF() - 0.75))
+    pixels = font.pixelSize()
+    if pixels <= 0:
+        pixels = round(QtGui.QFontInfo(font).pixelSize())
+    font.setPixelSize(max(1, pixels if role == TextRole.INSTRUMENT_SYMBOL else pixels - 1))
     return font
 
 
@@ -361,13 +361,15 @@ def _market_funding_rate(value: float) -> str:
     if not math.isfinite(value):
         return "—"
     if value == 0:
-        return "0%"
+        return "0.00%"
     decimals = 4
     if abs(value) < 0.0001:
         decimals = min(10, max(4, 2 - math.floor(math.log10(abs(value)))))
     if round(value, decimals) == 0:
         return f"{value:+.3g}%"
-    return f"{value:+.{decimals}f}".rstrip("0").rstrip(".") + "%"
+    text = f"{value:+.{decimals}f}".rstrip("0")
+    whole, fraction = text.split(".")
+    return f"{whole}.{fraction.ljust(2, '0')}%"
 
 
 def _market_funding_time(next_ms: float, event_ms: float = 0.0) -> tuple[str, str]:
@@ -665,6 +667,7 @@ def invalidate_watchlist_coin_icon(symbol: str) -> None:
 def watchlist_coin_icon(
     symbol: str,
     theme: dict[str, str] | None = None,
+    size: int = 18,
 ) -> QtGui.QIcon:
     """Return a DPR-aware icon loaded from assets/icons with an initials fallback."""
     base = coin_base_symbol(symbol)
@@ -675,15 +678,15 @@ def watchlist_coin_icon(
     screen = QtGui.QGuiApplication.primaryScreen()
     dpr = max(1.0, float(screen.devicePixelRatio()) if screen is not None else 1.0)
     dpr_key = max(1, int(round(dpr * 100.0)))
-    cache_key = (base, dpr_key, outline, surface, ink)
+    cache_key = (base, dpr_key, outline, surface, ink, size)
     if cache_key in _WATCHLIST_ICON_CACHE:
         return _WATCHLIST_ICON_CACHE[cache_key]
     source = QtGui.QPixmap()
     payload = coin_icon_bytes(base)
     if payload:
         source.loadFromData(payload)
-    logical_size = 18.0
-    physical_size = max(18, int(math.ceil(logical_size * dpr)))
+    logical_size = float(size)
+    physical_size = max(size, int(math.ceil(logical_size * dpr)))
     canvas = QtGui.QPixmap(physical_size, physical_size)
     canvas.setDevicePixelRatio(dpr)
     canvas.fill(Qt.GlobalColor.transparent)
@@ -697,7 +700,7 @@ def watchlist_coin_icon(
     else:
         painter.setPen(QtGui.QPen(QtGui.QColor(outline), 1))
         painter.setBrush(QtGui.QColor(surface))
-        painter.drawEllipse(QtCore.QRectF(1, 1, 16, 16))
+        painter.drawEllipse(QtCore.QRectF(1, 1, size - 2, size - 2))
         painter.setFont(typography_font(TextRole.ICON_FALLBACK))
         painter.setPen(QtGui.QColor(ink))
         painter.drawText(logical_rect, Qt.AlignmentFlag.AlignCenter, base[:2])
@@ -1737,8 +1740,21 @@ class MetricCard(QtWidgets.QFrame):
         for widget in (self, self.title, self.value):
             widget.setProperty("informationalToolTip", True)
         self.setToolTipDuration(8_000)
-        layout.addWidget(self.title)
-        layout.addWidget(self.value)
+        self._identity_separators = []
+        for widget in (self.title, self.value):
+            if self.identity:
+                separator = QtWidgets.QLabel("|")
+                set_text_role(separator, TextRole.TOP_TICKER_SYMBOL)
+                separator.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+                self._identity_separators.append(separator)
+                layout.addWidget(separator)
+            layout.addWidget(widget)
+        if self.identity:
+            separator = QtWidgets.QLabel("|")
+            set_text_role(separator, TextRole.TOP_TICKER_SYMBOL)
+            separator.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+            self._identity_separators.append(separator)
+            layout.addWidget(separator)
         if compact:
             alignment = Qt.AlignmentFlag.AlignVCenter
             if self.identity:
@@ -1780,7 +1796,8 @@ class MetricCard(QtWidgets.QFrame):
         return max(COMPACT_IDENTITY_WIDTH,
                    max(self.title.sizeHint().width(), self.title.fontMetrics().horizontalAdvance(self.title.text()))
                    + max(self.value.sizeHint().width(), self.value.fontMetrics().horizontalAdvance(self.value.text()))
-                   + self.layout().spacing() + left + right)
+                   + sum(label.sizeHint().width() for label in self._identity_separators)
+                   + self.layout().spacing() * (1 + len(self._identity_separators)) + left + right)
 
     def set_identity_horizontal_margins(self, left: int, right: int) -> None:
         if not self.identity:
@@ -3056,16 +3073,20 @@ class WatchlistSidebarWidget(QtWidgets.QWidget):
         self.table = WatchlistTableWidget(0, 5)
         self.table.setObjectName("sidebarWatchlistTable")
         self.watchlist_header = WatchlistHeaderView(source.theme, self.table)
+        self.watchlist_header.setStyleSheet(
+            "QHeaderView::section:first { padding-left: 2px; padding-right: 2px; }"
+        )
         self.table.setHorizontalHeader(self.watchlist_header)
         self.table.setHorizontalHeaderLabels(("", "PAIR", "LAST", "1H", "24H"))
-        self.table.setIconSize(QtCore.QSize(18, 18))
+        self.table.setIconSize(QtCore.QSize(14, 14))
         header = self.table.horizontalHeader()
         header.setSectionResizeMode(0, QtWidgets.QHeaderView.ResizeMode.Fixed)
-        header.resizeSection(0, 20)
+        header.setMinimumSectionSize(15)
+        header.resizeSection(0, 15)
         header.setSectionResizeMode(1, QtWidgets.QHeaderView.ResizeMode.Stretch)
         for column in (2, 3, 4):
             header.setSectionResizeMode(column, QtWidgets.QHeaderView.ResizeMode.Fixed)
-        header.setMinimumSectionSize(20)
+        header.setMinimumSectionSize(15)
         header.setSectionsClickable(True)
         header.setSortIndicatorShown(False)
         header.setDefaultAlignment(
@@ -3373,7 +3394,7 @@ class WatchlistSidebarWidget(QtWidgets.QWidget):
             if coin_base_symbol(symbol) != base:
                 continue
             if pair_item is not None:
-                pair_item.setIcon(watchlist_coin_icon(symbol, self.source.theme))
+                pair_item.setIcon(watchlist_coin_icon(symbol, self.source.theme, size=14))
                 self._row_display_signatures.pop(row, None)
                 self._icon_refresh_after[symbol] = float("inf")
 
@@ -3459,7 +3480,7 @@ class WatchlistSidebarWidget(QtWidgets.QWidget):
             # pair text aligned with its heading and more room for the name.
             if static_changed or icon_due:
                 found = coin_icon_exists(symbol)
-                toggle_item.setIcon(watchlist_coin_icon(symbol, self.source.theme))
+                toggle_item.setIcon(watchlist_coin_icon(symbol, self.source.theme, size=14))
                 self._icon_refresh_after[symbol] = float("inf") if found else now + 60.0
                 if not found:
                     self.source.request_icon(symbol)
@@ -3474,11 +3495,6 @@ class WatchlistSidebarWidget(QtWidgets.QWidget):
                     font = _watchlist_row_font(
                         TextRole.UI_BODY if column == 1 else TextRole.TABLE_VALUE
                     )
-                    if column == 1:
-                        if font.pixelSize() > 0:
-                            font.setPixelSize(max(1, font.pixelSize() - 1))
-                        else:
-                            font.setPointSizeF(max(1.0, font.pointSizeF() - 0.75))
                     item.setFont(font)
                     self.table.setItem(row, column, item)
                 if item.text() != value:
@@ -4034,3 +4050,4 @@ class MarketFilterDialog(QtWidgets.QDialog):
             str(self.timeframe.currentData()),
             parse_compact_amount(self.minimum.text()),
         )
+

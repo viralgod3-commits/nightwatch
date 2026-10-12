@@ -4,7 +4,7 @@ from __future__ import annotations
 from typing import Final
 from .constants import ORDERBOOK_FIXED_PALETTE
 
-DEFAULT_ORDERBOOK_THEME_NAME = 'TapeSurf'
+DEFAULT_ORDERBOOK_THEME_NAME = 'Nightwatch'
 _ORDERBOOK_BASE = {
     **ORDERBOOK_FIXED_PALETTE,
     'bg': '#000000', 'surface_top': '#000000', 'surface_raised': '#000000',
@@ -19,46 +19,9 @@ _ORDERBOOK_BASE = {
     'orderflow_depletion': ORDERBOOK_FIXED_PALETTE['ask'],
     'orderflow_wall': ORDERBOOK_FIXED_PALETTE['text'],
 }
-# Book presets supply directional accents; the app theme supplies surfaces.
-# Resolve on preference changes and pass the complete palette to the raster process.
+# Resolve book colors only when preferences change, before raster-process IPC.
 ORDERBOOK_THEMES: Final[dict[str, dict[str, str]]] = {
     'Nightwatch': {**_ORDERBOOK_BASE},
-    'TapeSurf': {
-        **_ORDERBOOK_BASE, 'bg': '#000000', 'surface_top': '#000000',
-        'surface_raised': '#000000', 'surface_center': '#000000', 'control': '#000000',
-        'grid': '#252527', 'grid_strong': '#38383A', 'text': '#D6D8D5',
-        'muted': '#929590', 'dim_price': '#70746F', 'bid': '#00E5B3', 'ask': '#B6A000',
-        'bid_fill': '#133A35', 'ask_fill': '#3B2420',
-        'bid_fill_strong': '#009583', 'ask_fill_strong': '#8F2019',
-        'bid_bar_start': '#009583', 'bid_bar_end': '#009757',
-        'ask_bar_start': '#8F2019', 'ask_bar_end': '#977F19',
-        'bid_background_start': '#133A35', 'bid_background_end': '#193A31',
-        'ask_background_start': '#3B2420', 'ask_background_end': '#3A3221',
-        'bid_line_start': '#00D7C3', 'bid_line_end': '#00E078',
-        'ask_line_start': '#D94A20', 'ask_line_end': '#B6A000',
-        'bid_heat_high': '#009583', 'ask_heat_high': '#977F19',
-        'bid_text': '#C3EEE2', 'ask_text': '#F6D4B1', 'mid': '#00DDC4',
-        'amber': '#E9BB32', 'price_line': '#00DDC4', 'last_price_line': '#00DDC4',
-    },
-    'Classic': {
-        **_ORDERBOOK_BASE, 'bid': '#16C784', 'ask': '#EA3943',
-        'bid_fill': '#062F23', 'ask_fill': '#381416',
-        'bid_fill_strong': '#08744B', 'ask_fill_strong': '#8B2028',
-    },
-    'Iceberg': {
-        **_ORDERBOOK_BASE, 'bid': '#67C5F0', 'ask': '#F4B866',
-        'bid_fill': '#102C3B', 'ask_fill': '#382B18',
-        'bid_fill_strong': '#285F7B', 'ask_fill_strong': '#7D532A',
-        'bid_text': '#D0EDFA', 'ask_text': '#F5E1C9',
-        'mid': '#D8E5EC', 'price_line': '#D8E5EC',
-    },
-    'Monochrome': {
-        **_ORDERBOOK_BASE, 'bid': '#E0E2E5', 'ask': '#989EA6',
-        'bid_fill': '#272A2E', 'ask_fill': '#171B20',
-        'bid_fill_strong': '#626970', 'ask_fill_strong': '#3C434C',
-        'bid_text': '#E5E7EB', 'ask_text': '#E5E7EB', 'mid': '#FFFFFF',
-        'amber': '#B9BEC5', 'purple': '#9CA3AE', 'price_line': '#D5D8DC',
-    },
 }
 for _name, _palette in ORDERBOOK_THEMES.items():
     _palette['orderbook_style'] = _name
@@ -108,8 +71,7 @@ def orderbook_palette(source: object = None, theme: dict[str, object] | None = N
         'orderflow_wall': 'orderflow_wall',
     }
     palette.update({key: str(resolved[token]) for key, token in mapping.items()})
-    # Named accent presets remain selectable. Nightwatch follows the app's
-    # directional tokens, including color-tuner overrides and light themes.
+    # Follow the supplied application palette, including its directional tokens.
     if palette['orderbook_style'] == 'Nightwatch':
         def blend(first: str, second: str, amount: float) -> str:
             return '#' + ''.join(f'{round(int(first[i:i + 2], 16) * (1 - amount) + int(second[i:i + 2], 16) * amount):02X}'
@@ -296,27 +258,45 @@ def chart_palette(resolved: dict[str, object], theme_name: str | None=None) -> d
         chart[runtime_key] = str(resolved[source_key])
     return chart
 DEFAULT_THEME_NAME = 'Nightwatch'
-NIGHTWATCH_COLORS: Final[dict[str, str]] = {
-    'bg': '#05070A', 'panel': '#090D12', 'panel2': '#0E131B',
-    'grid': '#151D27', 'border': '#1E2936', 'separator': '#151D27',
-    'control': '#101720', 'control_top': '#141D28', 'control_hover': '#1A2737',
-    'control_border': '#2C3B4E', 'text': '#E6EDF5', 'muted': '#A0AEC0',
-    'green': '#3DD6A0', 'red': '#FF7185', 'cyan': '#7CB8FF', 'info': '#7CB8FF',
-    'amber': '#E8BA69', 'purple': '#B49AF4', 'take_profit': '#3DD6A0', 'risk': '#FF7185',
-    'active': '#142338', 'active_line': '#7CB8FF', 'header': '#0E131B',
-    'chart_bg': '#05070A', 'chart_grid': '#151D27', 'chart_border': '#1E2936',
-    'chart_panel2': '#0E131B', 'chart_control': '#101720', 'chart_control_border': '#2C3B4E',
-    'chart_text': '#D2DCE8', 'chart_muted': '#A0AEC0', 'reference_price': '#A0AEC0',
-    'current_price_line': '#7CB8FF', 'current_price_text': '#E6EDF5',
-    'series_1': '#7CB8FF', 'series_2': '#B49AF4', 'series_3': '#E8BA69', 'series_4': '#3DD6A0',
-    'orderbook_bg': '#090D12', 'book_grid': '#151D27', 'orderbook_muted': '#A0AEC0',
-    'orderbook_value_text': '#D2DCE8', 'orderbook_badge_text': '#E6EDF5',
-    'rail_neutral': '#7CB8FF', 'rail_buy': '#3DD6A0', 'rail_sell': '#FF7185',
-    'rail_take_profit': '#48D6C2', 'rail_stop': '#FF855A',
-    'rail_secondary': '#B49AF4', 'rail_warning': '#E8BA69',
-}
-THEMES: dict[str, dict[str, object]] = {'Nightwatch': dict(NIGHTWATCH_COLORS), 'Obsidian Signal': {'bg': '#0B0B0D', 'panel': '#121215', 'panel2': '#17171B', 'grid': '#24242A', 'border': '#2D2D33', 'control': '#1F2026', 'control_top': '#282A31', 'control_hover': '#32343D', 'control_border': '#3A3A42', 'text': '#F1E7DA', 'muted': '#B4A89B', 'green': '#4CBB17', 'red': '#880808', 'cyan': '#C88A4A', 'info': '#7DB0D6', 'amber': '#F0C86A', 'purple': '#9A88C9', 'take_profit': '#79C6D9', 'risk': '#E7885E', 'chart_bg': '#0B0B0D', 'chart_grid': '#25262B', 'chart_border': '#34343A', 'chart_panel2': '#141417', 'chart_control': '#1F2026', 'chart_control_border': '#3A3A42', 'chart_text': '#D2C7BA', 'chart_muted': '#8B837A', 'reference_price': '#D4C0A3', 'series_1': '#7DB0D6', 'series_2': '#9A88C9', 'series_3': '#C88A4A', 'series_4': '#6FB497', 'orderbook_bg': '#101012', 'book_grid': '#2D2D33', 'orderbook_muted': '#8B837A', 'orderbook_value_text': '#DDD5CA', 'orderbook_badge_text': '#FFF7EC', }, 'Neon Reactor': {'bg': '#07040D', 'panel': '#0F0A18', 'panel2': '#151126', 'grid': '#241B42', 'border': '#2A2350', 'control': '#1C1633', 'control_top': '#261F45', 'control_hover': '#32265C', 'control_border': '#45366E', 'text': '#F3F7FF', 'muted': '#A39BC6', 'green': '#29F28A', 'red': '#FF4F9A', 'cyan': '#42E8FF', 'info': '#78B8FF', 'amber': '#FFC44D', 'purple': '#A05CFF', 'take_profit': '#39F0C8', 'risk': '#FF8A54', 'chart_bg': '#07040D', 'chart_grid': '#221A3A', 'chart_border': '#34285A', 'chart_panel2': '#120E20', 'chart_control': '#1C1633', 'chart_control_border': '#45366E', 'chart_text': '#D7D1EA', 'chart_muted': '#817A9F', 'reference_price': '#C8B7FF', 'series_1': '#42E8FF', 'series_2': '#A05CFF', 'series_3': '#FFC44D', 'series_4': '#78B8FF', 'orderbook_bg': '#0B0712', 'book_grid': '#2A2350', 'orderbook_muted': '#817A9F', 'orderbook_value_text': '#E4E8FA', 'orderbook_badge_text': '#FFFFFF', }, 'Arctic Terminal': {'bg': '#071017', 'panel': '#0C1620', 'panel2': '#12202C', 'grid': '#1A2F3E', 'border': '#1A3444', 'control': '#172A39', 'control_top': '#213749', 'control_hover': '#29475D', 'control_border': '#2F536A', 'text': '#EAF6FF', 'muted': '#9CB3C3', 'green': '#37D28A', 'red': '#FF6176', 'cyan': '#77E3FF', 'info': '#82AFFF', 'amber': '#F1C15B', 'purple': '#90A2FF', 'take_profit': '#4FD1C5', 'risk': '#FF9463', 'chart_bg': '#071017', 'chart_grid': '#173043', 'chart_border': '#25465A', 'chart_panel2': '#0F1B26', 'chart_control': '#172A39', 'chart_control_border': '#2F536A', 'chart_text': '#CBDCE8', 'chart_muted': '#71899A', 'reference_price': '#B8D8EA', 'series_1': '#77E3FF', 'series_2': '#82AFFF', 'series_3': '#90A2FF', 'series_4': '#4FD1C5', 'orderbook_bg': '#09131B', 'book_grid': '#1A3444', 'orderbook_muted': '#71899A', 'orderbook_value_text': '#DCEAF3', 'orderbook_badge_text': '#F5FDFF', }, 'Pulse Light': {'bg': '#F4F7FB', 'panel': '#FFFFFF', 'panel2': '#F7F9FC', 'grid': '#D8E0E9', 'border': '#CBD5E1', 'control': '#DCE4EE', 'control_top': '#E7ECF3', 'control_hover': '#D0DAE6', 'control_border': '#B8C5D3', 'text': '#16202B', 'muted': '#556373', 'green': '#137A4A', 'red': '#B72E41', 'cyan': '#1967B3', 'info': '#1967B3', 'amber': '#8B5D00', 'purple': '#5749C6', 'take_profit': '#08788F', 'risk': '#B24A18', 'chart_bg': '#FFFFFF', 'chart_grid': '#D9E1EA', 'chart_border': '#C2CEDA', 'chart_panel2': '#F7F9FC', 'chart_control': '#EEF2F7', 'chart_control_border': '#B8C5D3', 'chart_text': '#334155', 'chart_muted': '#64748B', 'reference_price': '#64748B', 'series_1': '#1967B3', 'series_2': '#5749C6', 'series_3': '#8B5D00', 'series_4': '#08796D', 'orderbook_bg': '#FAFCFE', 'book_grid': '#D8E0E9', 'orderbook_muted': '#687482', 'orderbook_value_text': '#243447', 'orderbook_badge_text': '#16202B', }}
-THEME_METADATA: dict[str, dict[str, str]] = {'Nightwatch': {'style_family': 'dark_terminal', 'identity': 'nightwatch_core', 'chart_surface': 'gray'}, 'Obsidian Signal': {'style_family': 'dark_terminal', 'identity': 'obsidian_signal', 'chart_surface': 'black'}, 'Neon Reactor': {'style_family': 'dark_terminal', 'identity': 'neon_reactor', 'chart_surface': 'black'}, 'Arctic Terminal': {'style_family': 'dark_terminal', 'identity': 'arctic_terminal', 'chart_surface': 'gray'}, 'Pulse Light': {'style_family': 'light_terminal', 'identity': 'pulse_light', 'chart_surface': 'white'}}
+NIGHTWATCH_COLORS: Final[dict[str, str]] = {'bg': '#0B0B0D',
+ 'panel': '#121215',
+ 'panel2': '#17171B',
+ 'grid': '#24242A',
+ 'border': '#2D2D33',
+ 'control': '#1F2026',
+ 'control_top': '#282A31',
+ 'control_hover': '#32343D',
+ 'control_border': '#3A3A42',
+ 'text': '#F1E7DA',
+ 'muted': '#B4A89B',
+ 'green': '#4CBB17',
+ 'red': '#880808',
+ 'cyan': '#C88A4A',
+ 'info': '#7DB0D6',
+ 'amber': '#F0C86A',
+ 'purple': '#9A88C9',
+ 'take_profit': '#79C6D9',
+ 'risk': '#E7885E',
+ 'chart_bg': '#0B0B0D',
+ 'chart_grid': '#25262B',
+ 'chart_border': '#34343A',
+ 'chart_panel2': '#141417',
+ 'chart_control': '#1F2026',
+ 'chart_control_border': '#3A3A42',
+ 'chart_text': '#D2C7BA',
+ 'chart_muted': '#8B837A',
+ 'reference_price': '#D4C0A3',
+ 'series_1': '#7DB0D6',
+ 'series_2': '#9A88C9',
+ 'series_3': '#C88A4A',
+ 'series_4': '#6FB497',
+ 'orderbook_bg': '#101012',
+ 'book_grid': '#2D2D33',
+ 'orderbook_muted': '#8B837A',
+ 'orderbook_value_text': '#DDD5CA',
+ 'orderbook_badge_text': '#FFF7EC'}
+THEMES: dict[str, dict[str, object]] = {'Nightwatch': dict(NIGHTWATCH_COLORS), 'Neon Reactor': {'bg': '#07040D', 'panel': '#0F0A18', 'panel2': '#151126', 'grid': '#241B42', 'border': '#2A2350', 'control': '#1C1633', 'control_top': '#261F45', 'control_hover': '#32265C', 'control_border': '#45366E', 'text': '#F3F7FF', 'muted': '#A39BC6', 'green': '#29F28A', 'red': '#FF4F9A', 'cyan': '#42E8FF', 'info': '#78B8FF', 'amber': '#FFC44D', 'purple': '#A05CFF', 'take_profit': '#39F0C8', 'risk': '#FF8A54', 'chart_bg': '#07040D', 'chart_grid': '#221A3A', 'chart_border': '#34285A', 'chart_panel2': '#120E20', 'chart_control': '#1C1633', 'chart_control_border': '#45366E', 'chart_text': '#D7D1EA', 'chart_muted': '#817A9F', 'reference_price': '#C8B7FF', 'series_1': '#42E8FF', 'series_2': '#A05CFF', 'series_3': '#FFC44D', 'series_4': '#78B8FF', 'orderbook_bg': '#0B0712', 'book_grid': '#2A2350', 'orderbook_muted': '#817A9F', 'orderbook_value_text': '#E4E8FA', 'orderbook_badge_text': '#FFFFFF', }, 'Arctic Terminal': {'bg': '#071017', 'panel': '#0C1620', 'panel2': '#12202C', 'grid': '#1A2F3E', 'border': '#1A3444', 'control': '#172A39', 'control_top': '#213749', 'control_hover': '#29475D', 'control_border': '#2F536A', 'text': '#EAF6FF', 'muted': '#9CB3C3', 'green': '#37D28A', 'red': '#FF6176', 'cyan': '#77E3FF', 'info': '#82AFFF', 'amber': '#F1C15B', 'purple': '#90A2FF', 'take_profit': '#4FD1C5', 'risk': '#FF9463', 'chart_bg': '#071017', 'chart_grid': '#173043', 'chart_border': '#25465A', 'chart_panel2': '#0F1B26', 'chart_control': '#172A39', 'chart_control_border': '#2F536A', 'chart_text': '#CBDCE8', 'chart_muted': '#71899A', 'reference_price': '#B8D8EA', 'series_1': '#77E3FF', 'series_2': '#82AFFF', 'series_3': '#90A2FF', 'series_4': '#4FD1C5', 'orderbook_bg': '#09131B', 'book_grid': '#1A3444', 'orderbook_muted': '#71899A', 'orderbook_value_text': '#DCEAF3', 'orderbook_badge_text': '#F5FDFF', }, 'Pulse Light': {'bg': '#F4F7FB', 'panel': '#FFFFFF', 'panel2': '#F7F9FC', 'grid': '#D8E0E9', 'border': '#CBD5E1', 'control': '#DCE4EE', 'control_top': '#E7ECF3', 'control_hover': '#D0DAE6', 'control_border': '#B8C5D3', 'text': '#16202B', 'muted': '#556373', 'green': '#137A4A', 'red': '#B72E41', 'cyan': '#1967B3', 'info': '#1967B3', 'amber': '#8B5D00', 'purple': '#5749C6', 'take_profit': '#08788F', 'risk': '#B24A18', 'chart_bg': '#FFFFFF', 'chart_grid': '#D9E1EA', 'chart_border': '#C2CEDA', 'chart_panel2': '#F7F9FC', 'chart_control': '#EEF2F7', 'chart_control_border': '#B8C5D3', 'chart_text': '#334155', 'chart_muted': '#64748B', 'reference_price': '#64748B', 'series_1': '#1967B3', 'series_2': '#5749C6', 'series_3': '#8B5D00', 'series_4': '#08796D', 'orderbook_bg': '#FAFCFE', 'book_grid': '#D8E0E9', 'orderbook_muted': '#687482', 'orderbook_value_text': '#243447', 'orderbook_badge_text': '#16202B', }}
+THEME_METADATA: dict[str, dict[str, str]] = {'Nightwatch': {'style_family': 'dark_terminal', 'identity': 'nightwatch', 'chart_surface': 'black'}, 'Neon Reactor': {'style_family': 'dark_terminal', 'identity': 'neon_reactor', 'chart_surface': 'black'}, 'Arctic Terminal': {'style_family': 'dark_terminal', 'identity': 'arctic_terminal', 'chart_surface': 'gray'}, 'Pulse Light': {'style_family': 'light_terminal', 'identity': 'pulse_light', 'chart_surface': 'white'}}
 
 def theme_style_family(name: str) -> str:
     return THEME_METADATA.get(str(name), THEME_METADATA[DEFAULT_THEME_NAME]).get('style_family', 'dark_terminal')
@@ -1457,9 +1437,9 @@ def build_shell_stylesheet(theme_name: str, theme: dict[str, str], surfaces: dic
                 subcontrol-origin: border; subcontrol-position: bottom right;
                 border-bottom-right-radius: {radius};
             }}
-            QComboBox {{ padding-right: 28px; }}
+            QComboBox {{ padding-left: 8px; padding-right: 8px; }}
             QComboBox::drop-down {{
-                subcontrol-origin: padding; subcontrol-position: top right; width: 24px;
+                subcontrol-origin: padding; subcontrol-position: top right; width: 0;
                 background: {control_top}; border: 0; border-left: 1px solid {t['border']};
                 border-top-right-radius: {radius}; border-bottom-right-radius: {radius};
             }}
@@ -1467,7 +1447,7 @@ def build_shell_stylesheet(theme_name: str, theme: dict[str, str], surfaces: dic
             QWidget#responsiveOrderTicket QComboBox#timeInForceCycle::drop-down,
             QWidget#responsiveOrderTicket QComboBox#leverageDropdown::drop-down {{
                 subcontrol-origin: padding; subcontrol-position: top right;
-                width: 20px; background: transparent; border: 0;
+                width: 0; background: transparent; border: 0;
             }}
             QComboBox QAbstractItemView {{
                 background: {t['panel']}; color: {t['text']}; border: 1px solid {control_border};
@@ -1838,6 +1818,11 @@ def build_shell_stylesheet(theme_name: str, theme: dict[str, str], surfaces: dic
             QTableWidget#tradingDataTable::item {{ border-bottom: 1px solid {t['separator']}; padding: 5px 7px; }}
             QStatusBar#terminalStatusBar {{ margin: {status_margin}; padding: 0; }}
             ''' + structural_overrides + tooltip_stylesheet(t) + timeframe_controls + f"""
+        QComboBox::down-arrow, QToolButton::menu-indicator, QPushButton::menu-indicator {{
+            image: none; width: 0; height: 0;
+        }}
+        QComboBox::drop-down {{ width: 0; border: 0; background: transparent; }}
+        QComboBox {{ padding-left: 8px; padding-right: 8px; }}
         QWidget#statusContent QLabel#statusVenue {{ color: {status_venue_dim}; }}
         QWidget#statusContent QLabel#statusFrameRate {{ color: {status_text_dim}; }}
         QWidget#statusContent QLabel#statusMessage {{ color: {status_message_dim}; }}
@@ -1846,3 +1831,4 @@ def build_shell_stylesheet(theme_name: str, theme: dict[str, str], surfaces: dic
         QWidget#statusContent QLabel#terminalLatency[stale="true"],
         QWidget#statusContent QLabel#statusOrderbookLatency[stale="true"] {{ color: {status_stale_dim}; }}
     """
+

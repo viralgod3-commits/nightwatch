@@ -374,8 +374,7 @@ DIRECTIONAL_COLOR_MODE_DEFAULTS = {
 
 
 THEME_DISPLAY_NAMES = {
-    "Nightwatch": "Nightwatch Core",
-    "Obsidian Signal": "Obsidian Signal",
+    "Nightwatch": "Nightwatch",
     "Neon Reactor": "Neon Reactor",
     "Arctic Terminal": "Arctic Terminal",
     "Pulse Light": "Pulse Light",
@@ -628,3 +627,4 @@ DEV_UI_STATUS_PRESETS = {
         "spacing": 10,
     },
 }
+
