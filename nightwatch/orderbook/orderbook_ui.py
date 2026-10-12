@@ -2896,8 +2896,11 @@ class _DomRasterCanvas(QtWidgets.QWidget):
 
     def _row_amount(self, notional: float, price: float, *, quantity: float | None=None, signed: bool=False) -> str:
         if self._book_depth and not signed:
-            amount = notional if self._value_mode == 'quote' else float(quantity) if quantity is not None else notional / price if price > 0 else 0.0
-            return self._profile_quantity_text(amount)
+            amount = float(quantity) if quantity is not None else notional / price if price > 0 else 0.0
+            return self._bar_amount_text(
+                notional if self._value_mode == 'quote' else amount,
+                price,
+            )
         if self._value_mode == 'quote':
             return self._signed_money(notional) if signed else self._money(notional)
         base = float(quantity) if quantity is not None else notional / price if price > 0.0 else 0.0
@@ -2914,6 +2917,47 @@ class _DomRasterCanvas(QtWidgets.QWidget):
         if '.' not in text:
             text += '.0'
         return text[1:] if text.startswith('0.') else text
+
+    @staticmethod
+    def _bar_quote_text(value: float) -> str:
+        """Show whole quote currency on depth bars without decimal noise."""
+        if not math.isfinite(value) or value <= 0.0:
+            return ''
+        if value < 1.0:
+            return '<1'
+        for threshold, suffix in (
+            (1_000_000_000_000.0, 'T'),
+            (1_000_000_000.0, 'B'),
+            (1_000_000.0, 'M'),
+            (1_000.0, 'K'),
+        ):
+            if value >= threshold:
+                scaled = round(value / threshold)
+                if scaled >= 1_000 and suffix != 'T':
+                    next_suffix = {'K': 'M', 'M': 'B', 'B': 'T'}[suffix]
+                    return f'{round(value / (threshold * 1_000)):,.0f}{next_suffix}'
+                return f'{scaled:,}{suffix}'
+        return f'{value:,.0f}'
+
+    def _bar_amount_text(self, value: float, price: float) -> str:
+        return (
+            self._bar_quote_text(value)
+            if self._value_mode == 'quote'
+            else self._bar_quantity_text(value, price)
+        )
+
+    @staticmethod
+    def _bar_quantity_text(value: float, price: float) -> str:
+        """Use whole tokens for low-priced markets and useful precision for costly ones."""
+        if not math.isfinite(value) or value <= 0.0:
+            return ''
+        if not math.isfinite(price) or price < 100.0:
+            if value < 1.0:
+                return '<1'
+            return f'{value:,.0f}'
+        decimals = max(0, min(16, 2 - int(math.floor(math.log10(value)))))
+        text = f'{value:.{decimals}f}'.rstrip('0').rstrip('.')
+        return text
 
     @staticmethod
     def _signed_percent(value: float) -> str:
@@ -4848,9 +4892,7 @@ class _DomRasterCanvas(QtWidgets.QWidget):
         )
         if self.snapshot is None or not self.snapshot.ready:
             self._profile_footer_text = ('BID —', 'ASK —')
-        # Whole numbers start at the lane's left edge. Sub-unit values keep
-        # the omitted zero's space, so .01 lines up with 1.01 without shifting
-        # 12.3 or 123.4. Cache measurements outside the paint path.
+        # Measure the selected value format outside the paint path.
         measured_amount = 0.0
         for rows in sides.values():
             for row in rows:
@@ -5653,7 +5695,9 @@ class _DomRasterCanvas(QtWidgets.QWidget):
                                     Qt.AlignmentFlag.AlignLeft, font=font, pad=4.0, bar_contrast=True,
                                     text_offset=row.profile_amount_text_offset)
             if self._hover_price == row.level.price:
-                cumulative = self._profile_quantity_text(row.profile_cumulative)
+                cumulative = self._bar_amount_text(
+                    row.profile_cumulative, row.level.price
+                )
                 width = QtGui.QFontMetricsF(self._profile_annotation_font).horizontalAdvance(cumulative) + 4.0
                 if not self._geometry['profile_totals_height']:
                     ruler_top, ruler_bottom = self._profile_rulers()
@@ -5774,10 +5818,10 @@ class _DomRasterCanvas(QtWidgets.QWidget):
             half = width * 0.5
             for side, value, left in (('bid', bid, 4.0), ('ask', ask, half + 2.0)):
                 rect = QtCore.QRectF(left, top, max(0.0, half - 6.0), height)
-                amount = self._profile_quantity_text(value) or '0'
+                amount = self._bar_amount_text(value, self.snapshot.midpoint or 0.0) or '0'
                 text = f'{side.title()} {amount}'
                 if metrics.horizontalAdvance(text) > rect.width():
-                    text = f'{side.title()} {self._compact_scalar(value) if value else "0"}'
+                    text = f'{side.title()} {self._bar_amount_text(value, self.snapshot.midpoint or 0.0) if value else "0"}'
                 self._draw_numeric_text(painter, rect, text, self._profile_bar_text[side],
                                         Qt.AlignmentFlag.AlignLeft, font=self._profile_annotation_font, pad=0.0)
             return
@@ -5789,9 +5833,9 @@ class _DomRasterCanvas(QtWidgets.QWidget):
             ('ask', ask, max(float(g['table_top']), min(ruler_top + 5.0, float(g['center_top']) - 20.0))),
             ('bid', bid, min(float(g['height']) - 20.0, max(ruler_bottom - 27.0, float(g['center_bottom'])))),
         ):
-            text = self._profile_quantity_text(value) or '0'
+            text = self._bar_amount_text(value, self.snapshot.midpoint or 0.0) or '0'
             if metrics.horizontalAdvance(text) + 6.0 > available:
-                text = self._compact_scalar(value) if value else '0'
+                text = self._bar_amount_text(value, self.snapshot.midpoint or 0.0) if value else '0'
             text_width = min(available, metrics.horizontalAdvance(text) + 6.0)
             rect = QtCore.QRectF(width - text_width - 3.0, y, text_width, 20.0)
             painter.fillRect(rect, self._profile_bg)
@@ -5812,7 +5856,10 @@ class _DomRasterCanvas(QtWidgets.QWidget):
         price_text = format_book_price(midpoint, precision)
         bid, ask = self._profile_ruler_totals
         delta = bid - ask
-        delta_text = ('+' if delta > 0.0 else '−' if delta < 0.0 else '') + (self._profile_quantity_text(abs(delta)) or '0')
+        delta_text = (
+            ('+' if delta > 0.0 else '−' if delta < 0.0 else '')
+            + (self._bar_amount_text(abs(delta), midpoint) or '0')
+        )
         delta_font = self._profile_annotation_font
         delta_width = QtGui.QFontMetricsF(delta_font).horizontalAdvance(delta_text) + 14.0
         stacked = width < 240.0
