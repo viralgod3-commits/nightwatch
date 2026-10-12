@@ -220,7 +220,7 @@ TYPOGRAPHY_DEFAULTS: dict[str, dict[str, Any]] = {
     TextRole.ORDERBOOK_CONTROL: _font_profile("ui", 9.0, 500, hinting="vertical"),
     TextRole.ORDERBOOK_CONTROL_ARROW: _font_profile("ui", 7.2, 500, hinting="vertical"),
     TextRole.ORDERBOOK_VALUE: _font_profile("numeric", 13.0, 500, hinting="full", fixed_pitch=True, size_mode="pixel"),
-    TextRole.ORDERBOOK_PRICE: _font_profile("numeric", 13.0, 500, hinting="full", fixed_pitch=True, size_mode="pixel"),
+    TextRole.ORDERBOOK_PRICE: _font_profile("numeric", 11.0, 500, hinting="full", fixed_pitch=True, size_mode="pixel"),
     TextRole.ORDERBOOK_METRIC: _font_profile("numeric", 12.0, 500, hinting="full", fixed_pitch=True, size_mode="pixel"),
     TextRole.ORDERBOOK_LABEL: _font_profile("ui", 11.0, 400, hinting="vertical", size_mode="pixel"),
     TextRole.ORDERBOOK_SYMBOL: _font_profile("ui", 14.0, 600, hinting="vertical", size_mode="pixel"),

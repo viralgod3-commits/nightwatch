@@ -393,15 +393,24 @@ def _decimal_places_from_float(value: float) -> int:
     exponent = int(exponent_text) if marker else 0
     return max(0, len(fraction) - exponent)
 
-def _decimal_places_from_step(value: object) -> int:
-    """Precision implied by an exchange tick/step without Decimal allocation."""
+def _decimal_places_from_step(value: object, multiplier: int=1) -> int:
+    """Precision of an exchange step and integer grouping, without float noise."""
     try:
         numeric = float(value)
     except (TypeError, ValueError):
         return 0
     if numeric <= 0.0 or not math.isfinite(numeric):
         return 0
-    return min(16, _decimal_places_from_float(numeric))
+    if multiplier == 1:
+        return min(16, _decimal_places_from_float(numeric))
+    # Multiply the decimal coefficient rather than the binary float. For
+    # example, 1e-7 * 25 is exactly 0.0000025, not a 16-decimal display step.
+    mantissa, marker, exponent_text = str(numeric).lower().partition('e')
+    fraction = mantissa.partition('.')[2]
+    exponent = int(exponent_text) if marker else 0
+    coefficient = str(int(mantissa.replace('.', '')) * multiplier)
+    trailing_zeros = len(coefficient) - len(coefficient.rstrip('0'))
+    return max(0, min(16, len(fraction) - exponent - trailing_zeros))
 import time
 from collections import OrderedDict, deque
 from PySide6 import QtCore, QtWidgets
@@ -1937,6 +1946,7 @@ class _DomRasterCanvas(QtWidgets.QWidget):
         self.symbol = 'BTCUSDT'
         self.price_tick_size = 0.0
         self.price_decimals = 0
+        self._grouped_price_decimals = 0
         self._price_envelope_integer_digits = 0
         self._price_envelope_text = '0'
         self._last_visible_depth_rows = -1
@@ -2437,6 +2447,8 @@ class _DomRasterCanvas(QtWidgets.QWidget):
             self.price_decimals = _decimal_places_from_step(self.price_tick_size)
         else:
             self.price_decimals = 0
+        self._grouped_price_decimals = _decimal_places_from_step(
+            self.price_tick_size, self.aggregation_multiplier)
         self._state_latches.clear()
         self._reset_visual_scales()
         if self.source_snapshot is not None:
@@ -2465,6 +2477,7 @@ class _DomRasterCanvas(QtWidgets.QWidget):
         self._state_latches.clear()
         self._prepared_display_states.clear()
         self.aggregation_multiplier = resolved
+        self._grouped_price_decimals = _decimal_places_from_step(self.price_tick_size, resolved)
         self._invalidate_aggregation()
         self._row_change_cues.clear()
         self._suppress_change_cues_once = True
@@ -2913,7 +2926,7 @@ class _DomRasterCanvas(QtWidgets.QWidget):
             return '—'
         decimals = self.price_decimals if self.price_tick_size > 0.0 else None
         if self._book_depth and self.price_tick_size > 0.0:
-            decimals = _decimal_places_from_step(self.price_tick_size * self.aggregation_multiplier)
+            decimals = self._grouped_price_decimals
         return format_book_price(value, decimals)
 
     def _metric_color(self, value: float, *, deadband: float=2.0) -> QtGui.QColor:
@@ -3688,7 +3701,8 @@ class _DomRasterCanvas(QtWidgets.QWidget):
             # Reserve native precision at the configured font size. Grouping
             # may shorten row labels, but must not narrow their lane and shrink
             # the font that also renders the midpoint.
-            return max(42.0, float(math.ceil(self._price_metrics.horizontalAdvance(widest_text) + 8.0)))
+            return max(42.0, float(math.ceil(
+                self._price_metrics_for_font(self._price_font).horizontalAdvance(widest_text) + 8.0)))
         font = typography_font_at_pixel_size(
             self._price_font, typography_min_pixel_size(TextRole.ORDERBOOK_PRICE)
         )
