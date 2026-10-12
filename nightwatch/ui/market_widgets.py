@@ -3059,6 +3059,7 @@ class WatchlistSidebarWidget(QtWidgets.QWidget):
         group_bar.setSpacing(4)
         self.group_selector = QtWidgets.QComboBox()
         self.group_selector.setObjectName("watchlistGroupSelector")
+        self.group_selector.setStyleSheet("QComboBox { combobox-popup: 0; }")
         self.group_selector.currentTextChanged.connect(self._select_group)
         self.group_menu_button = QtWidgets.QToolButton()
         self.group_menu_button.setObjectName("watchlistGroupMenu")
