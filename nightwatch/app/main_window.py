@@ -100,7 +100,8 @@ from ..models import (
 from ..networking.binance import BinanceRest
 from ..networking.binance import ApiTask, http_bytes, http_json, launch_task
 from ..orderbook.backend import OrderFlowRuntime
-from ..orderbook.orderbook_ui import OrderBookWidget, TradesTapeWidget
+from ..orderbook.modern import OrderBookWidget
+from ..orderbook.orderbook_ui import TradesTapeWidget
 from ..theme import (
     CANDLE_STYLES,
     DEFAULT_THEME_NAME,
@@ -1703,7 +1704,7 @@ class MainWindow(QtWidgets.QMainWindow):
         # Current profiles own their overlays. Consult the separate legacy key
         # only when no current embedded column preferences were saved.
         current_columns = (
-            restored_orderbook_presentation.get("profile_version") == 1
+            restored_orderbook_presentation.get("prism_version") == 1
             and isinstance(restored_orderbook_presentation.get("columns"), dict)
         )
         if restored_orderbook_columns and not current_columns:

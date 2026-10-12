@@ -58,15 +58,20 @@ Older history is fetched and adopted during held pans. The order-book rendering
 process retains shared pixel-buffer capacity across panel resizes, growing it
 only when necessary while keeping the displayed buffer leased until painting.
 
-The order book opens in a compact TapeSurf-style heatmap with paired depth
-rulers, cumulative liquidity and a last-trade price above the resting-depth
-delta. Before the first trade, that band explicitly shows the midpoint. Drag
-the rulers or use Range to change the shared liquidity scale; drag prices to
-change grouping. Grouped rows remain display-only and cannot select an order
-price. TapeSurf is the default color preset; saved preset choices are retained.
-Bar animation reuses shaped quantity text and repaints only moving liquidity
-regions. Market ingestion and the native price ladder remain independent of
-this visual interpolation.
+The order book uses the Prism price ladder: exact prices on a central spine,
+buy and sell size on opposing depth rails, a labeled last-trade/midpoint band,
+and an explicit spread. Visible-depth totals compare only the rows on screen.
+The bottom controls change tick grouping and base/quote size units; the display
+menu offers compact rows, cumulative totals on wide panels, reduced motion and
+an optional trade tape. Existing color presets and app theme overrides apply.
+
+The new view consumes the same immutable order-flow snapshots and aggregation
+as the market backend. Grouping rounds bids down and asks up. Selecting a live
+row only prefills its displayed price; it never submits an order. Stale books,
+market changes and pending geometry changes disable price selection. Prices and
+sizes update immediately; only depth bars interpolate, for at most 100 ms.
+Drawing, text caching and transitions run in the existing separate raster
+process, with dirty-region updates and leased shared pixels on the GUI side.
 
 During chart gestures, panel geometry and secondary updates join the active
 chart's presentation clock before chart preparation. Moving between chart panes
