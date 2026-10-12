@@ -91,7 +91,7 @@ def _trading_stylesheet(theme: dict[str, str]) -> str:
         QComboBox {{ padding-right: 26px; }}
         QWidget#responsiveOrderTicket QComboBox {{ padding-right: 4px; }}
         QComboBox::drop-down {{ border: 0; width: 24px; }}
-        QComboBox::down-arrow, QDoubleSpinBox::up-arrow, QDoubleSpinBox::down-arrow {{ image: none; width: 0; height: 0; }}
+        QDoubleSpinBox::up-arrow, QDoubleSpinBox::down-arrow {{ image: none; width: 0; height: 0; }}
         QComboBox QAbstractItemView, QMenu {{ background: {t['panel2']}; color: {t['text']}; selection-background-color: {t['control_hover']}; border: 1px solid {t['control_border']}; padding: 6px; }}
         QMenu::item:selected {{ background: {t['control_hover']}; }}
         QPushButton, QToolButton {{
@@ -1044,12 +1044,11 @@ class TicketScrollArea(QtWidgets.QScrollArea):
 
 
 class CompactTradeComboBox(QtWidgets.QComboBox):
-    """A compact native combo that does not depend on external arrow assets."""
+    """A compact native combo with the platform-rendered dropdown indicator."""
 
     def __init__(self, parent: QtWidgets.QWidget | None = None) -> None:
         super().__init__(parent)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
-        self.setStyleSheet("QComboBox::down-arrow { image: none; width: 0; height: 0; }")
         self.setSizePolicy(
             QtWidgets.QSizePolicy.Policy.Minimum,
             QtWidgets.QSizePolicy.Policy.Fixed,

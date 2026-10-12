@@ -408,7 +408,6 @@ def build_shell_stylesheet(theme_name: str, theme: dict[str, str], surfaces: dic
         }}
     """
     asset_root = Path(__file__).resolve().parent.parent / 'assets'
-    combo_arrow = str(asset_root / 'dropdown-arrow.svg').replace('\\', '/')
     spin_up_arrow = str(asset_root / 'spin-up-arrow.svg').replace('\\', '/')
     spin_down_arrow = str(asset_root / 'spin-down-arrow.svg').replace('\\', '/')
     control_bg = t['control']
@@ -1447,19 +1446,11 @@ def build_shell_stylesheet(theme_name: str, theme: dict[str, str], surfaces: dic
                 background: {control_top}; border: 0; border-left: 1px solid {t['border']};
                 border-top-right-radius: {radius}; border-bottom-right-radius: {radius};
             }}
-            QComboBox::down-arrow {{
-                image: url("{combo_arrow}"); width: 9px; height: 6px;
-            }}
             QWidget#responsiveOrderTicket QComboBox#tradeTicketPrimaryCombo::drop-down,
             QWidget#responsiveOrderTicket QComboBox#timeInForceCycle::drop-down,
             QWidget#responsiveOrderTicket QComboBox#leverageDropdown::drop-down {{
                 subcontrol-origin: padding; subcontrol-position: top right;
                 width: 20px; background: transparent; border: 0;
-            }}
-            QWidget#responsiveOrderTicket QComboBox#tradeTicketPrimaryCombo::down-arrow,
-            QWidget#responsiveOrderTicket QComboBox#timeInForceCycle::down-arrow,
-            QWidget#responsiveOrderTicket QComboBox#leverageDropdown::down-arrow {{
-                image: url("{combo_arrow}"); width: 9px; height: 6px;
             }}
             QComboBox QAbstractItemView {{
                 background: {t['panel']}; color: {t['text']}; border: 1px solid {control_border};
