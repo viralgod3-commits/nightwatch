@@ -5929,41 +5929,53 @@ class _DomRasterCanvas(QtWidgets.QWidget):
         self._profile_center_key = key
         precision = min(16, self.price_decimals + (0 if last else 1)) if self.price_tick_size > 0 else None
         price_text = format_book_price(value, precision)
-        delta_text = ('↑ ' if delta > 0 else '↓ ' if delta < 0 else '') + (self._bar_amount_text(abs(delta), snapshot.midpoint or 0.0) or '0')
+        delta_text = ('↑ ' if delta > 0 else '↓ ' if delta < 0 else '') + (self._compact_scalar(abs(delta)) if delta else '0')
         unit = 'USDT' if self._value_mode == 'quote' else self.symbol.removesuffix('USDT')
         width, top, height = float(g['width']), float(g['center_top']), float(g['center_height'])
         label = 'Last' if last else 'Mid'
-        caption_width = self._label_metrics.horizontalAdvance(label) + 12.0
-        price_rect = QtCore.QRectF(4.0, top, max(1.0, width - caption_width - 8.0), height * .54)
-        delta_rect = QtCore.QRectF(4.0, top + height * .54, max(1.0, width - 8.0), height * .46)
-        # Match the top-market ticker's center-price role (20 px by default).
-        # Shrink only when needed to preserve every digit on a narrow ladder.
+        inset = min(8.0, width * .1)
+        available = max(1.0, width - inset * 2.0)
+        price_height = height * .62
+        price_rect = QtCore.QRectF(inset, top + 1.0, available, max(0.0, price_height - 1.0))
+        # Use the ticker font and the full band width for the focal price.
         font = QtGui.QFont(self._center_price_font)
         while (font.pixelSize() > typography_min_pixel_size(TextRole.ORDERBOOK_PRICE)
-               and QtGui.QFontMetricsF(font).horizontalAdvance(price_text) > price_rect.width()):
+               and QtGui.QFontMetricsF(font).horizontalAdvance(price_text) > available):
             font = typography_font_at_pixel_size(font, font.pixelSize() - 1)
-        if QtGui.QFontMetricsF(font).horizontalAdvance(price_text) > price_rect.width():
-            # Drop the caption before ever clipping a price into a plausible
-            # but incorrect value on extremely narrow panels.
-            label = ''
-            price_rect.setWidth(max(1.0, width - 8.0))
-        if QtGui.QFontMetricsF(font).horizontalAdvance(price_text) > price_rect.width():
+        if QtGui.QFontMetricsF(font).horizontalAdvance(price_text) > available:
             price_text = '—'
-        color = self._text
-        if last and self._last_trade_side in ('buy', 'sell'):
-            color = self._profile_colors['bid' if self._last_trade_side == 'buy' else 'ask']
-        delta_color = self._profile_colors['bid' if delta >= 0 else 'ask']
         self._profile_center_items = (
-            (price_rect, price_text, color, Qt.AlignmentFlag.AlignLeft, font),
-            (QtCore.QRectF(width - caption_width, top, caption_width - 4.0, height * .54),
-             label, self._muted, Qt.AlignmentFlag.AlignRight, self._label_font),
-            (delta_rect, delta_text, delta_color, Qt.AlignmentFlag.AlignRight, self._profile_annotation_font),
+            (price_rect, price_text, self._text, Qt.AlignmentFlag.AlignHCenter, font),
         )
-        metrics = QtGui.QFontMetricsF(self._profile_annotation_font)
-        caption = f'Depth Δ · {unit}'
-        if self._label_metrics.horizontalAdvance(caption) + metrics.horizontalAdvance(delta_text) + 12.0 <= delta_rect.width():
-            self._profile_center_items += ((delta_rect, caption, self._muted,
-                                           Qt.AlignmentFlag.AlignLeft, self._label_font),)
+        # Keep source, depth delta and units together as one centered readout.
+        # Compact sizes avoid a long token count dominating the current price.
+        amount = f'{delta_text} {unit}'
+        amount_font = self._profile_annotation_font
+        amount_width = QtGui.QFontMetricsF(amount_font).horizontalAdvance(amount)
+        caption = ''
+        gap = 8.0
+        for candidate in (f'{label} · Depth Δ', f'{label} · Δ', label):
+            if self._label_metrics.horizontalAdvance(candidate) + gap + amount_width <= available:
+                caption = candidate
+                break
+        caption_width = self._label_metrics.horizontalAdvance(caption) if caption else 0.0
+        if not caption:
+            gap = 0.0
+        if amount_width > available:
+            amount = self._label_metrics.elidedText(amount, Qt.TextElideMode.ElideRight, int(available))
+            amount_width = QtGui.QFontMetricsF(amount_font).horizontalAdvance(amount)
+        group_width = caption_width + gap + amount_width
+        left = max(inset, (width - group_width) * .5)
+        detail_top = top + price_height
+        detail_height = max(0.0, height - price_height - 2.0)
+        if caption:
+            self._profile_center_items += ((
+                QtCore.QRectF(left, detail_top, caption_width, detail_height), caption,
+                self._muted, Qt.AlignmentFlag.AlignLeft, self._label_font),)
+        self._profile_center_items += ((
+            QtCore.QRectF(left + caption_width + gap, detail_top, amount_width, detail_height),
+            amount, self._profile_colors['bid' if delta >= 0 else 'ask'],
+            Qt.AlignmentFlag.AlignLeft, amount_font),)
 
     def _draw_profile_midpoint(self, painter: QtGui.QPainter) -> None:
         """Last trade (or labeled midpoint fallback) above resting-depth delta."""
