@@ -1817,30 +1817,10 @@ def _workspace_drawer(owner, detail):
 
 
 def _workspace_shell(owner, name: str):
-    """Shared research heading, filter rail and resizable content area."""
+    """Shared filter rail and resizable content area."""
     root = QtWidgets.QVBoxLayout(owner)
-    root.setContentsMargins(12, 10, 12, 12)
+    root.setContentsMargins(12, 0, 12, 12)
     root.setSpacing(12)
-    title, description = {
-        "leadershipBody": ("Market leaders", "Find relative strength and confirm participation."),
-        "sectorBody": ("Sector overview", "Compare sector performance against Bitcoin."),
-        "rotationBody": ("Market rotation", "Track relative strength and changing momentum."),
-    }[name]
-    heading = QtWidgets.QHBoxLayout()
-    heading.setSpacing(24)
-    identity = QtWidgets.QVBoxLayout()
-    identity.setSpacing(3)
-    label = QtWidgets.QLabel(title)
-    set_text_role(label, TextRole.WORKSPACE_TITLE)
-    identity.addWidget(label)
-    subtitle = QtWidgets.QLabel(description)
-    subtitle.setProperty("workspaceMuted", True)
-    set_text_role(subtitle, TextRole.WORKSPACE_SUBTITLE)
-    identity.addWidget(subtitle)
-    heading.addLayout(identity)
-    heading.addStretch(1)
-    owner.workspace_heading = heading
-    root.addLayout(heading)
     body = QtWidgets.QHBoxLayout()
     body.setSpacing(12)
     root.addLayout(body, 1)
@@ -1963,17 +1943,6 @@ def _workspace_clear_filters(owner):
 
 
 def _workspace_finish(owner):
-    # Existing data freshness labels were hidden in a compatibility container.
-    # Reuse their update path; no new timer, feed, or computation is needed.
-    freshness = getattr(owner, "asof", None)
-    if freshness is not None:
-        freshness.setProperty("workspaceMuted", True)
-        set_text_role(freshness, TextRole.UI_CAPTION)
-        freshness.setMinimumWidth(0)
-        freshness.setMaximumWidth(420)
-        freshness.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-        owner.workspace_heading.addWidget(freshness, 1)
-        freshness.show()
     for widget in owner.findChildren(QtWidgets.QLabel):
         if any(token in widget.objectName().lower() for token in
                ("muted", "subtitle", "caption", "controllabel", "stattitle", "coverage")):
