@@ -5,7 +5,6 @@ from __future__ import annotations
 import logging
 import math
 import re
-import sqlite3
 import statistics
 import threading
 import time
@@ -18,6 +17,7 @@ from PySide6.QtCore import Qt, Signal
 from .models import Candle, safe_float
 from .chart.analysis import LatestJob, run_analysis
 from .research import WorkspaceHistory
+from .overview import MarketOverviewCache
 from .research_data import completed_history, parse_completed_candles
 from .networking.binance import ApiTask
 from .utilities import (
@@ -40,7 +40,6 @@ from .theme import NIGHTWATCH_COLORS
 HOUR = 3_600_000
 BENCHMARK = "BTCUSDT"
 HISTORY_HOURS = 200  # 7-day span + 24-hour replay + warm-up
-LEADERS_REFRESH_MS = 300_000
 log = logging.getLogger(__name__)
 
 
@@ -141,24 +140,6 @@ def _metrics(series: dict[int, Candle], btc: dict[int, Candle], end: int, high_b
             "high_distance": distance}
 
 
-def _cached_history(db, symbol, interval, start, end):
-    try:
-        # Chart caches include mutable current bars and user-imported CSV rows.
-        # Only this namespace guarantees validated, completed exchange candles.
-        return db.load_candles(symbol, "research:" + interval, start, end - 1)
-    except (OSError, sqlite3.Error) as exc:
-        log.warning("Could not read research cache for %s %s: %s", symbol, interval, exc)
-        return []
-
-
-def _cache_history(db, symbol, interval, rows):
-    try:
-        db.cache_candles(symbol, "research:" + interval, rows)
-    except (OSError, sqlite3.Error) as exc:
-        # A disk failure must not hide a successfully downloaded dataset.
-        log.warning("Could not save research cache for %s %s: %s", symbol, interval, exc)
-
-
 def _research_task(owner, attribute, function, finished, failed, source):
     """Cancellable reads release Qt workers during exchange rate-window waits."""
     task = ApiTask(function, defer_rate_waits=True, source=source)
@@ -174,82 +155,6 @@ def _cancel_research_task(owner, attribute):
     if task is not None:
         setattr(owner, attribute, None)
         task.cancel()
-
-
-def _load_batch(rest: Any, db: Any, symbols: list[str], end: int,
-                cancel: threading.Event, generation: int, sync_clock: bool) -> dict[str, Any]:
-    clock_offset = None
-    if sync_clock and not cancel.is_set():
-        server = rest.sync_time()
-        clock_offset = server - time.time() * 1000
-        end = int((server - 2000) // HOUR) * HOUR
-    result: dict[str, Any] = {"generation": generation, "end": end,
-                              "clock_offset": clock_offset, "series": {}, "spot": {}, "spot_errors": {}, "errors": {}}
-    start = end - HISTORY_HOURS * HOUR
-    for symbol in symbols:
-        if cancel.is_set():
-            break
-        cached = _cached_history(db, symbol, "1h", start, end)
-        by_end = completed_history(cached, HOUR, end, start)
-        try:
-            missing = next((key for key in range(start + HOUR, end + 1, HOUR)
-                            if key not in by_end), None)
-            if cancel.is_set():
-                break
-            if missing is not None:
-                request_start = min(end - 2 * HOUR, missing - HOUR)
-                raw = rest.get("/fapi/v1/klines", {
-                    "symbol": symbol, "interval": "1h", "startTime": request_start,
-                    "endTime": end - 1, "limit": min(HISTORY_HOURS, (end - request_start) // HOUR),
-                }, priority="background")
-                fetched = parse_completed_candles(raw, HOUR, end)
-                _cache_history(db, symbol, "1h", fetched)
-                by_end.update(completed_history(fetched, HOUR, end, start))
-            if end not in by_end:
-                result["errors"][symbol] = "Latest completed hour unavailable"
-            elif any(key not in by_end for key in range(min(by_end), end + 1, HOUR)):
-                result["errors"][symbol] = "Completed hourly history has gaps"
-        except (RuntimeError, TimeoutError, OSError, ValueError, TypeError) as exc:
-            result["errors"][symbol] = str(exc)
-        result["series"][symbol] = {key: row for key, row in by_end.items() if start < key <= end}
-        if symbol != BENCHMARK and not cancel.is_set():
-
-
-            spot_interval = "spot:1h"
-            spot_cached = _cached_history(db, symbol, spot_interval, start, end)
-            spot_by_end = completed_history(spot_cached, HOUR, end, start)
-            spot_complete = all(
-                key in spot_by_end
-                for key in range(start + HOUR, end + 1, HOUR)
-            )
-            if not spot_complete:
-                try:
-                    if cancel.is_set():
-                        break
-                    missing = next(key for key in range(start + HOUR, end + 1, HOUR)
-                                   if key not in spot_by_end)
-                    spot = rest.spot_hour_history(
-                        symbol,
-                        end,
-                        hours=min(HISTORY_HOURS, max(2, (end - missing) // HOUR + 1)),
-                    )
-                    spot = list(completed_history(spot, HOUR, end, start).values())
-                    if spot:
-                        _cache_history(db, symbol, spot_interval, spot)
-                        spot_by_end.update({
-                            int(round(row.time * 1000)) + HOUR: row
-                            for row in spot
-                        })
-                        if end not in spot_by_end or any(key not in spot_by_end for key in range(min(spot_by_end), end + 1, HOUR)):
-                            result["spot_errors"][symbol] = "Completed spot history has gaps"
-                except (RuntimeError, TimeoutError, OSError, ValueError, TypeError) as exc:
-                    result["spot_errors"][symbol] = str(exc)
-            result["spot"][symbol] = {
-                key: row
-                for key, row in spot_by_end.items()
-                if start < key <= end
-            }
-    return result
 
 
 def _spot_share(spot: dict[int, Candle], future: dict[int, Candle], end: int):
@@ -411,16 +316,6 @@ def _workspace_analysis(function, state, histories=None):
     return histories.analyze(function, state) if histories is not None else run_analysis(function, state)
 
 
-def _save_leaders_snapshot(db, name, state):
-    try:
-        state = dict(state)
-        state["series"] = encode_histories(state["series"], state["end"])
-        state["spot"] = encode_histories(state["spot"], state["end"])
-        db.save_workspace_snapshot(name, state)
-    except (OSError, sqlite3.Error, ValueError, TypeError) as exc:
-        log.warning("Could not save Leaders snapshot: %s", exc)
-
-
 class LeadershipTimelineWidget(QtWidgets.QWidget):
     details_changed = Signal()
     symbol_selected = Signal(str)
@@ -445,11 +340,11 @@ class LeadershipTimelineWidget(QtWidgets.QWidget):
         self._refresh_pending = False
         self._render_dirty = True
         self._load_pending = False
-        self._cache_loading = False
-        self._cache_loaded = False
-        self._cache_task = None
-        self._cache_name = "leaders:v2:live"
-        self._next_refresh_at = time.monotonic() + LEADERS_REFRESH_MS / 1000
+        self._market_snapshot = None
+        self._pending_overview = None
+        self._deferred_analysis = None
+        self._overview = MarketOverviewCache(self)
+        self._overview.changed.connect(self._overview_changed)
         self.valid_symbols: set[str] = set()
         self.categories: dict[str, str] = {}
         self.tickers: dict[str, dict[str, Any]] = {}
@@ -457,9 +352,6 @@ class LeadershipTimelineWidget(QtWidgets.QWidget):
         self.spot_series: dict[str, dict[int, Candle]] = {}
         self.spot_errors: dict[str, str] = {}
         self.fetched_for: dict[str, int] = {}
-        self.spot_fetched_for: dict[str, int] = {}
-        self.retry_after: dict[str, float] = {}
-        self.spot_retry_after: dict[str, float] = {}
         self.errors: dict[str, str] = {}
         self.symbols: list[str] = []
         self.eligible_count = 0
@@ -475,7 +367,6 @@ class LeadershipTimelineWidget(QtWidgets.QWidget):
         self.selected = ""
         self.metrics: dict[str, dict[str, Any]] = {}
         self._rendering = False
-        self._needs_clock = True
         self._coin_pixmaps: dict[str, QtGui.QPixmap] = {}
         self._analysis_serial = 0
         self._history_transport = WorkspaceHistory()
@@ -484,14 +375,6 @@ class LeadershipTimelineWidget(QtWidgets.QWidget):
         self._analysis_job.failed.connect(self._analysis_failed)
         self._prepared_analysis = {}
         self._build_ui()
-        self.load_timer = QtCore.QTimer(self)
-        self.load_timer.setSingleShot(True)
-        self.load_timer.timeout.connect(self._next_batch)
-        self.refresh_timer = QtCore.QTimer(self)
-        self.refresh_timer.setSingleShot(True)
-        self.refresh_timer.setTimerType(Qt.TimerType.PreciseTimer)
-        self.refresh_timer.setInterval(LEADERS_REFRESH_MS)
-        self.refresh_timer.timeout.connect(self.refresh)
         self.detail_timer = QtCore.QTimer(self)
         self.detail_timer.setSingleShot(True)
         self.detail_timer.setInterval(450)
@@ -536,6 +419,9 @@ class LeadershipTimelineWidget(QtWidgets.QWidget):
                 self._coin_pixmaps.pop(base, None)
                 changed = True
         if changed:
+            delegate = self.table.itemDelegate()
+            if isinstance(delegate, LeadershipCellDelegate):
+                delegate.invalidate()
             self.table.viewport().update()
 
     def _coin_icon_changed(self, symbol: str) -> None:
@@ -593,86 +479,60 @@ class LeadershipTimelineWidget(QtWidgets.QWidget):
         watchlist.symbols_changed.connect(self._sync_watch)
         if hasattr(watchlist, "icon_changed"):
             watchlist.icon_changed.connect(self._coin_icon_changed)
-        self._cache_name = "leaders:v2:" + ("testnet" if getattr(rest, "testnet", False) else "live")
-        self._cache_loaded = False
-        if self.active:
-            self.refresh(force=True)
+        self._overview.bind(rest, db)
+        self._overview.configure(self.valid_symbols, self._overview.categories, self.tickers)
 
-    def _restore_cached_state(self) -> None:
-        self._cache_loaded = True
-        self._cache_loading = True
-        db, name = self.db, self._cache_name
-        self._cache_task = ApiTask(lambda: load_leadership_state(db, name))
-        self._cache_task.signals.finished.connect(self._cache_restored)
-        self._cache_task.signals.failed.connect(self._cache_failed)
-        QtCore.QThreadPool.globalInstance().start(self._cache_task, -1)
-
-    def _cache_restored(self, state: dict[str, Any] | None) -> None:
-        self._cache_task = None
-        self._cache_loading = False
+    def _overview_changed(self, snapshot):
         if self.closing:
             return
-        if state:
-
-
-            for name, value in state.items():
-                if name == "categories" and self.valid_symbols:
-                    continue
-                setattr(self, name, value)
-            self._render_dirty = True
-            self._history_revision += 1
-            self.data_changed.emit()
-        if self.active:
-            if state:
-                self.render()
-            self.refresh(force=True)
-        elif self._refresh_pending:
-            self.refresh()
-
-
-    def _cache_failed(self, error: str) -> None:
-        log.warning("Could not restore Leaders snapshot: %s", error)
-        self._cache_restored(None)
-
-    def _save_cached_state(self) -> None:
-        if self.db is None or self._cache_loading or not self.end or not self.series:
+        if self._interaction_paused:
+            self._pending_overview = snapshot
             return
-        state = {
-            "version": 2, "end": self.end, "clock_offset": self.clock_offset,
-            "symbols": tuple(self.symbols), "eligible_count": self.eligible_count,
-            "categories": dict(self.categories), "fetched_for": dict(self.fetched_for),
-            "spot_fetched_for": dict(self.spot_fetched_for),
-            "series": dict(self.series), "spot": dict(self.spot_series),
-        }
-        db, name = self.db, self._cache_name
-        self._save_task = ApiTask(lambda: _save_leaders_snapshot(db, name, state))
-        QtCore.QThreadPool.globalInstance().start(self._save_task, -1)
+        self._pending_overview = None
+        self._market_snapshot = snapshot
+        self.series = snapshot["series"]
+        self.spot_series = snapshot["spot_series"]
+        self.categories = dict(snapshot["categories"])
+        self.errors = {symbol: errors["futures_1h"] for symbol, errors in snapshot["errors"].items()
+                       if "futures_1h" in errors}
+        self.spot_errors = {symbol: errors["spot_1h"] for symbol, errors in snapshot["errors"].items()
+                            if "spot_1h" in errors}
+        self.fetched_for = {symbol: snapshot["end"] for symbol in self.series if symbol not in self.errors}
+        self._set_end(snapshot["end"])
+        self._history_revision += 1
+        self._apply_snapshot_filters()
+        self.data_changed.emit()
+
+    def _apply_snapshot_filters(self):
+        snapshot = self._market_snapshot
+        if not snapshot:
+            return
+        minimum = int(self.liquidity.currentData() or 0)
+        quotes = snapshot["tickers"]
+        liquid = sorted((symbol for symbol in snapshot["symbols"]
+                         if safe_float(quotes.get(symbol, {}).get("q")) >= minimum),
+                        key=lambda symbol: (-safe_float(quotes.get(symbol, {}).get("q")), symbol))
+        self.eligible_count = len(liquid)
+        count = int(self.limit.currentData() or 0)
+        self.symbols = liquid[:count] if count else liquid
+        self.generation += 1
+        self.render()
+
 
     def sector_hourly_snapshot(self) -> dict[str, Any]:
-        """Expose the already-loaded completed hourly dataset read-only by convention.
-
-        Sectors consumes these dictionaries on the GUI thread so it can reuse
-        Leaders' 1H futures/spot history without issuing duplicate requests.
-        """
+        # Rotation always sees the full cached universe, independent of Leaders filters.
         return {
-            "end": self.end,
-            "clock_offset": self.clock_offset,
-            "symbols": tuple(self.symbols),
-            "series": self.series,
-            "spot": self.spot_series,
-            "categories": self.categories,
-            "revision": self._history_revision,
+            "end": self.end, "clock_offset": self.clock_offset,
+            "symbols": tuple(self._market_snapshot["symbols"]) if self._market_snapshot else (),
+            "series": self.series, "spot": self.spot_series,
+            "categories": self.categories, "revision": self._history_revision,
         }
 
     def set_universe(self, symbols: set[str], metadata: list[dict[str, Any]]) -> None:
         self.valid_symbols = set(symbols)
-        self.categories = {
-            row["symbol"]: _sector_overview_classify(row["symbol"], row) or "—"
-            for row in metadata if row.get("symbol") in self.valid_symbols
-            and isinstance(row.get("underlyingSubType", []), list)
-        }
-        self._history_revision += 1
-        self.refresh(force=self.active)
+        categories = {row["symbol"]: _sector_overview_classify(row["symbol"], row) or "—"
+                      for row in metadata if row.get("symbol") in self.valid_symbols}
+        self._overview.configure(self.valid_symbols, categories, self.tickers)
 
     @property
     def tracked_symbols(self) -> list[str]:
@@ -681,27 +541,15 @@ class LeadershipTimelineWidget(QtWidgets.QWidget):
         return []
 
     def set_tickers(self, tickers: dict[str, dict[str, Any]]) -> None:
-
-
         self.tickers = tickers
-        if self.active and not self.symbols:
-            self.refresh(force=True)
+        self._overview.configure(self.valid_symbols, self._overview.categories, tickers)
         self._refresh_live_prices()
 
     def _refresh_live_prices(self) -> None:
         if not self.active or not self._view_visible or self.closing or self.replay.value() != 24:
             return
-        for row in range(self.table.rowCount()):
-            symbol_item = self.table.item(row, 1)
-            price_item = self.table.item(row, 3)
-            if symbol_item is None or price_item is None:
-                continue
-            symbol = str(symbol_item.data(Qt.ItemDataRole.UserRole) or "")
-            value = safe_float(self.tickers.get(symbol, {}).get("c"))
-            if value > 0:
-                text = _price(value)
-                if price_item.text() != text:
-                    price_item.setText(text)
+        # Whole-market rows advance with the overview snapshot. Only the
+        # selected-pair inspector consumes live price updates.
         if hasattr(self, "context_price"):
             price = safe_float(self.tickers.get(self.selected, {}).get("c"))
             if price > 0 and self.context_price.text() != _price(price):
@@ -719,68 +567,41 @@ class LeadershipTimelineWidget(QtWidgets.QWidget):
         self._refresh_live_prices()
 
     def set_active(self, active: bool, *, visible: bool = True) -> None:
-        was_active, was_visible = self.active, self._view_visible
         self.active = bool(active) and not self.closing
         self._view_visible = bool(visible)
-        if not self.active or not self._view_visible:
-            self.detail_timer.stop()
-            self.detail_cancel.set()
-            _cancel_research_task(self, "detail_task")
-            self._analysis_job.invalidate()
-            if hasattr(self, "context_expiry_timer"):
-                self.context_expiry_timer.stop()
-            self.play.setChecked(False)
-        if self.active:
-            if not was_active:
-                self.refresh(force=True)
-                if self._render_dirty:
-                    self.render()
-                self._schedule_details()
-            elif self._view_visible and not was_visible:
-                self.render()
-                self._schedule_details()
-            if self._view_visible and (not was_active or not was_visible):
-                self._refresh_live_prices()
+        # The model and widgets are already prepared, including while hidden.
+        # Activation only controls the optional selected-pair live inspector.
+        if self.active and self._view_visible:
+            self._schedule_details()
             return
-
-
-        self.load_timer.stop()
-        self.refresh_timer.stop()
-        self._analysis_job.invalidate()
-        self._load_pending = False
-        self._refresh_pending = False
-        self.cancel.set()
-        _cancel_research_task(self, "task")
         self.detail_timer.stop()
-        self.play.setChecked(False)
         self.detail_cancel.set()
         _cancel_research_task(self, "detail_task")
+        if hasattr(self, "context_expiry_timer"):
+            self.context_expiry_timer.stop()
+        self.play.setChecked(False)
 
     def set_interaction_priority(self, active: bool) -> None:
-        """Pause optional startup batches while a chart is being manipulated."""
         self._interaction_paused = bool(active)
+        self._overview.set_paused(active)
         if active:
-            self.load_timer.stop()
             self.detail_timer.stop()
-            self.cancel.set()
-            self.detail_cancel.set()
-            _cancel_research_task(self, "task")
-            _cancel_research_task(self, "detail_task")
-            self._analysis_job.invalidate()
-        elif not self.closing and self.active:
-            if self._refresh_pending:
-                self.refresh(force=True)
-            elif self.task is None and self._load_pending:
-                self.load_timer.start(0)
-            if self.active and self._render_dirty:
-                self.render()
+            return
+        if self.closing:
+            return
+        if self._pending_overview is not None:
+            self._overview_changed(self._pending_overview)
+        deferred, self._deferred_analysis = self._deferred_analysis, None
+        if deferred is not None:
+            self._analysis_ready(*deferred)
+        elif self._render_dirty:
+            self.render()
 
     def shutdown(self) -> None:
-        self._analysis_job.close()
         self.closing = True
         self.active = False
-        self.refresh_timer.stop()
-        self.load_timer.stop()
+        self._overview.shutdown()
+        self._analysis_job.close()
         self.detail_timer.stop()
         self.cancel.set()
         self.detail_cancel.set()
@@ -788,16 +609,9 @@ class LeadershipTimelineWidget(QtWidgets.QWidget):
         _cancel_research_task(self, "detail_task")
         if hasattr(self, "context_expiry_timer"):
             self.context_expiry_timer.stop()
-        self._save_cached_state()
 
     def _filters_changed(self) -> None:
-        self.generation += 1
-        self.cancel.set()
-        self.detail_cancel.set()
-        _cancel_research_task(self, "task")
-        _cancel_research_task(self, "detail_task")
-        self._needs_clock = True
-        self.refresh(force=True)
+        self._apply_snapshot_filters()
 
     def _reset_filters(self) -> None:
         changed = _workspace_clear_filters(self)
@@ -812,154 +626,10 @@ class LeadershipTimelineWidget(QtWidgets.QWidget):
 
     @profile_callback("workspace.leaders.refresh_ms")
     def refresh(self, *, force: bool = False) -> None:
-        if self.closing:
-            return
-        if not self.active:
-            self._refresh_pending = True
-            self.refresh_timer.stop()
-            return
-        if not self._cache_loaded and self.db is not None:
-            self._restore_cached_state()
-        remaining = self._next_refresh_at - time.monotonic()
-        if not force and remaining > 0:
-            if self.rest is not None and not self.refresh_timer.isActive():
-                self.refresh_timer.start(max(1, math.ceil(remaining * 1000)))
-            return
-        if self._interaction_paused or self._cache_loading:
-            self._refresh_pending = True
-            return
-        self._refresh_pending = False
-        self._next_refresh_at = time.monotonic() + LEADERS_REFRESH_MS / 1000
-        self.refresh_timer.start(LEADERS_REFRESH_MS)
-        if self.rest is None or not self.can_load() or not self.valid_symbols or not self.tickers:
-            return
-        minimum = int(self.liquidity.currentData() or 20_000_000)
-        liquid = sorted((symbol for symbol in self.valid_symbols if symbol != BENCHMARK
-                         if safe_float(self.tickers.get(symbol, {}).get("q")) >= minimum),
-                        key=lambda symbol: (-safe_float(self.tickers[symbol].get("q")), symbol))
-        self.eligible_count = len(liquid)
-        count = int(self.limit.currentData() or 0)
-        self.symbols = liquid[:count] if count else liquid
-        server = self.rest.cached_timestamp_ms()
-        self.clock_offset = server - time.time() * 1000
-        end = int((server - 2000) // HOUR) * HOUR
-        if end != self.end:
-            self.generation += 1
-            self.cancel.set()
-            _cancel_research_task(self, "task")
-            self._set_end(end)
-            self._needs_clock = True
-        wanted = {*self.symbols, BENCHMARK}
-        self.series = {symbol: rows for symbol, rows in self.series.items() if symbol in wanted}
-        self.spot_series = {symbol: rows for symbol, rows in self.spot_series.items() if symbol in wanted}
-        self.render()
-        self._load_pending = True
-        if not self.task:
-            self.load_timer.start(0)
-        if self.active:
-            self._schedule_details()
-
-    @profile_callback("workspace.leaders.next_batch_ms")
-    def _next_batch(self) -> None:
-        if (
-            self.task
-            or not self.active
-            or self.closing
-            or self._interaction_paused
-            or not self._load_pending
-            or self._cache_loading
-            or self.rest is None
-            or not self.can_load()
-        ):
-            return
-        if not self.symbols or BENCHMARK not in self.valid_symbols:
-            self._load_pending = False
-            return
-        now = time.monotonic()
-        wanted = [BENCHMARK, *self.symbols]
-        future_due = [symbol for symbol in wanted
-                      if self.fetched_for.get(symbol) != self.end or symbol not in self.series]
-        spot_due = [symbol for symbol in self.symbols if self.spot_fetched_for.get(symbol) != self.end]
-        # Optional spot retries cannot hold back futures rankings.
-        pending = list(dict.fromkeys(
-            [symbol for symbol in future_due if self.retry_after.get(symbol, 0) <= now]
-            + [symbol for symbol in spot_due if self.spot_retry_after.get(symbol, 0) <= now
-               and (symbol not in future_due or self.retry_after.get(symbol, 0) <= now)]
-        ))
-        if not pending:
-            deadlines = [self.retry_after.get(symbol, 0) for symbol in future_due]
-            deadlines += [self.spot_retry_after.get(symbol, 0) for symbol in spot_due]
-            deadlines = [stamp for stamp in deadlines if stamp > now]
-            if deadlines:
-                self.load_timer.start(max(50, math.ceil((min(deadlines) - now) * 1000)))
-                return
-            self._load_pending = False
-            self._save_cached_state()
-            return
+        if not self.closing:
+            self._overview.refresh(force=force)
 
 
-        batch = pending[:4]
-        self.cancel = threading.Event()
-        rest, db, end, cancel = self.rest, self.db, self.end, self.cancel
-        generation, sync = self.generation, self._needs_clock
-        self._needs_clock = False
-        self.task = _research_task(self, "task", lambda: _load_batch(rest, db, batch, end, cancel, generation, sync),
-                                   self._batch_finished, self._batch_failed, "Leaders histories")
-        self.task.symbols = batch
-        self.task.generation = generation
-        QtCore.QThreadPool.globalInstance().start(self.task, -1)
-
-    @profile_callback("workspace.leaders.batch_finished_ms")
-    def _batch_finished(self, result: dict[str, Any]) -> None:
-        self.task = None
-        if self.closing:
-            return
-        if result["generation"] == self.generation:
-            if result["clock_offset"] is not None:
-                self.clock_offset = result["clock_offset"]
-                self._set_end(result["end"])
-            for symbol, rows in result["series"].items():
-                if symbol not in {*self.symbols, BENCHMARK}:
-                    continue
-                self.series[symbol] = _sector_overview_adopt_history(self.series.get(symbol, {}), rows)
-                if symbol in result.get("spot", {}):
-                    self.spot_series[symbol] = _sector_overview_adopt_history(
-                        self.spot_series.get(symbol, {}), result["spot"][symbol])
-                self.spot_errors.pop(symbol, None)
-                if symbol in result.get("spot_errors", {}):
-                    self.spot_errors[symbol] = result["spot_errors"][symbol]
-                    self.spot_retry_after[symbol] = time.monotonic() + 120
-                elif symbol in result.get("spot", {}):
-                    self.spot_fetched_for[symbol] = result["end"]
-                    self.spot_retry_after.pop(symbol, None)
-                error = result["errors"].get(symbol)
-                if error:
-                    self.errors[symbol] = error
-                    self.retry_after[symbol] = time.monotonic() + 120
-                else:
-                    self.errors.pop(symbol, None)
-                    self.retry_after.pop(symbol, None)
-                    self.fetched_for[symbol] = result["end"]
-            self._history_revision += 1
-            self.render()
-            self.data_changed.emit()
-        if self.active and self._load_pending and not self._interaction_paused:
-            self.load_timer.start(250)
-
-    def _batch_failed(self, error: str) -> None:
-        task, self.task = self.task, None
-        if self.closing:
-            return
-        if task is not None and task.generation == self.generation:
-            for symbol in task.symbols:
-                self.errors[symbol] = error
-                self.retry_after[symbol] = time.monotonic() + 120
-            self._needs_clock = True
-            self._history_revision += 1
-            self.data_changed.emit()
-        self.render()
-        if self.active and self._load_pending and not self._interaction_paused:
-            self.load_timer.start(1500)
 
     def cursor_end(self) -> int:
         return self.end - (24 - self.replay.value()) * HOUR
@@ -986,10 +656,8 @@ class LeadershipTimelineWidget(QtWidgets.QWidget):
     @profile_callback("workspace.leaders.render_ms")
     def render(self) -> None:
         self._render_dirty = True
-        if not self._view_visible:
-            return
-        if (not self.active or self.closing or self._interaction_paused
-                or self._cache_loading or not hasattr(self, "table") or self._rendering):
+        if (self.closing or self._interaction_paused or not self.end
+                or not hasattr(self, "table") or self._rendering):
             return
         self._analysis_serial += 1
         state = {
@@ -1001,7 +669,7 @@ class LeadershipTimelineWidget(QtWidgets.QWidget):
             "category_filter_value": getattr(self, "category_filter_value", "All Sectors"),
             "state_filter": getattr(self, "state_filter", "All"),
             "valid_symbols": frozenset(self.valid_symbols),
-            "tickers": {symbol: {"q": row.get("q")} for symbol, row in self.tickers.items()},
+            "tickers": self._market_snapshot["tickers"],
         }
         self._analysis_job.submit(
             (self._analysis_view_key(), self._analysis_serial),
@@ -1010,8 +678,10 @@ class LeadershipTimelineWidget(QtWidgets.QWidget):
 
     @QtCore.Slot(object, object)
     def _analysis_ready(self, key, prepared) -> None:
-        if (self.closing or not self.active or not self._view_visible or self._interaction_paused
-                or key[0] != self._analysis_view_key()):
+        if self.closing or key[0] != self._analysis_view_key():
+            return
+        if self._interaction_paused:
+            self._deferred_analysis = (key, prepared)
             return
         self._prepared_analysis = prepared
         self._prepared_view_context = (self.generation, self.cursor_end(), tuple(self.symbols), self.span.currentData())
@@ -1618,8 +1288,58 @@ class LeadershipCellDelegate(QtWidgets.QStyledItemDelegate):
     def __init__(self, owner: "LeadershipTimelineWidget"):
         super().__init__(owner.table)
         self.owner = owner
+        self._cells = OrderedDict()
+        self._cell_bytes = 0
+        model = owner.table.model()
+        for signal in (model.dataChanged, model.modelReset, model.layoutChanged,
+                       model.rowsInserted, model.rowsRemoved):
+            signal.connect(self.invalidate)
+        owner.table.installEventFilter(self)
+        owner.table.viewport().installEventFilter(self)
+
+    def invalidate(self, *_args):
+        self._cells.clear()
+        self._cell_bytes = 0
+
+    def eventFilter(self, watched, event):
+        if event.type() in (QtCore.QEvent.Type.FontChange, QtCore.QEvent.Type.StyleChange,
+                            QtCore.QEvent.Type.PaletteChange, QtCore.QEvent.Type.DevicePixelRatioChange):
+            self.invalidate()
+        return super().eventFilter(watched, event)
 
     def paint(self, painter, option, index):
+        # Snapshot rows stay fixed between refreshes. Retain their rendered
+        # cells so exposing the tab does not repeat text layout and sparklines.
+        rect = option.rect
+        dpr = painter.device().devicePixelRatioF()
+        width, height = math.ceil(rect.width() * dpr), math.ceil(rect.height() * dpr)
+        if width <= 0 or height <= 0 or width * height > 262_144:
+            self._paint_cell(painter, option, index)
+            return
+        state = option.state & (QtWidgets.QStyle.StateFlag.State_Selected |
+                                QtWidgets.QStyle.StateFlag.State_MouseOver)
+        key = (index.row(), index.column(), rect.width(), rect.height(), dpr,
+               state.value, option.font.key())
+        pixmap = self._cells.pop(key, None)
+        if pixmap is None:
+            pixmap = QtGui.QPixmap(width, height)
+            pixmap.setDevicePixelRatio(dpr)
+            pixmap.fill(Qt.GlobalColor.transparent)
+            cached_option = QtWidgets.QStyleOptionViewItem(option)
+            cached_option.rect = QtCore.QRect(0, 0, rect.width(), rect.height())
+            cell_painter = QtGui.QPainter(pixmap)
+            try:
+                self._paint_cell(cell_painter, cached_option, index)
+            finally:
+                cell_painter.end()
+            self._cell_bytes += width * height * 4
+        self._cells[key] = pixmap
+        while self._cell_bytes > 16 * 1024 * 1024 and len(self._cells) > 1:
+            _old_key, old = self._cells.popitem(last=False)
+            self._cell_bytes -= old.width() * old.height() * 4
+        painter.drawPixmap(rect.topLeft(), pixmap)
+
+    def _paint_cell(self, painter, option, index):
         painter.save()
         painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing)
         apply_text_render_hints(painter)
@@ -2916,9 +2636,6 @@ _SECTOR_OVERVIEW_QUARTER = 15 * _SECTOR_OVERVIEW_MINUTE
 _SECTOR_OVERVIEW_HOUR = 60 * _SECTOR_OVERVIEW_MINUTE
 _SECTOR_OVERVIEW_DAY = 24 * _SECTOR_OVERVIEW_HOUR
 _SECTOR_OVERVIEW_BENCHMARK = "BTCUSDT"
-_SECTOR_OVERVIEW_SECTOR_REFRESH_MS = 90_000
-_SECTOR_OVERVIEW_ACTIVE_BATCH_SIZE = 6
-_SECTOR_OVERVIEW_ACTIVE_BATCH_DELAY_MS = 250
 
 _SECTOR_OVERVIEW_TIMEFRAMES: OrderedDict[str, tuple[str, int, int]] = OrderedDict(
     (
@@ -3093,221 +2810,6 @@ def _sector_overview_classify(symbol: str, metadata: dict[str, Any] | None) -> s
         if any(re.search(r"(?<![a-z0-9])" + re.escape(keyword) + r"(?![a-z0-9])", joined) for keyword in keywords):
             return sector
     return None
-
-
-def _sector_overview_closed_window_ready(
-    rows: list[Candle],
-    end_ms: int,
-    step_ms: int,
-    minimum_rows: int,
-) -> bool:
-    series = _sector_overview_map_candles(rows, step_ms)
-    return bool(_sector_overview_series_window(series, end_ms, step_ms, minimum_rows))
-
-
-def _sector_overview_tail_limit(
-    rows: list[Candle],
-    end_ms: int,
-    step_ms: int,
-    full_limit: int,
-    minimum_rows: int,
-) -> int:
-    series = _sector_overview_map_candles(rows, step_ms)
-    required = range(end_ms - (minimum_rows - 1) * step_ms, end_ms + 1, step_ms)
-    missing = [stamp for stamp in required if not _sector_overview_series_window(series, stamp, step_ms, 1)]
-    if not missing:
-        return 2
-    # Fetch from the oldest hole, including internal gaps, rather than merely
-    # fetching the most recent tail and permanently preserving a cache hole.
-    return min(full_limit, max(2, (end_ms - min(missing)) // step_ms + 1))
-
-
-def _sector_overview_merge_candles(existing: list[Candle], fetched: list[Candle]) -> list[Candle]:
-    merged = {int(round(row.time * 1000)): row for row in existing}
-    merged.update({int(round(row.time * 1000)): row for row in fetched})
-    return [merged[key] for key in sorted(merged)]
-
-
-def _sector_overview_adopt_history(existing: dict[int, Candle], incoming: dict[int, Candle]) -> dict[int, Candle]:
-    """Keep newer completed bars when a delayed batch or shared snapshot arrives."""
-    if not incoming or existing is incoming:
-        return existing
-    if not existing:
-        return incoming
-    merged = ({**incoming, **existing} if max(existing) > max(incoming)
-              else {**existing, **incoming})
-    # Preserve cache repairs even when both sources end at the same hour.
-    cutoff = max(merged) - HISTORY_HOURS * HOUR
-    return {stamp: row for stamp, row in merged.items() if stamp > cutoff}
-
-
-def _prepare_sector_batch_rows(output):
-    result = {}
-    for symbol, entry in output.items():
-        prepared = dict(entry)
-        for name, step in (("futures_15m", _SECTOR_OVERVIEW_QUARTER),
-                           ("spot_15m", _SECTOR_OVERVIEW_QUARTER),
-                           ("futures_1h", _SECTOR_OVERVIEW_HOUR),
-                           ("spot_1h", _SECTOR_OVERVIEW_HOUR)):
-            if prepared.get(name):
-                prepared[name] = _sector_overview_map_candles(prepared[name], step)
-        if prepared.get("daily"):
-            prepared["daily"] = sorted(prepared["daily"], key=lambda candle: candle.time)[-32:]
-        result[symbol] = prepared
-    return result
-
-
-def _sector_overview_load_sector_batch(
-    rest: Any,
-    db: Any,
-    requests: dict[str, dict[str, bool]],
-    end_15m: int,
-    end_hour: int,
-    cancel: threading.Event,
-) -> dict[str, Any]:
-    """Serve Sector history from SQLite first, then fetch only missing tails."""
-    if cancel.is_set() or not requests:
-        return {
-            "data": {}, "requests": requests, "end_15m": end_15m,
-            "end_hour": end_hour, "stats": {}, "cancelled": cancel.is_set(),
-        }
-
-    output: dict[str, dict[str, Any]] = {}
-    network_requests: dict[str, dict[str, Any]] = {}
-    stats = {
-        "symbols": len(requests),
-        "cache_hits": 0,
-        "network_calls": 0,
-        "spot_unavailable": 0,
-    }
-    day_end = int(end_hour // _SECTOR_OVERVIEW_DAY) * _SECTOR_OVERVIEW_DAY
-
-    for symbol, requested in requests.items():
-        if cancel.is_set():
-            break
-        spec: dict[str, Any] = dict(requested)
-        entry: dict[str, Any] = {}
-
-        if requested.get("futures_15m"):
-            cached = _cached_history(
-                db, symbol, "15m", end_15m - 64 * _SECTOR_OVERVIEW_QUARTER, end_15m
-            )
-            if cached:
-                entry["futures_15m"] = cached
-            if _sector_overview_closed_window_ready(cached, end_15m, _SECTOR_OVERVIEW_QUARTER, 24):
-                spec["futures_15m"] = False
-                stats["cache_hits"] += 1
-            else:
-                spec["futures_15m_limit"] = _sector_overview_tail_limit(
-                    cached, end_15m, _SECTOR_OVERVIEW_QUARTER, 64, 24
-                )
-
-        if requested.get("futures_1h"):
-            cached = _cached_history(
-                db, symbol, "1h", end_hour - 96 * _SECTOR_OVERVIEW_HOUR, end_hour
-            )
-            if cached:
-                entry["futures_1h"] = cached
-            if _sector_overview_closed_window_ready(cached, end_hour, _SECTOR_OVERVIEW_HOUR, 56):
-                spec["futures_1h"] = False
-                stats["cache_hits"] += 1
-            else:
-                spec["futures_1h_limit"] = _sector_overview_tail_limit(
-                    cached, end_hour, _SECTOR_OVERVIEW_HOUR, 96, 56
-                )
-
-        if requested.get("spot_15m"):
-            cached = _cached_history(
-                db, symbol, "spot:15m", end_15m - 64 * _SECTOR_OVERVIEW_QUARTER, end_15m
-            )
-            if cached:
-                entry["spot_15m"] = cached
-            if _sector_overview_closed_window_ready(cached, end_15m, _SECTOR_OVERVIEW_QUARTER, 24):
-                spec["spot_15m"] = False
-                stats["cache_hits"] += 1
-            else:
-                spec["spot_15m_limit"] = _sector_overview_tail_limit(
-                    cached, end_15m, _SECTOR_OVERVIEW_QUARTER, 64, 24
-                )
-
-        if requested.get("spot_1h"):
-
-
-            cached = _cached_history(
-                db, symbol, "spot:1h", end_hour - 96 * _SECTOR_OVERVIEW_HOUR, end_hour
-            )
-            if cached:
-                entry["spot_1h"] = cached
-            if _sector_overview_closed_window_ready(cached, end_hour, _SECTOR_OVERVIEW_HOUR, 56):
-                spec["spot_1h"] = False
-                stats["cache_hits"] += 1
-            else:
-                spec["spot_1h_limit"] = _sector_overview_tail_limit(
-                    cached, end_hour, _SECTOR_OVERVIEW_HOUR, 96, 56
-                )
-
-        if requested.get("daily"):
-            cached = _cached_history(
-                db, symbol, "1d", day_end - 32 * _SECTOR_OVERVIEW_DAY, day_end
-            )
-            cached = list(completed_history(cached, _SECTOR_OVERVIEW_DAY, day_end).values())
-            if cached:
-                entry["daily"] = cached
-            if _sector_overview_closed_window_ready(cached, day_end, _SECTOR_OVERVIEW_DAY, 20):
-                spec["daily"] = False
-                stats["cache_hits"] += 1
-            else:
-                spec["daily_limit"] = _sector_overview_tail_limit(
-                    cached, day_end, _SECTOR_OVERVIEW_DAY, 25, 20
-                )
-
-        output[symbol] = entry
-        if any(spec.get(key) for key in (
-            "futures_15m", "futures_1h", "daily",
-            "spot_15m", "spot_1h",
-        )):
-            network_requests[symbol] = spec
-
-    if cancel.is_set() or not network_requests:
-        return {
-            "data": _prepare_sector_batch_rows(output), "requests": requests, "end_15m": end_15m,
-            "end_hour": end_hour, "stats": stats, "cancelled": cancel.is_set(),
-        }
-
-    fetched = rest.sector_snapshot_batch(network_requests, end_15m, end_hour)
-    for symbol, fetched_entry in fetched.items():
-        if cancel.is_set():
-            break
-        target = output.setdefault(symbol, {})
-        stats["network_calls"] += int(fetched_entry.get("_network_calls") or 0)
-        unavailable = fetched_entry.get("_spot_unavailable") or ()
-        target["_spot_unavailable"] = tuple(unavailable)
-        stats["spot_unavailable"] += len(unavailable)
-
-        for key in ("futures_15m", "futures_1h", "daily"):
-            rows = fetched_entry.get(key) or []
-            if rows:
-                target[key] = _sector_overview_merge_candles(target.get(key) or [], rows)
-                _cache_history(
-                    db, symbol,
-                    {"futures_15m": "15m", "futures_1h": "1h", "daily": "1d"}[key],
-                    rows,
-                )
-        for key, interval in (("spot_15m", "spot:15m"), ("spot_1h", "spot:1h")):
-            if key in fetched_entry:
-                rows = fetched_entry.get(key) or []
-                if rows:
-                    target[key] = _sector_overview_merge_candles(target.get(key) or [], rows)
-                    _cache_history(db, symbol, interval, rows)
-                else:
-                    target.setdefault(key, [])
-        if fetched_entry.get("errors"):
-            target["errors"] = dict(fetched_entry["errors"])
-
-    return {
-        "data": _prepare_sector_batch_rows(output), "requests": requests, "end_15m": end_15m,
-        "end_hour": end_hour, "stats": stats, "cancelled": cancel.is_set(),
-    }
 
 
 class _SectorOverviewSparkline(QtWidgets.QWidget):
@@ -4005,6 +3507,10 @@ class SectorOverviewWidget(QtWidgets.QWidget):
         self._render_dirty = True
 
 
+        self._market_snapshot = None
+        self._pending_overview = None
+        self._deferred_analysis = None
+        self._snapshot_revision = 0
         self.timeframe = "4h"
         self.minimum_volume = 0.0
         self.selected_sector = "AI"
@@ -4016,8 +3522,6 @@ class SectorOverviewWidget(QtWidgets.QWidget):
         self.daily: dict[str, list[Candle]] = {}
         self.end_hour = 0
         self.end_15m = 0
-        self._component_attempts: dict[tuple[str, str], int] = {}
-        self._component_retries: dict[tuple[str, str], tuple[int, float]] = {}
         self.task: ApiTask | None = None
         self.cancel = threading.Event()
         self._analysis_serial = 0
@@ -4028,12 +3532,6 @@ class SectorOverviewWidget(QtWidgets.QWidget):
         self._prepared_analysis = {}
         self._build_ui()
 
-        self.load_timer = QtCore.QTimer(self)
-        self.load_timer.setSingleShot(True)
-        self.load_timer.timeout.connect(self._next_batch)
-        self.refresh_timer = QtCore.QTimer(self)
-        self.refresh_timer.setInterval(_SECTOR_OVERVIEW_SECTOR_REFRESH_MS)
-        self.refresh_timer.timeout.connect(self.refresh)
         self.render_timer = QtCore.QTimer(self)
         self.render_timer.setSingleShot(True)
         self.render_timer.setTimerType(Qt.TimerType.PreciseTimer)
@@ -4190,111 +3688,84 @@ class SectorOverviewWidget(QtWidgets.QWidget):
             self._select_sector(item.text())
 
     def bind_sources(self, rest: Any, db: Any, leadership: Any, can_load: Any) -> None:
-        previous = getattr(self, "leadership", None)
+        previous = self.leadership
         if previous is leadership and self.rest is rest and self.db is db:
-            self.can_load = can_load
             return
-        if previous is not None and hasattr(previous, "data_changed"):
+        if previous is not None:
             try:
-                previous.data_changed.disconnect(self._leaders_changed)
+                previous._overview.changed.disconnect(self._overview_changed)
             except (RuntimeError, TypeError):
                 pass
         self.rest, self.db, self.leadership, self.can_load = rest, db, leadership, can_load
-        if hasattr(leadership, "data_changed"):
-            leadership.data_changed.connect(self._leaders_changed)
-        if self.active and not self.refresh_timer.isActive():
-            self.refresh_timer.start()
-        self.refresh()
+        leadership._overview.changed.connect(self._overview_changed)
+        if leadership._overview.snapshot is not None:
+            self._overview_changed(leadership._overview.snapshot)
+
+    def _overview_changed(self, snapshot):
+        if self.closing:
+            return
+        if self._interaction_paused:
+            self._pending_overview = snapshot
+            return
+        self._pending_overview = None
+        self._market_snapshot = snapshot
+        self.hourly, self.spot_hourly = snapshot["series"], snapshot["spot_series"]
+        self.futures_15m, self.spot_15m = snapshot["futures_15m"], snapshot["spot_15m"]
+        self.daily = {symbol: list(rows.values()) for symbol, rows in snapshot["daily"].items()}
+        self.sectors = {symbol: sector for symbol, sector in snapshot["categories"].items()
+                        if sector in _SECTOR_OVERVIEW_SECTOR_ORDER}
+        self.end_hour, self.end_15m = snapshot["end"], snapshot["end_15m"]
+        self._snapshot_revision += 1
+        self._apply_snapshot_filters()
+
+    def _apply_snapshot_filters(self):
+        if self._market_snapshot is None:
+            return
+        quotes = self._market_snapshot["tickers"]
+        self.minimum_volume = safe_float(self.liquidity.currentData())
+        self.symbols = sorted((symbol for symbol in self.sectors
+                               if safe_float(quotes.get(symbol, {}).get("q")) >= self.minimum_volume),
+                              key=lambda symbol: (-safe_float(quotes.get(symbol, {}).get("q")), symbol))
+        self.render()
 
     def set_universe(self, symbols: set[str], metadata: list[dict[str, Any]]) -> None:
         self.valid_symbols = set(symbols)
-        self.metadata = {
-            str(row.get("symbol")): row
-            for row in metadata
-            if row.get("symbol") in self.valid_symbols
-        }
-        self.sectors = {
-            symbol: sector
-            for symbol in self.valid_symbols
-            if (sector := _sector_overview_classify(symbol, self.metadata.get(symbol))) is not None
-        }
-        self.refresh()
+        self.metadata = {str(row["symbol"]): row for row in metadata
+                         if row.get("symbol") in self.valid_symbols}
 
     def set_tickers(self, tickers: dict[str, dict[str, Any]]) -> None:
-
-
         self.tickers = tickers
 
-
-        if not self.symbols:
-            self.refresh()
-        self._refresh_ticker_stat()
-
     def update_tickers(self, updates: list[dict[str, Any]]) -> None:
-        for ticker in updates:
-            symbol = str(ticker.get("s") or "")
-            if symbol:
-                current = self.tickers.get(symbol)
-                if current is None:
-                    self.tickers[symbol] = dict(ticker)
-                elif current is not ticker:
-                    current.update(ticker)
-        self._refresh_ticker_stat()
+        # This is a market overview. Statistics advance with the shared snapshot.
+        return
 
-    def _refresh_ticker_stat(self) -> None:
-        if not self.active or self.closing or self._interaction_paused:
-            return
-        means = getattr(self, "_ma20", {})
-        current = [(safe_float(self.tickers.get(symbol, {}).get("c")), mean) for symbol, mean in means.items()]
-        current = [(price, mean) for price, mean in current if price > 0]
-        covered = len(current)
-        above = sum(price > mean for price, mean in current)
-        value = above / covered * 100 if covered else None
-        self.stat_ma.set_metric(_sector_overview_share(value, 0), f"/ {covered} covered",
-                                self.theme.get("green", "#22D27A"), (value or 0) / 100,
-                                self.theme.get("grid", "#1C1C20"))
 
     def set_active(self, active: bool) -> None:
-        was_active = self.active
         self.active = bool(active) and not self.closing
-        if self.active:
-            if not was_active:
-                self.render()
-                self.refresh_timer.start()
-                self.refresh()
-            return
-        self.refresh_timer.stop()
-        self.load_timer.stop()
-        self.cancel.set()
-        self.render_timer.stop()
-        _cancel_research_task(self, "task")
-        self._analysis_job.invalidate()
 
     def set_interaction_priority(self, active: bool) -> None:
         self._interaction_paused = bool(active)
-        if active:
-            self.load_timer.stop()
-            self.render_timer.stop()
-            self.cancel.set()
-            _cancel_research_task(self, "task")
-            self._analysis_job.invalidate()
-        elif not self.closing and self.active:
-            if self._refresh_pending:
-                self.refresh()
-            elif self.task is None:
-                self.load_timer.start(0)
-            if self.active and self._render_dirty:
-                self.render_timer.start(0)
+        if active or self.closing:
+            return
+        if self._pending_overview is not None:
+            self._overview_changed(self._pending_overview)
+        deferred, self._deferred_analysis = self._deferred_analysis, None
+        if deferred is not None:
+            self._analysis_ready(*deferred)
+        elif self._render_dirty:
+            self.render()
 
     def shutdown(self) -> None:
-        self._analysis_job.close()
         self.closing = True
         self.active = False
-        self.refresh_timer.stop()
-        self.load_timer.stop()
+        self._analysis_job.close()
         self.render_timer.stop()
-        self.cancel.set()
-        _cancel_research_task(self, "task")
+        if self.leadership is not None:
+            try:
+                self.leadership._overview.changed.disconnect(self._overview_changed)
+            except (RuntimeError, TypeError):
+                pass
 
     def _set_timeframe(self, timeframe: str) -> None:
         if timeframe not in _SECTOR_OVERVIEW_TIMEFRAMES or timeframe == self.timeframe:
@@ -4303,8 +3774,7 @@ class SectorOverviewWidget(QtWidgets.QWidget):
         self.render()
 
     def _filters_changed(self) -> None:
-        self.minimum_volume = safe_float(self.liquidity.currentData())
-        self.refresh()
+        self._apply_snapshot_filters()
 
     def _reset_filters(self) -> None:
         changed = _workspace_clear_filters(self)
@@ -4316,209 +3786,22 @@ class SectorOverviewWidget(QtWidgets.QWidget):
         else:
             self.render()
 
-    def _leaders_changed(self) -> None:
-
-
-        self.refresh()
-
-    def _sync_leader_histories(self) -> None:
-        if self.leadership is None:
-            return
-        snapshot = self.leadership.sector_hourly_snapshot() if hasattr(self.leadership, "sector_hourly_snapshot") else None
-        if not snapshot:
-            return
-        self.end_hour = max(self.end_hour, int(snapshot.get("end") or 0))
-        for symbol, rows in snapshot.get("series", {}).items():
-            if rows:
-                self.hourly[symbol] = _sector_overview_adopt_history(self.hourly.get(symbol, {}), rows)
-        for symbol, rows in snapshot.get("spot", {}).items():
-            if rows:
-                self.spot_hourly[symbol] = _sector_overview_adopt_history(self.spot_hourly.get(symbol, {}), rows)
 
     @profile_callback("workspace.sectors.refresh_ms")
     def refresh(self) -> None:
-        if self.closing:
-            return
-        if not self.active or self._interaction_paused:
-            self._refresh_pending = True
-            return
-        self._refresh_pending = False
-        if self.rest is None or self.db is None or not self.can_load():
-            return
-        self._sync_leader_histories()
-        minimum = safe_float(self.liquidity.currentData()) if hasattr(self, "liquidity") else self.minimum_volume
-        self.minimum_volume = minimum
-        candidates = [
-            symbol
-            for symbol, sector in self.sectors.items()
-            if symbol in self.valid_symbols
-            and sector in _SECTOR_OVERVIEW_SECTOR_ORDER
-            and safe_float(self.tickers.get(symbol, {}).get("q")) >= minimum
-        ]
-        candidates.sort(key=lambda symbol: (-safe_float(self.tickers.get(symbol, {}).get("q")), symbol))
-        self.symbols = candidates
-
-        now_ms = self.rest.cached_timestamp_ms() - 2000
-        new_end_15m = int(now_ms // _SECTOR_OVERVIEW_QUARTER) * _SECTOR_OVERVIEW_QUARTER
-        new_end_hour = int(now_ms // _SECTOR_OVERVIEW_HOUR) * _SECTOR_OVERVIEW_HOUR
-        if new_end_15m != self.end_15m:
-            self.end_15m = new_end_15m
-        if new_end_hour != self.end_hour:
-            self.end_hour = new_end_hour
-
-        self.render()
-        if self.task is None:
-            self.load_timer.start(0)
-
-    def _request_spec(self, symbol: str) -> dict[str, bool]:
-        hourly_ready = bool(_sector_overview_series_window(self.hourly.get(symbol, {}), self.end_hour, _SECTOR_OVERVIEW_HOUR, 56))
-        spot_hourly_ready = bool(_sector_overview_series_window(self.spot_hourly.get(symbol, {}), self.end_hour, _SECTOR_OVERVIEW_HOUR, 56))
-        future15_ready = bool(_sector_overview_series_window(self.futures_15m.get(symbol, {}), self.end_15m, _SECTOR_OVERVIEW_QUARTER, 24))
-        spot15_ready = bool(_sector_overview_series_window(self.spot_15m.get(symbol, {}), self.end_15m, _SECTOR_OVERVIEW_QUARTER, 24))
-        daily_rows = self.daily.get(symbol, [])
-        day_stamp = int(self.end_hour // _SECTOR_OVERVIEW_DAY) * _SECTOR_OVERVIEW_DAY
-        daily_ready = _sector_overview_closed_window_ready(daily_rows, day_stamp, _SECTOR_OVERVIEW_DAY, 20)
-
-        def attempted(component: str, stamp: int) -> bool:
-            key = (symbol, component)
-            retry = self._component_retries.get(key)
-            return self._component_attempts.get(key) == stamp or bool(retry and time.monotonic() < retry[1])
-
-        leader_expected = bool(
-            self.leadership is not None
-            and (symbol == _SECTOR_OVERVIEW_BENCHMARK or symbol in getattr(self.leadership, "symbols", ()))
-        )
-        leader_failed = bool(
-            self.leadership is not None
-            and symbol in getattr(self.leadership, "errors", {})
-        )
-        leader_pending = bool(
-            leader_expected
-            and getattr(self.leadership, "active", False)
-            and not leader_failed
-            and (getattr(self.leadership, "_load_pending", False)
-                 or getattr(self.leadership, "task", None) is not None
-                 or getattr(self.leadership, "_cache_loading", False))
-            and getattr(self.leadership, "fetched_for", {}).get(symbol)
-            != getattr(self.leadership, "end", 0)
-        )
-        return {
-            "futures_15m": not future15_ready and not attempted("futures_15m", self.end_15m),
-            "spot_15m": symbol != _SECTOR_OVERVIEW_BENCHMARK and not spot15_ready and not attempted("spot_15m", self.end_15m),
+        if not self.closing and self.leadership is not None:
+            self.leadership.refresh(force=True)
 
 
-            "futures_1h": not hourly_ready and not leader_pending and not attempted("futures_1h", self.end_hour),
-            "spot_1h": symbol != _SECTOR_OVERVIEW_BENCHMARK and not spot_hourly_ready and not leader_pending and not attempted("spot_1h", self.end_hour),
-            "daily": symbol != _SECTOR_OVERVIEW_BENCHMARK and not daily_ready and not attempted("daily", day_stamp),
-        }
 
-    @profile_callback("workspace.sectors.next_batch_ms")
-    def _next_batch(self) -> None:
-        if self.task is not None or not self.active or self.closing or self._interaction_paused or self.rest is None or self.db is None or not self.can_load():
-            return
-        wanted = [_SECTOR_OVERVIEW_BENCHMARK, *self.symbols]
-        pending: list[str] = []
-        specs: dict[str, dict[str, bool]] = {}
-        for symbol in wanted:
-            spec = self._request_spec(symbol)
-            if any(spec.values()):
-                pending.append(symbol)
-                specs[symbol] = spec
-                if len(pending) >= _SECTOR_OVERVIEW_ACTIVE_BATCH_SIZE:
-                    break
-        if not pending:
-            deadlines = [deadline for _count, deadline in self._component_retries.values() if deadline > time.monotonic()]
-            if deadlines:
-                self.load_timer.start(max(50, int((min(deadlines) - time.monotonic()) * 1000)))
-            return
-        batch_symbols = pending[:_SECTOR_OVERVIEW_ACTIVE_BATCH_SIZE]
-        batch_specs = {symbol: specs[symbol] for symbol in batch_symbols}
-        rest, db = self.rest, self.db
-        end15, endhour = self.end_15m, self.end_hour
-        self.cancel = threading.Event()
-        cancel = self.cancel
-        self.task = _research_task(self, "task",
-                                  lambda: _sector_overview_load_sector_batch(rest, db, batch_specs, end15, endhour, cancel),
-                                  self._batch_finished, self._batch_failed, "Sector histories")
-        self.task.requests = batch_specs
-        QtCore.QThreadPool.globalInstance().start(self.task, -1)
-
-    @profile_callback("workspace.sectors.batch_finished_ms")
-    def _batch_finished(self, result: dict[str, Any]) -> None:
-        self.task = None
-        if self.closing:
-            return
-        result_hour = int(result.get("end_hour", self.end_hour))
-        result_quarter = int(result.get("end_15m", self.end_15m))
-        day_stamp = int(result_hour // _SECTOR_OVERVIEW_DAY) * _SECTOR_OVERVIEW_DAY
-        attempted = {} if result.get("cancelled") else result.get("requests", {})
-        for symbol, spec in attempted.items():
-            for component, requested in spec.items():
-                if not requested:
-                    continue
-                stamp = (
-                    result_quarter
-                    if component in {"futures_15m", "spot_15m"}
-                    else day_stamp
-                    if component == "daily"
-                    else result_hour
-                )
-                key = (symbol, component)
-                entry = result.get("data", {}).get(symbol, {})
-                error = entry.get("errors", {}).get(component)
-                rows = entry.get(component) or ([] if component == 'daily' else {})
-                unavailable = component in entry.get("_spot_unavailable", ())
-                step = _SECTOR_OVERVIEW_QUARTER if component.endswith("15m") else _SECTOR_OVERVIEW_DAY if component == "daily" else _SECTOR_OVERVIEW_HOUR
-                minimum = 24 if component.endswith("15m") else 20 if component == "daily" else 56
-                ready = _sector_overview_closed_window_ready(rows, stamp, step, minimum) if component == "daily" else bool(_sector_overview_series_window(rows, stamp, step, minimum))
-                series = _sector_overview_map_candles(rows, step) if component == "daily" else rows
-                # A newly listed market may have less than the warm-up window.
-                # A contiguous response reaching the target is exhausted for
-                # this bar; retrying it every minute cannot create older data.
-                exhausted = bool(series and stamp in series and
-                                 _sector_overview_series_window(series, stamp, step, (stamp - min(series)) // step + 1))
-                if unavailable or (not error and (ready or exhausted)):
-                    self._component_attempts[key] = stamp
-                    self._component_retries.pop(key, None)
-                else:
-                    count = self._component_retries.get(key, (0, 0.0))[0] + 1
-                    self._component_retries[key] = (count, time.monotonic() + min(60.0, 1.5 * 2 ** min(count - 1, 6)))
-        for symbol, entry in result.get("data", {}).items():
-            for component, target in (("futures_15m", self.futures_15m), ("futures_1h", self.hourly),
-                                      ("spot_15m", self.spot_15m), ("spot_1h", self.spot_hourly)):
-                rows = entry.get(component)
-                if rows:
-                    target[symbol] = _sector_overview_adopt_history(target.get(symbol, {}), rows)
-            rows = entry.get("daily") or []
-            if rows:
-                existing = self.daily.get(symbol, [])
-                if existing and existing[-1].time > rows[-1].time:
-                    rows = _sector_overview_merge_candles(rows, existing)[-32:]
-                self.daily[symbol] = rows
-        self.render()
-        if self.active and not self._interaction_paused:
-            self.load_timer.start(_SECTOR_OVERVIEW_ACTIVE_BATCH_DELAY_MS)
-
-
-    def _batch_failed(self, message: str) -> None:
-        task, self.task = self.task, None
-        log.warning("Sector history batch failed: %s", message)
-        for symbol, spec in getattr(task, "requests", {}).items():
-            for component, requested in spec.items():
-                if requested:
-                    key = (symbol, component)
-                    count = self._component_retries.get(key, (0, 0.0))[0] + 1
-                    self._component_retries[key] = (count, time.monotonic() + min(60.0, 1.5 * 2 ** min(count - 1, 6)))
-        if self.active and not self.closing and not self._interaction_paused:
-            self.load_timer.start(1500)
 
     def _analysis_view_key(self):
-        return (self.timeframe, tuple(self.symbols), self.end_hour, self.end_15m)
+        return (self.timeframe, tuple(self.symbols), self.end_hour, self.end_15m, self._snapshot_revision)
 
     @profile_callback("workspace.sectors.render_ms")
     def render(self) -> None:
         self._render_dirty = True
-        if not self.active or self.closing or self._interaction_paused:
+        if self.closing or self._interaction_paused or self._market_snapshot is None:
             return
         if not self.symbols:
             self._analysis_job.invalidate()
@@ -4534,7 +3817,7 @@ class SectorOverviewWidget(QtWidgets.QWidget):
                  ("hourly", "spot_hourly", "futures_15m", "spot_15m", "daily", "sectors")}
         state.update(symbols=tuple(self.symbols), timeframe=self.timeframe,
                      end_hour=self.end_hour, end_15m=self.end_15m,
-                     tickers={symbol: {"c": row.get("c")} for symbol, row in self.tickers.items()})
+                     tickers=self._market_snapshot["tickers"])
         self._analysis_job.submit(
             (self._analysis_view_key(), self._analysis_serial),
             _workspace_analysis, _prepare_sectors, state, self._history_transport,
@@ -4542,8 +3825,10 @@ class SectorOverviewWidget(QtWidgets.QWidget):
 
     @QtCore.Slot(object, object)
     def _analysis_ready(self, key, prepared) -> None:
-        if (self.closing or not self.active or self._interaction_paused
-                or key[0] != self._analysis_view_key()):
+        if self.closing or key[0] != self._analysis_view_key():
+            return
+        if self._interaction_paused:
+            self._deferred_analysis = (key, prepared)
             return
         self._prepared_analysis = prepared
         self._prepared_sector_key = key[0]
@@ -4602,6 +3887,7 @@ class SectorOverviewWidget(QtWidgets.QWidget):
         loaded15, loaded1h = prepared["loaded15"], prepared["loaded1h"]
         self.coverage.setText(
             f"{len(self.symbols)} classified pairs · 15M {loaded15}/{len(self.symbols)} · 1H {loaded1h}/{len(self.symbols)} · 20D {daily_covered}/{len(self.symbols)}"
+            + f" · Snapshot {_stamp(int(self._market_snapshot['saved_at'] * 1000) or self.end_hour, True)}"
         )
 
     @QtCore.Slot(object, str)
@@ -4686,7 +3972,8 @@ class SectorOverviewWidget(QtWidgets.QWidget):
             tile.set_selected(name == sector)
             tile.setVisible(name in visible)
         self._sync_table_sector()
-        if self._prepared_analysis and getattr(self, "_prepared_sector_key", None) == self._analysis_view_key():
+        if (self._prepared_analysis
+                and getattr(self, "_prepared_sector_key", (None,))[0] == self.timeframe):
             self.detail.update_data(sector, self._prepared_analysis["metrics"].get(sector, {}),
                                     _SECTOR_OVERVIEW_TIMEFRAMES[self.timeframe][0])
         else:
@@ -5795,8 +5082,8 @@ class RotationScannerWidget(LeadershipTimelineWidget):
 
     def render(self):
         self._render_dirty = True
-        if (not self.active or not self._view_visible or self.closing or self._interaction_paused
-                or self._cache_loading or self._rendering or self._rotation_snapshot_end is None):
+        if (self.closing or self._interaction_paused
+                or self._rendering or self._rotation_snapshot_end is None):
             return
         view_key = self._analysis_view_key()
         if self._prepared_analysis and view_key == self._rotation_revision:
@@ -6085,8 +5372,6 @@ class RotationScannerWidget(LeadershipTimelineWidget):
                 self._render_facts()
 
     def set_active(self, active, *, visible=True):
-        if not active or not visible:
-            self._rotation_pending_key = None
         super().set_active(active, visible=visible)
         if self.active and self._view_visible:
             self.detail_freshness_timer.start()
@@ -6094,9 +5379,9 @@ class RotationScannerWidget(LeadershipTimelineWidget):
             self.detail_freshness_timer.stop()
 
     def set_interaction_priority(self, active):
-        if active:
-            self._rotation_pending_key = None
         super().set_interaction_priority(active)
+        if not active and self._refresh_pending:
+            self.refresh()
 
     def _details_finished(self, result):
         super()._details_finished(result)
@@ -6140,7 +5425,6 @@ class RotationScannerWidget(LeadershipTimelineWidget):
                 self.leadership.details_changed.disconnect(self._refresh_detail_view)
             except (RuntimeError, TypeError):
                 pass
-        self.load_timer.stop()
         self.cancel.set()
         self._load_pending = False
         self.generation += 1
@@ -6154,8 +5438,7 @@ class RotationScannerWidget(LeadershipTimelineWidget):
             leadership.data_changed.connect(self._leaders_changed)
             leadership.details_changed.connect(self._refresh_detail_view)
             self._adopt_shared_bindings()
-        if self.active:
-            self.refresh(force=True)
+        self.refresh()
 
     def _adopt_shared_bindings(self):
         source = self.leadership
@@ -6180,7 +5463,7 @@ class RotationScannerWidget(LeadershipTimelineWidget):
     def _leaders_changed(self, *, force=False):
         if self.leadership is None or self.closing:
             return
-        if not self.active or self._interaction_paused:
+        if self._interaction_paused:
             self._refresh_pending = True
             return
         force = force or self._rotation_reload_pending
@@ -6198,18 +5481,16 @@ class RotationScannerWidget(LeadershipTimelineWidget):
         fetched = getattr(source, "fetched_for", {})
         pending = any(fetched.get(symbol) != end
                       for symbol in (BENCHMARK, *snapshot["symbols"]))
-        # Publish available completed bars progressively. Failed markets and
-        # same-hour repairs must not freeze the whole scanner until next hour.
+        # The source publishes one completed overview generation at a time.
         self._rotation_reload_pending = False
         self._rotation_source_key = source_key
         self._rotation_snapshot_end = end
         self._rotation_snapshot_complete = not pending
         self._set_end(end)
         self.clock_offset = snapshot["clock_offset"]
-        # Inner maps must also be owned by this snapshot. Repairs to the
-        # source's same-hour history must not alter an already displayed map.
-        self.series = {symbol: dict(rows) for symbol, rows in snapshot["series"].items()}
-        self.spot_series = {symbol: dict(rows) for symbol, rows in snapshot["spot"].items()}
+        # Published bars are immutable; the cache replaces maps on refresh.
+        self.series = dict(snapshot["series"])
+        self.spot_series = dict(snapshot["spot"])
         self.categories = dict(snapshot["categories"])
         self.errors = dict(getattr(source, "errors", {}))
         self._rotation_universe = tuple(symbol for symbol in snapshot["symbols"] if symbol != BENCHMARK)
@@ -6230,8 +5511,7 @@ class RotationScannerWidget(LeadershipTimelineWidget):
         self.eligible_count = len(symbols)
         self.generation += 1
         self._render_dirty = True
-        if self.active:
-            self.render()
+        self.render()
 
     def bind_sources(self, rest, db, watchlist, can_load):
         """Compatibility binding only: no cache restore, loader, or REST jobs."""
@@ -6261,12 +5541,7 @@ class RotationScannerWidget(LeadershipTimelineWidget):
         else:
             self._apply_rotation_universe()
 
-    def _next_batch(self):
-        # Histories are owned exclusively by Leaders.
-        return
 
-    def _save_cached_state(self):
-        return
 
     def _schedule_details(self):
         # Selection must never start a new REST request.

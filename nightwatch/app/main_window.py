@@ -1808,8 +1808,8 @@ class MainWindow(QtWidgets.QMainWindow):
         chart_column_layout.addWidget(instrument_host)
         chart_column_layout.addWidget(self.chart_surface, 1)
         self.instrument_bar.set_plot_alignment(self.chart_container, instrument_layout)
-        # Build the shells once; Leaders restores its snapshot in a worker and
-        # Sectors starts history work only when its workspace is visible.
+        # Build every overview once. The shared cache restores and prepares
+        # hidden workspaces during startup; navigation only reveals them.
         self.market_board = LeadershipTimelineWidget(self.ui_theme)
         self.market_board.symbol_selected.connect(self._open_market_from_board)
         self.market_board.tracked_changed.connect(self._sync_ticker_streams)
@@ -3451,7 +3451,7 @@ class MainWindow(QtWidgets.QMainWindow):
         market_board = self.market_board
         sector_overview = self.sector_overview
         if market_board is not None:
-            market_board.set_active(index in (1, 3), visible=index == 1)
+            market_board.set_active(index == 1, visible=index == 1)
         if sector_overview is not None:
             sector_overview.set_active(index == 2)
         self.rotation_overview.set_active(index == 3)
