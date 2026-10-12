@@ -59,13 +59,15 @@ process retains shared pixel-buffer capacity across panel resizes, growing it
 only when necessary while keeping the displayed buffer leased until painting.
 
 The order book uses the Prism price ladder: exact prices on a central spine,
-buy and sell size on opposing depth rails, a labeled last-trade/midpoint band,
-and an explicit spread. Visible-depth totals compare only the rows on screen.
+buy and sell size on opposing depth rails, a centered last-trade/midpoint price,
+five-second taker-flow delta on the left and spread on the right. Delta is
+taker-buy minus taker-sell notional in the quote asset; it is signed and shows
+an em dash when trade data is unavailable. Visible-depth totals compare only the rows on screen.
 The bottom controls change tick grouping and base/quote size units; the display
 menu offers compact rows, cumulative totals on wide panels, reduced motion and
 an optional trade tape. Existing color presets and app theme overrides apply.
-There is no duplicate ticker, orderbook title, or routine LIVE badge. The compact
-grouping control shows the actual price step and quote unit, for example 0.1 USDT.
+There is no duplicate ticker, orderbook title, routine LIVE badge, or top column-label
+row. The compact grouping control shows only the multiplier, for example 1× or 250×.
 The mouse wheel over the book changes grouping: up for finer price detail,
 down for coarser buckets. At large grouping, the ladder fits the real loaded
 buckets and marks their depth boundary with quiet caps; unavailable depth is not zero liquidity.

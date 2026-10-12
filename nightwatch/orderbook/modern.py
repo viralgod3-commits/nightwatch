@@ -116,9 +116,9 @@ def _geometry(width, height, density, price_width, totals):
     # Grow whitespace gradually. A larger panel must never suddenly show fewer
     # levels because it crossed a typography/density breakpoint.
     space = min(1., max(0., (height-340)/320))
-    header = 0
-    labels, center, footer = (round(a+(b-a)*space)
-        for a, b in ((24, 28), (54, 62), (28, 34)))
+    header = labels = 0
+    center, footer = (round(a+(b-a)*space)
+        for a, b in ((54, 62), (28, 34)))
     available = max(0, height - header - labels - center - footer)
     count = min(120, int(available // (2 * row_height)))
     # Spare height stays in the header/footer, never stretches rows on a feed update.
@@ -343,6 +343,7 @@ class _PrismRenderer(QtWidgets.QWidget):
         self._display_live = live
         chrome = (self.status, snapshot.best_bid if snapshot else 0,
                   snapshot.best_ask if snapshot else 0, self._last_trade(now),
+                  self._trade_delta(),
                   tuple(side_totals), len(visible[0]), len(visible[1]))
         if chrome != self._last_chrome:
             for top, height in ((0, g['header']), (g['center_top'], g['center_height']), (g['footer_top'], g['footer_height'])):
@@ -398,24 +399,6 @@ class _PrismRenderer(QtWidgets.QWidget):
     def _rect(self, x, y, w, h):
         return QtCore.QRectF(x, y, max(0, w), max(0, h))
 
-    def _paint_labels(self, p):
-        g = self.geometry
-        m, left, right, w = g['margin'], g['price_left'], g['price_right'], g['width']
-        base, quote = _assets(self.config['symbol'])
-        label_y, label_h = g['header']+2, g['labels']-3
-        unit = quote if self.config['values'] == 'quote' else base
-        if left-m < 84:
-            unit = ''  # The adjacent unit control remains explicit at narrow widths.
-        self._text(p, self._rect(left, label_y, right-left, label_h), f'PRICE · {quote}', self.muted,
-                   self.label_font, _ALIGN.AlignHCenter)
-        self._text(p, self._rect(m, label_y, left-m-10, label_h), f'BID · {unit}' if unit else 'BID', self.side_colors['bid'],
-                   self.label_font, _ALIGN.AlignRight)
-        self._text(p, self._rect(right+10, label_y, w-right-m-10, label_h), f'ASK · {unit}' if unit else 'ASK', self.side_colors['ask'],
-                   self.label_font, _ALIGN.AlignLeft)
-        if g['totals']:
-            self._text(p, self._rect(m, label_y, 65, label_h), 'TOTAL', self.muted, self.label_font, _ALIGN.AlignLeft)
-            self._text(p, self._rect(w-m-65, label_y, 65, label_h), 'TOTAL', self.muted, self.label_font)
-
     def _paint_row(self, p, row, bars):
         g = self.geometry
         left, right, m, w = g['price_left'], g['price_right'], g['margin'], g['width']
@@ -455,6 +438,14 @@ class _PrismRenderer(QtWidgets.QWidget):
                        _ALIGN.AlignLeft if bid else _ALIGN.AlignRight)
 
 
+    def _trade_delta(self):
+        source = self.source
+        if (source is None or not source.ready or not self.trade_active
+                or not self._display_live or source.trade_age_seconds is None):
+            return None
+        delta = source.buy_notional_5s - source.sell_notional_5s
+        return delta if math.isfinite(delta) else None
+
     def _paint_center(self, p, now):
         g = self.geometry
         y, h, w, m = g['center_top'], g['center_height'], g['width'], g['margin']
@@ -462,24 +453,38 @@ class _PrismRenderer(QtWidgets.QWidget):
         p.fillRect(self._rect(m, y, w-m*2, 1), self.line)
         p.fillRect(self._rect(m, y+h-1, w-m*2, 1), self.line)
         label, price, side = self._last_trade(now)
-        if not self._display_live:
-            label = 'LAST KNOWN' if self.snapshot is not None else 'WAITING FOR DEPTH'
         color = self.side_colors.get(side, self.accent) if self._display_live else self.muted
-        self._text(p, self._rect(m, y+4, w*.50-m, 17), label, self.muted,
-                   self.label_font, _ALIGN.AlignLeft)
         center_price = self._price(price, native=True)
         if label == 'MID PRICE' and price > 0:
             # A midpoint can be half a native tick; preserve that extra digit.
             decimals = _decimal_places_from_step(self.config['tick']) if self.config['tick'] else 11
             center_price = f'{price:,.{min(16, decimals+1)}f}'
-        self._text(p, self._rect(m, y+21, w*.57-m, h-26), center_price, color,
-                   self.hero_font, _ALIGN.AlignLeft, exact=True)
+        self._text(p, self._rect(g['price_left']+4, y+3,
+                   g['price_right']-g['price_left']-8, h-6), center_price, color,
+                   self.hero_font, _ALIGN.AlignHCenter, exact=True)
+        if not self._display_live:
+            status = 'LAST KNOWN' if self.source is not None and self.source.ready else 'SYNCING'
+            self._text(p, self._rect(g['price_left']+4, y+3,
+                       g['price_right']-g['price_left']-8, 13), status, self.muted,
+                       self.label_font, _ALIGN.AlignHCenter)
+        left_width = max(0., g['price_left']-m-12)
+        quote = _assets(self.config['symbol'])[1]
+        delta = self._trade_delta()
+        delta_text = '—' if delta is None else ('+' if delta > 0 else '−' if delta < 0 else '') + _amount(abs(delta))
+        delta_color = (self.side_colors['bid'] if delta is not None and delta > 0 else
+                       self.side_colors['ask'] if delta is not None and delta < 0 else self.muted)
+        self._text(p, self._rect(m, y+4, left_width, 17), f'Δ5s {quote}',
+                   self.muted, self.label_font, _ALIGN.AlignLeft)
+        self._text(p, self._rect(m, y+23, left_width, 23), delta_text,
+                   delta_color, self.number_font, _ALIGN.AlignLeft, exact=True)
+        right_x = g['price_right']+12
+        right_width = max(0., w-m-right_x)
         spread = self.source.spread if self.source else 0.
         spread_text = format_book_price(max(0., spread), _decimal_places_from_step(self.config['tick']) if self.config['tick'] else None) if self.source and self.source.ready else '—'
-        self._text(p, self._rect(w*.61, y+4, w*.39-m, 17), 'SPREAD', self.muted, self.label_font)
-        self._text(p, self._rect(w*.61, y+22, w*.39-m, 20), spread_text, self.ink, self.number_font, exact=True)
+        self._text(p, self._rect(right_x, y+4, right_width, 17), 'SPREAD', self.muted, self.label_font)
+        self._text(p, self._rect(right_x, y+22, right_width, 20), spread_text, self.ink, self.number_font, exact=True)
         bps = f'{self.source.spread_bps:.2f} bps' if self.source and self.source.ready else '—'
-        self._text(p, self._rect(w*.61, y+h-18, w*.39-m, 14), bps, self.muted, self.label_font)
+        self._text(p, self._rect(right_x, y+h-18, right_width, 14), bps, self.muted, self.label_font)
 
     def _paint_footer(self, p):
         g = self.geometry
@@ -518,7 +523,6 @@ class _PrismRenderer(QtWidgets.QWidget):
         p.setRenderHint(QtGui.QPainter.RenderHint.TextAntialiasing)
         p.fillRect(self.rect(), self._bg)
         g = self.geometry
-        self._paint_labels(p)
         bars = self._bar_values(now)
         for row in self.rows:
             if dirty.intersects(QtCore.QRect(0, row.top, self.width(), g['row_height'])):
@@ -934,12 +938,12 @@ class PrismCanvas(QtWidgets.QWidget):
             # Label last-known prices immediately if worker scheduling is delayed.
             if frame['status'] in {'LIVE', 'TRADES OFF'} and time.monotonic() >= frame['prices_valid_until']:
                 g = frame['geometry']
-                label_rect = QtCore.QRect(g['margin'], g['center_top']+4,
-                    max(1, int(self.width()*.5)-g['margin']), 17)
+                label_rect = QtCore.QRect(int(g['price_left'])+4, g['center_top']+3,
+                    max(1, int(g['price_right']-g['price_left'])-8), 13)
                 p.fillRect(label_rect, _mix(self.theme['bg'], self.theme['text'], .035))
                 p.setPen(QtGui.QColor(self.theme['muted']))
                 p.setFont(typography_font(TextRole.ORDERBOOK_LABEL))
-                p.drawText(label_rect, _ALIGN.AlignLeft | _ALIGN.AlignVCenter, 'LAST KNOWN')
+                p.drawText(label_rect, _ALIGN.AlignHCenter | _ALIGN.AlignVCenter, 'LAST KNOWN')
             if frame['sequence'] != self._last_painted_sequence and frame['generated_monotonic']:
                 self._last_latency_ms = max(0., (time.monotonic()-frame['generated_monotonic'])*1000)
                 self._latency_samples += 1
@@ -1120,8 +1124,8 @@ class OrderBookWidget(QtWidgets.QWidget):
         toolbar.setSpacing(6)
         self.grouping = QtWidgets.QToolButton(self.controls)
         self.grouping.setPopupMode(QtWidgets.QToolButton.ToolButtonPopupMode.InstantPopup)
-        self.grouping.setAccessibleName('Price step')
-        self.grouping.setToolTip('Price step. Wheel over the book: up = finer, down = coarser. Keyboard: + / −')
+        self.grouping.setAccessibleName('Price grouping')
+        self.grouping.setToolTip('Price grouping. Wheel over the book: up = finer, down = coarser. Keyboard: + / −')
         self._group_menu = QtWidgets.QMenu(self.grouping)
         self._group_actions = {}
         group = QtGui.QActionGroup(self._group_menu)
@@ -1184,15 +1188,12 @@ class OrderBookWidget(QtWidgets.QWidget):
 
     def _sync_controls(self):
         base, quote = _assets(self.symbol)
-        tick = self.price_tick_size
         multiplier = self.canvas.aggregation_multiplier
-        step = format_book_price(tick*multiplier, _decimal_places_from_step(tick, multiplier)) if tick else '—'
-        self.grouping.setText(f'{step} {quote}')
-        self.grouping.setEnabled(tick > 0)
+        self.grouping.setText(f'{multiplier}×')
         self.unit.setText(quote if self.canvas.values == 'quote' else base)
         for value, action in self._group_actions.items():
             self._checked(action, value == multiplier)
-            action.setText(f'{format_book_price(tick*value, _decimal_places_from_step(tick, value))} {quote}' if tick else '—')
+            action.setText(f'{value}×')
         for action, checked in ((self._compact_action, self.canvas.density == 'compact'),
                 (self._totals_action, self.canvas.totals), (self._motion_action, self.canvas.motion),
                 (self._tape_action, self._tape_enabled), (self._tape_mode_action, self._tape_mode == 'ALL')):
@@ -1207,8 +1208,6 @@ class OrderBookWidget(QtWidgets.QWidget):
             self.presentation_changed.emit(self.presentation_state())
 
     def _step_grouping(self, step):
-        if self.price_tick_size <= 0:
-            return
         values = ORDER_FLOW_AGGREGATION_MULTIPLIERS
         index = values.index(self.canvas.aggregation_multiplier)
         target = values[max(0, min(len(values)-1, index+step))]

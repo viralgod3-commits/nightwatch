@@ -14,7 +14,9 @@
 - Keep the trading UI compact and useful to a crypto trader. Omit redundant titles, subtitles, explanatory labels and dedicated rows for them.
 - Do not repeat the current ticker inside the orderbook; it is already shown in the market bar.
 - Do not show routine status badges such as LIVE or headings such as ORDER BOOK and VISIBLE DEPTH. Reclaim their space for prices and trading data.
-- Grouping controls must display the actual price step (exchange tick size times grouping multiplier) with its quote unit, rather than an opaque group number or multiplier.
+- Show grouping as only the multiplier followed by ×, such as 1× or 250×. Do not show a quote-currency increment, quote unit, or Group/Step prefix in this control.
+- Omit the orderbook's top BID / PRICE / ASK column-label row and reclaim its height for prices.
+- Omit LAST TRADE above the midpoint-band price. Center the price on the ladder's price axis; use the left side for useful measured trading information, such as signed five-second taker-flow delta.
 - Reserve exception indicators for conditions that affect trading, such as stale data. Keep stale-price selection safeguards even when normal-state badges are omitted.
 
 ## Commits and pushes
