@@ -3048,11 +3048,11 @@ class WatchlistSidebarWidget(QtWidgets.QWidget):
         self.table.setIconSize(QtCore.QSize(18, 18))
         header = self.table.horizontalHeader()
         header.setSectionResizeMode(0, QtWidgets.QHeaderView.ResizeMode.Fixed)
-        header.resizeSection(0, 18)
+        header.resizeSection(0, 26)
         header.setSectionResizeMode(1, QtWidgets.QHeaderView.ResizeMode.Stretch)
         for column in (2, 3, 4):
             header.setSectionResizeMode(column, QtWidgets.QHeaderView.ResizeMode.Fixed)
-        header.setMinimumSectionSize(18)
+        header.setMinimumSectionSize(26)
         header.setSectionsClickable(True)
         header.setSortIndicatorShown(False)
         header.setDefaultAlignment(
@@ -3240,8 +3240,6 @@ class WatchlistSidebarWidget(QtWidgets.QWidget):
         self.refresh()
 
     def _open_row(self, row: int, _column: int) -> None:
-        if _column == 0:
-            return
         item = self.table.item(row, 1)
         symbol = str(item.data(Qt.ItemDataRole.UserRole) or "") if item else ""
         if symbol:
@@ -3444,7 +3442,14 @@ class WatchlistSidebarWidget(QtWidgets.QWidget):
                 toggle_item = QtWidgets.QTableWidgetItem()
                 toggle_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
                 self.table.setItem(row, 0, toggle_item)
-            toggle_item.setIcon(QtGui.QIcon())
+            # Use the leading header-toggle column for row icons, leaving
+            # pair text aligned with its heading and more room for the name.
+            if static_changed or icon_due:
+                found = coin_icon_exists(symbol)
+                toggle_item.setIcon(watchlist_coin_icon(symbol, self.source.theme))
+                self._icon_refresh_after[symbol] = float("inf") if found else now + 60.0
+                if not found:
+                    self.source.request_icon(symbol)
             toggle_item.setBackground(
                 current_bg if symbol == active_symbol else QtGui.QBrush()
             )
@@ -3479,11 +3484,7 @@ class WatchlistSidebarWidget(QtWidgets.QWidget):
                     item.setData(Qt.ItemDataRole.UserRole, symbol)
                     item.setTextAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
                     if static_changed or icon_due:
-                        found = coin_icon_exists(symbol)
-                        item.setIcon(watchlist_coin_icon(symbol, self.source.theme))
-                        self._icon_refresh_after[symbol] = float("inf") if found else now + 60.0
-                        if not found:
-                            self.source.request_icon(symbol)
+                        item.setIcon(QtGui.QIcon())
                         item.setToolTip("Right-click to remove from watchlist")
                     item.setForeground(
                         QtGui.QColor(self.source.theme["cyan"])
