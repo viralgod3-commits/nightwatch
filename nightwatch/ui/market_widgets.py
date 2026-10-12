@@ -46,6 +46,16 @@ from ..models import (
 _WATCHLIST_ICON_CACHE: dict[tuple[str, int, str, str, str], QtGui.QIcon] = {}
 
 
+def _watchlist_row_font(role: str) -> QtGui.QFont:
+    """Use a dense row face without changing the app-wide typography roles."""
+    font = typography_font(role)
+    if font.pixelSize() > 0:
+        font.setPixelSize(max(1, font.pixelSize() - 1))
+    else:
+        font.setPointSizeF(max(1.0, font.pointSizeF() - 0.75))
+    return font
+
+
 _WATCHLIST_WIDTH_ENVIRONMENT_EVENTS = frozenset(
     event_type
     for name in (
@@ -2462,6 +2472,7 @@ class WatchlistWidget(QtWidgets.QWidget):
         self.table.cellDoubleClicked.connect(self._open_row)
         self.add_button.clicked.connect(self.add_current)
         self.remove_button.clicked.connect(self.remove_selected)
+        typography_controller().changed.connect(self._typography_changed)
         layout.addLayout(controls)
         layout.addWidget(self.table)
         self.refresh()
@@ -2782,7 +2793,7 @@ class WatchlistWidget(QtWidgets.QWidget):
                 item = self.table.item(row, column)
                 if item is None:
                     item = QtWidgets.QTableWidgetItem()
-                    item.setFont(typography_font(TextRole.INSTRUMENT_SYMBOL if column == 0 else TextRole.TABLE_VALUE))
+                    item.setFont(_watchlist_row_font(TextRole.INSTRUMENT_SYMBOL if column == 0 else TextRole.TABLE_VALUE))
                     self.table.setItem(row, column, item)
                 if item.text() != value:
                     item.setText(value)
@@ -2827,6 +2838,15 @@ class WatchlistWidget(QtWidgets.QWidget):
     def apply_theme(self, theme: dict[str, str]) -> None:
         self.theme = theme
         self.refresh()
+
+    def _typography_changed(self) -> None:
+        for row in range(self.table.rowCount()):
+            for column in range(self.table.columnCount()):
+                item = self.table.item(row, column)
+                if item is not None:
+                    role = TextRole.INSTRUMENT_SYMBOL if column == 0 else TextRole.TABLE_VALUE
+                    item.setFont(_watchlist_row_font(role))
+        self.refresh(force=True)
 
 
 class WatchlistHeaderView(QtWidgets.QHeaderView):
@@ -3156,7 +3176,7 @@ class WatchlistSidebarWidget(QtWidgets.QWidget):
                 item = self.table.item(row, column)
                 if item is not None:
                     role = TextRole.UI_BODY if column == 1 else TextRole.TABLE_VALUE
-                    item.setFont(typography_font(role))
+                    item.setFont(_watchlist_row_font(role))
         self._invalidate_numeric_widths()
         self._pending_numeric_resizes.update((2, 3, 4))
         self.refresh()
@@ -3341,9 +3361,8 @@ class WatchlistSidebarWidget(QtWidgets.QWidget):
             symbol = str(pair_item.data(Qt.ItemDataRole.UserRole) or "") if pair_item else ""
             if coin_base_symbol(symbol) != base:
                 continue
-            icon_item = self.table.item(row, 0)
-            if icon_item is not None:
-                icon_item.setIcon(watchlist_coin_icon(symbol, self.source.theme))
+            if pair_item is not None:
+                pair_item.setIcon(watchlist_coin_icon(symbol, self.source.theme))
                 self._row_display_signatures.pop(row, None)
                 self._icon_refresh_after[symbol] = float("inf")
 
@@ -3420,19 +3439,13 @@ class WatchlistSidebarWidget(QtWidgets.QWidget):
             if signature == previous and not icon_due:
                 continue
             static_changed = previous is None or (previous[0], previous[-1]) != (symbol, style_key)
-            icon_item = self.table.item(row, 0)
-            if icon_item is None:
-                icon_item = QtWidgets.QTableWidgetItem()
-                icon_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-                self.table.setItem(row, 0, icon_item)
-            if static_changed or icon_due:
-                found = coin_icon_exists(symbol)
-                icon_item.setIcon(watchlist_coin_icon(symbol, self.source.theme))
-                self._icon_refresh_after[symbol] = float("inf") if found else now + 60.0
-                if not found:
-                    self.source.request_icon(symbol)
-                icon_item.setToolTip("Right-click to remove from watchlist")
-            icon_item.setBackground(
+            toggle_item = self.table.item(row, 0)
+            if toggle_item is None:
+                toggle_item = QtWidgets.QTableWidgetItem()
+                toggle_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                self.table.setItem(row, 0, toggle_item)
+            toggle_item.setIcon(QtGui.QIcon())
+            toggle_item.setBackground(
                 current_bg if symbol == active_symbol else QtGui.QBrush()
             )
 
@@ -3440,7 +3453,7 @@ class WatchlistSidebarWidget(QtWidgets.QWidget):
                 item = self.table.item(row, column)
                 if item is None:
                     item = QtWidgets.QTableWidgetItem()
-                    item.setFont(typography_font(TextRole.UI_BODY if column == 1 else TextRole.TABLE_VALUE))
+                    item.setFont(_watchlist_row_font(TextRole.UI_BODY if column == 1 else TextRole.TABLE_VALUE))
                     self.table.setItem(row, column, item)
                 if item.text() != value:
                     item.setText(value)
@@ -3464,6 +3477,14 @@ class WatchlistSidebarWidget(QtWidgets.QWidget):
                     )
                 if column == 1:
                     item.setData(Qt.ItemDataRole.UserRole, symbol)
+                    item.setTextAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+                    if static_changed or icon_due:
+                        found = coin_icon_exists(symbol)
+                        item.setIcon(watchlist_coin_icon(symbol, self.source.theme))
+                        self._icon_refresh_after[symbol] = float("inf") if found else now + 60.0
+                        if not found:
+                            self.source.request_icon(symbol)
+                        item.setToolTip("Right-click to remove from watchlist")
                     item.setForeground(
                         QtGui.QColor(self.source.theme["cyan"])
                         if symbol == active_symbol
