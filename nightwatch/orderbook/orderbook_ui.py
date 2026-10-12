@@ -5910,7 +5910,7 @@ class _DomRasterCanvas(QtWidgets.QWidget):
                                     Qt.AlignmentFlag.AlignRight, font=self._profile_annotation_font, pad=3.0)
 
     def _prepare_profile_center(self) -> None:
-        """Prepare exact last price and resting-depth delta once per change."""
+        """Prepare last price, side totals and resting-depth delta once per change."""
         snapshot, g = self.snapshot, self._geometry
         if snapshot is None or not snapshot.ready:
             self._profile_center_key = None
@@ -5920,7 +5920,7 @@ class _DomRasterCanvas(QtWidgets.QWidget):
         value = self._last_trade_price if last else snapshot.midpoint or snapshot.microprice
         bid, ask = self._profile_ruler_totals
         delta = bid - ask
-        key = (value, last, self._last_trade_side, delta, snapshot.midpoint, self.price_tick_size, self.price_decimals,
+        key = (value, last, self._last_trade_side, bid, ask, snapshot.midpoint, self.price_tick_size, self.price_decimals,
                self._value_mode, self.symbol, g['width'], g['center_top'], g['center_height'],
                self._center_price_font.toString(), self._profile_bg.rgba(), self._text.rgba(),
                self._muted.rgba(), self._bid.rgba(), self._ask.rgba())
@@ -5947,6 +5947,23 @@ class _DomRasterCanvas(QtWidgets.QWidget):
         self._profile_center_items = (
             (price_rect, price_text, self._text, Qt.AlignmentFlag.AlignHCenter, font),
         )
+        # Put side totals in the unused wings without moving the focal price.
+        price_width = QtGui.QFontMetricsF(font).horizontalAdvance(price_text)
+        wing_width = max(0.0, (width - price_width) * .5 - inset - 12.0)
+        side_font = self._profile_annotation_font
+        side_metrics = QtGui.QFontMetricsF(side_font)
+        side_texts = tuple(
+            f'{side.title()} {self._compact_scalar(total) if total else "0"}'
+            for side, total in (('bid', bid), ('ask', ask))
+        )
+        if all(side_metrics.horizontalAdvance(text) <= wing_width for text in side_texts):
+            for side, text, left, alignment in (
+                ('bid', side_texts[0], inset, Qt.AlignmentFlag.AlignLeft),
+                ('ask', side_texts[1], width - inset - wing_width, Qt.AlignmentFlag.AlignRight),
+            ):
+                self._profile_center_items += ((
+                    QtCore.QRectF(left, price_rect.top(), wing_width, price_rect.height()),
+                    text, self._profile_colors[side], alignment, side_font),)
         # Keep source, depth delta and units together as one centered readout.
         # Compact sizes avoid a long token count dominating the current price.
         amount = f'{delta_text} {unit}'
@@ -5978,7 +5995,7 @@ class _DomRasterCanvas(QtWidgets.QWidget):
             Qt.AlignmentFlag.AlignLeft, amount_font),)
 
     def _draw_profile_midpoint(self, painter: QtGui.QPainter) -> None:
-        """Last trade (or labeled midpoint fallback) above resting-depth delta."""
+        """Last price between side totals, above the resting-depth delta."""
         g = self._geometry
         top, bottom = float(g['center_top']), float(g['center_bottom'])
         width, height = float(g['width']), max(0.0, float(g['center_height']))
