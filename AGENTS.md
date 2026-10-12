@@ -11,6 +11,7 @@
 
 ## Commits and pushes
 
+- Always use the connected GitHub account route to publish changes directly to main. Local Git CLI credentials are not required; do not stop or ask for credentials when that connection is available.
 - Keep repository work to pulling current source and pushing task changes directly to main. Do not add PR workflows or GitHub Actions integrations.
 - Do not run integration tests unless the task involves a large code change. Do not add automated GitHub integration checks.
 

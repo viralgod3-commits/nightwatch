@@ -43,16 +43,16 @@ from ..models import (
 )
 
 
-_WATCHLIST_ICON_CACHE: dict[tuple[str, int, str, str, str, int], QtGui.QIcon] = {}
+_WATCHLIST_ICON_CACHE: dict[tuple[str, int, str, str, str], QtGui.QIcon] = {}
 
 
 def _watchlist_row_font(role: str) -> QtGui.QFont:
     """Use a dense row face without changing the app-wide typography roles."""
     font = typography_font(role)
-    pixels = font.pixelSize()
-    if pixels <= 0:
-        pixels = round(QtGui.QFontInfo(font).pixelSize())
-    font.setPixelSize(max(1, pixels if role == TextRole.INSTRUMENT_SYMBOL else pixels - 1))
+    if font.pixelSize() > 0:
+        font.setPixelSize(max(1, font.pixelSize() - 1))
+    else:
+        font.setPointSizeF(max(1.0, font.pointSizeF() - 0.75))
     return font
 
 
@@ -667,7 +667,6 @@ def invalidate_watchlist_coin_icon(symbol: str) -> None:
 def watchlist_coin_icon(
     symbol: str,
     theme: dict[str, str] | None = None,
-    size: int = 18,
 ) -> QtGui.QIcon:
     """Return a DPR-aware icon loaded from assets/icons with an initials fallback."""
     base = coin_base_symbol(symbol)
@@ -678,15 +677,15 @@ def watchlist_coin_icon(
     screen = QtGui.QGuiApplication.primaryScreen()
     dpr = max(1.0, float(screen.devicePixelRatio()) if screen is not None else 1.0)
     dpr_key = max(1, int(round(dpr * 100.0)))
-    cache_key = (base, dpr_key, outline, surface, ink, size)
+    cache_key = (base, dpr_key, outline, surface, ink)
     if cache_key in _WATCHLIST_ICON_CACHE:
         return _WATCHLIST_ICON_CACHE[cache_key]
     source = QtGui.QPixmap()
     payload = coin_icon_bytes(base)
     if payload:
         source.loadFromData(payload)
-    logical_size = float(size)
-    physical_size = max(size, int(math.ceil(logical_size * dpr)))
+    logical_size = 18.0
+    physical_size = max(18, int(math.ceil(logical_size * dpr)))
     canvas = QtGui.QPixmap(physical_size, physical_size)
     canvas.setDevicePixelRatio(dpr)
     canvas.fill(Qt.GlobalColor.transparent)
@@ -700,7 +699,7 @@ def watchlist_coin_icon(
     else:
         painter.setPen(QtGui.QPen(QtGui.QColor(outline), 1))
         painter.setBrush(QtGui.QColor(surface))
-        painter.drawEllipse(QtCore.QRectF(1, 1, size - 2, size - 2))
+        painter.drawEllipse(QtCore.QRectF(1, 1, 16, 16))
         painter.setFont(typography_font(TextRole.ICON_FALLBACK))
         painter.setPen(QtGui.QColor(ink))
         painter.drawText(logical_rect, Qt.AlignmentFlag.AlignCenter, base[:2])
@@ -2984,24 +2983,6 @@ class WatchlistHeaderView(QtWidgets.QHeaderView):
         self.updateSection(0)
 
 
-class WatchlistIconDelegate(QtWidgets.QStyledItemDelegate):
-    """Center row icons on the header toggle without style decoration insets."""
-
-    def paint(self, painter, option, index):
-        opt = QtWidgets.QStyleOptionViewItem(option)
-        self.initStyleOption(opt, index)
-        icon = opt.icon
-        opt.icon = QtGui.QIcon()
-        opt.features &= ~QtWidgets.QStyleOptionViewItem.ViewItemFeature.HasDecoration
-        style = opt.widget.style() if opt.widget else QtWidgets.QApplication.style()
-        style.drawControl(QtWidgets.QStyle.ControlElement.CE_ItemViewItem, opt, painter, opt.widget)
-        size = option.decorationSize.boundedTo(option.rect.size())
-        rect = QtCore.QRect(QtCore.QPoint(), size)
-        rect.moveCenter(option.rect.center())
-        mode = QtGui.QIcon.Mode.Normal if opt.state & QtWidgets.QStyle.StateFlag.State_Enabled else QtGui.QIcon.Mode.Disabled
-        icon.paint(painter, rect, Qt.AlignmentFlag.AlignCenter, mode)
-
-
 class WatchlistTableWidget(QtWidgets.QTableWidget):
     """Table whose internal row drag delegates ordering to canonical state."""
 
@@ -3097,21 +3078,16 @@ class WatchlistSidebarWidget(QtWidgets.QWidget):
         self.table = WatchlistTableWidget(0, 5)
         self.table.setObjectName("sidebarWatchlistTable")
         self.watchlist_header = WatchlistHeaderView(source.theme, self.table)
-        self.watchlist_header.setStyleSheet(
-            "QHeaderView::section:first { padding-left: 6px; padding-right: 6px; }"
-        )
         self.table.setHorizontalHeader(self.watchlist_header)
         self.table.setHorizontalHeaderLabels(("", "PAIR", "LAST", "1H", "24H"))
-        self.table.setIconSize(QtCore.QSize(14, 14))
-        self.table.setItemDelegateForColumn(0, WatchlistIconDelegate(self.table))
+        self.table.setIconSize(QtCore.QSize(18, 18))
         header = self.table.horizontalHeader()
         header.setSectionResizeMode(0, QtWidgets.QHeaderView.ResizeMode.Fixed)
-        header.setMinimumSectionSize(20)
         header.resizeSection(0, 20)
         header.setSectionResizeMode(1, QtWidgets.QHeaderView.ResizeMode.Stretch)
         for column in (2, 3, 4):
             header.setSectionResizeMode(column, QtWidgets.QHeaderView.ResizeMode.Fixed)
-        header.setMinimumSectionSize(15)
+        header.setMinimumSectionSize(20)
         header.setSectionsClickable(True)
         header.setSortIndicatorShown(False)
         header.setDefaultAlignment(
@@ -3419,7 +3395,7 @@ class WatchlistSidebarWidget(QtWidgets.QWidget):
             if coin_base_symbol(symbol) != base:
                 continue
             if pair_item is not None:
-                pair_item.setIcon(watchlist_coin_icon(symbol, self.source.theme, size=14))
+                pair_item.setIcon(watchlist_coin_icon(symbol, self.source.theme))
                 self._row_display_signatures.pop(row, None)
                 self._icon_refresh_after[symbol] = float("inf")
 
@@ -3505,7 +3481,7 @@ class WatchlistSidebarWidget(QtWidgets.QWidget):
             # pair text aligned with its heading and more room for the name.
             if static_changed or icon_due:
                 found = coin_icon_exists(symbol)
-                toggle_item.setIcon(watchlist_coin_icon(symbol, self.source.theme, size=14))
+                toggle_item.setIcon(watchlist_coin_icon(symbol, self.source.theme))
                 self._icon_refresh_after[symbol] = float("inf") if found else now + 60.0
                 if not found:
                     self.source.request_icon(symbol)
@@ -3520,8 +3496,11 @@ class WatchlistSidebarWidget(QtWidgets.QWidget):
                     font = _watchlist_row_font(
                         TextRole.UI_BODY if column == 1 else TextRole.TABLE_VALUE
                     )
-                    if column == 1 and font.pixelSize() > 0:
-                        font.setPixelSize(font.pixelSize() + 1)
+                    if column == 1:
+                        if font.pixelSize() > 0:
+                            font.setPixelSize(max(1, font.pixelSize() - 1))
+                        else:
+                            font.setPointSizeF(max(1.0, font.pointSizeF() - 0.75))
                     item.setFont(font)
                     self.table.setItem(row, column, item)
                 if item.text() != value:
