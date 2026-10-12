@@ -3048,11 +3048,11 @@ class WatchlistSidebarWidget(QtWidgets.QWidget):
         self.table.setIconSize(QtCore.QSize(18, 18))
         header = self.table.horizontalHeader()
         header.setSectionResizeMode(0, QtWidgets.QHeaderView.ResizeMode.Fixed)
-        header.resizeSection(0, 26)
+        header.resizeSection(0, 20)
         header.setSectionResizeMode(1, QtWidgets.QHeaderView.ResizeMode.Stretch)
         for column in (2, 3, 4):
             header.setSectionResizeMode(column, QtWidgets.QHeaderView.ResizeMode.Fixed)
-        header.setMinimumSectionSize(26)
+        header.setMinimumSectionSize(20)
         header.setSectionsClickable(True)
         header.setSortIndicatorShown(False)
         header.setDefaultAlignment(
@@ -3458,7 +3458,15 @@ class WatchlistSidebarWidget(QtWidgets.QWidget):
                 item = self.table.item(row, column)
                 if item is None:
                     item = QtWidgets.QTableWidgetItem()
-                    item.setFont(_watchlist_row_font(TextRole.UI_BODY if column == 1 else TextRole.TABLE_VALUE))
+                    font = _watchlist_row_font(
+                        TextRole.UI_BODY if column == 1 else TextRole.TABLE_VALUE
+                    )
+                    if column == 1:
+                        if font.pixelSize() > 0:
+                            font.setPixelSize(max(1, font.pixelSize() - 1))
+                        else:
+                            font.setPointSizeF(max(1.0, font.pointSizeF() - 0.75))
+                    item.setFont(font)
                     self.table.setItem(row, column, item)
                 if item.text() != value:
                     item.setText(value)

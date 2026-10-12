@@ -3157,7 +3157,7 @@ class MainWindow(QtWidgets.QMainWindow):
             header = table.horizontalHeader()
             header.setTextElideMode(Qt.TextElideMode.ElideRight)
             header.setMinimumSectionSize(
-                26 if table.objectName() == "sidebarWatchlistTable" else 34
+                20 if table.objectName() == "sidebarWatchlistTable" else 34
             )
         for combo in target.findChildren(QtWidgets.QComboBox):
             combo.view().setTextElideMode(Qt.TextElideMode.ElideRight)
