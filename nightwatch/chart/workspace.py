@@ -32,6 +32,7 @@ from .rendering import (
     NativeAreaItem, NativeBandItem,
 )
 from .retained import RetainedChartItems
+from .axis import CachedAxisPainting
 from .super_trades import SuperTradeOverlay
 from ..orderbook.super_trades import SuperTradeFrame
 from ..utilities import alpha_color, TextRole, format_local_time, set_text_role, typography_controller, typography_font
@@ -253,7 +254,7 @@ def _log_price_axis_ticks(
     return ticks
 
 
-class PriceAxisItem(pg.AxisItem):
+class PriceAxisItem(CachedAxisPainting, pg.AxisItem):
     manual_scale_requested = Signal()
 
     def __init__(self, *args: Any, **kwargs: Any):
@@ -338,7 +339,7 @@ class PriceAxisItem(pg.AxisItem):
             self._drag_range = None
 
 
-class ScalableStudyAxisItem(pg.AxisItem):
+class ScalableStudyAxisItem(CachedAxisPainting, pg.AxisItem):
     """Right-side study axis with TradingView-style vertical drag scaling."""
 
     manual_scale_requested = Signal()
@@ -1112,7 +1113,7 @@ def _chart_axis_font() -> QtGui.QFont:
     return typography_font(TextRole.CHART_AXIS)
 
 
-class TimeAxisItem(pg.DateAxisItem):
+class TimeAxisItem(CachedAxisPainting, pg.DateAxisItem):
     """Keep calendar ticks and formatting bounded by pixels on every zoom level."""
 
     def __init__(self, *args: Any, **kwargs: Any):

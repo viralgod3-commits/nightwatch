@@ -63,6 +63,12 @@ own thread so a queue of profile calculations cannot delay a live study update.
 The feed parser observes the same GUI-core reservation as the other workers.
 GPU chart drawing and display pacing are unchanged.
 
+Chart axes retain shaped tick text and its measurements while panning. Qt's
+OpenGL painter can reuse the glyphs instead of laying out every label again on
+each frame. Tick selection, price precision and clipping still use the existing
+axis rules; font/DPI changes invalidate the bounded caches. Unchanged axis-label
+HTML no longer triggers repeated text-document and layout updates during pans.
+
 Chart preparation workers build an immutable multiresolution candle index for
 wide zooms and live aggregate updates (about 2 MB for 250,000 contiguous candles).
 Older history is fetched and adopted during held pans. The order-book rendering
