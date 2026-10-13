@@ -68,6 +68,14 @@ OpenGL painter can reuse the glyphs instead of laying out every label again on
 each frame. Tick selection, price precision and clipping still use the existing
 axis rules; font/DPI changes invalidate the bounded caches. Unchanged axis-label
 HTML no longer triggers repeated text-document and layout updates during pans.
+Hidden axes disconnect from camera signals; the shared time axis reconnects to
+the current range when its visible study row changes.
+
+During navigation, each prepared frame flushes its window's pending Qt paint
+before another batch of producer events. OpenGL composition feedback still gates
+the next frame. Synchronous completions yield to input and timers before preparing
+again, so faster drawing cannot turn into an uninterrupted repaint loop. Idle
+updates keep Qt's normal coalescing.
 
 Chart preparation workers build an immutable multiresolution candle index for
 wide zooms and live aggregate updates (about 2 MB for 250,000 contiguous candles).

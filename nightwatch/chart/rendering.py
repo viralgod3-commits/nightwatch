@@ -3193,6 +3193,15 @@ class ChartGraphicsView(pg.GraphicsLayoutWidget):
         if clock is not None:
             clock.frame_submitted(viewport)
         viewport.update()
+        if required:
+            # Preparation already coalesced this frame outside painting. Flush
+            # only its window's pending Qt paint, before more producer work can
+            # delay the camera. repaint() alone is insufficient: Qt defers it
+            # again shortly after an OpenGL composition. Qt still owns drawing
+            # and composition; the clock awaits the real swap before advancing.
+            QtCore.QCoreApplication.sendPostedEvents(
+                viewport.window(), QtCore.QEvent.Type.UpdateRequest,
+            )
         return True
 
     def paintEvent(self, event):

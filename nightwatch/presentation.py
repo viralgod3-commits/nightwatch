@@ -208,6 +208,7 @@ class PresentationClock(QtCore.QObject):
         self._owner = owner
         self._requested = False
         self._flushing = False
+        self._presenting = False
         self._frame_timestamps: deque[float] = deque()
         self._next_frame_deadline = 0.0
         self._pacing_source = None
@@ -269,7 +270,7 @@ class PresentationClock(QtCore.QObject):
         return display_frame_interval_ms(self._owner)
 
     def set_frame_presenter(self, presenter: Callable[[], bool]) -> None:
-        """Bind a chart's asynchronous viewport-update boundary, once."""
+        """Bind a chart's viewport-update boundary, once, outside painting."""
         self._frame_presenter = presenter
 
     def set_driver_clock(self, clock: PresentationClock | None) -> None:
@@ -368,9 +369,18 @@ class PresentationClock(QtCore.QObject):
 
 
         if epoch == self._frame_epoch and source is self._pacing_source:
-            submitted = self._frame_presenter()
+            self._presenting = True
+            try:
+                submitted = self._frame_presenter()
+            finally:
+                self._presenting = False
             if submitted:
                 self._final_frame_requested = False
+                # A synchronous completion must yield to native input/timers
+                # before posting another preparation. Otherwise the nested Qt
+                # paint flush can keep drawing ahead of the next mouse sample.
+                if not self.frame_pending() and (self._continuous or self._requested):
+                    self._timer.start(0)
             elif not self.frame_pending():
                 if self.presentation_required():
                     self._requested |= self._final_frame_requested
@@ -566,7 +576,7 @@ class PresentationClock(QtCore.QObject):
         self._schedule_frame(immediate=immediate)
 
     def _schedule_frame(self, *, immediate: bool = False) -> None:
-        if self._flushing or self._painting:
+        if self._flushing or self._painting or self._presenting:
             return
         if self._driver_clock is not None:
             # An unrelated panel can resize without changing chart geometry.

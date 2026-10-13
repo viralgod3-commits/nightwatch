@@ -1704,6 +1704,10 @@ class ChartWorkspace(QtWidgets.QWidget):
             plot.layout.setContentsMargins(0, 0, 0, 0)
             plot.layout.setHorizontalSpacing(0)
             plot.hideAxis("left")
+            # Invisible axes otherwise still format labels, invalidate layouts
+            # and follow every camera change through ViewBox signals.
+            plot.getAxis("left").unlinkFromView()
+            plot.getAxis("top").unlinkFromView()
             plot.showAxis("right")
             right_axis = plot.getAxis("right")
             right_axis.setWidth(self._effective_axis_width)
@@ -8747,9 +8751,13 @@ class ChartWorkspace(QtWidgets.QWidget):
             axis = plot.getAxis("bottom")
             axis.setTickFont(chart_font)
             if plot is owner:
+                if axis.linkedView() is None:
+                    axis.linkToView(plot.getViewBox())
+                    axis.linkedViewChanged(plot.getViewBox())
                 plot.showAxis("bottom")
             else:
                 plot.hideAxis("bottom")
+                axis.unlinkFromView()
 
     def _set_subplot_visible(
         self,
