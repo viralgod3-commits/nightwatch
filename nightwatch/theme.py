@@ -877,7 +877,7 @@ def build_shell_stylesheet(theme_name: str, theme: dict[str, str], surfaces: dic
         }}
 
         /* Continuous data surfaces. */
-        QTableWidget, QListWidget, QTreeView, QListView {{
+        QTableView, QListWidget, QTreeView, QListView {{
             background: {t['panel']};
             alternate-background-color: {t['panel2']};
             color: {t['text']};
@@ -889,17 +889,17 @@ def build_shell_stylesheet(theme_name: str, theme: dict[str, str], surfaces: dic
             selection-color: {t['text']};
         }}
         QTableWidget#tradingDataTable,
-        QTableWidget#symbolSearchResults,
+        QTableView#symbolSearchResults,
         QTableWidget#sidebarWatchlistTable {{
             background: {t['panel']};
             alternate-background-color: {t['panel2']};
             border: 0;
         }}
-        QTableWidget::item, QListWidget::item,
+        QTableView::item, QListWidget::item,
         QTreeView::item, QListView::item {{
             border: 0;
         }}
-        QTableWidget::item:selected, QListWidget::item:selected,
+        QTableView::item:selected, QListWidget::item:selected,
         QTreeView::item:selected, QListView::item:selected {{
             background: {active_bg};
             color: {t['text']};
@@ -1461,12 +1461,12 @@ def build_shell_stylesheet(theme_name: str, theme: dict[str, str], surfaces: dic
             QLabel#searchResultCount {{
                 color: {t['muted']}; padding: 1px 2px 0 2px;
             }}
-            QTableWidget#symbolSearchResults {{
+            QTableView#symbolSearchResults {{
                 background: {t['bg']}; alternate-background-color: {t['panel2']};
                 border: 1px solid {control_border}; border-radius: {radius}; outline: 0;
             }}
-            QTableWidget#symbolSearchResults::item {{ padding: 3px 7px; }}
-            QTableWidget#symbolSearchResults::item:selected {{
+            QTableView#symbolSearchResults::item {{ padding: 3px 7px; }}
+            QTableView#symbolSearchResults::item:selected {{
                 background: {control_hover}; color: {t['text']};
             }}
             QPushButton, QToolButton {{
@@ -1564,16 +1564,16 @@ def build_shell_stylesheet(theme_name: str, theme: dict[str, str], surfaces: dic
             }}
             QPushButton#dangerButton {{ color: {t['red']}; border-color: {t['red']}; }}
             QPushButton#filterPreset {{ padding: 3px 5px; }}
-            QTableWidget, QListWidget {{
+            QTableView, QListWidget {{
                 background: {t['bg']}; alternate-background-color: {t['panel2']};
                 border: 1px solid {control_border}; border-radius: {radius}; gridline-color: {t['border']};
                 selection-background-color: {control_hover}; selection-color: {t['text']};
                 outline: 0;
             }}
-            QTableWidget {{
+            QTableView {{
             }}
-            QTableWidget::item, QListWidget::item {{ padding: 3px 6px; }}
-            QTableWidget::item:selected, QListWidget::item:selected {{
+            QTableView::item, QListWidget::item {{ padding: 3px 6px; }}
+            QTableView::item:selected, QListWidget::item:selected {{
                 background: {control_hover}; color: {t['text']};
             }}
             QHeaderView::section {{

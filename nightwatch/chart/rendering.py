@@ -1009,19 +1009,9 @@ class PixelBarBatch:
             self._rect_batches = []
             self._cpu_image = QtGui.QImage()
             self._cpu_bounds = QtCore.QRectF()
-            for brush, rects in self.batches:
-                # Overlapping translucent rectangles must blend once, as a
-                # winding-fill union. Opaque batches need no polygon roundtrip.
-                ordered = sorted(rects, key=lambda rect: rect.left())
-                disjoint = all(a.right() <= b.left() for a, b in zip(ordered, ordered[1:]))
-                path = None
-                if not disjoint:
-                    path = QtGui.QPainterPath()
-                    path.setFillRule(Qt.FillRule.WindingFill)
-                    if not brush.isOpaque():
-                        for rect in rects:
-                            path.addRect(rect)
-                self._rect_batches.append((brush, rects, disjoint, path))
+            # Opaque rectangles need no overlap sort or winding-fill path.
+            # Resolve those only if this batch is actually drawn translucent.
+            self._rect_batches = [(brush, rects, None, None) for brush, rects in self.batches]
 
         # The cache uses physical pixels, exactly like the bar geometry. Limit
         # its memory, retain pan margins, and never resample candles on resize.
@@ -1072,14 +1062,24 @@ class PixelBarBatch:
         self._paint_cpu_rectangles(painter)
 
     def _paint_cpu_rectangles(self, painter):
-        for brush, rects, disjoint, path in self._rect_batches:
+        opaque_painter = painter.opacity() == 1.0
+        for index, (brush, rects, disjoint, path) in enumerate(self._rect_batches):
             painter.setBrush(brush)
-            if disjoint or (brush.isOpaque() and painter.opacity() == 1.0):
+            if brush.isOpaque() and opaque_painter:
                 painter.drawRects(rects)
-            else:
-                if path.isEmpty():
+                continue
+            if disjoint is None:
+                ordered = sorted(rects, key=lambda rect: rect.left())
+                disjoint = all(a.right() <= b.left() for a, b in zip(ordered, ordered[1:]))
+                if not disjoint:
+                    path = QtGui.QPainterPath()
+                    path.setFillRule(Qt.FillRule.WindingFill)
                     for rect in rects:
                         path.addRect(rect)
+                self._rect_batches[index] = (brush, rects, disjoint, path)
+            if disjoint:
+                painter.drawRects(rects)
+            else:
                 painter.drawPath(path)
 
     @staticmethod

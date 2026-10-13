@@ -3982,8 +3982,7 @@ class MainWindow(QtWidgets.QMainWindow):
         # Load the visible/query matches first, then complete the full search
         # universe so header sorting is not restricted to the first 120 rows.
         query = dialog.search.text().upper().strip().replace("/", "").replace("-", "")
-        visible = {str(dialog.table.item(row, 0).data(Qt.ItemDataRole.UserRole))
-                   for row in range(dialog.table.rowCount())}
+        visible = set(dialog.visible_symbols())
         self.search_hour_queue.sort(key=lambda symbol: (symbol not in visible, query not in symbol))
         requested = self.search_hour_queue[:24]
         del self.search_hour_queue[:24]

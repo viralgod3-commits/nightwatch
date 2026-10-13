@@ -3584,6 +3584,85 @@ class WatchlistSidebarWidget(QtWidgets.QWidget):
         self.refresh()
 
 
+class _SymbolSearchModel(QtCore.QAbstractTableModel):
+    """Retain search rows without rebuilding hundreds of Qt items per keypress."""
+
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.rows = []
+        self.headers = ["PAIR", "LAST", "1H CHANGE", "24H CHANGE", "24H USDT VOLUME"]
+        self._alignment = Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+        self._refresh_fonts()
+        typography_controller().changed.connect(self._refresh_fonts)
+
+    def _refresh_fonts(self):
+        self._fonts = (typography_font(TextRole.INSTRUMENT_SYMBOL),
+                       typography_font(TextRole.TABLE_VALUE))
+        if self.rows:
+            self.dataChanged.emit(self.index(0, 0), self.index(len(self.rows) - 1, 4),
+                                  [Qt.ItemDataRole.FontRole])
+
+    def rowCount(self, parent=QtCore.QModelIndex()):
+        return 0 if parent.isValid() else len(self.rows)
+
+    def columnCount(self, parent=QtCore.QModelIndex()):
+        return 0 if parent.isValid() else 5
+
+    def headerData(self, section, orientation, role=Qt.ItemDataRole.DisplayRole):
+        if orientation == Qt.Orientation.Horizontal and role == Qt.ItemDataRole.DisplayRole:
+            return self.headers[section] if 0 <= section < len(self.headers) else None
+        return super().headerData(section, orientation, role)
+
+    def set_volume_header(self, text):
+        if self.headers[4] != text:
+            self.headers[4] = text
+            self.headerDataChanged.emit(Qt.Orientation.Horizontal, 4, 4)
+
+    def data(self, index, role=Qt.ItemDataRole.DisplayRole):
+        if not index.isValid() or not 0 <= index.row() < len(self.rows):
+            return None
+        symbol, values, colors = self.rows[index.row()]
+        column = index.column()
+        if role == Qt.ItemDataRole.DisplayRole:
+            return values[column]
+        if role == Qt.ItemDataRole.UserRole:
+            return symbol
+        if role == Qt.ItemDataRole.ForegroundRole:
+            return colors[column]
+        if role == Qt.ItemDataRole.FontRole:
+            return self._fonts[column != 0]
+        if role == Qt.ItemDataRole.TextAlignmentRole and column:
+            return self._alignment
+        return None
+
+    def set_rows(self, rows):
+        previous = self.rows
+        # Keep the view's scroll/selection state through live ranking changes.
+        # Resizing the model only inserts/removes rows, never recreates cells.
+        if len(rows) > len(previous):
+            self.beginInsertRows(QtCore.QModelIndex(), len(previous), len(rows) - 1)
+            self.rows = previous + rows[len(previous):]
+            self.endInsertRows()
+        elif len(rows) < len(previous):
+            self.beginRemoveRows(QtCore.QModelIndex(), len(rows), len(previous) - 1)
+            self.rows = previous[:len(rows)]
+            self.endRemoveRows()
+        self.rows = rows
+        for row, (old, new) in enumerate(zip(previous, rows)):
+            if old is new:
+                continue
+            if old[0] != new[0]:
+                self.dataChanged.emit(self.index(row, 0), self.index(row, 4),
+                                      [Qt.ItemDataRole.DisplayRole, Qt.ItemDataRole.ForegroundRole,
+                                       Qt.ItemDataRole.UserRole])
+                continue
+            changed = [column for column in range(5)
+                       if old[1][column] != new[1][column] or old[2][column] != new[2][column]]
+            if changed:
+                self.dataChanged.emit(self.index(row, changed[0]), self.index(row, changed[-1]),
+                                      [Qt.ItemDataRole.DisplayRole, Qt.ItemDataRole.ForegroundRole])
+
+
 class SymbolSearchDialog(QtWidgets.QDialog):
     filter_requested = Signal()
     sort_changed = Signal(str)
@@ -3612,6 +3691,7 @@ class SymbolSearchDialog(QtWidgets.QDialog):
         self.volume_values = dict(volume_values or {})
         self.use_volume_override = volume_values is not None
         self.selected_symbol = ""
+        self._row_cache = {}
         self.setObjectName("symbolSearchDialog")
         self.setWindowTitle("Search Binance USD-M markets")
         self.setModal(True)
@@ -3648,9 +3728,10 @@ class SymbolSearchDialog(QtWidgets.QDialog):
         )
         search_row.addWidget(self.search, 1)
         search_row.addWidget(self.filter_button)
-        self.table = QtWidgets.QTableWidget(0, 5)
+        self.table = QtWidgets.QTableView()
         self.table.setObjectName("symbolSearchResults")
-        self.table.setHorizontalHeaderLabels(("PAIR", "LAST", "1H CHANGE", "24H CHANGE", "24H USDT VOLUME"))
+        self._model = _SymbolSearchModel(self.table)
+        self.table.setModel(self._model)
         header = self.table.horizontalHeader()
         header.setSectionsClickable(True)
         header.setSortIndicatorShown(False)
@@ -3663,15 +3744,15 @@ class SymbolSearchDialog(QtWidgets.QDialog):
             )
             self.table.setColumnWidth(column, width)
         self.table.verticalHeader().hide()
+        self.table.verticalHeader().setSectionResizeMode(QtWidgets.QHeaderView.ResizeMode.Fixed)
+        self.table.verticalHeader().setDefaultSectionSize(28)
         self.table.setShowGrid(False)
         self.table.setAlternatingRowColors(True)
         self.table.setEditTriggers(QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers)
         self.table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QtWidgets.QAbstractItemView.SelectionMode.SingleSelection)
-        self.table.itemActivated.connect(self._accept_item)
-        self.table.cellDoubleClicked.connect(
-            lambda row, _column: self._accept_row(row)
-        )
+        self.table.activated.connect(lambda index: self._accept_row(index.row()))
+        self.table.doubleClicked.connect(lambda index: self._accept_row(index.row()))
         self.search.textChanged.connect(self._refresh)
         self.search.returnPressed.connect(self._accept_current)
         self.result_count = QtWidgets.QLabel()
@@ -3696,11 +3777,12 @@ class SymbolSearchDialog(QtWidgets.QDialog):
     def eventFilter(self, watched: QtCore.QObject, event: QtCore.QEvent) -> bool:
         if watched is self.search and event.type() == QtCore.QEvent.Type.KeyPress:
             key = int(event.key())
-            if key in {int(Qt.Key.Key_Down), int(Qt.Key.Key_Up)} and self.table.rowCount():
+            if key in {int(Qt.Key.Key_Down), int(Qt.Key.Key_Up)} and self._model.rowCount():
                 step = 1 if key == int(Qt.Key.Key_Down) else -1
-                row = max(0, min(self.table.rowCount() - 1, self.table.currentRow() + step))
-                self.table.setCurrentCell(row, 0)
-                self.table.scrollToItem(self.table.item(row, 0))
+                row = max(0, min(self._model.rowCount() - 1, self.table.currentIndex().row() + step))
+                index = self._model.index(row, 0)
+                self.table.setCurrentIndex(index)
+                self.table.scrollTo(index)
                 return True
             if key in {int(Qt.Key.Key_Return), int(Qt.Key.Key_Enter)}:
                 self._accept_current()
@@ -3775,7 +3857,7 @@ class SymbolSearchDialog(QtWidgets.QDialog):
             style = self.filter_button.style()
             style.unpolish(self.filter_button)
             style.polish(self.filter_button)
-        self.table.horizontalHeaderItem(4).setText(
+        self._model.set_volume_header(
             f"{timeframe.upper()} USDT VOLUME"
         )
 
@@ -3828,12 +3910,7 @@ class SymbolSearchDialog(QtWidgets.QDialog):
         self._refresh(self.search.text())
 
     def _refresh(self, text: str) -> None:
-        selected_item = self.table.item(self.table.currentRow(), 0)
-        selected_symbol = (
-            str(selected_item.data(Qt.ItemDataRole.UserRole) or "")
-            if selected_item is not None
-            else ""
-        )
+        selected_symbol = str(self.table.currentIndex().data(Qt.ItemDataRole.UserRole) or "")
         query = text.upper().strip().replace("/", "").replace("-", "").removesuffix(".P")
         query_changed = query != getattr(self, "_last_query", None)
         self._last_query = query
@@ -3869,14 +3946,22 @@ class SymbolSearchDialog(QtWidgets.QDialog):
             matches.sort(key=lambda symbol: symbol != query)
         total_matches = len(matches)
         matches = matches[:120]
-        self.table.setUpdatesEnabled(False)
-        self.table.setRowCount(len(matches))
-        for row, symbol in enumerate(matches):
+        colors = {key: QtGui.QColor(self.theme[key]) for key in ("text", "muted", "green", "red")}
+        style_key = tuple(self.theme[key] for key in colors)
+        rows, cache = [], {}
+        for symbol in matches:
             ticker = self.tickers.get(symbol, {})
             price = safe_float(ticker.get("c"))
             change = safe_float(ticker.get("P"))
             hour_change = self.hour_changes.get(symbol)
             volume = self._volume_for(symbol)
+            # Text preserves signed zero; colors also depend on the raw sign.
+            signature = (str(price), str(change), str(hour_change), volume, bool(ticker), style_key)
+            previous = self._row_cache.get(symbol)
+            if previous is not None and previous[0] == signature:
+                cache[symbol] = previous
+                rows.append(previous[1])
+                continue
             values = (
                 symbol,
                 format_price(price) if price else "—",
@@ -3884,36 +3969,20 @@ class SymbolSearchDialog(QtWidgets.QDialog):
                 f"{change:+.2f}%" if ticker else "—",
                 human_number(volume, money=True) if volume else "—",
             )
-            for column, value in enumerate(values):
-                item = self.table.item(row, column)
-                if item is None:
-                    item = QtWidgets.QTableWidgetItem()
-                    item.setFont(
-                        typography_font(
-                            TextRole.INSTRUMENT_SYMBOL if column == 0 else TextRole.TABLE_VALUE
-                        )
-                    )
-                    self.table.setItem(row, column, item)
-                if item.text() != value:
-                    item.setText(value)
-                item.setData(Qt.ItemDataRole.UserRole, symbol)
-                if column > 0:
-                    item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-                if column == 2 and hour_change is not None:
-                    item.setForeground(QtGui.QColor(self.theme["green"] if hour_change >= 0 else self.theme["red"]))
-                elif column == 3 and ticker:
-                    item.setForeground(
-                        QtGui.QColor(self.theme["green"] if change >= 0 else self.theme["red"])
-                    )
-                elif column == 4:
-                    item.setForeground(QtGui.QColor(self.theme["muted"]))
-                else:
-                    item.setForeground(QtGui.QColor(self.theme["text"]))
-            self.table.setRowHeight(row, 28)
-        self.table.setUpdatesEnabled(True)
+            row_colors = (colors["text"], colors["text"],
+                          colors["green" if hour_change >= 0 else "red"] if hour_change is not None else colors["text"],
+                          colors["green" if change >= 0 else "red"] if ticker else colors["text"],
+                          colors["muted"])
+            row = (symbol, values, row_colors)
+            cache[symbol] = (signature, row)
+            rows.append(row)
+        self._row_cache = cache
+        self._model.set_rows(rows)
         if matches:
             selected_row = matches.index(selected_symbol) if not query_changed and selected_symbol in matches else 0
-            self.table.setCurrentCell(selected_row, 0)
+            index = self._model.index(selected_row, 0)
+            if index != self.table.currentIndex():
+                self.table.setCurrentIndex(index)
         active_filter = (
             f" · {self.filter_timeframe.upper()} VOLUME ≥ {human_number(self.minimum_volume)}"
             if self.minimum_volume > 0
@@ -3925,19 +3994,17 @@ class SymbolSearchDialog(QtWidgets.QDialog):
         )
 
     def _accept_current(self) -> None:
-        row = self.table.currentRow()
-        self._accept_row(row)
+        self._accept_row(self.table.currentIndex().row())
 
     def _accept_row(self, row: int) -> None:
-        item = self.table.item(row, 0) if 0 <= row < self.table.rowCount() else None
-        if item is None:
+        index = self._model.index(row, 0)
+        if not index.isValid():
             return
-        self.selected_symbol = str(item.data(Qt.ItemDataRole.UserRole) or item.text())
+        self.selected_symbol = str(index.data(Qt.ItemDataRole.UserRole) or "")
         self.accept()
 
-    def _accept_item(self, item: QtWidgets.QTableWidgetItem) -> None:
-        if item is not None:
-            self._accept_row(item.row())
+    def visible_symbols(self) -> tuple[str, ...]:
+        return tuple(row[0] for row in self._model.rows)
 
 
 class MarketFilterDialog(QtWidgets.QDialog):
