@@ -32,7 +32,7 @@ from .rendering import (
     NativeAreaItem, NativeBandItem,
 )
 from .retained import RetainedChartItems
-from .axis import CachedAxisPainting
+from .axis import CachedAxisPainting, CalendarTickCache, PanningAxisLayout
 from .super_trades import SuperTradeOverlay
 from ..orderbook.super_trades import SuperTradeFrame
 from ..utilities import alpha_color, TextRole, format_local_time, set_text_role, typography_controller, typography_font
@@ -1113,7 +1113,7 @@ def _chart_axis_font() -> QtGui.QFont:
     return typography_font(TextRole.CHART_AXIS)
 
 
-class TimeAxisItem(CachedAxisPainting, pg.DateAxisItem):
+class TimeAxisItem(CachedAxisPainting, PanningAxisLayout, pg.DateAxisItem):
     """Keep calendar ticks and formatting bounded by pixels on every zoom level."""
 
     def __init__(self, *args: Any, **kwargs: Any):
@@ -1127,6 +1127,7 @@ class TimeAxisItem(CachedAxisPainting, pg.DateAxisItem):
                 if spec.autoSkip is None:
                     spec.autoSkip = [1, 2, 3, 6, 12]
         self._time_tick_strings: OrderedDict[tuple, str] = OrderedDict()
+        self._calendar_ticks = CalendarTickCache()
 
     def tickValues(self, minVal: float, maxVal: float, size: float):
         if (
@@ -1140,7 +1141,7 @@ class TimeAxisItem(CachedAxisPainting, pg.DateAxisItem):
         # At most 32 ticks per level (two levels); no loop over empty bar slots.
         budget = max(2, min(32, int(size / 70.0)))
         spacing = max(self.minSpacing, span / budget)
-        return self.zoomLevel.tickValues(minVal, maxVal, minSpc=spacing)
+        return self._calendar_ticks.tick_values(self.zoomLevel, minVal, maxVal, spacing)
 
     def tickStrings(self, values, scale, spacing):
         prefix = (id(self.zoomLevel), self.utcOffset, spacing)
