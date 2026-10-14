@@ -361,46 +361,60 @@ def funding_indices(times, rates, x0, x1, width):
     return np.asarray(sorted(set(chosen)), dtype=np.int64)
 
 
-def prepare_study(kind, rows, smoothing, x0, x1, width):
-    """Prepare OI/funding arrays, exact scaling and display decimation together."""
-    smoothing = max(1, int(smoothing))
-    if kind == "oi":
-        times = np.fromiter((safe_float(r.get("timestamp"))/1000 for r in rows), dtype=float)
-        values = np.fromiter((safe_float(r.get("sumOpenInterestValue"), math.nan) for r in rows), dtype=float)
-        values[~np.isfinite(values) | (values <= 0)] = np.nan
-        if smoothing > len(values):
-            values[:] = np.nan
-        elif smoothing > 1:
-            values = np.r_[np.full(smoothing-1, np.nan), np.convolve(values, np.ones(smoothing)/smoothing, mode="valid")]
-        visible = values[np.searchsorted(times, x0):np.searchsorted(times, x1, side="right")]
-        finite = visible[np.isfinite(visible)]
-        if not len(finite):
-            finite = values[np.isfinite(values)]
-        extent = (float(finite.min()), float(finite.max())) if len(finite) else None
-        shown_x, shown_y, _ = decimate_series(times, values, width)
-        return {"curve": (shown_x, shown_y), "extent": extent}
-    times = np.fromiter((safe_float(r.get("fundingTime"))/1000 for r in rows), dtype=float)
-    rates = np.fromiter((safe_float(r.get("fundingRate"))*100 for r in rows), dtype=float)
-    valid = np.isfinite(times) & np.isfinite(rates) & (times > 0)
-    times, rates = times[valid], rates[valid]
-    order = np.argsort(times, kind="stable")
-    times, rates = times[order], rates[order]
-    smoothed = np.empty_like(rates)
-    previous = math.nan
-    alpha = 2/(smoothing+1)
-    for i, value in enumerate(rates):
-        previous = value if not math.isfinite(previous) else alpha*value+(1-alpha)*previous
-        smoothed[i] = previous
-    a, b = np.searchsorted(times, x0), np.searchsorted(times, x1, side="right")
-    raw, smooth = (rates[a:b], smoothed[a:b]) if b > a else (rates, smoothed)
-    extent = (min(float(raw.min()), float(smooth.min()), 0.), max(float(raw.max()), float(smooth.max()), 0.)) if len(raw) else None
-    selected = funding_indices(times, rates, x0, x1, width)
-    positive = rates[selected] >= 0
-    pos, neg = selected[positive], selected[~positive]
-    spacing = max(1., float(np.median(np.diff(times)))*.6) if len(times)>1 else 5*3600.
-    shown_x, shown_y, _ = decimate_series(times, smoothed, width)
-    return {"curve": (shown_x, shown_y), "positive": (times[pos], rates[pos]),
-            "negative": (times[neg], rates[neg]), "bar_width": spacing, "extent": extent}
+def prepare_study(kind, rows, smoothing, x0, x1, width, source=None):
+    """Retain a pan margin and an exact scale index independent of the camera."""
+    if source is None:
+        smoothing = max(1, int(smoothing))
+        if kind == "oi":
+            times = np.fromiter((safe_float(r.get("timestamp"))/1000 for r in rows), dtype=float)
+            values = np.fromiter((safe_float(r.get("sumOpenInterestValue"), math.nan) for r in rows), dtype=float)
+            valid = np.isfinite(times) & (times > 0)
+            times, values = times[valid], values[valid]
+            order = np.argsort(times, kind="stable")
+            times, values = times[order], values[order]
+            values[~np.isfinite(values) | (values <= 0)] = np.nan
+            if smoothing > len(values):
+                values[:] = np.nan
+            elif smoothing > 1:
+                values = np.r_[np.full(smoothing-1, np.nan), np.convolve(values, np.ones(smoothing)/smoothing, mode="valid")]
+            rates, spacing = None, None
+            index = RangeExtrema(values, values)
+        else:
+            times = np.fromiter((safe_float(r.get("fundingTime"))/1000 for r in rows), dtype=float)
+            rates = np.fromiter((safe_float(r.get("fundingRate"))*100 for r in rows), dtype=float)
+            valid = np.isfinite(times) & np.isfinite(rates) & (times > 0)
+            times, rates = times[valid], rates[valid]
+            order = np.argsort(times, kind="stable")
+            times, rates = times[order], rates[order]
+            values = np.empty_like(rates)
+            previous = math.nan
+            alpha = 2/(smoothing+1)
+            for i, value in enumerate(rates):
+                previous = value if not math.isfinite(previous) else alpha*value+(1-alpha)*previous
+                values[i] = previous
+            index = RangeExtrema(np.minimum(rates, values), np.maximum(rates, values))
+            spacing = max(1., float(np.median(np.diff(times)))*.6) if len(times)>1 else 5*3600.
+        source = (times, values, rates, index, spacing)
+    times, values, rates, index, spacing = source
+    span = max(x1-x0, 1.)
+    window = (x0-span, x1+span)
+    a = max(0, int(np.searchsorted(times, window[0]))-1)
+    b = min(len(times), int(np.searchsorted(times, window[1], side="right"))+1)
+    shown_x, shown_y, _ = decimate_series(times[a:b], values[a:b], width*3)
+    extent = index.query(np.searchsorted(times, x0), np.searchsorted(times, x1, side="right"))
+    if not all(math.isfinite(value) for value in extent):
+        extent = index.query(0, len(times))
+    if not all(math.isfinite(value) for value in extent):
+        extent = None
+    elif kind == "funding":
+        extent = (min(0., extent[0]), max(0., extent[1]))
+    result = {"curve": (shown_x, shown_y), "extent": extent, "source": source, "window": window}
+    if kind == "funding":
+        selected = funding_indices(times, rates, *window, width*3)
+        positive = rates[selected] >= 0
+        pos, neg = selected[positive], selected[~positive]
+        result.update(positive=(times[pos], rates[pos]), negative=(times[neg], rates[neg]), bar_width=spacing)
+    return result
 
 
 def prepare_storage_recovery(payload):

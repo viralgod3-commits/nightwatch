@@ -353,6 +353,18 @@ class PresentationClock(QtCore.QObject):
         """Whether a paint or its composition already owns the next completion."""
         return self._awaiting_paint or self._painting or self._awaiting_swap
 
+    def _advance_prepare_deadline(self, source, now: float) -> None:
+        if self._uses_swap_feedback(source):
+            self._next_frame_deadline = 0.0
+            return
+        # Preserve fractional display periods on surfaces without swap feedback.
+        period = 1.0 / display_refresh_rate(self._owner)
+        previous = self._next_frame_deadline
+        if previous <= 0.0 or now - previous >= period:
+            self._next_frame_deadline = now + period
+        else:
+            self._next_frame_deadline = previous + period
+
     def event(self, event: QtCore.QEvent) -> bool:
         if event.type() != _PREPARE_FRAME_EVENT:
             return super().event(event)
@@ -375,12 +387,13 @@ class PresentationClock(QtCore.QObject):
             finally:
                 self._presenting = False
             if submitted:
+                self._advance_prepare_deadline(source, now)
                 self._final_frame_requested = False
                 # A synchronous completion must yield to native input/timers
                 # before posting another preparation. Otherwise the nested Qt
                 # paint flush can keep drawing ahead of the next mouse sample.
                 if not self.frame_pending() and (self._continuous or self._requested):
-                    self._timer.start(0)
+                    self._schedule_frame()
             elif not self.frame_pending():
                 if self.presentation_required():
                     self._requested |= self._final_frame_requested
@@ -404,6 +417,7 @@ class PresentationClock(QtCore.QObject):
             self._pacing_source = widget
             self._awaiting_paint = False
             self._awaiting_swap = False
+            self._next_frame_deadline = 0.0
             self._timer.stop()
         if key not in self._frame_sources:
             self._frame_sources[key] = widget
@@ -458,6 +472,8 @@ class PresentationClock(QtCore.QObject):
         window.installEventFilter(self)
 
     def eventFilter(self, watched: QtCore.QObject, event: QtCore.QEvent) -> bool:
+        if watched is self._pacing_window and event.type() == QtCore.QEvent.Type.UpdateRequest:
+            self._prepare_window_update()
         key = id(watched)
         if key in self._frame_sources:
             if event.type() == QtCore.QEvent.Type.Paint:
@@ -477,6 +493,40 @@ class PresentationClock(QtCore.QObject):
                 if self._continuous or self._requested:
                     self._schedule_frame(immediate=True)
         return super().eventFilter(watched, event)
+
+    def _prepare_window_update(self) -> None:
+        """Latch pending state before Qt paints the window and its overlays.
+
+        Native exposure/child-widget updates can paint before our queued prepare
+        event. Input can also arrive between preparation and painting. Commit
+        that latest state here, before Qt starts any sibling paint, so the chart
+        and its QWidget overlays cannot display different camera generations.
+        """
+        source = self._pacing_source
+        if (self._frame_presenter is None or not self._requested or source is None
+                or self._flushing or self._painting or self._presenting
+                or (self._awaiting_swap and not self._awaiting_paint)
+                or not source.isVisible() or source.window().isMinimized()):
+            return
+        self._prepare_queued = False
+        QtCore.QCoreApplication.removePostedEvents(self, _PREPARE_FRAME_EVENT)
+        now = time.monotonic()
+        epoch = self._frame_epoch
+        self._commit_frame(now)
+        if epoch != self._frame_epoch or source is not self._pacing_source:
+            return
+        if self._awaiting_paint:
+            return
+        self._presenting = True
+        try:
+            submitted = self._frame_presenter()
+        finally:
+            self._presenting = False
+        if submitted:
+            self._advance_prepare_deadline(source, now)
+            self._final_frame_requested = False
+        elif self._requested:
+            self._schedule_frame()
 
     def _uses_swap_feedback(self, source: QtWidgets.QWidget) -> bool:
         return bool(
@@ -600,6 +650,13 @@ class PresentationClock(QtCore.QObject):
                 return
             if self._awaiting_paint or self._awaiting_swap:
                 return
+            if not self._uses_swap_feedback(source):
+                remaining = self._next_frame_deadline - time.monotonic()
+                if remaining > 0:
+                    delay = max(1, math.ceil(remaining * 1000))
+                    if not self._timer.isActive() or delay < self._timer.remainingTime():
+                        self._timer.start(delay)
+                    return
             if not self._prepare_queued:
                 self._prepare_queued = True
                 self._prepare_queued_at = time.monotonic()

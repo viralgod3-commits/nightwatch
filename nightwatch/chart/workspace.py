@@ -1368,7 +1368,10 @@ class ChartWorkspace(QtWidgets.QWidget):
         self._study_mailboxes = {}
         self._study_committed = {}
         self._study_extents = {}
-        self._study_jobs = {kind: LatestJob(self._analysis_pool, self) for kind in ("oi", "funding")}
+        self._study_sources = {}
+        self._study_windows = {}
+        self._study_jobs = {kind: LatestJob(self._analysis_pool, self, accept_intermediate=True)
+                            for kind in ("oi", "funding")}
         for job in self._study_jobs.values():
             job.ready.connect(self._study_prepared)
         self._navigation_frame_requested = False
@@ -1481,7 +1484,7 @@ class ChartWorkspace(QtWidgets.QWidget):
         self.ruler_graphics: list[Any] = []
         self.fibonacci_graphics: list[Any] = []
         self.auto_fib_graphics: list[Any] = []
-        self.auto_fib_level_graphics: list[tuple[pg.PlotDataItem, pg.TextItem, float]] = []
+        self.auto_fib_level_graphics: list[tuple[QtWidgets.QGraphicsLineItem, pg.TextItem, float]] = []
         self.auto_fib_candidates: list[AutoFibCandidate] = []
         self.auto_fib_index = -1
         self.auto_fib_enabled = False
@@ -2431,12 +2434,12 @@ class ChartWorkspace(QtWidgets.QWidget):
 
 
     def _sync_frame_activity(self) -> None:
+        # Pointer/wheel input already requests a frame. A held mouse is not an
+        # animation: repainting the same camera until release wastes input time
+        # and makes the paint counter look smooth while nothing is moving.
         self._presentation_clock.set_continuous(bool(
-            self._presentation_active and self.isVisible() and (
-                self._interaction_render_active
-                or self._pending_zoom_range is not None
-                or self._navigation_pending_rail
-            )
+            self._presentation_active and self.isVisible()
+            and self._navigation_pending_rail
         ))
 
     def _scene_frame_needed(self) -> None:
@@ -2638,22 +2641,6 @@ class ChartWorkspace(QtWidgets.QWidget):
         if profile_started:
             record_performance_count("overlay.y_relayouts")
         self._position_interaction_overlays()
-        view = self.price_plot.getViewBox()
-        scene_rect = view.sceneBoundingRect()
-        if not scene_rect.isEmpty():
-            if self.trend_label.isVisible():
-                self.trend_label.setPos(
-                    view.mapSceneToView(scene_rect.topRight() + QtCore.QPointF(-6, 4))
-                )
-            if self.auto_fib_badge.isVisible():
-                self.auto_fib_badge.setPos(
-                    view.mapSceneToView(scene_rect.topLeft() + QtCore.QPointF(4.0, 22.0))
-                )
-        if self.crosshair_vertical.isVisible():
-            y_range = self.price_plot.viewRange()[1]
-            self.crosshair_time_label.setPos(
-                self.crosshair_vertical.value(), float(y_range[0])
-            )
         if profile_started:
             record_performance_timing(
                 "overlay.y_relayout_ms",
@@ -2708,6 +2695,21 @@ class ChartWorkspace(QtWidgets.QWidget):
                 self._navigation_pending_fit = False
                 if self.auto_scale and self.candles:
                     self._fit_y_to_visible(*self.price_plot.viewRange()[0])
+            # These consume retained geometry or worker-prepared arrays. Keep
+            # their visible windows current during a gesture, too; the settle
+            # timer is only for analysis, never for camera-attached content.
+            if not self._resize_expensive_deferred:
+                if self._navigation_deferred_indicators:
+                    self._navigation_deferred_indicators = False
+                    self._render_indicators()
+                if self._navigation_deferred_study_scale:
+                    self._navigation_deferred_study_scale = False
+                    self._refresh_linked_study_ranges()
+                for kind in ("oi", "funding"):
+                    flag = "_navigation_pending_" + kind
+                    if getattr(self, flag):
+                        setattr(self, flag, False)
+                        self._render_study(kind)
             if self._navigation_pending_rail:
                 self._navigation_pending_rail = False
                 self._order_rail_animation_tick()
@@ -2715,10 +2717,7 @@ class ChartWorkspace(QtWidgets.QWidget):
                 self._navigation_pending_overlay = False
                 self._navigation_pending_y_overlay = False
                 self._navigation_pending_price_overlay = False
-                if moving:
-                    self._position_interaction_overlays()
-                else:
-                    self._position_overlay_labels(force_full=True)
+                self._position_interaction_overlays()
             elif self._navigation_pending_y_overlay:
                 self._navigation_pending_y_overlay = False
                 self._navigation_pending_price_overlay = False
@@ -2799,6 +2798,8 @@ class ChartWorkspace(QtWidgets.QWidget):
         self._study_mailboxes.clear()
         self._study_committed.clear()
         self._study_extents.clear()
+        self._study_sources.clear()
+        self._study_windows.clear()
         self._bar_job.invalidate()
         self._index_job.invalidate()
         self._snapshot_mailbox = self._bar_mailbox = None
@@ -3687,6 +3688,7 @@ class ChartWorkspace(QtWidgets.QWidget):
         )
         self._committed_live_render_key = live_key
         self._render_volume_live(prepared=live_volume)
+        self._navigation_deferred_indicators |= self._has_active_rendered_indicators()
         x0, x1 = self.price_plot.viewRange()[0]
         if x0 <= self.candles[-1].time <= x1:
             self.graphics.request_redraw()
@@ -5405,9 +5407,7 @@ class ChartWorkspace(QtWidgets.QWidget):
         if scene_rect.isEmpty():
             result = None
         else:
-            top_left = self.graphics.mapFromScene(scene_rect.topLeft())
-            bottom_right = self.graphics.mapFromScene(scene_rect.bottomRight())
-            plot_rect = QtCore.QRectF(QtCore.QPointF(top_left), QtCore.QPointF(bottom_right)).normalized()
+            plot_rect = self.graphics.viewportTransform().mapRect(scene_rect)
             result = (view, plot_rect, float(self.price_plot.viewRange()[0][0]))
         if cache is not None:
             cache["price_view"] = result
@@ -5424,7 +5424,7 @@ class ChartWorkspace(QtWidgets.QWidget):
         view, plot_rect, x0 = geometry
         shown = chart_y(float(rail_price), self.logarithmic)
         scene_point = view.mapViewToScene(QtCore.QPointF(x0, shown))
-        viewport_point = self.graphics.mapFromScene(scene_point)
+        viewport_point = self.graphics.viewportTransform().map(scene_point)
         return plot_rect, float(viewport_point.y())
 
     def _order_rail_axis_view_rect(self) -> QtCore.QRectF | None:
@@ -6996,14 +6996,12 @@ class ChartWorkspace(QtWidgets.QWidget):
             )
             label_color = QtGui.QColor(source_color)
             label_color.setAlpha(205 if emphasized else (154 if extension else 172))
-            line = pg.PlotDataItem(
-                [x0, x1],
-                [shown, shown],
-                pen=pg.mkPen(
-                    line_color,
-                    width=1.05 if emphasized else (0.85 if boundary else 0.72),
-                ),
-            )
+            line = QtWidgets.QGraphicsLineItem(x0, shown, x1, shown)
+            line.setPen(pg.mkPen(
+                line_color,
+                width=1.05 if emphasized else (0.85 if boundary else 0.72),
+            ))
+            line.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
             line.setZValue(59.5 if emphasized else 59.0)
             line.setToolTip(tooltip)
             label_parts = []
@@ -7097,7 +7095,7 @@ class ChartWorkspace(QtWidgets.QWidget):
         else:
             label_x, label_anchor = line_end, (1, 0.5)
         for line, label, shown in self.auto_fib_level_graphics:
-            line.setData([line_start, line_end], [shown, shown])
+            line.setLine(line_start, shown, line_end, shown)
             label.setAnchor(label_anchor)
             label.setPos(label_x, shown)
 
@@ -7195,7 +7193,7 @@ class ChartWorkspace(QtWidgets.QWidget):
             scene_point = view.mapViewToScene(
                 QtCore.QPointF(x0, chart_y(float(price), self.logarithmic))
             )
-            viewport_point = self.graphics.mapFromScene(scene_point)
+            viewport_point = self.graphics.viewportTransform().map(scene_point)
             return float(viewport_point.y() + self.graphics.viewport().pos().y())
         except (RuntimeError, TypeError, ValueError, IndexError):
             return None
@@ -7229,7 +7227,7 @@ class ChartWorkspace(QtWidgets.QWidget):
                 overlay.hide()
                 return
             scene_point = view.mapViewToScene(QtCore.QPointF(x0, shown))
-            viewport_point = self.graphics.mapFromScene(scene_point)
+            viewport_point = self.graphics.viewportTransform().map(scene_point)
             line_y = float(viewport_point.y() + offset.y())
         except (RuntimeError, TypeError, ValueError, IndexError):
             overlay.hide()
@@ -7323,7 +7321,7 @@ class ChartWorkspace(QtWidgets.QWidget):
                 scene_point = view.mapViewToScene(
                     QtCore.QPointF(x0, float(self._crosshair_axis_y_value))
                 )
-                viewport_point = self.graphics.mapFromScene(scene_point)
+                viewport_point = self.graphics.viewportTransform().map(scene_point)
                 cursor_y = (
                     float(viewport_point.y() + self.graphics.viewport().pos().y())
                     - float(geometry.top())
@@ -7380,40 +7378,26 @@ class ChartWorkspace(QtWidgets.QWidget):
             current_candle=self.candles[-1], interval_seconds=INTERVAL_SECONDS[self.interval])
 
     def _position_interaction_overlays(self) -> tuple[float, float]:
-        """Move only overlays that must remain attached during camera motion."""
-        x_range = self.price_plot.viewRange()[0]
+        """Commit every camera-dependent anchor before the same viewport paint."""
         with self._overlay_geometry_transaction():
             self._position_super_trades()
             self._position_current_price_line_overlay()
             self._position_order_rail_hud()
+            self._position_cached_overlay_labels()
+        x_range = self.price_plot.viewRange()[0]
         return float(x_range[0]), float(x_range[1])
 
     def _position_overlay_labels(self, *, force_full: bool = False) -> None:
+        del force_full
+        self._position_interaction_overlays()
 
-
-        if not force_full and self._navigation_is_active():
-            self._position_interaction_overlays()
-            self._navigation_pending_overlay = True
-            self._start_navigation_scheduler()
-            return
-
-        profile_started = time.perf_counter() if (
-            force_full and performance_profile_active()
-        ) else 0.0
-        if profile_started:
-            record_performance_count("overlay.full_relayouts")
-
-
+    def _position_cached_overlay_labels(self) -> None:
+        # Positioning is cheap and must not wait for indicator/profile binning.
+        # Retain all data and text; only their camera-dependent anchors change.
         view = self.price_plot.getViewBox()
         scene_rect = view.sceneBoundingRect()
         if scene_rect.isEmpty():
-            if profile_started:
-                record_performance_timing(
-                    "overlay.full_relayout_ms",
-                    (time.perf_counter() - profile_started) * 1000.0,
-                )
             return
-        self._position_super_trades()
         if self.trend_label.isVisible():
             self.trend_label.setPos(
                 view.mapSceneToView(scene_rect.topRight() + QtCore.QPointF(-6, 4))
@@ -7433,22 +7417,16 @@ class ChartWorkspace(QtWidgets.QWidget):
             self.auto_fib_badge.setPos(
                 view.mapSceneToView(scene_rect.topLeft() + QtCore.QPointF(4.0, 22.0))
             )
+        if self.auto_fib_enabled and self.indicators_enabled:
             self._position_auto_fibonacci_levels()
-        self._position_order_rail_hud()
-        self._position_price_axis_focus_overlay()
         if self.drawings_visible:
             for line, label in self.horizontal_graphics:
                 if label.isVisible():
                     label.setPos(x_range[1], float(line.value()))
-            if self.selected_drawing is not None:
+            if self.selected_drawing is not None and self.selected_drawing[0] == "horizontal":
                 self._update_drawing_selection_graphic()
         if self.crosshair_vertical.isVisible():
             self.crosshair_time_label.setPos(self.crosshair_vertical.value(), y_range[0])
-        if profile_started:
-            record_performance_timing(
-                "overlay.full_relayout_ms",
-                (time.perf_counter() - profile_started) * 1000.0,
-            )
 
     def add_liquidation(self, event: dict[str, Any]) -> None:
         parsed = self._parse_liquidation(event)
@@ -7868,13 +7846,14 @@ class ChartWorkspace(QtWidgets.QWidget):
 
     @staticmethod
     def _indicator_display_compatible(prepared_key, requested_key) -> bool:
-        # A newer tick must not starve an otherwise current result. Market,
-        # closed history, settings, viewport and scale still have to match.
+        # Window coverage is checked at adoption against the latest camera.
+        # Rejecting a worker result just because the mouse moved again can
+        # starve a visible indicator for an entire drag.
         return (
             prepared_key is not None
             and requested_key is not None
             and prepared_key[0] == requested_key[0]
-            and prepared_key[2:] == requested_key[2:]
+            and prepared_key[4:] == requested_key[4:]
         )
 
     def _start_indicator_display_worker(
@@ -7924,6 +7903,7 @@ class ChartWorkspace(QtWidgets.QWidget):
             self._start_indicator_display_worker(*payload)
             return
         if self._indicator_display_async_key == key:
+            self._indicator_display_async_pending = None
             return
 
 
@@ -8068,15 +8048,27 @@ class ChartWorkspace(QtWidgets.QWidget):
             pixel_width,
             display_stride,
         )
-        if self._indicator_committed_key == display_key:
+        guard = min(indicator_margin // 2, max(24, visible_count // 2))
+
+        def covers(key, *, prefetch: bool = False) -> bool:
+            margin = guard if prefetch else 0
+            return (
+                self._indicator_display_compatible(key, display_key)
+                and key[2] <= max(0, visible_first - margin)
+                and key[3] >= min(len(source), visible_last + margin)
+            )
+
+        committed = self._indicator_committed_key
+        if covers(committed, prefetch=True) and committed[1] == display_key[1]:
             return
         mailbox = self._indicator_display_mailbox
-        if mailbox is not None and self._indicator_display_compatible(mailbox[0], display_key):
+        if mailbox is not None:
             self._indicator_display_mailbox = None
-            self._commit_indicator_display(mailbox[1])
-            self._indicator_committed_key = mailbox[0]
-            if mailbox[0] == display_key:
-                return
+            if covers(mailbox[0]):
+                self._commit_indicator_display(mailbox[1])
+                self._indicator_committed_key = mailbox[0]
+                if covers(mailbox[0], prefetch=True) and mailbox[0][1] == display_key[1]:
+                    return
 
 
         self._request_indicator_display_worker(
@@ -8112,7 +8104,7 @@ class ChartWorkspace(QtWidgets.QWidget):
             self._trend_label_html = label_html
             self.trend_label.setHtml(label_html)
         self.trend_label.setVisible(bool(rows))
-        self._position_overlay_labels()
+        self._schedule_overlay_frame()
 
     def _render_volume_live(
         self,
@@ -8147,7 +8139,7 @@ class ChartWorkspace(QtWidgets.QWidget):
 
     def _study_prepared(self, key, result):
         kind = key[0]
-        if key != self._study_key(kind):
+        if key[:4] != self._study_key(kind)[:4]:
             return
         self._study_mailboxes[kind] = (key, result)
         self._schedule_render_work(**{kind: True})
@@ -8158,29 +8150,54 @@ class ChartWorkspace(QtWidgets.QWidget):
         if not self.indicators_enabled or not self.indicators[name] or not plot.isVisible():
             return
         key = self._study_key(kind)
-        if self._study_committed.get(kind) == key:
+        span = max(key[5]-key[4], 1.)
+
+        def covers(prepared_key, window, *, prefetch=False):
+            margin = span*.3 if prefetch else 0.
+            return (prepared_key is not None and window is not None
+                    and prepared_key[:4] == key[:4] and prepared_key[6] == key[6]
+                    and math.isclose(prepared_key[5]-prepared_key[4], key[5]-key[4], rel_tol=1e-8)
+                    and window[0] <= key[4]-margin and window[1] >= key[5]+margin)
+
+        fit = self._fit_oi_to_visible if kind == "oi" else self._fit_funding_to_visible
+        if covers(self._study_committed.get(kind), self._study_windows.get(kind), prefetch=True):
+            fit()
             return
         mailbox = self._study_mailboxes.pop(kind, None)
-        if mailbox is None or mailbox[0] != key:
+        if mailbox is not None and covers(mailbox[0], mailbox[1]["window"]):
+            prepared = mailbox[1]
+            self._study_extents[kind] = prepared["extent"]
+            self._study_sources[kind] = (mailbox[0][:4], prepared["source"])
+            self._study_windows[kind] = prepared["window"]
+            self._study_committed[kind] = mailbox[0]
+            curve = self.oi_curve if kind == "oi" else self.funding_curve
+            curve.setDownsampling(ds=1, auto=False)
+            curve.setData(*prepared["curve"], connect="finite")
+            if kind == "funding":
+                for side, item, color in (("positive", self.funding_positive_bars, "red"),
+                                          ("negative", self.funding_negative_bars, "green")):
+                    xs, ys = prepared[side]
+                    item.setOpts(x=xs, height=ys, width=prepared["bar_width"],
+                                 brush=pg.mkBrush(opaque_overlay_color(self.theme["bg"], self.theme[color], 68)), pen=None)
+                self.funding_zero_line.setVisible(bool(len(prepared["curve"][0])))
+        fit()
+        if not covers(self._study_committed.get(kind), self._study_windows.get(kind), prefetch=True):
             rows = self.oi_history if kind == "oi" else self.funding_history
-            self._study_jobs[kind].submit(key, prepare_study, kind, tuple(rows), *key[3:])
-            return
-        prepared = mailbox[1]
-        self._study_extents[kind] = prepared["extent"]
-        self._study_committed[kind] = key
-        curve = self.oi_curve if kind == "oi" else self.funding_curve
-        curve.setDownsampling(ds=1, auto=False)
-        curve.setData(*prepared["curve"], connect="finite")
-        if kind == "oi":
-            self._fit_oi_to_visible()
-        else:
-            for side, item, color in (("positive", self.funding_positive_bars, "red"),
-                                      ("negative", self.funding_negative_bars, "green")):
-                xs, ys = prepared[side]
-                item.setOpts(x=xs, height=ys, width=prepared["bar_width"],
-                             brush=pg.mkBrush(opaque_overlay_color(self.theme["bg"], self.theme[color], 68)), pen=None)
-            self.funding_zero_line.setVisible(bool(len(prepared["curve"][0])))
-            self._fit_funding_to_visible()
+            cached = self._study_sources.get(kind)
+            source = cached[1] if cached is not None and cached[0] == key[:4] else None
+            self._study_jobs[kind].submit(key, prepare_study, kind,
+                                          tuple(rows) if source is None else (), *key[3:], source)
+
+    def _visible_study_extent(self, kind):
+        cached = self._study_sources.get(kind)
+        if cached is None:
+            return None
+        times, _values, _rates, index, _spacing = cached[1]
+        x0, x1 = self.price_plot.viewRange()[0]
+        low, high = index.query(np.searchsorted(times, x0), np.searchsorted(times, x1, side="right"))
+        if not (math.isfinite(low) and math.isfinite(high)):
+            return self._study_extents.get(kind)
+        return low, high
 
     def _render_liquidations(self) -> None:
         if (
@@ -8337,10 +8354,9 @@ class ChartWorkspace(QtWidgets.QWidget):
         if self.atr_plot.isVisible() and self.indicators["ATR"]:
             self._fit_atr_to_visible()
         if self.oi_plot.isVisible() and self.indicators["Open Interest"]:
-            self._fit_oi_to_visible()
+            self._render_study("oi")
         if self.funding_plot.isVisible() and self.indicators["Funding Rate History"]:
             self._render_study("funding")
-            self._fit_funding_to_visible()
 
     def _fit_atr_to_visible(self) -> None:
         if not self.indicators_enabled or not self.indicators["ATR"] or self.study_manual_scale["ATR"]:
@@ -8359,10 +8375,7 @@ class ChartWorkspace(QtWidgets.QWidget):
     def _fit_oi_to_visible(self) -> None:
         if not self.indicators_enabled or not self.indicators["Open Interest"] or self.study_manual_scale["Open Interest"]:
             return
-        if self._study_committed.get("oi") != self._study_key("oi"):
-            self._render_study("oi")
-            return
-        extent = self._study_extents.get("oi")
+        extent = self._visible_study_extent("oi")
         if extent is not None:
             low, high = extent
             pad = max((high-low)*.12, high*.0015, 1.)
@@ -8371,10 +8384,7 @@ class ChartWorkspace(QtWidgets.QWidget):
     def _fit_funding_to_visible(self) -> None:
         if not self.indicators_enabled or not self.indicators["Funding Rate History"] or self.study_manual_scale["Funding Rate History"]:
             return
-        if self._study_committed.get("funding") != self._study_key("funding"):
-            self._render_study("funding")
-            return
-        extent = self._study_extents.get("funding")
+        extent = self._visible_study_extent("funding")
         if extent is not None:
             magnitude = max(abs(extent[0]), abs(extent[1]), .0001)*1.12
             self.funding_plot.setYRange(-magnitude, magnitude, padding=0)

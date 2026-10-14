@@ -3267,15 +3267,9 @@ class ChartGraphicsView(pg.GraphicsLayoutWidget):
         if clock is not None:
             clock.frame_submitted(viewport)
         viewport.update()
-        if required:
-            # Preparation already coalesced this frame outside painting. Flush
-            # only its window's pending Qt paint, before more producer work can
-            # delay the camera. repaint() alone is insufficient: Qt defers it
-            # again shortly after an OpenGL composition. Qt still owns drawing
-            # and composition; the clock awaits the real swap before advancing.
-            QtCore.QCoreApplication.sendPostedEvents(
-                viewport.window(), QtCore.QEvent.Type.UpdateRequest,
-            )
+        # Let Qt combine the viewport and sibling overlays into one window
+        # update. A nested paint flush can run ahead of pending native input
+        # and count repeated camera frames as high FPS.
         return True
 
     def paintEvent(self, event):
