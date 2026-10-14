@@ -2379,14 +2379,12 @@ class ChartWorkspace(QtWidgets.QWidget):
         self._sync_frame_activity()
         if self._interaction_priority_release_timer.isActive():
             self._interaction_priority_release_timer.stop()
+        if not self._order_rail_dragging:
+            self._set_crosshair_visible(False)
         if self._interaction_priority_active:
             self.interaction_started.emit()
             return
         self._interaction_priority_active = True
-
-
-        if not self._order_rail_dragging:
-            self._set_crosshair_visible(False)
         self.interaction_priority_changed.emit(True)
         self.interaction_started.emit()
 
@@ -2398,11 +2396,15 @@ class ChartWorkspace(QtWidgets.QWidget):
         if not self._interaction_priority_active:
             self._begin_interaction_priority()
 
-    def _schedule_interaction_priority_release(self) -> None:
-
-
+    def _schedule_interaction_priority_release(
+        self, viewport_position: QtCore.QPointF | None = None
+    ) -> None:
         self._interaction_render_active = False
         self._sync_frame_activity()
+        if viewport_position is not None:
+            # Release/wheel events may be the last input at this position.
+            # Refresh against the committed camera even without another move.
+            self._queue_crosshair_move(self.graphics.mapToScene(viewport_position.toPoint()))
         if not self._interaction_priority_active:
             return
         self._navigation_last_activity = time.monotonic()
@@ -2724,7 +2726,10 @@ class ChartWorkspace(QtWidgets.QWidget):
             elif self._navigation_pending_price_overlay:
                 self._navigation_pending_price_overlay = False
                 self._commit_price_overlay()
-            if self._navigation_deferred_crosshair and not moving:
+            # Pointer feedback must not wait for the analytics settle window.
+            # Camera input and auto-fit above already committed the new range.
+            if (self._navigation_deferred_crosshair and not self._interaction_render_active
+                    and not self._resize_expensive_deferred):
                 self._navigation_deferred_crosshair = False
                 if self._pending_crosshair_position is not None:
                     self._flush_crosshair_move()
@@ -2760,7 +2765,7 @@ class ChartWorkspace(QtWidgets.QWidget):
         self._pointer_over_price_plot = True
         self._pending_crosshair_position = QtCore.QPointF(position)
         self._navigation_deferred_crosshair = True
-        if self._interaction_priority_active and not self._order_rail_dragging:
+        if self._interaction_render_active and not self._order_rail_dragging:
             return
         first_dispatch = self._last_crosshair_dispatch <= 0.0
         self._start_navigation_scheduler(immediate=first_dispatch)
@@ -4240,7 +4245,7 @@ class ChartWorkspace(QtWidgets.QWidget):
                     self._hold_interaction_priority()
             elif event_type == QtCore.QEvent.Type.MouseButtonRelease:
                 if event.button() == Qt.MouseButton.LeftButton:
-                    self._schedule_interaction_priority_release()
+                    self._schedule_interaction_priority_release(event.position())
             elif event_type in (
                 QtCore.QEvent.Type.Hide,
                 QtCore.QEvent.Type.WindowDeactivate,
@@ -4316,10 +4321,10 @@ class ChartWorkspace(QtWidgets.QWidget):
                 viewport.setFocus(Qt.FocusReason.MouseFocusReason)
                 self._begin_interaction_priority()
                 if self._touchpad_zoom(event.position(), float(event.value())):
-                    self._schedule_interaction_priority_release()
+                    self._schedule_interaction_priority_release(event.position())
                     event.accept()
                     return True
-                self._schedule_interaction_priority_release()
+                self._schedule_interaction_priority_release(event.position())
         if watched is viewport and event.type() == QtCore.QEvent.Type.Wheel:
             viewport.setFocus(Qt.FocusReason.MouseFocusReason)
             self._begin_interaction_priority()
@@ -4328,10 +4333,10 @@ class ChartWorkspace(QtWidgets.QWidget):
                 int(event.angleDelta().y()),
                 int(event.pixelDelta().y()),
             ):
-                self._schedule_interaction_priority_release()
+                self._schedule_interaction_priority_release(event.position())
                 event.accept()
                 return True
-            self._schedule_interaction_priority_release()
+            self._schedule_interaction_priority_release(event.position())
         if (
             watched is viewport and self.drawing_mode is None and self.magnetic_order_rail_enabled
             and event.type() == QtCore.QEvent.Type.MouseButtonPress
