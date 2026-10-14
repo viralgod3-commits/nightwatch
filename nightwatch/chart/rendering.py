@@ -965,11 +965,13 @@ class PixelBarBatch:
         self._rect_batch_source = None
         self._rect_batches = []
         self._cpu_image = QtGui.QImage()
+        self._cpu_overlap_layer = QtGui.QImage()
         self._cpu_image_rect = QtCore.QRect()
         self._cpu_bounds = QtCore.QRectF()
         self._cpu_disjoint = False
         self.cache_origin = (0.0, 0.0)
         self._cpu_geometry_transform = QtGui.QTransform()
+        self._volume_pan_screen = None
         self.cache_screen = QtCore.QRectF()
         self.interactive_resize = False
         self.gpu_enabled = False
@@ -1051,7 +1053,7 @@ class PixelBarBatch:
                             # for volume bars; the finished image still blends
                             # normally with the chart underneath it.
                             cache_painter.setCompositionMode(QtGui.QPainter.CompositionMode.CompositionMode_Source)
-                        self._paint_cpu_rectangles(cache_painter)
+                        self._paint_cpu_rectangles(cache_painter, QtCore.QRectF(image_rect))
                         cache_painter.end()
                         self._cpu_image, self._cpu_image_rect = image, image_rect
                 else:
@@ -1059,9 +1061,9 @@ class PixelBarBatch:
             if not self._cpu_image.isNull() and self._cpu_image_rect.contains(target):
                 painter.drawImage(QtCore.QPointF(self._cpu_image_rect.topLeft()), self._cpu_image)
                 return
-        self._paint_cpu_rectangles(painter)
+        self._paint_cpu_rectangles(painter, screen)
 
-    def _paint_cpu_rectangles(self, painter):
+    def _paint_cpu_rectangles(self, painter, screen):
         opaque_painter = painter.opacity() == 1.0
         for index, (brush, rects, disjoint, path) in enumerate(self._rect_batches):
             painter.setBrush(brush)
@@ -1071,16 +1073,77 @@ class PixelBarBatch:
             if disjoint is None:
                 ordered = sorted(rects, key=lambda rect: rect.left())
                 disjoint = all(a.right() <= b.left() for a, b in zip(ordered, ordered[1:]))
-                if not disjoint:
-                    path = QtGui.QPainterPath()
-                    path.setFillRule(Qt.FillRule.WindingFill)
-                    for rect in rects:
-                        path.addRect(rect)
                 self._rect_batches[index] = (brush, rects, disjoint, path)
             if disjoint:
                 painter.drawRects(rects)
-            else:
-                painter.drawPath(path)
+                continue
+            if self._paint_overlap_layer(painter, brush, rects, screen):
+                continue
+            if path is None:
+                path = QtGui.QPainterPath()
+                path.setFillRule(Qt.FillRule.WindingFill)
+                for rect in rects:
+                    path.addRect(rect)
+                self._rect_batches[index] = (brush, rects, disjoint, path)
+            painter.drawPath(path)
+
+    def _paint_overlap_layer(self, painter, brush, rects, screen):
+        """Fill a translucent rectangle union without the path intersection cost.
+
+        Source writes give every covered pixel the same premultiplied color,
+        including overlaps. Blend the finished coverage once, preserving the
+        winding-fill opacity instead of accumulating alpha for each rectangle.
+        Geometry is already in physical pixels; the caller handles clipping.
+        """
+        # Small live batches are cheaper as paths and need no scratch image.
+        if (len(rects) < 512 or painter.opacity() != 1.0
+                or brush.style() != Qt.BrushStyle.SolidPattern
+                or painter.compositionMode() != QtGui.QPainter.CompositionMode.CompositionMode_SourceOver):
+            return False
+        target = screen.toAlignedRect()
+        if target.isEmpty():
+            return True
+        # One reusable scratch surface per batch, bounded to 16 MiB. Tall/high
+        # DPI views are tiled rather than allocating a surface per glow color.
+        width = target.width()
+        height = min(target.height(), (4 * 1024 * 1024) // width)
+        if height < 1:
+            return False
+        if self._cpu_overlap_layer.size() != QtCore.QSize(width, height):
+            self._cpu_overlap_layer = QtGui.QImage(
+                width, height, QtGui.QImage.Format.Format_ARGB32_Premultiplied)
+        layer = self._cpu_overlap_layer
+        if layer.isNull():
+            return False
+        for top in range(target.top(), target.bottom() + 1, height):
+            rows = min(height, target.bottom() + 1 - top)
+            layer.fill(Qt.GlobalColor.transparent)
+            raster = QtGui.QPainter(layer)
+            raster.setCompositionMode(QtGui.QPainter.CompositionMode.CompositionMode_Source)
+            raster.setPen(Qt.PenStyle.NoPen)
+            raster.setBrush(brush)
+            raster.translate(-target.left(), -top)
+            raster.drawRects(rects)
+            raster.end()
+            painter.drawImage(QtCore.QRectF(target.left(), top, width, rows), layer,
+                              QtCore.QRectF(0, 0, width, rows))
+        return True
+
+    def _compact_cpu_geometry(self, key, style):
+        if key[0] == "volume-overlay":
+            return self.interactive_resize or (
+                self.cache_key is not None and self.cache_key[0] == "volume-overlay"
+                and self.cache_key[1] != key[1]
+            )
+        # A changing X scale makes offscreen pan geometry obsolete on the next
+        # wheel/resize frame. Keep full margins for Y-only auto-fit during pans.
+        # Glow retains its cache extent to preserve exact alpha compositing.
+        return self.interactive_resize or (
+            self.cache_key is not None and self.cache_key[0] != key[0]
+            and not style.get("glow_alpha")
+            and not style.get("up_bloom_color")
+            and not style.get("down_bloom_color")
+        )
 
     @staticmethod
     def _append_rectangles(
@@ -1462,26 +1525,37 @@ class PixelBarBatch:
             key != self.cache_key
             or not self.cache_screen.translated(pan_dx, 0.0).contains(clip_screen)
         ):
+            expand_resident = (key == self.cache_key and self._volume_pan_screen is not None
+                               and self._volume_pan_screen.translated(pan_dx, 0.0).contains(clip_screen))
+            if expand_resident:
+                # The old full-margin cache would still use this origin. Grow
+                # resident geometry without shifting fractional-DPI columns.
+                self.cache_screen = self._volume_pan_screen
+                self._volume_pan_screen = None
+            else:
+                compact = self._compact_cpu_geometry(key, style) and all(
+                    QtGui.QColor(style.get(name, fallback)).alpha() == 255
+                    for name, fallback in (("up_color", up), ("down_color", down)))
+                self.cache_origin = (transform.dx(), 0.0)
+                self._cpu_geometry_transform = QtGui.QTransform(transform)
+                dx = 0.0
+                full_screen = QtCore.QRectF(overlay_screen) if self.interactive_resize else overlay_screen.adjusted(
+                    -overlay_screen.width() * .5, 0.0, overlay_screen.width() * .5, 0.0)
+                self._volume_pan_screen = full_screen if compact and not self.interactive_resize else None
+                self.cache_screen = QtCore.QRectF(overlay_screen) if compact else full_screen
             self.cache_key = key
-            self.cache_origin = (transform.dx(), 0.0)
-            dx = 0.0
-            self.cache_screen = QtCore.QRectF(overlay_screen) if self.interactive_resize else overlay_screen.adjusted(
-                -overlay_screen.width() * .5,
-                0.0,
-                overlay_screen.width() * .5,
-                0.0,
-            )
             build_screen = self.cache_screen
             self.batches = []
 
+            geometry_transform = self._cpu_geometry_transform
             first, last = self.prepared.screen_slice(
-                build_screen.left(), build_screen.right(), transform.m11(), transform.dx(),
+                build_screen.left(), build_screen.right(), geometry_transform.m11(), geometry_transform.dx(),
             )
             data = self.data[first:last]
             if not len(data):
                 return
             x_ref = float(self.data[0, 0])
-            origin_x = transform.map(QtCore.QPointF(x_ref, 0.0)).x()
+            origin_x = geometry_transform.map(QtCore.QPointF(x_ref, 0.0)).x()
             xs = (data[:, 0] - x_ref) * transform.m11() + origin_x
             slots = abs(transform.m11()) * data[:, 6]
             visible = (
@@ -1670,22 +1744,22 @@ class PixelBarBatch:
             key != self.cache_key
             or not self.cache_screen.translated(pan_dx, pan_dy).contains(gl_screen)
         ):
+            compact_geometry = self._compact_cpu_geometry(key, style)
             if key != self.cache_key:
                 self.cache_origin = (transform.dx(), transform.dy())
                 self._cpu_geometry_transform = QtGui.QTransform(transform)
                 dx = dy = 0.0
             self.cache_key = key
-            # Resize changes the scale each frame, so pan margins would be
-            # rebuilt before they could be reused. Retain only the visible
-            # region plus neighboring bloom. Preserve the transform origin on
-            # pan-only rebuilds so fractional-DPI bars keep their pixel phase.
+            # Only prepare visible geometry while zooming. Expand the resident
+            # margin if a subsequent pan needs it. Pan-only rebuilds retain the
+            # transform origin so fractional-DPI bars keep their pixel phase.
             build_view = gl_screen.translated(-round(dx), -round(dy))
             bloom_margin = max(2, int(style.get("up_bloom_radius", 0)),
                                int(style.get("down_bloom_radius", 0)),
                                math.ceil(float(style.get("glow_width", 2.0)) * .5)) + 1
             self.cache_screen = build_view.adjusted(
                 -bloom_margin, -bloom_margin, bloom_margin, bloom_margin
-            ) if self.interactive_resize else build_view.adjusted(
+            ) if compact_geometry else build_view.adjusted(
                 -gl_screen.width() * .5,
                 -gl_screen.height() * .25,
                 gl_screen.width() * .5,
