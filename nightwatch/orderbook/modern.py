@@ -29,10 +29,11 @@ from ..utilities import (
 from .formatting import format_book_price
 from .ipc import SnapshotDecoder, SnapshotSeedRequired
 from .orderbook_ui import (
-    TradesTapeWidget, _DomAggregation, _DomRasterProcess, _decimal_places_from_step,
+    TradesTapeWidget, _DomRasterProcess, _decimal_places_from_step,
     _map_dom_frame,
 )
 from .raster_regions import bounded_region, draw_native_region
+from .revisions import amount_inputs, amount_revision_key
 from .tape_source import SharedTradeTapeSource
 
 _ALIGN = Qt.AlignmentFlag
@@ -87,6 +88,58 @@ def _deadline(snapshot):
         BOOK_DEPTH_FRESH_SECONDS - snapshot.depth_age_seconds,
         BOOK_BBO_FRESH_SECONDS - snapshot.bbo_age_seconds,
     )
+
+
+@dataclass(frozen=True, slots=True)
+class _DepthLevel:
+    price: float
+    quantity: float
+    notional: float
+
+
+class _DepthAggregation:
+    """Group only displayed depth; leave temporal analytics in the analyzer."""
+
+    def __init__(self):
+        self.key = None
+        self.levels = ((), ())
+        self.reused = 0
+
+    def prepare(self, snapshot, multiplier, tick, epoch):
+        if not snapshot.ready:
+            self.key = None
+            self.levels = ((), ())
+            return
+        if (multiplier <= 1 or multiplier not in ORDER_FLOW_AGGREGATION_MULTIPLIERS
+                or tick <= 0 or not math.isfinite(tick)):
+            self.key = None
+            self.levels = (snapshot.ask_levels, snapshot.bid_levels)
+            return
+        amounts = amount_revision_key(snapshot)
+        if amounts is None:
+            amounts = amount_inputs(snapshot)
+        key = (epoch, snapshot.symbol, multiplier, tick, amounts)
+        if key == self.key:
+            self.reused += 1
+            return
+
+        def group(levels, *, bid):
+            buckets = {}
+            for level in levels:
+                native = int(round(level.price / tick))
+                bucket = (native if bid else native + multiplier - 1) // multiplier * multiplier
+                members = buckets.get(bucket)
+                if members is None:
+                    members = buckets[bucket] = []
+                members.append(level)
+            # Preserve source order and actual quote sums, not bucket-price * size.
+            return tuple(_DepthLevel(price * tick,
+                sum(max(0., level.quantity) for level in members),
+                sum(max(0., level.notional) for level in members))
+                for price, members in buckets.items())
+
+        self.levels = (group(snapshot.ask_levels, bid=False), group(snapshot.bid_levels, bid=True))
+        self.key = key
 
 
 @dataclass(frozen=True, slots=True)
@@ -171,7 +224,7 @@ class _PrismRenderer(QtWidgets.QWidget):
         self.book_valid = True
         self.trade_active = True
         self.status = 'SYNCING'
-        self._aggregation = _DomAggregation()
+        self._aggregation = _DepthAggregation()
         self._text_cache = OrderedDict()
         self._bar_from = {}
         self._bar_to = {}
@@ -221,7 +274,7 @@ class _PrismRenderer(QtWidgets.QWidget):
             self.rows = ()
             self._bar_from.clear()
             self._bar_to.clear()
-            self._aggregation = _DomAggregation()
+            self._aggregation = _DepthAggregation()
             self.book_valid = True
             self.trade_active = True
             self._last_chrome = None
@@ -242,11 +295,10 @@ class _PrismRenderer(QtWidgets.QWidget):
             self.adopt(self.source)
 
     def adopt(self, source):
-        self.source = source
+        self.source = self.snapshot = source
         self._last_execution = source.recent_prints[-1] if source.recent_prints else None
-        context = (self.config['market_epoch'], source.symbol,
-                   self.config['aggregation'], self.config['tick'], False)
-        _, self.snapshot, _, _ = self._aggregation.prepare(context, source)
+        self._aggregation.prepare(source, self.config['aggregation'], self.config['tick'],
+                                  self.config['market_epoch'])
 
     def _price(self, price, *, native=False):
         if not math.isfinite(price) or price <= 0:
@@ -271,8 +323,7 @@ class _PrismRenderer(QtWidgets.QWidget):
         live = self.book_valid and _deadline(self.source) > now
         self.status = ('LIVE' if self.trade_active else 'TRADES OFF') if live else (
             'STALE' if snapshot is not None and snapshot.ready else 'SYNCING')
-        levels = ((snapshot.ask_levels, snapshot.bid_levels)
-                  if snapshot is not None and snapshot.ready else ((), ()))
+        levels = self._aggregation.levels
         # Stable price envelope prevents lane widths jittering when digits change.
         examples = [self._price(l.price) for side in levels for l in side[:1]]
         price_width = max((self.metrics.horizontalAdvance('8' * len(t)) for t in examples), default=84)
@@ -706,6 +757,7 @@ class PrismCanvas(QtWidgets.QWidget):
         self._remote_error = ''
         self._remote_diagnostics = {}
         self._unpainted_region = QtGui.QRegion()
+        self._unpainted_prices = QtGui.QRegion()
         self._last_rows = -1
         self._gui_paints = 0
         self._last_paint_ms = self._max_paint_ms = 0.
@@ -793,6 +845,7 @@ class PrismCanvas(QtWidgets.QWidget):
         self._pending_raster = self._display_frame = None
         self._latest_received_sequence = -1
         self._last_painted_sequence = -1
+        self._unpainted_prices = QtGui.QRegion()
         self._freshness_timer.stop()
         self._reset_wheel()
         self._clear_pointer()
@@ -865,6 +918,12 @@ class PrismCanvas(QtWidgets.QWidget):
                 dirty = QtGui.QRegion()
                 for r in result['dirty_rects']:
                     dirty += QtCore.QRect(*r)
+            if (frame is None or frame['epoch'] != result['epoch']
+                    or frame['geometry'] != result['geometry'] or frame['prices'] != result['prices']):
+                # Hit metadata arrives before Qt paints the leased image. Do
+                # not select a changed price until its row has been displayed.
+                # Size/bar-only updates keep existing prices selectable.
+                self._unpainted_prices = bounded_region(self._unpainted_prices.united(dirty), self.rect())
             self._display_frame = result
             self._geometry = result['geometry']
             self._publish_rows()
@@ -950,6 +1009,7 @@ class PrismCanvas(QtWidgets.QWidget):
                 self._last_painted_sequence = frame['sequence']
         p.end()
         self._unpainted_region = bounded_region(self._unpainted_region.subtracted(region), self.rect())
+        self._unpainted_prices = self._unpainted_prices.subtracted(region)
         self._last_paint_ms = (time.perf_counter()-started)*1000
         self._max_paint_ms = max(self._max_paint_ms, self._last_paint_ms)
         self._gui_paints += 1
@@ -975,7 +1035,12 @@ class PrismCanvas(QtWidgets.QWidget):
         else:
             return None
         prices = frame['prices'][0 if side == 'ask' else 1]
-        return (side, index, prices[index]) if 0 <= index < len(prices) else None
+        if not 0 <= index < len(prices):
+            return None
+        top = g['center_top']-(index+1)*g['row_height'] if side == 'ask' else g['center_bottom']+index*g['row_height']
+        if self._unpainted_prices.intersects(QtCore.QRect(0, top, self.width(), g['row_height'])):
+            return None
+        return side, index, prices[index]
 
     def _hover_region(self, hover):
         if hover is None or not self._geometry:
