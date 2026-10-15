@@ -1300,6 +1300,7 @@ class OrderPanel(QtWidgets.QWidget):
         self._account_problem = ""
         self._leverage_problem = ""
         self._last_confirmed_leverage = 5
+        self._allocation_percent: int | None = None
         self.protection_plans: dict[str, list[dict[str, float]]] = {"tp": [], "sl": []}
         self.hedge_mode: bool | None = None
         self.setObjectName("responsiveOrderTicket")
@@ -1322,6 +1323,8 @@ class OrderPanel(QtWidgets.QWidget):
         self.size_mode.currentIndexChanged.connect(
             lambda _index: self._size_mode_changed(str(self.size_mode.currentData()))
         )
+        self.size_mode.activated.connect(self._clear_margin_allocation)
+        self.quantity_edit.textEdited.connect(self._clear_margin_allocation)
         self.price_mark_button.clicked.connect(
             lambda: self._copy_mark_to(self.price_edit)
         )
@@ -1660,6 +1663,7 @@ class OrderPanel(QtWidgets.QWidget):
         self.set_settings_icon(ui_palette(THEMES[DEFAULT_THEME_NAME], {})["muted"])
 
     def _clear_position_desk_account(self, _key):
+        self._allocation_percent = None
         self._leverage_apply_timer.stop()
         self._position_cache = []
         self._desk_selected_key = None
@@ -1723,7 +1727,9 @@ class OrderPanel(QtWidgets.QWidget):
             if quantity is None:
                 quantity = getattr(self, "_desk_preview_quantity", "")
             allocation = 0.0
-            if mode == "POSITION %":
+            if not reducing and self._allocation_percent is not None:
+                allocation = self._allocation_percent
+            elif mode == "POSITION %":
                 allocation = safe_float(raw)
             elif reducing:
                 amount = self._reduced_position_size()
@@ -1748,19 +1754,9 @@ class OrderPanel(QtWidgets.QWidget):
             blocker = QtCore.QSignalBlocker(self.allocation_slider)
             self.allocation_slider.setValue(round(max(0, min(100, allocation))))
             del blocker
-            if reducing:
-                allocation_ready = self._reduced_position_size() > 0
-            else:
-                try:
-                    available = self.gateway.available_balance(self.rules.margin_asset)
-                except ValueError:
-                    available = 0.0
-                reference = self._entry_reference(self.current_order_type())
-                allocation_ready = bool(
-                    available > 0 and self.gateway.current_leverage(self.symbol) > 0
-                    and reference > 0
-                )
-            self.margin_bar.setEnabled(usable and allocation_ready)
+            # Allocation is an intent: it can be selected before the price or
+            # account is ready. The order builder checks fresh inputs on submit.
+            self.margin_bar.setEnabled(usable)
             intent = "position" if reducing else "margin"
             if intent != getattr(self, "_allocation_accessibility_intent", None):
                 self._allocation_accessibility_intent = intent
@@ -1880,6 +1876,7 @@ class OrderPanel(QtWidgets.QWidget):
         for editor in (self.price_edit, self.trigger_edit, self.activation_edit):
             editor.set_quote_asset(rules.quote_asset)
         if changed:
+            self._allocation_percent = None
             # A delayed edit belongs to the old market. Never let its timer
             # apply that leverage to a different symbol after navigation.
             self._leverage_apply_timer.stop()
@@ -1995,6 +1992,7 @@ class OrderPanel(QtWidgets.QWidget):
                 del blocker
             self._gateway_state_text = message
             self._update_execution_state()
+        self._update_order_summary()
 
     def _copy_mark_to(self, target: QtWidgets.QLineEdit) -> None:
         if not self._mark_is_fresh():
@@ -2153,6 +2151,10 @@ class OrderPanel(QtWidgets.QWidget):
             QTimer.singleShot(0, self, self._publish_compact_minimum_height)
 
     def _intent_changed(self, reducing: bool) -> None:
+        had_allocation = self._allocation_percent is not None
+        self._allocation_percent = None
+        if had_allocation:
+            self.quantity_edit.clear()
         current_type = self.current_order_type()
         values = self.ORDER_TYPES
         allowed = {value for _label, value in self.ORDER_TYPES}
@@ -2207,47 +2209,28 @@ class OrderPanel(QtWidgets.QWidget):
         self.prepare_order()
 
     def _apply_size_preset(self, percent: int, *, focus_amount: bool = True) -> None:
-        """Apply one-click margin/position sizing without changing exchange semantics."""
+        """Retain allocation intent; derive its quantity from fresh trading inputs."""
         percent = max(0, min(100, int(percent)))
-        if percent <= 0:
-            self.quantity_edit.clear()
-            return
         target_mode = "POSITION %" if self.reduce_only.isChecked() else "CONTRACTS"
         index = self.size_mode.findData(target_mode)
         if index >= 0:
             self.size_mode.setCurrentIndex(index)
         if self.reduce_only.isChecked():
-            amount = str(percent)
+            self._allocation_percent = None
+            self.quantity_edit.setText(str(percent))
         else:
-            try:
-                available = self.gateway.available_balance(self.rules.margin_asset)
-            except ValueError:
-                available = 0.0
-            leverage = self.gateway.current_leverage(self.symbol)
-            reference = self._entry_reference(self.current_order_type())
-            if available <= 0 or leverage <= 0 or reference <= 0:
-                self.quantity_edit.clear()
-                return
-            order_type = self.current_order_type()
-            market_quantity = order_type in {"MARKET", "STOP_MARKET", "TRAILING_STOP_MARKET"}
-            step = self.rules.market_step if market_quantity else self.rules.lot_step
-            minimum_qty = self.rules.min_market_qty if market_quantity else self.rules.min_qty
-            quantity_value = available * percent / 100.0 * leverage / reference
-            try:
-                amount = quantize_step(str(quantity_value), step, offset=str(minimum_qty))
-            except ValueError:
-                # A preset below the exchange minimum must never become a
-                # misleading raw percentage or an invalid contract quantity.
-                self.quantity_edit.clear()
-                return
-            if safe_float(amount) < minimum_qty or safe_float(amount) <= 0:
-                self.quantity_edit.clear()
-                return
-        self.quantity_edit.setText(amount)
+            self._allocation_percent = percent
+            self._update_order_summary()
         if focus_amount:
             editor = self.quantity_edit
             editor.setFocus(Qt.FocusReason.ShortcutFocusReason)
             editor.selectAll()
+
+    def _clear_margin_allocation(self, *_args: object) -> None:
+        """An explicit amount or unit selection takes over from the slider."""
+        if self._allocation_percent is not None:
+            self._allocation_percent = None
+            self._update_order_summary()
 
     def _position_side_changed(self, position_side: str) -> None:
         _ = position_side
@@ -2334,6 +2317,7 @@ class OrderPanel(QtWidgets.QWidget):
         previous = getattr(self, "_quantity_unit", mode)
         self._quantity_unit = mode
         if previous != mode:
+            self._allocation_percent = None
             self.quantity_edit.clear()
         base_asset = self.symbol.removesuffix(self.rules.quote_asset)
         label, placeholder = {
@@ -2487,10 +2471,26 @@ class OrderPanel(QtWidgets.QWidget):
                 self._validated_price(self.trigger_edit.text().replace(",", "").strip(), "Trigger price")
             if order_type == "TRAILING_STOP_MARKET" and self.activation_edit.text().strip():
                 self._validated_price(self.activation_edit.text().replace(",", "").strip(), "Activation price")
-            if self.quantity_edit.text().strip():
+            if self._allocation_percent is not None or self.quantity_edit.text().strip():
                 quantity = self._quantity(order_type)
         except (ValueError, TypeError):
             pass
+        if self._allocation_percent is not None and self.quantity_edit.text() != quantity:
+            # Show the derived base quantity while the slider retains the
+            # percentage. Internal preview refreshes must not become manual edits.
+            selected = self.quantity_edit.selectedText()
+            selection_start = self.quantity_edit.selectionStart()
+            cursor = self.quantity_edit.cursorPosition()
+            all_selected = bool(selected) and len(selected) == len(self.quantity_edit.text())
+            blocker = QtCore.QSignalBlocker(self.quantity_edit)
+            self.quantity_edit.setText(quantity)
+            if all_selected:
+                self.quantity_edit.selectAll()
+            elif selection_start >= 0:
+                self.quantity_edit.setSelection(selection_start, len(selected))
+            else:
+                self.quantity_edit.setCursorPosition(min(cursor, len(quantity)))
+            del blocker
         self._update_ticket_estimates(quantity, order_type)
 
     def _update_ticket_estimates(self, quantity: str, order_type: str) -> None:
@@ -2554,14 +2554,26 @@ class OrderPanel(QtWidgets.QWidget):
         return total
 
     def _quantity(self, order_type: str) -> str:
-        raw = safe_float(self.quantity_edit.text().replace(",", ""))
+        allocating = self._allocation_percent is not None and not self.reduce_only.isChecked()
+        raw = (self._allocation_percent if allocating
+               else safe_float(self.quantity_edit.text().replace(",", "")))
         if raw <= 0:
             raise ValueError("Enter a positive order size.")
         reference = self._entry_reference(order_type)
         mode = str(self.size_mode.currentData())
-        if mode in {"RISK %", "POSITION %"} and raw > 100:
+        if (allocating or mode in {"RISK %", "POSITION %"}) and raw > 100:
             raise ValueError("Percentage sizing cannot exceed 100%.")
-        if mode == "CONTRACTS":
+        if allocating:
+            balance = self.gateway.available_balance(self.rules.margin_asset)
+            if balance <= 0:
+                raise ValueError("Load account balances before using margin allocation.")
+            if reference <= 0:
+                raise ValueError("A current or limit price is required for margin allocation.")
+            leverage = self.gateway.current_leverage(self.symbol)
+            if leverage <= 0:
+                raise ValueError("Load the confirmed Binance leverage before using margin allocation.")
+            quantity_value = balance * raw / 100.0 * leverage / reference
+        elif mode == "CONTRACTS":
             quantity_value = raw
         elif mode == "POSITION %":
             direction = "SHORT" if self.buy_button.isChecked() else "LONG"
@@ -2610,10 +2622,12 @@ class OrderPanel(QtWidgets.QWidget):
                 "Quantity",
                 offset=str(minimum_qty),
             )
-            if mode == "CONTRACTS"
+            if mode == "CONTRACTS" and not allocating
             else quantize_step(str(quantity_value), step, offset=str(minimum_qty))
         )
         value = safe_float(quantity)
+        if value <= 0:
+            raise ValueError("Resulting quantity is below the exchange lot size.")
         maximum_qty = self.rules.max_market_qty if market_quantity else self.rules.max_qty
         if not (minimum_qty <= value <= maximum_qty):
             raise ValueError(
@@ -2754,7 +2768,8 @@ class OrderPanel(QtWidgets.QWidget):
             "rules": self.rules,
             "position_intent": "REDUCE" if reducing else "OPEN",
         }
-        if not reducing and self.size_mode.currentData() == 'RISK %':
+        if not reducing and (self._allocation_percent is not None
+                             or self.size_mode.currentData() == 'RISK %'):
             request['collateral_asset'] = self.rules.margin_asset
             request['collateral_required'] = (safe_float(order['quantity'])
                                               * self._entry_reference(order_type) / confirmed_leverage)
