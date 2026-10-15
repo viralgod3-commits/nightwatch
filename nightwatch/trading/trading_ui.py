@@ -1265,7 +1265,6 @@ class OrderPanel(QtWidgets.QWidget):
     OPEN_SIZE_MODES: ClassVar[tuple[tuple[str, str], ...]] = (
         ("Quantity", "CONTRACTS"),
         ("USDT value", "QUOTE NOTIONAL"),
-        ("Available %", "BALANCE %"),
         ("Risk %", "RISK %"),
     )
     REDUCE_SIZE_MODES: ClassVar[tuple[tuple[str, str], ...]] = (
@@ -1506,7 +1505,7 @@ class OrderPanel(QtWidgets.QWidget):
         self.size_mode = combo(self.OPEN_SIZE_MODES)
         self.size_mode.setAccessibleName("Amount mode")
         self.quantity_edit = QtWidgets.QLineEdit()
-        self.quantity_edit.setPlaceholderText("Size")
+        self.quantity_edit.setPlaceholderText("0")
         self.price_edit = TicketPriceEdit("Limit price")
         self.price_edit.setPlaceholderText("0.00")
         self.price_edit.setToolTip("Maximum buy price or minimum sell price.")
@@ -1567,9 +1566,6 @@ class OrderPanel(QtWidgets.QWidget):
                 amount_heading = QtWidgets.QHBoxLayout()
                 amount_heading.setContentsMargins(0, 0, 0, 0)
                 amount_heading.setSpacing(8)
-                self.amount_caption = label("Size")
-                self.amount_caption.setBuddy(self.quantity_edit)
-                amount_heading.addWidget(self.amount_caption)
                 self.order_cost = ElidedLabel("")
                 self.order_cost.setObjectName("ticketFieldCaption")
                 self.order_cost.setAccessibleName("Estimated order cost")
@@ -1726,10 +1722,8 @@ class OrderPanel(QtWidgets.QWidget):
             raw = self.quantity_edit.text().strip()
             if quantity is None:
                 quantity = getattr(self, "_desk_preview_quantity", "")
-            for button, percent in zip(self.size_presets, (25, 50, 75, 100)):
-                button.setChecked(mode in {"BALANCE %", "POSITION %"} and safe_float(raw) == percent)
             allocation = 0.0
-            if mode in {"BALANCE %", "POSITION %"}:
+            if mode == "POSITION %":
                 allocation = safe_float(raw)
             elif reducing:
                 amount = self._reduced_position_size()
@@ -1741,12 +1735,50 @@ class OrderPanel(QtWidgets.QWidget):
                     available = self.gateway.available_balance(self.rules.margin_asset)
                 except ValueError:
                     available = 0.0
-                if leverage > 0 and available > 0:
-                    allocation = (safe_float(quantity) * self._entry_reference(self.current_order_type())
+                reference = self._entry_reference(self.current_order_type())
+                if leverage > 0 and available > 0 and reference > 0:
+                    allocation = (safe_float(quantity) * reference
                                   / leverage / available * 100)
+            for button, percent in zip(self.size_presets, (25, 50, 75, 100)):
+                matched_preset = (
+                    safe_float(raw) == percent if reducing and mode == "POSITION %"
+                    else round(allocation) == percent if not reducing else False
+                )
+                button.setChecked(matched_preset)
             blocker = QtCore.QSignalBlocker(self.allocation_slider)
             self.allocation_slider.setValue(round(max(0, min(100, allocation))))
             del blocker
+            if reducing:
+                allocation_ready = self._reduced_position_size() > 0
+            else:
+                try:
+                    available = self.gateway.available_balance(self.rules.margin_asset)
+                except ValueError:
+                    available = 0.0
+                reference = self._entry_reference(self.current_order_type())
+                allocation_ready = bool(
+                    available > 0 and self.gateway.current_leverage(self.symbol) > 0
+                    and reference > 0
+                )
+            self.margin_bar.setEnabled(usable and allocation_ready)
+            intent = "position" if reducing else "margin"
+            if intent != getattr(self, "_allocation_accessibility_intent", None):
+                self._allocation_accessibility_intent = intent
+                self.margin_bar.setAccessibleName(
+                    "Position close percentage" if reducing else "Available margin allocation")
+                self.margin_bar.setToolTip(
+                    "Size this order to use the selected share of available margin at confirmed leverage."
+                    if not reducing else "Close the selected share of the active position."
+                )
+                for percent, button in zip((25, 50, 75, 100), self.size_presets):
+                    if reducing:
+                        button.setAccessibleName(f"Close {percent}% of the selected position")
+                        button.setToolTip(f"Size the reduction to close {percent}% of the selected position.")
+                    else:
+                        button.setAccessibleName(f"Allocate {percent}% of available margin")
+                        button.setToolTip(
+                            f"Size the order to use {percent}% of available margin at confirmed leverage."
+                        )
         finally:
             self._desk_syncing = False
 
@@ -2177,11 +2209,41 @@ class OrderPanel(QtWidgets.QWidget):
     def _apply_size_preset(self, percent: int, *, focus_amount: bool = True) -> None:
         """Apply one-click margin/position sizing without changing exchange semantics."""
         percent = max(0, min(100, int(percent)))
-        target_mode = "POSITION %" if self.reduce_only.isChecked() else "BALANCE %"
+        if percent <= 0:
+            self.quantity_edit.clear()
+            return
+        target_mode = "POSITION %" if self.reduce_only.isChecked() else "CONTRACTS"
         index = self.size_mode.findData(target_mode)
         if index >= 0:
             self.size_mode.setCurrentIndex(index)
-        self.quantity_edit.setText(str(percent))
+        if self.reduce_only.isChecked():
+            amount = str(percent)
+        else:
+            try:
+                available = self.gateway.available_balance(self.rules.margin_asset)
+            except ValueError:
+                available = 0.0
+            leverage = self.gateway.current_leverage(self.symbol)
+            reference = self._entry_reference(self.current_order_type())
+            if available <= 0 or leverage <= 0 or reference <= 0:
+                self.quantity_edit.clear()
+                return
+            order_type = self.current_order_type()
+            market_quantity = order_type in {"MARKET", "STOP_MARKET", "TRAILING_STOP_MARKET"}
+            step = self.rules.market_step if market_quantity else self.rules.lot_step
+            minimum_qty = self.rules.min_market_qty if market_quantity else self.rules.min_qty
+            quantity_value = available * percent / 100.0 * leverage / reference
+            try:
+                amount = quantize_step(str(quantity_value), step, offset=str(minimum_qty))
+            except ValueError:
+                # A preset below the exchange minimum must never become a
+                # misleading raw percentage or an invalid contract quantity.
+                self.quantity_edit.clear()
+                return
+            if safe_float(amount) < minimum_qty or safe_float(amount) <= 0:
+                self.quantity_edit.clear()
+                return
+        self.quantity_edit.setText(amount)
         if focus_amount:
             editor = self.quantity_edit
             editor.setFocus(Qt.FocusReason.ShortcutFocusReason)
@@ -2275,17 +2337,16 @@ class OrderPanel(QtWidgets.QWidget):
             self.quantity_edit.clear()
         base_asset = self.symbol.removesuffix(self.rules.quote_asset)
         label, placeholder = {
-            "CONTRACTS": (f"Amount · {base_asset}", "Size"),
-            "QUOTE NOTIONAL": (f"Value · {self.rules.quote_asset}", "Size"),
-            "BALANCE %": ("Available margin · %", "Size · 1–100"),
-            "RISK %": ("Account risk · %", "Size · 1–100"),
-            "POSITION %": ("Position size · %", "Size · 1–100"),
+            "CONTRACTS": (f"Amount · {base_asset}", "0"),
+            "QUOTE NOTIONAL": (f"Value · {self.rules.quote_asset}", "0"),
+            "RISK %": ("Account risk · %", "1–100"),
+            "POSITION %": ("Position size · %", "1–100"),
         }.get(mode, ("Amount", "0.00"))
         self.quantity_edit.setAccessibleName(label)
         units = {
             "CONTRACTS": base_asset,
             "QUOTE NOTIONAL": self.rules.quote_asset,
-            "BALANCE %": "Margin %", "RISK %": "Risk %", "POSITION %": "Position %",
+            "RISK %": "Risk %", "POSITION %": "Position %",
         }
         for index in range(self.size_mode.count()):
             self.size_mode.setItemText(index, units.get(self.size_mode.itemData(index), "Qty"))
@@ -2498,7 +2559,7 @@ class OrderPanel(QtWidgets.QWidget):
             raise ValueError("Enter a positive order size.")
         reference = self._entry_reference(order_type)
         mode = str(self.size_mode.currentData())
-        if mode in {"BALANCE %", "RISK %", "POSITION %"} and raw > 100:
+        if mode in {"RISK %", "POSITION %"} and raw > 100:
             raise ValueError("Percentage sizing cannot exceed 100%.")
         if mode == "CONTRACTS":
             quantity_value = raw
@@ -2516,21 +2577,13 @@ class OrderPanel(QtWidgets.QWidget):
             balance = self.gateway.available_balance(self.rules.margin_asset)
             if balance <= 0:
                 raise ValueError("Load account balances before using balance- or risk-based sizing.")
-            if mode == "BALANCE %":
-                if reference <= 0:
-                    raise ValueError("A current or limit price is required for balance sizing.")
-                leverage = self.gateway.current_leverage(self.symbol)
-                if leverage <= 0:
-                    raise ValueError("Load the confirmed Binance leverage before using Available %.")
-                quantity_value = balance * raw / 100.0 * leverage / reference
-            else:
-                stops = self.protection_plans.get("sl", [])
-                if not stops or reference <= 0:
-                    raise ValueError("Risk sizing needs an entry price and at least one stop-loss target.")
-                distance = abs(reference - safe_float(stops[0].get("price")))
-                if distance <= 0:
-                    raise ValueError("The first stop-loss must differ from the entry price.")
-                quantity_value = balance * raw / 100.0 / distance
+            stops = self.protection_plans.get("sl", [])
+            if not stops or reference <= 0:
+                raise ValueError("Risk sizing needs an entry price and at least one stop-loss target.")
+            distance = abs(reference - safe_float(stops[0].get("price")))
+            if distance <= 0:
+                raise ValueError("The first stop-loss must differ from the entry price.")
+            quantity_value = balance * raw / 100.0 / distance
         if self.reduce_only.isChecked():
             direction = "SHORT" if self.buy_button.isChecked() else "LONG"
             available_position = self._reduced_position_size()
@@ -2701,7 +2754,7 @@ class OrderPanel(QtWidgets.QWidget):
             "rules": self.rules,
             "position_intent": "REDUCE" if reducing else "OPEN",
         }
-        if not reducing and self.size_mode.currentData() in {'BALANCE %', 'RISK %'}:
+        if not reducing and self.size_mode.currentData() == 'RISK %':
             request['collateral_asset'] = self.rules.margin_asset
             request['collateral_required'] = (safe_float(order['quantity'])
                                               * self._entry_reference(order_type) / confirmed_leverage)
