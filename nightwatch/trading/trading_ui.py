@@ -125,8 +125,6 @@ def _trading_stylesheet(theme: dict[str, str]) -> str:
         QSlider#ticketAllocation::sub-page:horizontal {{ background: {t['cyan']}; border-radius: 2px; }}
         QSlider#ticketAllocation::handle:horizontal {{ width: 12px; height: 12px; margin: -5px 0; background: {t['text']}; border: 2px solid {t['panel']}; border-radius: 7px; }}
         QSlider#ticketAllocation:focus::handle:horizontal {{ border-color: {t['cyan']}; }}
-        QPushButton#sizePresetButton {{ color: {t['muted']}; background: transparent; border: 0; padding: 0; min-height: 0; }}
-        QPushButton#sizePresetButton:hover, QPushButton#sizePresetButton:checked, QPushButton#sizePresetButton:focus {{ color: {t['text']}; background: {t['control_hover']}; }}
         QScrollBar:vertical {{ background: transparent; width: 6px; margin: 0; border: 0; }}
         QScrollBar:horizontal {{ background: transparent; height: 6px; margin: 0; border: 0; }}
         QScrollBar::handle:vertical {{ background: {t['control_border']}; min-height: 28px; border-radius: 3px; }}
@@ -961,6 +959,45 @@ class TicketInputGroup(QtWidgets.QFrame):
 
 
 class TicketPercentageSlider(QtWidgets.QSlider):
+    """Direct pointer tracking; clicking the track must not also page-step."""
+
+    def _position_value(self, position: QtCore.QPointF) -> int:
+        option = QtWidgets.QStyleOptionSlider()
+        self.initStyleOption(option)
+        style = self.style()
+        groove = style.subControlRect(QtWidgets.QStyle.ComplexControl.CC_Slider, option,
+                                       QtWidgets.QStyle.SubControl.SC_SliderGroove, self)
+        handle = style.subControlRect(QtWidgets.QStyle.ComplexControl.CC_Slider, option,
+                                       QtWidgets.QStyle.SubControl.SC_SliderHandle, self)
+        span = max(1, groove.width() - handle.width())
+        pixel = round(position.x()) - groove.left() - handle.width() // 2
+        return QtWidgets.QStyle.sliderValueFromPosition(
+            self.minimum(), self.maximum(), pixel, span, option.upsideDown)
+
+    def mousePressEvent(self, event: QtGui.QMouseEvent) -> None:
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.setFocus(Qt.FocusReason.MouseFocusReason)
+            self.setSliderDown(True)
+            self.setSliderPosition(self._position_value(event.position()))
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event: QtGui.QMouseEvent) -> None:
+        if self.isSliderDown():
+            self.setSliderPosition(self._position_value(event.position()))
+            event.accept()
+            return
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event: QtGui.QMouseEvent) -> None:
+        if event.button() == Qt.MouseButton.LeftButton and self.isSliderDown():
+            self.setSliderPosition(self._position_value(event.position()))
+            self.setSliderDown(False)
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
+
     def wheelEvent(self, event: QtGui.QWheelEvent) -> None:
         if self.hasFocus():
             super().wheelEvent(event)
@@ -969,7 +1006,7 @@ class TicketPercentageSlider(QtWidgets.QSlider):
 
 
 class TicketAllocationControl(QtWidgets.QFrame):
-    """Percentage slider with clickable, position-aligned quarter marks."""
+    """An unlabeled sizing track; the amount is shown in the main size input."""
 
     percentage_changed = Signal(int)
 
@@ -977,69 +1014,21 @@ class TicketAllocationControl(QtWidgets.QFrame):
         super().__init__(parent)
         self.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding,
                            QtWidgets.QSizePolicy.Policy.Fixed)
+        row = QtWidgets.QHBoxLayout(self)
+        row.setContentsMargins(0, 0, 0, 0)
         self.slider = TicketPercentageSlider(Qt.Orientation.Horizontal, self)
         self.slider.setObjectName("ticketAllocation")
         self.slider.setRange(0, 100)
-        self.slider.setPageStep(25)
+        self.slider.setPageStep(10)
+        self.slider.setTracking(True)
         self.slider.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.slider.setAccessibleName("Available margin percentage")
-        self.slider.installEventFilter(self)
         self.slider.valueChanged.connect(self.percentage_changed)
-        self.buttons: list[QtWidgets.QPushButton] = []
-        for percent in (25, 50, 75, 100):
-            button = QtWidgets.QPushButton(f"{percent}%", self)
-            button.setObjectName("sizePresetButton")
-            button.setCheckable(True)
-            button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-            set_text_role(button, TextRole.UI_CAPTION)
-            self.buttons.append(button)
-
-    def _slider_geometry(self):
-        option = QtWidgets.QStyleOptionSlider()
-        self.slider.initStyleOption(option)
-        style = self.slider.style()
-        groove = style.subControlRect(QtWidgets.QStyle.ComplexControl.CC_Slider, option,
-                                       QtWidgets.QStyle.SubControl.SC_SliderGroove, self.slider)
-        handle = style.subControlRect(QtWidgets.QStyle.ComplexControl.CC_Slider, option,
-                                       QtWidgets.QStyle.SubControl.SC_SliderHandle, self.slider)
-        return option, groove, handle
-
-    def sync_geometry(self) -> None:
-        if not self.buttons:
-            return
-        tick_height = max(button.fontMetrics().height() for button in self.buttons) + 4
-        track_height = max(16, tick_height - 4)
-        self.setFixedHeight(track_height + tick_height)
-        self.slider.setGeometry(0, 0, self.width(), track_height)
-        option, groove, handle = self._slider_geometry()
-        span = max(0, groove.width() - handle.width())
-        positions = []
-        for percent, button in zip((25, 50, 75, 100), self.buttons):
-            center = groove.left() + handle.width() // 2 + QtWidgets.QStyle.sliderPositionFromValue(
-                0, 100, percent, span, option.upsideDown)
-            positions.append((center, button))
-        right_edge = self.width()
-        for center, button in sorted(positions, key=lambda item: item[0], reverse=True):
-            width = button.fontMetrics().horizontalAdvance(button.text()) + 6
-            left = max(0, min(right_edge - width, center - width // 2))
-            button.setGeometry(left, track_height, width, tick_height)
-            right_edge = left - 4
-
-    def resizeEvent(self, event: QtGui.QResizeEvent) -> None:
-        super().resizeEvent(event)
+        row.addWidget(self.slider)
         self.sync_geometry()
 
-    def eventFilter(self, watched: QtCore.QObject, event: QtCore.QEvent) -> bool:
-        if watched is self.slider:
-            if (event.type() == QtCore.QEvent.Type.MouseButtonPress
-                    and event.button() == Qt.MouseButton.LeftButton):
-                option, groove, handle = self._slider_geometry()
-                if not handle.contains(event.position().toPoint()):
-                    span = max(1, groove.width() - handle.width())
-                    pixel = round(event.position().x()) - groove.left() - handle.width() // 2
-                    value = QtWidgets.QStyle.sliderValueFromPosition(0, 100, pixel, span, option.upsideDown)
-                    self.slider.setValue(value)
-        return super().eventFilter(watched, event)
+    def sync_geometry(self) -> None:
+        self.slider.setFixedHeight(max(22, self.slider.fontMetrics().height() + 4))
 
 
 class TicketScrollArea(QtWidgets.QScrollArea):
@@ -1553,19 +1542,19 @@ class OrderPanel(QtWidgets.QWidget):
         ):
             field, box = frame("ticketField", spacing=5)
             field.setParent(self._order_card)
-            box.addWidget(label(caption))
+            caption_label = label(caption)
+            box.addWidget(caption_label)
+            if name == "amount":
+                self._amount_caption = caption_label
             box.addWidget(control)
             self._field_rows[name] = field
         entry.addWidget(self._field_rows["amount"])
         self.preset_section, preset = frame("ticketField", spacing=4)
         self.margin_bar = TicketAllocationControl()
         self.margin_bar.setObjectName("tradingMarginRow")
-        self.size_presets = self.margin_bar.buttons
         self.allocation_slider = self.margin_bar.slider
-        self.margin_bar.percentage_changed.connect(lambda value: self._apply_size_preset(value, focus_amount=False))
-        for percent, button in zip((25, 50, 75, 100), self.size_presets):
-            button.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
-            button.clicked.connect(lambda _checked=False, value=percent: self._apply_size_preset(value))
+        self.margin_bar.percentage_changed.connect(
+            lambda value: self._apply_size_preset(value, focus_amount=False))
         preset.addWidget(self.margin_bar)
         entry.addWidget(self.preset_section)
 
@@ -1670,7 +1659,7 @@ class OrderPanel(QtWidgets.QWidget):
                        self.trigger_edit, self.trigger_mark_button, self.price_edit,
                        self.price_mark_button, self.activation_edit, self.activation_mark_button,
                        self.callback_rate, self.working_type, self.quantity_edit, self.size_mode,
-                       self.allocation_slider, *self.size_presets, self.reduce_only,
+                       self.allocation_slider, self.reduce_only,
                        self.time_in_force, self.protection_button, self.reconcile_button,
                        self.buy_button, self.sell_button)
         for previous, following in zip(focus_order, focus_order[1:]):
@@ -1731,7 +1720,9 @@ class OrderPanel(QtWidgets.QWidget):
             self.leverage_field.setVisible(not reducing)
             self.protection_field.setVisible(not reducing)
             self.allocation_slider.setAccessibleName(
-                "Position close percentage" if reducing else "Available margin percentage")
+                "Position close percentage" if reducing else
+                "Account risk percentage" if self.size_mode.currentData() == "RISK %"
+                else "Available margin percentage")
             usable = not self.gateway.stopping
             self.buy_button.setEnabled(usable)
             self.sell_button.setEnabled(usable)
@@ -1745,7 +1736,7 @@ class OrderPanel(QtWidgets.QWidget):
             allocation = 0.0
             if not reducing and self._allocation_percent is not None:
                 allocation = self._allocation_percent
-            elif mode == "POSITION %":
+            elif mode in {"POSITION %", "RISK %"}:
                 allocation = safe_float(raw)
             elif reducing:
                 amount = self._reduced_position_size()
@@ -1761,36 +1752,24 @@ class OrderPanel(QtWidgets.QWidget):
                 if leverage > 0 and available > 0 and reference > 0:
                     allocation = (safe_float(quantity) * reference
                                   / leverage / available * 100)
-            for button, percent in zip(self.size_presets, (25, 50, 75, 100)):
-                matched_preset = (
-                    safe_float(raw) == percent if reducing and mode == "POSITION %"
-                    else round(allocation) == percent if not reducing else False
-                )
-                button.setChecked(matched_preset)
             blocker = QtCore.QSignalBlocker(self.allocation_slider)
             self.allocation_slider.setValue(round(max(0, min(100, allocation))))
             del blocker
             # Allocation is an intent: it can be selected before the price or
             # account is ready. The order builder checks fresh inputs on submit.
             self.margin_bar.setEnabled(usable)
-            intent = "position" if reducing else "margin"
+            intent = "position" if reducing else "risk" if mode == "RISK %" else "margin"
             if intent != getattr(self, "_allocation_accessibility_intent", None):
                 self._allocation_accessibility_intent = intent
                 self.margin_bar.setAccessibleName(
-                    "Position close percentage" if reducing else "Available margin allocation")
+                    "Position close percentage" if reducing else
+                    "Account risk percentage" if mode == "RISK %" else "Available margin allocation")
                 self.margin_bar.setToolTip(
                     "Size this order to use the selected share of available margin at confirmed leverage."
-                    if not reducing else "Close the selected share of the active position."
+                    if not reducing and mode != "RISK %" else
+                    "Set the account risk percentage shown in the size field."
+                    if mode == "RISK %" else "Close the selected share of the active position."
                 )
-                for percent, button in zip((25, 50, 75, 100), self.size_presets):
-                    if reducing:
-                        button.setAccessibleName(f"Close {percent}% of the selected position")
-                        button.setToolTip(f"Size the reduction to close {percent}% of the selected position.")
-                    else:
-                        button.setAccessibleName(f"Allocate {percent}% of available margin")
-                        button.setToolTip(
-                            f"Size the order to use {percent}% of available margin at confirmed leverage."
-                        )
         finally:
             self._desk_syncing = False
 
@@ -2212,13 +2191,19 @@ class OrderPanel(QtWidgets.QWidget):
     def _apply_size_preset(self, percent: int, *, focus_amount: bool = True) -> None:
         """Retain allocation intent; derive its quantity from fresh trading inputs."""
         percent = max(0, min(100, int(percent)))
-        target_mode = "POSITION %" if self.reduce_only.isChecked() else "CONTRACTS"
-        index = self.size_mode.findData(target_mode)
-        if index >= 0:
-            self.size_mode.setCurrentIndex(index)
-        if self.reduce_only.isChecked():
+        mode = str(self.size_mode.currentData())
+        if self.reduce_only.isChecked() or mode == "RISK %":
             self._allocation_percent = None
-            self.quantity_edit.setText(str(percent))
+            if mode in {"POSITION %", "RISK %"}:
+                self.quantity_edit.setText(str(percent))
+            else:
+                market = self.current_order_type() in {"MARKET", "STOP_MARKET", "TRAILING_STOP_MARKET"}
+                step = self.rules.market_step if market else self.rules.lot_step
+                minimum = self.rules.min_market_qty if market else self.rules.min_qty
+                amount = Decimal(str(self._reduced_position_size())) * Decimal(percent) / 100
+                quantity = (quantize_step(str(amount), step, offset=str(minimum))
+                            if amount > 0 and amount >= Decimal(str(minimum)) else "0")
+                self.quantity_edit.setText(quantity)
         else:
             self._allocation_percent = percent
             self._update_order_summary()
@@ -2328,6 +2313,8 @@ class OrderPanel(QtWidgets.QWidget):
             "POSITION %": ("Position size · %", "1–100"),
         }.get(mode, ("Amount", "0.00"))
         self.quantity_edit.setAccessibleName(label)
+        self._amount_caption.setText({"CONTRACTS": "Amount", "QUOTE NOTIONAL": "Order value",
+                                      "RISK %": "Account risk", "POSITION %": "Position size"}.get(mode, "Amount"))
         units = {
             "CONTRACTS": base_asset,
             "QUOTE NOTIONAL": self.rules.quote_asset,
@@ -2480,21 +2467,27 @@ class OrderPanel(QtWidgets.QWidget):
                 quantity = self._quantity(order_type)
         except (ValueError, TypeError):
             pass
-        if self._allocation_percent is not None and self.quantity_edit.text() != quantity:
-            # Show the derived base quantity while the slider retains the
+        displayed = quantity
+        if self._allocation_percent is not None:
+            if self._allocation_percent == 0:
+                displayed = "0"
+            elif quantity and self.size_mode.currentData() == "QUOTE NOTIONAL":
+                displayed = format((Decimal(quantity) * Decimal(str(self._entry_reference(order_type)))).normalize(), "f")
+        if self._allocation_percent is not None and self.quantity_edit.text() != displayed:
+            # Show the derived amount in the selected unit while the slider retains the
             # percentage. Internal preview refreshes must not become manual edits.
             selected = self.quantity_edit.selectedText()
             selection_start = self.quantity_edit.selectionStart()
             cursor = self.quantity_edit.cursorPosition()
             all_selected = bool(selected) and len(selected) == len(self.quantity_edit.text())
             blocker = QtCore.QSignalBlocker(self.quantity_edit)
-            self.quantity_edit.setText(quantity)
+            self.quantity_edit.setText(displayed)
             if all_selected:
                 self.quantity_edit.selectAll()
             elif selection_start >= 0:
                 self.quantity_edit.setSelection(selection_start, len(selected))
             else:
-                self.quantity_edit.setCursorPosition(min(cursor, len(quantity)))
+                self.quantity_edit.setCursorPosition(min(cursor, len(displayed)))
             del blocker
         self._update_ticket_estimates(quantity, order_type)
 
