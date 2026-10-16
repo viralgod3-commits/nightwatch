@@ -73,6 +73,11 @@ def _multiplier(value) -> int:
     return value if value in ORDER_FLOW_AGGREGATION_MULTIPLIERS else 1
 
 
+def _depth_range(value) -> float:
+    value = safe_float(value, 1.0)
+    return max(.05, min(1., value)) if math.isfinite(value) else 1.
+
+
 def _mix(first, second, amount):
     a, b = QtGui.QColor(first), QtGui.QColor(second)
     return QtGui.QColor(*(round(x * (1 - amount) + y * amount)
@@ -164,6 +169,7 @@ class _Row:
     ratio: float
     top: int
     touch: bool
+    depth_ratio: float = 0.
 
     @property
     def key(self):
@@ -264,6 +270,9 @@ class _PrismRenderer(QtWidgets.QWidget):
         self.side_colors = {s: QtGui.QColor(p[s]) for s in ('bid', 'ask')}
         self.fills = {s: _mix(p['bg'], p[s], .48) for s in ('bid', 'ask')}
         self.tracks = {s: _mix(p['bg'], p[s], .055) for s in ('bid', 'ask')}
+        self._depth_brush_key = None
+        self._depth_brushes = {}
+        self._depth_edges = {s: _mix(p['bg'], p[s], .5) for s in ('bid', 'ask')}
         self._last_chrome = self._last_layout = None
 
     def _fonts(self):
@@ -358,6 +367,14 @@ class _PrismRenderer(QtWidgets.QWidget):
         value = lambda l: l.notional if quote else l.quantity
         scale = max((value(l) for side in visible for l in side), default=0.)
         side_totals = [sum(value(l) for l in side) for side in visible]
+        heatmap = self.config.get('heatmap', False)
+        depth_scale = 0.
+        if heatmap:
+            fraction = _depth_range(self.config.get('depth_range', 1.))
+            # Both sides share one scale. A small ask book must not look as
+            # deep as a much larger bid book simply by filling its own lane.
+            depth_scale = max((sum(value(level) for level in side[:max(1, math.ceil(len(side)*fraction))])
+                               for side in visible), default=0.)
         prepared = []
         for side_index, side in enumerate(visible):
             cumulative = 0.
@@ -372,7 +389,8 @@ class _PrismRenderer(QtWidgets.QWidget):
                 prepared.append(_Row('ask' if side_index == 0 else 'bid', level.price,
                     self._price(level.price), ('' if complete else '≥') + _amount(amount),
                     ('' if cumulative_complete else '≥') + _amount(cumulative), amount,
-                    amount / scale if scale else 0., top, index == 0))
+                    amount / scale if scale else 0., top, index == 0,
+                    min(1., cumulative/depth_scale) if depth_scale else 0.))
         previous = {row.key: row for row in self.rows}
         previous_bars = self._bar_values(now)
         new_targets = {row.key: row.ratio for row in prepared}
@@ -466,6 +484,21 @@ class _PrismRenderer(QtWidgets.QWidget):
     def _rect(self, x, y, w, h):
         return QtCore.QRectF(x, y, max(0, w), max(0, h))
 
+    def _depth_brush(self, side, anchor, width):
+        key = (self.geometry['price_left'], self.geometry['price_right'], width)
+        if key != self._depth_brush_key:
+            self._depth_brush_key = key
+            self._depth_brushes.clear()
+        brush = self._depth_brushes.get(side)
+        if brush is None:
+            outer = anchor-width if side == 'bid' else anchor+width
+            gradient = QtGui.QLinearGradient(anchor, 0., outer, 0.)
+            gradient.setColorAt(0., _mix(self._bg, self.side_colors[side], .035))
+            gradient.setColorAt(.55, _mix(self._bg, self.side_colors[side], .12))
+            gradient.setColorAt(1., _mix(self._bg, self.side_colors[side], .25))
+            brush = self._depth_brushes[side] = QtGui.QBrush(gradient)
+        return brush
+
     def _paint_row(self, p, row, bars):
         g = self.geometry
         left, right, m, w = g['price_left'], g['price_right'], g['margin'], g['width']
@@ -478,11 +511,20 @@ class _PrismRenderer(QtWidgets.QWidget):
         bid = row.side == 'bid'
         area = left-m-8
         bar_max = max(1, area - (78 if g['totals'] else 0))
+        if self.config.get('heatmap', False) and row.depth_ratio > 0:
+            anchor = left-5 if bid else right+5
+            width = bar_max*row.depth_ratio
+            outer = anchor-width if bid else anchor+width
+            p.fillRect(self._rect(outer if bid else anchor, y, width, h),
+                       self._depth_brush(row.side, anchor, bar_max) if self._display_live else self.surface)
+            p.fillRect(self._rect(outer if bid else outer-1, y, 1, h),
+                       self._depth_edges[row.side] if self._display_live else self.muted)
         ratio = bars.get(row.key, row.ratio)
         bar = max(0, bar_max * ratio)
         bx = left-5-bar if bid else right+5
         if bar > 0:
-            p.fillRect(self._rect(bx, y+2, bar, h-4), self.tracks[row.side] if self._display_live else self.surface)
+            if not self.config.get('heatmap', False):
+                p.fillRect(self._rect(bx, y+2, bar, h-4), self.tracks[row.side] if self._display_live else self.surface)
             p.fillRect(self._rect(bx, y+h-6, bar, 3), self.fills[row.side] if self._display_live else self.surface)
             # One sharp terminal accent makes small depth changes visible.
             p.fillRect(self._rect(bx if bid else bx+bar-2, y+h-6, min(2, bar), 3), color)
@@ -761,6 +803,8 @@ class PrismCanvas(QtWidgets.QWidget):
         self.density = 'comfortable'
         self.totals = True
         self.motion = True
+        self.heatmap = False
+        self.depth_range = 1.
         self.theme = orderbook_palette(theme)
         self._market_epoch = self._display_epoch = 0
         self._latest_received_sequence = -1
@@ -811,6 +855,7 @@ class PrismCanvas(QtWidgets.QWidget):
         config = dict(symbol=self.symbol, market_epoch=self._market_epoch,
             tick=self.price_tick_size, aggregation=self.aggregation_multiplier,
             values=self.values, density=self.density, totals=self.totals, motion=self.motion,
+            heatmap=self.heatmap, depth_range=self.depth_range,
             book_valid=self._book_valid, trade_active=self._trade_active,
             size=(max(1, self.width()), max(1, self.height())), dpr=self.devicePixelRatioF(),
             interval=display_frame_interval_ms(self), theme=self.theme,
@@ -1205,9 +1250,22 @@ class OrderBookWidget(QtWidgets.QWidget):
         self.splitter.setStretchFactor(0, 1)
         self.controls = QtWidgets.QFrame(self)
         self.controls.setObjectName('prismControls')
-        toolbar = QtWidgets.QHBoxLayout(self.controls)
-        toolbar.setContentsMargins(10, 6, 10, 6)
-        toolbar.setSpacing(6)
+        self.controls.setSizePolicy(QtWidgets.QSizePolicy.Policy.Ignored, QtWidgets.QSizePolicy.Policy.Fixed)
+        control_layout = QtWidgets.QVBoxLayout(self.controls)
+        control_layout.setContentsMargins(8, 6, 8, 6)
+        control_layout.setSpacing(4)
+        toolbar = self._toolbar = QtWidgets.QHBoxLayout()
+        toolbar.setContentsMargins(0, 0, 0, 0)
+        toolbar.setSpacing(4)
+        control_layout.addLayout(toolbar)
+        self._secondary_controls = QtWidgets.QWidget(self.controls)
+        self._secondary_toolbar = QtWidgets.QHBoxLayout(self._secondary_controls)
+        self._secondary_toolbar.setContentsMargins(0, 0, 0, 0)
+        self._secondary_toolbar.setSpacing(4)
+        self._secondary_toolbar.addStretch(1)
+        control_layout.addWidget(self._secondary_controls)
+        self._secondary_controls.hide()
+        self._compact_controls = False
         self.grouping = QtWidgets.QToolButton(self.controls)
         self.grouping.setPopupMode(QtWidgets.QToolButton.ToolButtonPopupMode.InstantPopup)
         self.grouping.setAccessibleName('Price grouping')
@@ -1224,6 +1282,13 @@ class OrderBookWidget(QtWidgets.QWidget):
             self._group_actions[multiplier] = action
         self.grouping.setMenu(self._group_menu)
         toolbar.addWidget(self.grouping)
+        self.heatmap_button = QtWidgets.QToolButton(self.controls)
+        self.heatmap_button.setText('Heatmap')
+        self.heatmap_button.setCheckable(True)
+        self.heatmap_button.setAccessibleName('Show depth heatmap')
+        self.heatmap_button.setToolTip('Cumulative liquidity behind the size bars. Turn off for the price ladder.')
+        self.heatmap_button.toggled.connect(self.set_heatmap_enabled)
+        toolbar.addWidget(self.heatmap_button)
         toolbar.addStretch(1)
         self.unit = QtWidgets.QToolButton(self.controls)
         self.unit.setAccessibleName('Size units')
@@ -1239,6 +1304,27 @@ class OrderBookWidget(QtWidgets.QWidget):
         self._compact_action = self._toggle('Compact rows', lambda v: self._set_option('density', 'compact' if v else 'comfortable'))
         self._totals_action = self._toggle('Cumulative totals when space permits', lambda v: self._set_option('totals', v))
         self._motion_action = self._toggle('Smooth depth transitions', lambda v: self._set_option('motion', v))
+        self._range_action = QtWidgets.QWidgetAction(self._options_menu)
+        range_widget = QtWidgets.QWidget(self._options_menu)
+        range_layout = QtWidgets.QHBoxLayout(range_widget)
+        range_layout.setContentsMargins(10, 6, 10, 6)
+        range_label = QtWidgets.QLabel('Heatmap range', range_widget)
+        self.depth_range_slider = QtWidgets.QSlider(Qt.Orientation.Horizontal, range_widget)
+        self.depth_range_slider.setRange(5, 100)
+        self.depth_range_slider.setPageStep(5)
+        self.depth_range_slider.setMinimumWidth(80)
+        self.depth_range_slider.setAccessibleName('Heatmap depth range')
+        self.depth_range_slider.setToolTip('Scale cumulative depth against this portion of the visible levels. All prices remain visible.')
+        self.depth_range_slider.valueChanged.connect(lambda value: self.set_depth_range(value/100.))
+        self._range_value = QtWidgets.QLabel(range_widget)
+        self._range_value.setAlignment(_ALIGN.AlignRight | _ALIGN.AlignVCenter)
+        for label in (range_label, self._range_value):
+            set_text_role(label, TextRole.ORDERBOOK_CONTROL)
+        self._range_value.setFixedWidth(self._range_value.fontMetrics().horizontalAdvance('100%')+4)
+        for widget in (range_label, self.depth_range_slider, self._range_value):
+            range_layout.addWidget(widget)
+        self._range_action.setDefaultWidget(range_widget)
+        self._options_menu.addAction(self._range_action)
         self._options_menu.addSeparator()
         self._tape_action = self._toggle('Trade tape (wide panels)', self.set_tape_enabled)
         self._tape_mode_action = self._toggle('Tape: all trades', lambda v: self._set_tape_mode('ALL' if v else 'LARGE'))
@@ -1246,7 +1332,7 @@ class OrderBookWidget(QtWidgets.QWidget):
         self._options_menu.addAction('Reset display', self._reset_display)
         self.options.setMenu(self._options_menu)
         toolbar.addWidget(self.options)
-        for button in (self.grouping, self.unit, self.options):
+        for button in (self.grouping, self.heatmap_button, self.unit, self.options):
             button.setMinimumHeight(26)
             set_text_role(button, TextRole.ORDERBOOK_CONTROL)
         layout = QtWidgets.QVBoxLayout(self)
@@ -1277,6 +1363,12 @@ class OrderBookWidget(QtWidgets.QWidget):
         multiplier = self.canvas.aggregation_multiplier
         self.grouping.setText(f'{multiplier}×')
         self.unit.setText(quote if self.canvas.values == 'quote' else base)
+        self._checked(self.heatmap_button, self.canvas.heatmap)
+        self._range_action.setVisible(self.canvas.heatmap)
+        blocker = QtCore.QSignalBlocker(self.depth_range_slider)
+        self.depth_range_slider.setValue(round(self.canvas.depth_range*100))
+        del blocker
+        self._range_value.setText(f'{round(self.canvas.depth_range*100)}%')
         for value, action in self._group_actions.items():
             self._checked(action, value == multiplier)
             action.setText(f'{value}×')
@@ -1284,8 +1376,29 @@ class OrderBookWidget(QtWidgets.QWidget):
                 (self._totals_action, self.canvas.totals), (self._motion_action, self.canvas.motion),
                 (self._tape_action, self._tape_enabled), (self._tape_mode_action, self._tape_mode == 'ALL')):
             self._checked(action, checked)
+        self._reflow_controls()
+
+    def _reflow_controls(self):
+        buttons = (self.grouping, self.heatmap_button, self.unit, self.options)
+        required = 16 + 3*self._toolbar.spacing() + sum(button.sizeHint().width() for button in buttons)
+        compact = self.width() < required
+        if compact == self._compact_controls:
+            return
+        self._compact_controls = compact
+        source, target = ((self._toolbar, self._secondary_toolbar) if compact
+                          else (self._secondary_toolbar, self._toolbar))
+        for button in (self.unit, self.options):
+            source.removeWidget(button)
+        if compact:
+            target.insertWidget(0, self.unit)
+        else:
+            target.addWidget(self.unit)
+        target.addWidget(self.options)
+        self._secondary_controls.setVisible(compact)
 
     def _set_option(self, name, value, *, emit=True):
+        if getattr(self.canvas, name) == value:
+            return
         setattr(self.canvas, name, value)
         self.canvas._queue_configuration()
         self._sync_controls()
@@ -1317,6 +1430,12 @@ class OrderBookWidget(QtWidgets.QWidget):
     def set_value_mode(self, mode, *, emit=True):
         self._set_option('values', 'quote' if mode == 'quote' else 'base', emit=emit)
 
+    def set_heatmap_enabled(self, enabled, *, emit=True):
+        self._set_option('heatmap', bool(enabled), emit=emit)
+
+    def set_depth_range(self, fraction, *, emit=True):
+        self._set_option('depth_range', _depth_range(fraction), emit=emit)
+
     def set_column_preferences(self, preferences, *, emit=False):
         # Old analytical-lane settings cannot overwrite this new composition.
         if isinstance(preferences, dict) and 'totals' in preferences:
@@ -1330,6 +1449,7 @@ class OrderBookWidget(QtWidgets.QWidget):
     def presentation_state(self):
         return dict(prism_version=1, values=self.canvas.values, density=self.canvas.density,
             totals=self.canvas.totals, motion=self.canvas.motion, aggregation=self.aggregation_multiplier(),
+            heatmap=self.canvas.heatmap, depth_range=self.canvas.depth_range,
             columns=self.column_preferences(), tape_enabled=self._tape_enabled, tape_mode=self._tape_mode)
 
     def restore_presentation_state(self, state, *, emit=False):
@@ -1338,6 +1458,8 @@ class OrderBookWidget(QtWidgets.QWidget):
         self.canvas.density = 'compact' if values.get('density') == 'compact' else 'comfortable'
         self.canvas.totals = bool(values.get('totals', True))
         self.canvas.motion = bool(values.get('motion', True))
+        self.canvas.heatmap = bool(values.get('heatmap', False))
+        self.canvas.depth_range = _depth_range(values.get('depth_range', 1.))
         self.canvas.aggregation_multiplier = _multiplier(values.get('aggregation', 1))
         self._tape_enabled = bool(values.get('tape_enabled', False))
         self._set_tape_mode(values.get('tape_mode', 'LARGE'), emit=False)
@@ -1490,6 +1612,7 @@ class OrderBookWidget(QtWidgets.QWidget):
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
+        self._reflow_controls()
         self._sync_tape_visibility()
 
     def wheelEvent(self, event):
@@ -1510,8 +1633,9 @@ class OrderBookWidget(QtWidgets.QWidget):
             QWidget#prismOrderBook, QFrame#prismControls {{ background: {p['bg']}; }}
             QFrame#prismControls {{ border-top: 1px solid {p['grid']}; }}
             QToolButton {{ color: {p['text']}; background: {p['surface_raised']};
-                border: 1px solid {p['grid']}; border-radius: 5px; padding: 3px 9px; }}
+                border: 1px solid {p['grid']}; border-radius: 5px; padding: 3px 6px; }}
             QToolButton:hover {{ border-color: {p['mid']}; background: {p['control_hover']}; }}
+            QToolButton:checked {{ border-color: {p['mid']}; background: {p['control_pressed']}; color: {p['mid']}; }}
             QToolButton:pressed {{ background: {p['control_pressed']}; }}
             QToolButton:focus {{ border-color: {p['mid']}; }}
             QToolButton::menu-indicator {{ image: none; width: 0; }}
@@ -1521,6 +1645,11 @@ class OrderBookWidget(QtWidgets.QWidget):
             border: 1px solid {p['grid']}; padding: 5px; }}
             QMenu::item {{ padding: 7px 22px; }}
             QMenu::item:selected {{ background: {p['control_hover']}; }}
+            QMenu QLabel {{ color: {p['text']}; background: transparent; }}
+            QMenu QSlider::groove:horizontal {{ height: 3px; background: {p['grid']}; }}
+            QMenu QSlider::sub-page:horizontal {{ background: {p['mid']}; }}
+            QMenu QSlider::handle:horizontal {{ width: 10px; margin: -5px 0;
+                background: {p['mid']}; border-radius: 5px; }}
             QMenu::separator {{ height: 1px; background: {p['grid']}; margin: 4px 0; }}'''
         self._group_menu.setStyleSheet(menu_style)
         self._options_menu.setStyleSheet(menu_style)

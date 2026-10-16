@@ -22,7 +22,7 @@ from nightwatch.models import (
     OrderFlowDisplayLevel, OrderFlowSnapshot,
 )
 from nightwatch.orderbook.modern import (
-    _DepthAggregation, _fit_depth_geometry, _geometry, _PrismRenderer, PrismCanvas,
+    _DepthAggregation, _fit_depth_geometry, _geometry, _PrismRenderer, PrismCanvas, OrderBookWidget,
 )
 from nightwatch.market.data import _DepthParserWorker
 from nightwatch.orderbook.backend import OrderFlowAnalyzer
@@ -245,6 +245,103 @@ class _LocalLink(QtCore.QObject):
     def enable(self, *args, **kwargs): pass
     def close(self): pass
     def consumed(self, *args, **kwargs): pass
+
+
+class HeatmapChecks(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+
+    def setUp(self):
+        with patch('nightwatch.orderbook.backend._OrderBookProcessLink', _LocalLink):
+            self.widget = OrderBookWidget(orderbook_palette())
+        self.widget.set_symbol('BTCUSDT', SimpleNamespace(tick_size=.1))
+        self.widget.resize(360, 600)
+        self.widget.show()
+        self.app.processEvents()
+
+    def tearDown(self):
+        self.widget.close()
+
+    def test_visible_switch_range_and_saved_state_without_new_depth_requests(self):
+        w = self.widget
+        requests, changes = [], []
+        w.depth_view_requested.connect(lambda *args: requests.append(args))
+        w.presentation_changed.connect(changes.append)
+        QtTest.QTest.mouseClick(w.heatmap_button, QtCore.Qt.MouseButton.LeftButton)
+        self.assertTrue(w.canvas._sent_config['heatmap'])
+        self.assertTrue(w._range_action.isVisible())
+        w.depth_range_slider.setValue(35)
+        saved = w.presentation_state()
+        self.assertEqual(saved['depth_range'], .35)
+        self.assertEqual(w.canvas._sent_config['depth_range'], .35)
+        self.assertEqual(requests, [])
+        self.assertEqual(len(changes), 2)
+        w.restore_presentation_state({})
+        self.assertFalse(w.heatmap_button.isChecked())
+        self.assertFalse(w._range_action.isVisible())
+        w.restore_presentation_state(saved)
+        self.assertTrue(w.heatmap_button.isChecked())
+        self.assertEqual(w.depth_range_slider.value(), 35)
+        w.depth_range_slider.setValue(100)
+        self.assertEqual(w.canvas.depth_range, 1.)
+        w.depth_range_slider.setValue(5)
+        self.assertEqual(w.canvas.depth_range, .05)
+
+    def test_long_symbols_do_not_widen_or_overlap_narrow_panels(self):
+        w = self.widget
+        w.set_symbol('1000PEPEUSDT')
+        w.set_aggregation_multiplier(10000)
+        for width in (220, 260, 320, 600, 220):
+            with self.subTest(width=width):
+                w.resize(width, 520)
+                self.app.processEvents()
+                self.app.processEvents()
+                self.assertEqual(w.width(), width)
+                bounds = []
+                for button in (w.grouping, w.heatmap_button, w.unit, w.options):
+                    rect = QtCore.QRect(button.mapTo(w.controls, QtCore.QPoint()), button.size())
+                    self.assertTrue(w.controls.rect().contains(rect))
+                    self.assertGreaterEqual(button.width(), button.sizeHint().width())
+                    self.assertFalse(any(rect.intersects(previous) for previous in bounds))
+                    bounds.append(rect)
+
+    def test_shared_cumulative_scale_preserves_prices_sizes_and_idle_rendering(self):
+        w = self.widget
+        source = snapshot(count=24)
+        source = replace(source,
+            bid_levels=tuple(replace(level, quantity=3., notional=3.*level.price) for level in source.bid_levels),
+            ask_levels=tuple(replace(level, quantity=12., notional=12.*level.price) for level in source.ask_levels))
+        renderer = _PrismRenderer(orderbook_palette())
+        now = source.generated_monotonic
+        renderer.configure(w.canvas._sent_config)
+        renderer.adopt(source)
+        renderer.prepare(now)
+        original = [(row.side, row.price, row.size_text, row.total_text) for row in renderer.rows]
+        grouped = renderer._aggregation.levels
+        w.set_heatmap_enabled(True)
+        renderer.configure(w.canvas._sent_config)
+        renderer.prepare(now)
+        self.assertTrue(all(current is old for current, old in zip(renderer._aggregation.levels, grouped)))
+        self.assertEqual([(r.side, r.price, r.size_text, r.total_text) for r in renderer.rows], original)
+        self.assertEqual(max(r.depth_ratio for r in renderer.rows if r.side == 'ask'), 1.)
+        self.assertEqual(max(r.depth_ratio for r in renderer.rows if r.side == 'bid'), .25)
+        totals = renderer.side_totals
+        w.set_depth_range(.5)
+        renderer.configure(w.canvas._sent_config)
+        renderer.prepare(now)
+        self.assertEqual([(r.side, r.price, r.size_text, r.total_text) for r in renderer.rows], original)
+        self.assertEqual(renderer.side_totals, totals)
+        self.assertGreater(max(r.depth_ratio for r in renderer.rows if r.side == 'bid'), .25)
+        target = QtGui.QImage(renderer.size(), QtGui.QImage.Format_ARGB32_Premultiplied)
+        renderer.paint(target, QtGui.QRegion(renderer.rect()), now)
+        brushes = dict(renderer._depth_brushes)
+        renderer._dirty_pixels = QtGui.QRegion()
+        renderer.prepare(now+.1)
+        self.assertTrue(renderer._dirty_pixels.isEmpty())
+        self.assertLessEqual(renderer._animation_end, now)
+        self.assertEqual(renderer._depth_brushes, brushes)
+        renderer.close()
 
 
 class PriceSelectionChecks(unittest.TestCase):
