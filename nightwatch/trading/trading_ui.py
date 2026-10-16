@@ -193,6 +193,32 @@ def _paint_trade_arrow(widget: QtWidgets.QWidget, painter: QtGui.QPainter,
     )
 
 
+class _TradingTooltipFilter(QtCore.QObject):
+    def attach(self, root: QtCore.QObject) -> None:
+        root.installEventFilter(self)
+        if isinstance(root, QtWidgets.QWidget) and root.toolTip():
+            root.setToolTip("")
+        for child in root.children():
+            self.attach(child)
+
+    def eventFilter(self, watched: QtCore.QObject, event: QtCore.QEvent) -> bool:
+        kind = event.type()
+        if kind == QtCore.QEvent.Type.ToolTip:
+            event.accept()
+            return True
+        if kind == QtCore.QEvent.Type.ToolTipChange:
+            if isinstance(watched, QtWidgets.QWidget) and watched.toolTip():
+                watched.setToolTip("")
+        elif kind == QtCore.QEvent.Type.ChildAdded:
+            self.attach(event.child())
+        return False
+
+
+def _disable_trading_tooltips(root: QtWidgets.QWidget) -> None:
+    root._trading_tooltip_filter = _TradingTooltipFilter(root)
+    root._trading_tooltip_filter.attach(root)
+
+
 class TradingRateSpinBox(QtWidgets.QDoubleSpinBox):
     def __init__(self, parent: QtWidgets.QWidget | None = None):
         super().__init__(parent)
@@ -246,6 +272,7 @@ def _confirm_cancel_symbol_orders(parent: QtWidgets.QWidget, symbol: str) -> boo
 class CredentialsDialog(QtWidgets.QDialog):
     def __init__(self, api_key: str, api_secret: str, parent: QtWidgets.QWidget | None = None):
         super().__init__(parent)
+        _disable_trading_tooltips(self)
         self.setWindowTitle("Binance API credentials")
         self.setMinimumWidth(500)
         layout = QtWidgets.QVBoxLayout(self)
@@ -301,6 +328,7 @@ class TradingHotkeysDialog(QtWidgets.QDialog):
         reserved_shortcuts: set[str] | None = None,
     ):
         super().__init__(parent)
+        _disable_trading_tooltips(self)
         self.reserved_shortcuts = {str(value) for value in (reserved_shortcuts or set()) if str(value)}
         self.setWindowTitle("Trading hotkeys")
         self.setMinimumWidth(500)
@@ -405,6 +433,7 @@ class QuickTradingSettingsDialog(QtWidgets.QDialog):
         reserved_shortcuts: set[str] | None = None,
     ):
         super().__init__(parent)
+        _disable_trading_tooltips(self)
         self.reserved_shortcuts = {str(value) for value in (reserved_shortcuts or set()) if str(value)}
         self.setWindowTitle("Quick trading settings")
         self.setMinimumSize(650, 650)
@@ -484,16 +513,10 @@ class QuickTradingSettingsDialog(QtWidgets.QDialog):
         self.collateral_percent.setDecimals(1)
         self.collateral_percent.setSuffix("%")
         self.collateral_percent.setValue(safe_float(merged["collateral_percent"]))
-        self.collateral_percent.setToolTip(
-            'Share of available margin used before leverage.'
-        )
         self.leverage = QtWidgets.QSpinBox()
         self.leverage.setRange(1, 125)
         self.leverage.setSuffix("×")
         self.leverage.setValue(int(safe_float(merged["leverage"])))
-        self.leverage.setToolTip(
-            'Saving applies this leverage to the active symbol before entry shortcuts can run.'
-        )
         leverage_box = QtWidgets.QWidget()
         leverage_layout = QtWidgets.QHBoxLayout(leverage_box)
         leverage_layout.setContentsMargins(0, 0, 0, 0)
@@ -514,9 +537,6 @@ class QuickTradingSettingsDialog(QtWidgets.QDialog):
         self.order_mode = QtWidgets.QComboBox()
         self.order_mode.addItems(("MARKET", "LIMIT"))
         self.order_mode.setCurrentText(str(merged["order_mode"]).upper())
-        self.order_mode.setToolTip(
-            'Market buys or sells now. Limit uses the same-side best price and may not fill.'
-        )
         self.time_in_force = QtWidgets.QComboBox()
         self.time_in_force.addItem("IOC", "IOC")
         self.time_in_force.addItem("GTC", "GTC")
@@ -525,23 +545,13 @@ class QuickTradingSettingsDialog(QtWidgets.QDialog):
         self.time_in_force.setCurrentIndex(
             max(0, self.time_in_force.findData(str(merged["time_in_force"]).upper()))
         )
-        for index in range(self.time_in_force.count()):
-            self.time_in_force.setItemData(index, _TIME_IN_FORCE_HINTS[self.time_in_force.itemData(index)], Qt.ItemDataRole.ToolTipRole)
-        self.time_in_force.setToolTip(_TIME_IN_FORCE_HINTS[self.time_in_force.currentData()])
-        self.time_in_force.currentIndexChanged.connect(lambda _index: self.time_in_force.setToolTip(_TIME_IN_FORCE_HINTS[self.time_in_force.currentData()]))
         self.slippage_enabled = QtWidgets.QCheckBox("Cap market slippage")
         self.slippage_enabled.setChecked(bool(merged["slippage_enabled"]))
-        self.slippage_enabled.setToolTip(
-            'Use a limit order to cap the execution price. A fill is not guaranteed.'
-        )
         self.max_slippage = QtWidgets.QDoubleSpinBox()
         self.max_slippage.setRange(0.01, 10.0)
         self.max_slippage.setDecimals(2)
         self.max_slippage.setSuffix("%")
         self.max_slippage.setValue(safe_float(merged["max_slippage_percent"]))
-        self.max_slippage.setToolTip(
-            'Price limit from the best ask for buys or best bid for sells. A tighter cap may not fill.'
-        )
         slippage_box = QtWidgets.QWidget()
         slippage_layout = QtWidgets.QHBoxLayout(slippage_box)
         slippage_layout.setContentsMargins(0, 0, 0, 0)
@@ -549,13 +559,9 @@ class QuickTradingSettingsDialog(QtWidgets.QDialog):
         slippage_layout.addWidget(self.max_slippage)
         self.reduce_only = QtWidgets.QCheckBox("Reduce existing position only")
         self.reduce_only.setChecked(bool(merged["reduce_only"]))
-        self.reduce_only.setToolTip(
-            'Only reduces a position; cannot open or reverse it. One-way mode only.'
-        )
 
         def add_row(label_text: str, field: QtWidgets.QWidget, tooltip: str) -> None:
             label = QtWidgets.QLabel(label_text)
-            field.setToolTip(field.toolTip() or tooltip)
             form.addRow(label, field)
 
         add_row("Margin allocation", self.collateral_percent, self.collateral_percent.toolTip())
@@ -567,18 +573,15 @@ class QuickTradingSettingsDialog(QtWidgets.QDialog):
 
         self.take_profit_enabled = QtWidgets.QCheckBox("Enabled")
         self.take_profit_enabled.setChecked(bool(merged["take_profit_enabled"]))
-        self.take_profit_enabled.setToolTip('Place a take-profit after the entry fills.')
         self.take_profit_percent = QtWidgets.QDoubleSpinBox()
         self.take_profit_percent.setRange(0.01, 100.0)
         self.take_profit_percent.setDecimals(2)
         self.take_profit_percent.setSuffix("% move")
         self.take_profit_percent.setValue(safe_float(merged["take_profit_percent"]))
-        self.take_profit_percent.setToolTip("Favorable percentage move from the shortcut entry reference.")
         self.take_profit_close = QtWidgets.QSpinBox()
         self.take_profit_close.setRange(1, 100)
         self.take_profit_close.setSuffix("% close")
         self.take_profit_close.setValue(int(safe_float(merged["take_profit_close_percent"])))
-        self.take_profit_close.setToolTip('Share of the filled entry to close at take-profit.')
         tp_box = QtWidgets.QWidget()
         tp_layout = QtWidgets.QHBoxLayout(tp_box)
         tp_layout.setContentsMargins(0, 0, 0, 0)
@@ -589,18 +592,15 @@ class QuickTradingSettingsDialog(QtWidgets.QDialog):
 
         self.stop_loss_enabled = QtWidgets.QCheckBox("Enabled")
         self.stop_loss_enabled.setChecked(bool(merged["stop_loss_enabled"]))
-        self.stop_loss_enabled.setToolTip('Place a stop-loss after the entry fills.')
         self.stop_loss_percent = QtWidgets.QDoubleSpinBox()
         self.stop_loss_percent.setRange(0.01, 100.0)
         self.stop_loss_percent.setDecimals(2)
         self.stop_loss_percent.setSuffix("% move")
         self.stop_loss_percent.setValue(safe_float(merged["stop_loss_percent"]))
-        self.stop_loss_percent.setToolTip("Adverse percentage move from the shortcut entry reference.")
         self.stop_loss_close = QtWidgets.QSpinBox()
         self.stop_loss_close.setRange(1, 100)
         self.stop_loss_close.setSuffix("% close")
         self.stop_loss_close.setValue(int(safe_float(merged["stop_loss_close_percent"])))
-        self.stop_loss_close.setToolTip('Share of the filled entry to close at stop-loss.')
         sl_box = QtWidgets.QWidget()
         sl_layout = QtWidgets.QHBoxLayout(sl_box)
         sl_layout.setContentsMargins(0, 0, 0, 0)
@@ -618,7 +618,6 @@ class QuickTradingSettingsDialog(QtWidgets.QDialog):
             editor.setRange(1, 100)
             editor.setSuffix("%")
             editor.setValue(int(safe_float(merged[key])))
-            editor.setToolTip("Position percentage closed by the matching close hotkey.")
             self.close_presets.append(editor)
             close_layout.addWidget(editor)
         add_row("Close hotkeys", close_box, "Independent position-close presets; ticket sizing buttons remain 25/50/75/100%.")
@@ -658,7 +657,6 @@ class QuickTradingSettingsDialog(QtWidgets.QDialog):
             )
             if hasattr(editor, "setMaximumSequenceLength"):
                 editor.setMaximumSequenceLength(1)
-            editor.setToolTip(hotkey_help[key])
             label_widget = QtWidgets.QLabel(label)
             self.hotkey_editors[key] = editor
             hotkey_form.addRow(label_widget, editor)
@@ -811,6 +809,7 @@ class ProtectionEditorDialog(QtWidgets.QDialog):
         parent: QtWidgets.QWidget | None = None,
     ):
         super().__init__(parent)
+        _disable_trading_tooltips(self)
         self.setWindowTitle("Multiple take-profit and stop-loss targets")
         self.setMinimumWidth(570)
         self.rows: dict[str, list[tuple[QtWidgets.QLineEdit, QtWidgets.QSpinBox]]] = {
@@ -1259,6 +1258,7 @@ class OrderPanel(QtWidgets.QWidget):
         parent: QtWidgets.QWidget | None = None,
     ):
         super().__init__(parent)
+        _disable_trading_tooltips(self)
         self.gateway = gateway
         self.testnet = gateway.testnet
         self.compact = compact
@@ -1412,10 +1412,8 @@ class OrderPanel(QtWidgets.QWidget):
         leverage_row = QtWidgets.QHBoxLayout(self.leverage_field)
         leverage_row.setContentsMargins(0, 0, 0, 0)
         leverage_row.setSpacing(5)
-        leverage_row.addWidget(label("Cross"))
         self.leverage = LeverageComboBox()
         self.leverage.setAccessibleName("Cross margin leverage")
-        self.leverage.setToolTip("Cross margin leverage")
         set_text_role(self.leverage, TextRole.UI_CONTROL)
         leverage_row.addWidget(self.leverage)
         header.addWidget(self.leverage_field)
@@ -1424,7 +1422,6 @@ class OrderPanel(QtWidgets.QWidget):
         self.quick_settings_button.setFixedSize(28, 28)
         self.quick_settings_button.setIconSize(QtCore.QSize(16, 16))
         self.quick_settings_button.setAccessibleName("Trading settings")
-        self.quick_settings_button.setToolTip("Trading settings")
         header.addWidget(self.quick_settings_button)
         content.addWidget(self._ticket_header)
 
@@ -1515,7 +1512,6 @@ class OrderPanel(QtWidgets.QWidget):
         self.callback_rate.setValue(0.5)
         self.callback_rate.setSuffix(" %")
         self.callback_rate.setAccessibleName("Trailing callback rate")
-        self.callback_rate.setToolTip("Price reversal that triggers the trailing stop.")
         set_text_role(self.callback_rate, TextRole.TRADING_DESK_VALUE)
         self.working_type = combo((("Mark price", "MARK_PRICE"), ("Last price", "CONTRACT_PRICE")))
         self.working_type.setAccessibleName("Trigger source")
@@ -1525,7 +1521,6 @@ class OrderPanel(QtWidgets.QWidget):
             mark.setText("Mark")
             mark.setObjectName("tradeMarkButton")
             mark.setAccessibleName(f"Use mark price for {edit.accessibleName().lower()}")
-            mark.setToolTip("Copy the current mark price")
             set_text_role(mark, TextRole.UI_CAPTION)
             return TicketInputGroup(edit, mark), mark
 
@@ -1567,7 +1562,6 @@ class OrderPanel(QtWidgets.QWidget):
         options.setVerticalSpacing(8)
         self.reduce_only = QtWidgets.QCheckBox("Reduce only", self)
         self.reduce_only.setObjectName("ticketReduceOnly")
-        self.reduce_only.setToolTip("Only reduce or close a position; never open or reverse it.")
         set_text_role(self.reduce_only, TextRole.UI_CONTROL)
         self._execution_options = QtWidgets.QWidget()
         self._execution_options.setObjectName("tradingInlineField")
@@ -1577,17 +1571,11 @@ class OrderPanel(QtWidgets.QWidget):
         self.time_in_force_field, tif = frame("ticketField", spacing=0)
         self.time_in_force = combo(((key, key) for key in _TIME_IN_FORCE_HINTS), "timeInForceCycle")
         self.time_in_force.setAccessibleName("Time in force")
-        for index, description in enumerate(_TIME_IN_FORCE_HINTS.values()):
-            self.time_in_force.setItemData(index, description, Qt.ItemDataRole.ToolTipRole)
-        self.time_in_force.currentTextChanged.connect(
-            lambda key: self.time_in_force.setToolTip(_TIME_IN_FORCE_HINTS.get(key, "")))
-        self.time_in_force.setToolTip(_TIME_IN_FORCE_HINTS["GTC"])
         tif.addWidget(self.time_in_force)
         self.protection_field, protection = frame("ticketField", spacing=0)
         self.protection_button = QtWidgets.QPushButton("TP / SL")
         self.protection_button.setObjectName("protectionButton")
         self.protection_button.setProperty("active", False)
-        self.protection_button.setToolTip("Attach take-profit and stop-loss targets")
         set_text_role(self.protection_button, TextRole.UI_CONTROL)
         protection.addWidget(self.protection_button)
         execution.addWidget(self.time_in_force_field)
@@ -1717,8 +1705,8 @@ class OrderPanel(QtWidgets.QWidget):
         self._desk_syncing = True
         try:
             reducing = self.reduce_only.isChecked()
-            self.leverage_field.setVisible(not reducing)
-            self.protection_field.setVisible(not reducing)
+            self.leverage_field.setEnabled(not reducing)
+            self.protection_field.setEnabled(not reducing)
             self.allocation_slider.setAccessibleName(
                 "Position close percentage" if reducing else
                 "Account risk percentage" if self.size_mode.currentData() == "RISK %"
@@ -1764,12 +1752,6 @@ class OrderPanel(QtWidgets.QWidget):
                 self.margin_bar.setAccessibleName(
                     "Position close percentage" if reducing else
                     "Account risk percentage" if mode == "RISK %" else "Available margin allocation")
-                self.margin_bar.setToolTip(
-                    "Size this order to use the selected share of available margin at confirmed leverage."
-                    if not reducing and mode != "RISK %" else
-                    "Set the account risk percentage shown in the size field."
-                    if mode == "RISK %" else "Close the selected share of the active position."
-                )
         finally:
             self._desk_syncing = False
 
@@ -2048,8 +2030,6 @@ class OrderPanel(QtWidgets.QWidget):
         _set_repolished_property(self.conditional_button, "active", conditional)
         self.conditional_button.setText(dict((value, title) for title, value in self.ORDER_TYPES)[order_type]
                                         if conditional else "Stop")
-        self.conditional_button.setToolTip(
-            self.conditional_button.text() + " · Choose a stop order type")
         for kind, action in self.conditional_actions.items():
             action.setChecked(kind == order_type)
         self.time_in_force.setVisible(limit_price)
@@ -2162,7 +2142,6 @@ class OrderPanel(QtWidgets.QWidget):
 
 
         self._refresh_reduce_positions()
-        self.protection_button.setVisible(not reducing)
         self.protection_button.setEnabled(not reducing)
         self._type_changed(self.current_order_type())
         self._size_mode_changed(str(self.size_mode.currentData()))
@@ -2499,11 +2478,10 @@ class OrderPanel(QtWidgets.QWidget):
         value = (f"Order value ≈ {human_number(notional)} {self.rules.quote_asset}"
                  if quantity and reference > 0 else "Order value —")
         cost = (f"Margin ≈ {human_number(notional / leverage)} {self.rules.margin_asset}"
-                if quantity and reference > 0 and leverage > 0 else "Margin —")
+                if quantity and reference > 0 and leverage > 0 and not self.reduce_only.isChecked()
+                else "Margin —")
         _set_text_if_changed(self.order_value, value)
         _set_text_if_changed(self.order_cost, cost)
-        self.order_cost.setVisible(not self.reduce_only.isChecked())
-        self.order_cost.setToolTip("Estimated initial margin, excluding fees.")
         self._sync_position_desk(quantity)
 
     def apply_external_price_prefill(self, price: float) -> tuple[bool, str]:
@@ -2804,6 +2782,7 @@ class BatchOrderDialog(QtWidgets.QDialog):
         parent: QtWidgets.QWidget | None = None,
     ):
         super().__init__(parent)
+        _disable_trading_tooltips(self)
         self.symbol = symbol
         self.rules = rules
         self.order_side = order_side
@@ -2842,16 +2821,11 @@ class BatchOrderDialog(QtWidgets.QDialog):
         for index in range(5):
             side = QtWidgets.QComboBox()
             side.addItem(self.order_side)
-            side.setToolTip(
-                f"Locked entry side · position intent {direction}"
-            )
             price = QtWidgets.QLineEdit()
             price.setPlaceholderText(f"Limit {index + 1}")
-            price.setToolTip(f"Binance price tick: {_exchange_step_text(rules.tick_size)}")
             set_text_role(price, TextRole.MARKET_VALUE)
             quantity = QtWidgets.QLineEdit()
             quantity.setPlaceholderText("Quantity")
-            quantity.setToolTip(f"Binance quantity step: {_exchange_step_text(rules.lot_step)}")
             set_text_role(quantity, TextRole.MARKET_VALUE)
             price.textChanged.connect(self._validate_live)
             quantity.textChanged.connect(self._validate_live)
@@ -2937,6 +2911,7 @@ class ModifyOrderDialog(QtWidgets.QDialog):
         parent: QtWidgets.QWidget | None = None,
     ):
         super().__init__(parent)
+        _disable_trading_tooltips(self)
         self.order = dict(order)
         self.rules = rules
         symbol = str(order.get("symbol") or "")
@@ -2968,13 +2943,8 @@ class ModifyOrderDialog(QtWidgets.QDialog):
         form.setVerticalSpacing(8)
         self.quantity = QtWidgets.QLineEdit(str(order.get("origQty") or order.get("quantity") or ""))
         self.price = QtWidgets.QLineEdit(str(order.get("price") or ""))
-        self.price.setToolTip(f"Binance price tick: {_exchange_step_text(rules.tick_size)}")
         set_text_role(self.quantity, TextRole.MARKET_VALUE)
         set_text_role(self.price, TextRole.MARKET_VALUE)
-        self.quantity.setToolTip(
-            f"Total size includes {_quantity_text(executed)} already filled. "
-            f"Quantity step: {_exchange_step_text(rules.lot_step)}."
-        )
         form.addRow("New total quantity", self.quantity)
         form.addRow("Price", self.price)
         root.addLayout(form)
@@ -3935,12 +3905,10 @@ class PositionDeskDetails(QtWidgets.QFrame):
         actions.setSpacing(8)
         self.trade_button = QtWidgets.QPushButton("Reduce…")
         self.trade_button.setAccessibleName("Prepare a reduce-only order for this position")
-        self.trade_button.setToolTip('Open the ticket to reduce this position.')
         self.trade_button.setObjectName("deskTradePosition")
         set_text_role(self.trade_button, TextRole.UI_CONTROL)
         self.trade_button.clicked.connect(lambda: self.trade_requested.emit(dict(self.payload)) if self.payload else None)
         self.close_button = QtWidgets.QPushButton("Market close")
-        self.close_button.setToolTip("Close 100% of this position at market")
         set_text_role(self.close_button, TextRole.UI_CONTROL)
         self.close_button.clicked.connect(
             lambda: self.close_requested.emit(dict(self.payload), 100) if self.payload else None
@@ -4325,6 +4293,7 @@ class TradingWorkspace(QtWidgets.QWidget):
         symbol_rules: dict[str, SymbolRules] | None = None,
     ):
         super().__init__(parent)
+        _disable_trading_tooltips(self)
         self.theme = ui_palette(theme)
         self.gateway = gateway
         self.symbol_rules = symbol_rules if symbol_rules is not None else {}
@@ -4354,17 +4323,22 @@ class TradingWorkspace(QtWidgets.QWidget):
         self.ticket.order_requested.connect(self.order_requested)
         self.account_frame = PositionDeskView(self._position_card, self._order_card)
         self.account_frame.symbol_rules = self.symbol_rules
-        self.account_frame.tabs.insertTab(0, self.ticket, "Trade")
-        self.account_frame.tabs.setCurrentIndex(0)
-        self._last_account_tab = 1
-        layout.addWidget(self.account_frame)
+        self.main_tabs = QtWidgets.QTabWidget()
+        self.main_tabs.setObjectName("tradingAccountTabs")
+        self.main_tabs.setDocumentMode(True)
+        self.main_tabs.setIconSize(QtCore.QSize(18, 18))
+        self.main_tabs.tabBar().setExpanding(False)
+        self.main_tabs.tabBar().setDrawBase(False)
+        set_text_role(self.main_tabs.tabBar(), TextRole.UI_CONTROL)
+        self.main_tabs.addTab(self.ticket, "Trade")
+        self.main_tabs.addTab(self.account_frame, "Positions")
+        layout.addWidget(self.main_tabs)
 
         self.refresh_button = QtWidgets.QPushButton()
         self.refresh_button.setObjectName("portfolioSyncButton")
         self.refresh_button.setIconSize(QtCore.QSize(16, 16))
         self.refresh_button.setFixedSize(28, 28)
         self.refresh_button.setAccessibleName("Refresh account")
-        self.refresh_button.setToolTip("Refresh balances, positions and orders")
         self.refresh_button.setAutoDefault(False)
         self.refresh_button.clicked.connect(lambda: self.gateway.refresh_account(self.symbol, True))
         self.refresh_button.setEnabled(self.gateway.has_credentials())
@@ -4403,6 +4377,7 @@ class TradingWorkspace(QtWidgets.QWidget):
         self.ticket.reduce_only.toggled.connect(lambda _checked: self._sync_batch_action())
         self.cancel_all_button.clicked.connect(self.cancel_selected_symbol_orders)
         self.tabs.currentChanged.connect(self._account_tab_changed)
+        self.main_tabs.currentChanged.connect(self._main_tab_changed)
         self.orders.currentItemChanged.connect(lambda *_args: self._sync_account_actions(self.tabs.currentIndex()))
         self.account_frame.position_selected.connect(self._position_selected)
         self.ticket.position_target_selected.connect(self.select_position)
@@ -4486,7 +4461,7 @@ class TradingWorkspace(QtWidgets.QWidget):
         self.set_account_view(int(index) == 1)
 
     def set_account_view(self, opened: bool) -> None:
-        self.tabs.setCurrentIndex(self._last_account_tab if opened else 0)
+        self.main_tabs.setCurrentIndex(1 if opened else 0)
 
     def current_page(self) -> int:
         return 1 if self._account_view_open else 0
@@ -4520,17 +4495,21 @@ class TradingWorkspace(QtWidgets.QWidget):
         _set_repolished_property(self.account_menu_button, "active", extra is not None)
         for page, action in self.account_pages.items():
             action.setChecked(page is current)
-        opened = self.tabs.currentWidget() is not self.ticket
+        self._sync_account_actions(tab_index)
+        self._refresh_account_freshness()
+        self._poll_account_if_open()
+
+    def _main_tab_changed(self, index: int) -> None:
+        opened = index == 1
         changed = opened != self._account_view_open
         self._account_view_open = opened
-        if opened:
-            self._last_account_tab = tab_index
-            if self.isVisible():
-                self.account_age_timer.start()
+        if opened and self.isVisible():
+            self.account_age_timer.start()
         else:
             self.account_age_timer.stop()
         if changed:
             self.view_changed.emit(1 if opened else 0)
+        tab_index = self.tabs.currentIndex()
         self._sync_account_actions(tab_index)
         self._refresh_account_freshness()
         if self._account_view_open and self.isVisible() and self.gateway.has_credentials():
@@ -4543,22 +4522,16 @@ class TradingWorkspace(QtWidgets.QWidget):
 
     def _sync_account_actions(self, tab_index: int) -> None:
         orders_open = self.tabs.widget(tab_index) is self.account_frame.order_page
-        self.account_frame.footer.setVisible(self.tabs.widget(tab_index) is not self.ticket)
+        self.account_frame.footer.setVisible(True)
         self.order_actions.setVisible(orders_open)
         self.cancel_all_button.setVisible(orders_open)
         connected = self.gateway.has_credentials()
         self.cancel_all_button.setEnabled(connected and any(str(row.get("symbol") or "").upper() == self.symbol.upper() for row in self._open_orders))
-        self.cancel_all_button.setToolTip(f"Cancel all working orders for {self.symbol} only")
         self._sync_batch_action()
 
     def _sync_batch_action(self) -> None:
         reducing = bool(self.ticket.reduce_only.isChecked())
         self.batch_button.setEnabled(not reducing and self.gateway.has_credentials())
-        self.batch_button.setToolTip(
-            'Turn off Reduce only to create batch entries.'
-            if reducing
-            else 'Create up to five Limit / GTC entries for this side.'
-        )
 
     def set_close_presets(self, preset: dict[str, Any]) -> None:
         self.close_percentages = [
@@ -4613,7 +4586,6 @@ class TradingWorkspace(QtWidgets.QWidget):
                     item.setData(_ACCOUNT_SORT_ROLE, _account_sort_value(header, value, payload))
                     if column == 0:
                         item.setData(Qt.ItemDataRole.UserRole, dict(payload))
-                    item.setToolTip(value)
                 table.setRowHeight(row_index, 25)
             table._rows_fingerprint = fingerprint
         finally:
@@ -4894,4 +4866,6 @@ class TradingWorkspace(QtWidgets.QWidget):
         self.fills.apply_theme(self.theme)
         ratio = self.devicePixelRatioF()
         self.refresh_button.setIcon(line_icon('refresh', self.theme['muted'], ratio))
+        self.main_tabs.setTabIcon(0, asset_svg_icon("trading-account.svg", self.theme["text"], ratio))
+        self.main_tabs.setTabIcon(1, asset_svg_icon("trading-open-orders.svg", self.theme["text"], ratio))
 
