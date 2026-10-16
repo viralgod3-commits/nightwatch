@@ -8,7 +8,7 @@ from collections import OrderedDict, deque
 from dataclasses import dataclass, field, replace
 from typing import Any
 
-from ..models import OrderFlowDisplayLevel, OrderFlowLevelMetrics, OrderFlowSnapshot, OrderFlowTradePrint
+from ..models import OrderBookDepthView, OrderFlowDisplayLevel, OrderFlowLevelMetrics, OrderFlowSnapshot, OrderFlowTradePrint
 from ..models import (
     BOOK_BBO_FRESH_SECONDS, BOOK_DEPTH_FRESH_SECONDS, book_data_is_fresh,
     order_flow_semantic_event,
@@ -348,6 +348,7 @@ class OrderFlowAnalyzer:
         self._source_depth_asks: list[tuple[float, float]] | tuple[tuple[float, float], ...] = ()
         self._source_depth_revision = 0
         self._source_depth_update_id = 0
+        self._display_depth: OrderBookDepthView | None = None
         self._display_only_depth_cache: OrderedDict[
             tuple[str, int | float], tuple[float, OrderFlowDisplayLevel]
         ] = OrderedDict()
@@ -379,6 +380,7 @@ class OrderFlowAnalyzer:
         self._source_depth_bids = ()
         self._source_depth_asks = ()
         self._source_depth_update_id = 0
+        self._display_depth = None
         self._display_only_depth_cache.clear()
         self._source_depth_revision += 1
         self._snapshot_source_depth_revision = -1
@@ -1677,6 +1679,7 @@ class OrderFlowAnalyzer:
         now: float | None=None,
         *,
         source_revision: int=0,
+        display_depth: OrderBookDepthView | None=None,
     ) -> bool:
         if not bids or not asks:
             return False
@@ -1688,6 +1691,7 @@ class OrderFlowAnalyzer:
         if best_bid <= 0.0 or best_ask <= best_bid:
             return False
         current = time.monotonic() if now is None else float(now)
+        self._display_depth = display_depth
         try:
             resolved_source_revision = int(source_revision)
         except (TypeError, ValueError, OverflowError):
@@ -2639,7 +2643,7 @@ class OrderFlowAnalyzer:
         self._snapshot_sequence += 1
         prints = self._recent_prints_snapshot(current)
         components = self._presentation_revisions.update(bids, asks, prints)
-        return OrderFlowSnapshot(symbol=self.symbol, sequence=self._snapshot_sequence, generated_monotonic=current, ready=metrics.ready, live=live, bbo_source=bbo_source, depth_age_seconds=depth_age, bbo_age_seconds=bbo_age, trade_age_seconds=trade_age, best_bid=metrics.best_bid, best_ask=metrics.best_ask, best_bid_quantity=metrics.best_bid_quantity, best_ask_quantity=metrics.best_ask_quantity, midpoint=metrics.midpoint, spread=max(0.0, metrics.best_ask - metrics.best_bid), spread_bps=metrics.spread_bps, microprice=metrics.microprice, microprice_bias_bps=metrics.microprice_bias_bps, near_pressure_pct=metrics.near_pressure_pct, touch_imbalance_pct=metrics.touch_imbalance_pct, buy_notional_1s=metrics.buy_notional_1s, sell_notional_1s=metrics.sell_notional_1s, buy_notional_5s=metrics.buy_notional_5s, sell_notional_5s=metrics.sell_notional_5s, buy_notional_15s=metrics.buy_notional_15s, sell_notional_15s=metrics.sell_notional_15s, aggressor_imbalance_5s_pct=metrics.aggressor_imbalance_5s_pct, rpi_notional_5s=metrics.rpi_notional_5s, rpi_share_5s_pct=metrics.rpi_share_5s_pct, added_notional_5s=metrics.added_notional_5s, cancelled_notional_5s=metrics.cancelled_notional_5s, replenished_notional_5s=metrics.replenished_notional_5s, add_cancel_pressure_5s_pct=metrics.add_cancel_pressure_5s_pct, bid_liquidity_delta_5s=metrics.bid_liquidity_delta_5s, ask_liquidity_delta_5s=metrics.ask_liquidity_delta_5s, has_recent_activity=recent_activity, liquidity_scale=scales[0], delta_scale=scales[1], trade_scale=scales[2], cumulative_depth_scale=max(bids[-1].cumulative_depth_notional if bids else 0.0, asks[-1].cumulative_depth_notional if asks else 0.0), large_trade_threshold=max(1.0, self._adaptive_print_threshold(current)), recent_prints=prints, bid_levels=bids, ask_levels=asks, component_revisions=components)
+        return OrderFlowSnapshot(symbol=self.symbol, sequence=self._snapshot_sequence, generated_monotonic=current, ready=metrics.ready, live=live, bbo_source=bbo_source, depth_age_seconds=depth_age, bbo_age_seconds=bbo_age, trade_age_seconds=trade_age, best_bid=metrics.best_bid, best_ask=metrics.best_ask, best_bid_quantity=metrics.best_bid_quantity, best_ask_quantity=metrics.best_ask_quantity, midpoint=metrics.midpoint, spread=max(0.0, metrics.best_ask - metrics.best_bid), spread_bps=metrics.spread_bps, microprice=metrics.microprice, microprice_bias_bps=metrics.microprice_bias_bps, near_pressure_pct=metrics.near_pressure_pct, touch_imbalance_pct=metrics.touch_imbalance_pct, buy_notional_1s=metrics.buy_notional_1s, sell_notional_1s=metrics.sell_notional_1s, buy_notional_5s=metrics.buy_notional_5s, sell_notional_5s=metrics.sell_notional_5s, buy_notional_15s=metrics.buy_notional_15s, sell_notional_15s=metrics.sell_notional_15s, aggressor_imbalance_5s_pct=metrics.aggressor_imbalance_5s_pct, rpi_notional_5s=metrics.rpi_notional_5s, rpi_share_5s_pct=metrics.rpi_share_5s_pct, added_notional_5s=metrics.added_notional_5s, cancelled_notional_5s=metrics.cancelled_notional_5s, replenished_notional_5s=metrics.replenished_notional_5s, add_cancel_pressure_5s_pct=metrics.add_cancel_pressure_5s_pct, bid_liquidity_delta_5s=metrics.bid_liquidity_delta_5s, ask_liquidity_delta_5s=metrics.ask_liquidity_delta_5s, has_recent_activity=recent_activity, liquidity_scale=scales[0], delta_scale=scales[1], trade_scale=scales[2], cumulative_depth_scale=max(bids[-1].cumulative_depth_notional if bids else 0.0, asks[-1].cumulative_depth_notional if asks else 0.0), large_trade_threshold=max(1.0, self._adaptive_print_threshold(current)), recent_prints=prints, bid_levels=bids, ask_levels=asks, component_revisions=components, display_depth=self._display_depth)
 
 
     def diagnostic_state(self) -> dict[str, Any]:
@@ -3152,7 +3156,7 @@ class _LocalOrderFlowRuntime(QtCore.QObject):
         if resolved != previous:
             self._mark_dirty()
 
-    @QtCore.Slot(int, object, object, int, object)
+    @QtCore.Slot(int, object, object, int, object, object)
     def add_depth(
         self,
         generation: int,
@@ -3160,6 +3164,7 @@ class _LocalOrderFlowRuntime(QtCore.QObject):
         asks: object,
         source_revision: int = 0,
         timing: object = None,
+        display_depth: OrderBookDepthView | None = None,
     ) -> None:
         if int(generation) != self._generation:
             return
@@ -3168,7 +3173,7 @@ class _LocalOrderFlowRuntime(QtCore.QObject):
         try:
             changed = bool(
                 self._analyzer.add_depth(
-                    bids, asks, source_revision=int(source_revision or 0)
+                    bids, asks, source_revision=int(source_revision or 0), display_depth=display_depth
                 )
             )
         except Exception as exc:
@@ -4055,9 +4060,9 @@ class OrderFlowRuntime(QtCore.QObject):
         self._depth_capacity = limit_per_side
         self._post('set_depth_capacity', generation, limit_per_side)
 
-    @QtCore.Slot(int, object, object, int, object)
-    def add_depth(self, generation, bids, asks, source_revision=0, timing=None):
-        self._post('add_depth', generation, bids, asks, source_revision, timing)
+    @QtCore.Slot(int, object, object, int, object, object)
+    def add_depth(self, generation, bids, asks, source_revision=0, timing=None, display_depth=None):
+        self._post('add_depth', generation, bids, asks, source_revision, timing, display_depth)
 
     @QtCore.Slot(int, object)
     def add_book_ticker(self, generation, payload):

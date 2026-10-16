@@ -95,6 +95,7 @@ class _DepthLevel:
     price: float
     quantity: float
     notional: float
+    complete: bool = True
 
 
 class _DepthAggregation:
@@ -109,6 +110,16 @@ class _DepthAggregation:
         if not snapshot.ready:
             self.key = None
             self.levels = ((), ())
+            return
+        depth = snapshot.display_depth
+        if depth is not None and depth.multiplier == multiplier and depth.tick_size == tick:
+            key = ('display', epoch, snapshot.symbol, depth)
+            if key == self.key:
+                self.reused += 1
+                return
+            self.levels = tuple(tuple(_DepthLevel(*row) for row in side)
+                                for side in (depth.asks, depth.bids))
+            self.key = key
             return
         if (multiplier <= 1 or multiplier not in ORDER_FLOW_AGGREGATION_MULTIPLIERS
                 or tick <= 0 or not math.isfinite(tick)):
@@ -350,13 +361,17 @@ class _PrismRenderer(QtWidgets.QWidget):
         prepared = []
         for side_index, side in enumerate(visible):
             cumulative = 0.
+            cumulative_complete = True
             for index, level in enumerate(side):
                 amount = value(level)
                 cumulative += amount
+                complete = getattr(level, 'complete', True)
+                cumulative_complete = cumulative_complete and complete
                 top = (g['center_top']-(index+1)*g['row_height'] if side_index == 0
                        else g['center_bottom']+index*g['row_height'])
                 prepared.append(_Row('ask' if side_index == 0 else 'bid', level.price,
-                    self._price(level.price), _amount(amount), _amount(cumulative), amount,
+                    self._price(level.price), ('' if complete else '≥') + _amount(amount),
+                    ('' if cumulative_complete else '≥') + _amount(cumulative), amount,
                     amount / scale if scale else 0., top, index == 0))
         previous = {row.key: row for row in self.rows}
         previous_bars = self._bar_values(now)
@@ -391,11 +406,12 @@ class _PrismRenderer(QtWidgets.QWidget):
                 self._dirty_pixels += QtCore.QRect(0, row.top, self.width(), g['row_height'])
         self._was_animating = now < self._animation_end
         self.side_totals = side_totals
+        self.side_complete = tuple(all(getattr(level, 'complete', True) for level in side) for side in visible)
         self._display_live = live
         chrome = (self.status, snapshot.best_bid if snapshot else 0,
                   snapshot.best_ask if snapshot else 0, self._last_trade(now),
                   self._trade_delta(),
-                  tuple(side_totals), len(visible[0]), len(visible[1]))
+                  tuple(side_totals), self.side_complete, len(visible[0]), len(visible[1]))
         if chrome != self._last_chrome:
             for top, height in ((0, g['header']), (g['center_top'], g['center_height']), (g['footer_top'], g['footer_height'])):
                 self._dirty_pixels += QtCore.QRect(0, top, self.width(), height)
@@ -548,6 +564,10 @@ class _PrismRenderer(QtWidgets.QWidget):
         p.fillRect(self._rect(m, y, w-m*2, 1), self.line)
         bid_label = f'{_amount(bid)} · {ratio*100:.0f}%' if total else '—'
         ask_label = f'{(1-ratio)*100:.0f}% · {_amount(ask)}' if total else '—'
+        if total and not self.side_complete[1]:
+            bid_label = '≥' + bid_label
+        if total and not self.side_complete[0]:
+            ask_label = f'{(1-ratio)*100:.0f}% · ≥{_amount(ask)}'
         self._text(p, self._rect(m, amount_y, w/2-m-6, 19), bid_label, self.side_colors['bid'],
                    self.number_font, _ALIGN.AlignLeft)
         self._text(p, self._rect(w/2+6, amount_y, w/2-m-6, 19), ask_label, self.side_colors['ask'], self.number_font)
@@ -1159,7 +1179,7 @@ class OrderBookWidget(QtWidgets.QWidget):
     presentation_changed = Signal(object)
     snapshot_activity_requested = Signal(bool)
     depth_capacity_requested = Signal(int)
-    DEPTH_CAPACITY_TIERS = (80, 120, 256, 512, 1000)
+    depth_view_requested = Signal(str, int, int, float)
     EMBEDDED_TAPE_CONNECTED = True
 
     def __init__(self, theme, parent=None):
@@ -1173,6 +1193,7 @@ class OrderBookWidget(QtWidgets.QWidget):
         self._tape_mode = 'LARGE'
         self._panel_active = False
         self._last_depth_capacity = 0
+        self._last_depth_view = None
         self.canvas = PrismCanvas(self.theme, self)
         self.canvas.price_selected.connect(self.price_selected.emit)
         self.canvas.grouping_step_requested.connect(self._step_grouping)
@@ -1332,11 +1353,17 @@ class OrderBookWidget(QtWidgets.QWidget):
                     visible_rows_per_side=self.canvas.visible_rows_per_side(), columns=self.column_preferences())
 
     def _publish_depth_capacity(self, _rows=None, *, force=False):
-        native = (self.canvas.visible_rows_per_side()+12)*self.aggregation_multiplier()+self.aggregation_multiplier()-1
-        capacity = next((v for v in self.DEPTH_CAPACITY_TIERS if v >= native), self.DEPTH_CAPACITY_TIERS[-1])
+        # Native analytics stay bounded; the feed worker groups its retained
+        # book into only the requested visible rows before crossing processes.
+        capacity = 80 if self.canvas.visible_rows_per_side()+12 <= 80 else 120
         if force or capacity != self._last_depth_capacity:
             self._last_depth_capacity = capacity
             self.depth_capacity_requested.emit(capacity)
+        view = (self.symbol, self.canvas.visible_rows_per_side()+12,
+                self.aggregation_multiplier(), self.price_tick_size)
+        if force or view != self._last_depth_view:
+            self._last_depth_view = view
+            self.depth_view_requested.emit(*view)
             self.layout_state_changed.emit(self.layout_state())
 
     def set_symbol(self, symbol, rules=None):
@@ -1357,6 +1384,7 @@ class OrderBookWidget(QtWidgets.QWidget):
         self.price_tick_size = self.canvas.price_tick_size = max(0., tick)
         self.canvas._queue_configuration()
         self._sync_controls()
+        self._publish_depth_capacity()
         if self._tape is not None:
             self._tape.set_market(self.symbol, tick_size=self.price_tick_size)
 

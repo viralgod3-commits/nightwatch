@@ -444,6 +444,20 @@ class OrderFlowComponentRevisions:
 
 
 @dataclass(frozen=True, slots=True)
+class OrderBookDepthView:
+    """Worker-grouped visible depth, independent of the temporal analysis band.
+
+    Rows contain price, base quantity, actual quote notional and completeness.
+    A bucket beyond the REST snapshot frontier is a known lower bound until
+    all of its constituent prices are covered; never present it as full depth.
+    """
+    tick_size: float
+    multiplier: int
+    bids: tuple[tuple[float, float, float, bool], ...] = ()
+    asks: tuple[tuple[float, float, float, bool], ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
 class OrderFlowSnapshot:
     """Stable backend -> DOM contract for one current-symbol frame.
 
@@ -498,6 +512,7 @@ class OrderFlowSnapshot:
     # None keeps legacy/direct snapshot producers compatible. Such consumers
     # compare contents instead of assuming that a missing version means zero.
     component_revisions: OrderFlowComponentRevisions | None = None
+    display_depth: OrderBookDepthView | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -538,6 +553,9 @@ class MarketDataHubPort(Protocol):
         ...
 
     def set_orderbook_depth_capacity(self, limit_per_side: int) -> None:
+        ...
+
+    def set_orderbook_depth_view(self, symbol: str, rows: int, multiplier: int, tick_size: float) -> None:
         ...
 
     def set_valid_ticker_symbols(self, symbols: object) -> None:

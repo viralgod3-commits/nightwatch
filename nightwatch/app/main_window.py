@@ -464,7 +464,7 @@ class MainWindow(QtWidgets.QMainWindow):
     _order_flow_reset_requested = QtCore.Signal(int, str, float, float)
     _order_flow_active_requested = QtCore.Signal(int, bool)
     _order_flow_quote_volume_requested = QtCore.Signal(int, float)
-    _order_flow_depth_requested = QtCore.Signal(int, object, object, int, object)
+    _order_flow_depth_requested = QtCore.Signal(int, object, object, int, object, object)
     _order_flow_depth_capacity_requested = QtCore.Signal(int, int)
     _order_flow_book_ticker_requested = QtCore.Signal(int, object)
     _order_flow_trade_batch_requested = QtCore.Signal(int, object)
@@ -749,6 +749,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._order_flow_generation = 1
         self._order_flow_tick_size = 0.0
         self._order_flow_depth_capacity = 120
+        self._order_flow_depth_view = ('', 0, 1, 0.0)
         self._order_flow_depth_timing_counter = 0
         self._order_flow_diagnostic_state: dict[str, Any] = {}
         self._order_flow_runtime_thread = QtCore.QThread(self)
@@ -1143,6 +1144,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.orderbook.depth_capacity_requested.connect(
             self._set_order_flow_depth_capacity
         )
+        self.orderbook.depth_view_requested.connect(self._set_order_flow_depth_view)
         self.orderbook.set_tape_source(self._order_flow_runtime.tape_source)
         self.order_flow_snapshot_ready.connect(self.orderbook.set_order_flow_snapshot)
         self._sync_execution_ticket_state()
@@ -1219,6 +1221,7 @@ class MainWindow(QtWidgets.QMainWindow):
         hub.set_market_data_api_key(self.trading_gateway.api_key)
         hub.set_orderbook_streaming_enabled(self._market_depth_should_stream())
         hub.set_orderbook_depth_capacity(self._order_flow_depth_capacity)
+        hub.set_orderbook_depth_view(*self._order_flow_depth_view)
         self.stats.bind_metric_history(hub.rest)
         self.trading_gateway.credentials_changed.connect(
             hub.set_market_data_api_key
@@ -7766,6 +7769,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 worker_asks,
                 source_revision,
                 depth_timing,
+                event.get('_display_depth'),
             )
         now = time.monotonic()
         if now - self.last_recorded_depth >= 5.0 and bids and asks:
@@ -7820,6 +7824,11 @@ class MainWindow(QtWidgets.QMainWindow):
         self._order_flow_depth_capacity_requested.emit(
             self._order_flow_generation, resolved
         )
+
+    def _set_order_flow_depth_view(self, symbol: str, rows: int, multiplier: int, tick_size: float) -> None:
+        self._order_flow_depth_view = (symbol, rows, multiplier, tick_size)
+        if self.hub is not None:
+            self.hub.set_orderbook_depth_view(symbol, rows, multiplier, tick_size)
 
     def _set_market_depth_active(self, active: bool) -> None:
         """Keep shared transport alive for the chart and visible order-flow panels."""

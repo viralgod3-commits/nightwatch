@@ -14,7 +14,7 @@ from typing import Any
 from PySide6 import QtCore
 from PySide6.QtCore import QTimer, Signal
 
-from ..models import safe_float
+from ..models import ORDER_FLOW_AGGREGATION_MULTIPLIERS, OrderBookDepthView, safe_float
 from ..models import DiagnosticsPort, book_data_is_fresh
 
 def _strict_float(value: Any) -> float | None:
@@ -362,7 +362,9 @@ class _DepthParserWorker(QtCore.QObject):
     MAX_PARSER_QUEUE_AGE_MS = 1_500.0
     COVERAGE_MONITOR_MIN_LEVELS = 900
     COVERAGE_RESERVE_LEVELS = 256
-    MAX_BOOK_LEVELS_BEFORE_REBASE = 4_096
+    MAX_RETAINED_LEVELS = 16_384
+    RETAINED_LEVELS_AFTER_TRIM = 12_288
+    MAX_DISPLAY_ROWS = 144
 
     def __init__(self) -> None:
         super().__init__()
@@ -392,6 +394,13 @@ class _DepthParserWorker(QtCore.QObject):
         self._monitor_bid_coverage = False
         self._monitor_ask_coverage = False
         self._buffer: deque[dict[str, Any]] = deque()
+        self._display_config = ('', 0, 1, 0.0)
+        self._display_buckets = {'bid': {}, 'ask': {}}
+        self._display_prices = {'bid': [], 'ask': []}
+        self._display_dirty = True
+        self._display_view: OrderBookDepthView | None = None
+        self._complete_bid_floor = 0.0
+        self._complete_ask_ceiling = 0.0
 
 
     def _reset_state(
@@ -423,6 +432,119 @@ class _DepthParserWorker(QtCore.QObject):
         self._monitor_bid_coverage = False
         self._monitor_ask_coverage = False
         self._buffer.clear()
+        self._reset_display_depth()
+
+    def _reset_display_depth(self) -> None:
+        for side in ('bid', 'ask'):
+            self._display_buckets[side].clear()
+            self._display_prices[side].clear()
+        self._display_view = None
+        self._display_dirty = True
+        self._complete_bid_floor = 0.0
+        self._complete_ask_ceiling = 0.0
+
+    @QtCore.Slot(str, int, int, float)
+    def set_display_depth(self, symbol: str, rows: int, multiplier: int, tick_size: float) -> None:
+        tick_size = max(0.0, safe_float(tick_size))
+        multiplier = int(multiplier) if multiplier in ORDER_FLOW_AGGREGATION_MULTIPLIERS else 1
+        config = (str(symbol).upper(), max(0, min(int(rows), self.MAX_DISPLAY_ROWS)), multiplier, tick_size)
+        if config == self._display_config:
+            return
+        regroup = ((config[0], config[2:]) != (self._display_config[0], self._display_config[2:])
+                   or (config[1] > 0 and self._display_config[1] == 0))
+        self._display_config = config
+        if regroup:
+            for side, book in (('bid', self._bids), ('ask', self._asks)):
+                self._display_buckets[side].clear()
+                self._display_prices[side].clear()
+                self._update_display_depth(side, ((price, 0.0, quantity) for price, quantity in book.items()))
+        self._display_dirty = True
+
+    def _update_display_depth(self, side: str, changes) -> None:
+        symbol, rows, multiplier, tick = self._display_config
+        if symbol != self._symbol or not rows or not tick:
+            return
+        if multiplier == 1:
+            if self._display_dirty:
+                return
+            prices = self._bid_prices if side == 'bid' else self._ask_prices
+            if len(prices) < rows:
+                self._display_dirty = True
+            else:
+                boundary = prices[-rows] if side == 'bid' else prices[rows-1]
+                self._display_dirty = any(price >= boundary if side == 'bid' else price <= boundary
+                                          for price, _previous, _quantity in changes)
+            return
+        buckets, prices = self._display_buckets[side], self._display_prices[side]
+        for price, previous, quantity in changes:
+            native = int(round(price / tick))
+            key = (native if side == 'bid' else native + multiplier - 1) // multiplier * multiplier
+            values = buckets.get(key)
+            if values is None:
+                values = buckets[key] = [0.0, 0.0, 0]
+                insort(prices, key)
+            values[0] = math.fsum((values[0], quantity, -previous))
+            values[1] = math.fsum((values[1], price * quantity, -price * previous))
+            values[2] += int(quantity > 0) - int(previous > 0)
+            if values[2] == 0:
+                del buckets[key]
+                prices.pop(bisect_left(prices, key))
+            # Retain far updates without republishing an unchanged visible band.
+            if self._display_dirty:
+                continue
+            boundary = prices[max(0, len(prices)-rows)] if side == 'bid' and prices else (
+                prices[min(rows, len(prices))-1] if prices else key)
+            if len(prices) < rows or (key >= boundary if side == 'bid' else key <= boundary):
+                self._display_dirty = True
+
+    def _visible_depth(self) -> OrderBookDepthView | None:
+        symbol, rows, multiplier, tick = self._display_config
+        if symbol != self._symbol or not rows or not tick:
+            return None
+        if not self._display_dirty:
+            return self._display_view
+        sides = []
+        for side in ('bid', 'ask'):
+            if multiplier == 1:
+                prices = self._bid_prices if side == 'bid' else self._ask_prices
+                book = self._bids if side == 'bid' else self._asks
+                selected = reversed(prices[-rows:]) if side == 'bid' else prices[:rows]
+                sides.append(tuple((price, book[price], price * book[price], True) for price in selected))
+                continue
+            prices = self._display_prices[side]
+            selected = reversed(prices[-rows:]) if side == 'bid' else prices[:rows]
+            frontier = self._complete_bid_floor if side == 'bid' else self._complete_ask_ceiling
+            output = []
+            for key in selected:
+                quantity, notional, _count = self._display_buckets[side][key]
+                price = key * tick
+                complete = (price >= frontier - tick * 1e-6 if side == 'bid'
+                            else price <= frontier + tick * 1e-6)
+                output.append((price, max(0.0, quantity), max(0.0, notional), complete))
+            sides.append(tuple(output))
+        candidate = OrderBookDepthView(tick, multiplier, *sides)
+        if candidate != self._display_view:
+            self._display_view = candidate
+        self._display_dirty = False
+        return self._display_view
+
+    def _trim_far_depth(self, side: str) -> None:
+        """Bound memory without throwing away the synchronized near book."""
+        prices = self._bid_prices if side == 'bid' else self._ask_prices
+        if len(prices) <= self.MAX_RETAINED_LEVELS:
+            return
+        book = self._bids if side == 'bid' else self._asks
+        count = len(prices) - self.RETAINED_LEVELS_AFTER_TRIM
+        removed = prices[:count] if side == 'bid' else prices[-count:]
+        changes = [(price, book.pop(price), 0.0) for price in removed]
+        self._update_display_depth(side, changes)
+        if side == 'bid':
+            del prices[:count]
+            self._complete_bid_floor = max(self._complete_bid_floor, prices[0])
+        else:
+            del prices[-count:]
+            self._complete_ask_ceiling = min(self._complete_ask_ceiling, prices[-1])
+        self._display_dirty = True
 
     @QtCore.Slot(int, int, str)
     def reset_epoch(self, epoch: int, revision: int, symbol: str) -> None:
@@ -679,6 +801,7 @@ class _DepthParserWorker(QtCore.QObject):
         self._monitor_bid_coverage = False
         self._monitor_ask_coverage = False
         self._resync_pending = True
+        self._reset_display_depth()
         if should_signal:
             self.invalidated.emit(self._epoch, self._revision, reason)
             self.resync_required.emit(self._epoch, self._revision)
@@ -724,6 +847,10 @@ class _DepthParserWorker(QtCore.QObject):
         ask_topology, ask_changes = self._apply_side(
             self._asks, self._ask_prices, event.get("a") or ()
         )
+        self._update_display_depth('bid', bid_changes)
+        self._update_display_depth('ask', ask_changes)
+        self._trim_far_depth('bid')
+        self._trim_far_depth('ask')
         self._update_depth_notional('bid', bid_topology, bid_changes)
         self._update_depth_notional('ask', ask_topology, ask_changes)
         if (
@@ -754,11 +881,6 @@ class _DepthParserWorker(QtCore.QObject):
             remaining = len(self._snapshot_ask_prices) - first
             if remaining <= self.COVERAGE_RESERVE_LEVELS:
                 return f"DEPTH ASK COVERAGE LOW ({remaining})"
-        if (
-            len(self._bids) > self.MAX_BOOK_LEVELS_BEFORE_REBASE
-            or len(self._asks) > self.MAX_BOOK_LEVELS_BEFORE_REBASE
-        ):
-            return "DEPTH BOOK STATE REBASE"
         return ""
 
     def _emit_book(self, event: dict[str, Any] | None = None) -> None:
@@ -828,6 +950,7 @@ class _DepthParserWorker(QtCore.QObject):
             "_analysis_bids": selected_bids,
             "_analysis_asks": selected_asks,
             "_analysis_revision": self._analysis_revision,
+            "_display_depth": self._visible_depth(),
             "b": bids,
             "a": asks,
             "_local_book": True,
@@ -923,6 +1046,11 @@ class _DepthParserWorker(QtCore.QObject):
         self._depth_ask_notional = self._depth_notional_for_side('ask')
         self._snapshot_bid_prices = tuple(self._bid_prices)
         self._snapshot_ask_prices = tuple(self._ask_prices)
+        self._reset_display_depth()
+        self._complete_bid_floor = self._bid_prices[0] if len(bids) >= 1000 else 0.0
+        self._complete_ask_ceiling = self._ask_prices[-1] if len(asks) >= 1000 else math.inf
+        for side, book in (('bid', self._bids), ('ask', self._asks)):
+            self._update_display_depth(side, ((price, 0.0, quantity) for price, quantity in book.items()))
         self._monitor_bid_coverage = len(self._snapshot_bid_prices) >= self.COVERAGE_MONITOR_MIN_LEVELS
         self._monitor_ask_coverage = len(self._snapshot_ask_prices) >= self.COVERAGE_MONITOR_MIN_LEVELS
         self._snapshot_update_id = snapshot_id
@@ -1442,6 +1570,7 @@ class MarketDataHub(QtCore.QObject):
 
         self.orderbook_streaming_enabled = True
         self._orderbook_depth_capacity = _DepthParserWorker.PUBLISH_LEVELS
+        self._orderbook_depth_view = ('', 0, 1, 0.0)
         self._market_socket_has_agg_trade = False
         self._trade_stream_status_last: tuple[bool, str] | None = None
         self.public_socket: QWebSocket | None = None
@@ -1573,6 +1702,7 @@ class MarketDataHub(QtCore.QObject):
         if not self.chart_only:
             parser.submit('reset_epoch', (self.depth_epoch, self.depth_revision, self.symbol))
             parser.submit('set_analysis_publish_levels', (self._orderbook_depth_capacity,))
+            parser.submit('set_display_depth', self._orderbook_depth_view)
 
     def _stop_parser(self) -> None:
         parser, self._parser = self._parser, None
@@ -3492,6 +3622,15 @@ class MarketDataHub(QtCore.QObject):
         self._orderbook_depth_capacity = resolved
         if self._parser is not None:
             self._parser.submit('set_analysis_publish_levels', (resolved,))
+
+    def set_orderbook_depth_view(self, symbol: str, rows: int, multiplier: int, tick_size: float) -> None:
+        config = (str(symbol).upper(), max(0, min(int(rows), _DepthParserWorker.MAX_DISPLAY_ROWS)),
+                  int(multiplier), max(0.0, safe_float(tick_size)))
+        if config == self._orderbook_depth_view:
+            return
+        self._orderbook_depth_view = config
+        if self._parser is not None:
+            self._parser.submit('set_display_depth', config)
 
     def set_orderbook_streaming_enabled(self, enabled: bool) -> None:
         """Start/stop every network stream used exclusively by Market Depth."""

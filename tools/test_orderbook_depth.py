@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 from dataclasses import replace
+import json
 import os
+import pickle
 from pathlib import Path
 import sys
 import time
@@ -20,10 +22,14 @@ from nightwatch.models import (
     OrderFlowDisplayLevel, OrderFlowSnapshot,
 )
 from nightwatch.orderbook.modern import (
-    _DepthAggregation, _fit_depth_geometry, _geometry, PrismCanvas,
+    _DepthAggregation, _fit_depth_geometry, _geometry, _PrismRenderer, PrismCanvas,
 )
+from nightwatch.market.data import _DepthParserWorker
+from nightwatch.orderbook.backend import OrderFlowAnalyzer
+from nightwatch.orderbook.ipc import SnapshotDecoder, SnapshotEncoder
 from nightwatch.orderbook.orderbook_ui import aggregate_order_flow_snapshot
 from nightwatch.theme import orderbook_palette
+from nightwatch.utilities import TYPOGRAPHY_DEFAULTS, typography_controller
 
 
 def snapshot(tick=.1, midpoint=60000., count=96):
@@ -87,6 +93,145 @@ class DepthChecks(unittest.TestCase):
         self.assertNotEqual(aggregation.levels, original)
         aggregation.prepare(source, 1, .1, 0)
         self.assertIs(aggregation.levels[1], source.bid_levels)
+
+
+class DeepFeedChecks(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+
+    def seed(self, symbol='ETHUSDT', midpoint=2412.95, tick=.01, multiplier=250):
+        self.worker = _DepthParserWorker()
+        self.events, self.invalidations = [], []
+        self.worker.parsed.connect(lambda _epoch, _revision, event: self.events.append(event))
+        self.worker.invalidated.connect(lambda *_args: self.invalidations.append(_args))
+        self.worker.reset_epoch(1, 0, symbol)
+        self.worker.set_display_depth(symbol, 24, multiplier, tick)
+        native = round(midpoint / tick)
+        self.worker.seed_snapshot(1, 0, dict(lastUpdateId=100,
+            bids=[[(native-i-1)*tick, 1.] for i in range(1000)],
+            asks=[[(native+i+1)*tick, 2.] for i in range(1000)]))
+        self.symbol, self.tick = symbol, tick
+        self.send([], [], first=True)
+
+    def send(self, bids, asks, *, first=False, gap=False):
+        previous = self.worker._last_update_id
+        final = previous if first else previous+1
+        self.worker.parse(1, json.dumps(dict(e='depthUpdate', s=self.symbol,
+            U=final, u=final, pu=previous-1 if first or gap else previous,
+            b=bids, a=asks)), self.symbol, ())
+        return self.events[-1] if self.events else None
+
+    def test_deeper_updates_reach_renderer_without_expanding_analytics(self):
+        self.seed()
+        event = self.send([[2390., 5.], [2385., 7.]], [[2430., 9.], [2435., 11.]])
+        self.assertEqual(len(event['_analysis_bids']), 120)
+        self.assertEqual(len(event['_analysis_asks']), 120)
+        view = event['_display_depth']
+        self.assertEqual(view.bids[-1], (2385., 7., 16695., False))
+        self.assertEqual(view.asks[-1], (2435., 11., 26785., False))
+        analyzer = OrderFlowAnalyzer(self.symbol)
+        analyzer.reset(self.symbol, tick_size=self.tick)
+        analyzer.add_depth(event['_analysis_bids'], event['_analysis_asks'],
+            source_revision=event['_analysis_revision'], display_depth=view)
+        source = analyzer.snapshot(limit_per_side=120)
+        wire = SnapshotEncoder().encode(source, 1)
+        restored = SnapshotDecoder().decode(pickle.loads(pickle.dumps(wire)), 1)
+        self.assertEqual(restored.display_depth, view)
+        renderer = _PrismRenderer(orderbook_palette())
+        controller = typography_controller()
+        renderer.configure(dict(symbol=self.symbol, market_epoch=1, size=(408, 720), dpr=1.,
+            aggregation=250, tick=self.tick, density='comfortable', values='quote', totals=True,
+            motion=False, theme=orderbook_palette(),
+            typography=({role: controller.profile(role) for role in TYPOGRAPHY_DEFAULTS}, controller.globals())))
+        renderer.adopt(restored)
+        renderer.prepare(time.monotonic())
+        self.assertTrue(any(row.price < 2400 for row in renderer.rows))
+        self.assertTrue(any(row.price > 2425 for row in renderer.rows))
+        self.assertTrue(next(row for row in renderer.rows if row.price == 2385).size_text.startswith('≥'))
+        renderer.close()
+
+    def test_growth_no_longer_rebases_and_retention_remains_bounded(self):
+        self.seed()
+        event = self.send([[2402.-i*.01, 1.] for i in range(5000)],
+                          [[2423.+i*.01, 2.] for i in range(5000)])
+        self.assertFalse(self.invalidations)
+        self.assertTrue(self.worker._ready)
+        self.assertLess(event['_display_depth'].bids[-1][0], 2400)
+        self.assertGreater(event['_display_depth'].asks[-1][0], 2425)
+        best = (self.worker._bid_prices[-1], self.worker._ask_prices[0])
+        self.send([[2300.-i*.01, 1.] for i in range(18000)],
+                  [[2500.+i*.01, 2.] for i in range(18000)])
+        self.assertFalse(self.invalidations)
+        self.assertEqual((len(self.worker._bids), len(self.worker._asks)), (12288, 12288))
+        self.assertEqual(best, (self.worker._bid_prices[-1], self.worker._ask_prices[0]))
+        self.assertLessEqual(len(self.events[-1]['_display_depth'].bids), 24)
+        for side, book in (('bid', self.worker._bids), ('ask', self.worker._asks)):
+            buckets = self.worker._display_buckets[side]
+            self.assertEqual(sum(v[2] for v in buckets.values()), len(book))
+            self.assertAlmostEqual(sum(v[0] for v in buckets.values()), sum(book.values()))
+
+    def test_quantity_replacements_deletions_and_quote_sums(self):
+        self.seed()
+        self.send([[2390.01, 5.], [2390.02, 3.]], [[2430.01, 4.]])
+        event = self.send([[2390.01, 2.], [2390.02, 0.]], [[2430.01, 0.]])
+        self.assertEqual(event['_display_depth'].bids[-1][:3], (2390., 2., 4780.02))
+        self.assertNotIn(2432.5, [row[0] for row in event['_display_depth'].asks])
+
+    def test_disabled_view_still_trims_book_and_reenables_from_current_state(self):
+        self.seed()
+        self.worker.set_display_depth(self.symbol, 0, 250, self.tick)
+        self.send([[2300.-i*.01, 1.] for i in range(18000)], [])
+        self.assertEqual(len(self.worker._bids), len(self.worker._bid_prices))
+        self.assertLessEqual(len(self.worker._bids), self.worker.MAX_RETAINED_LEVELS)
+        self.worker.set_display_depth(self.symbol, 24, 250, self.tick)
+        event = self.send([], [])
+        self.assertLess(event['_display_depth'].bids[-1][0], 2400.)
+        self.assertEqual(sum(v[2] for v in self.worker._display_buckets['bid'].values()),
+                         len(self.worker._bids))
+
+    def test_far_changes_reuse_visible_view_and_grouping_uses_retained_book(self):
+        self.seed()
+        self.worker.set_display_depth(self.symbol, 3, 250, self.tick)
+        event = self.send([], [])
+        old = event['_display_depth']
+        event = self.send([[2300., 10.]], [[2500., 10.]])
+        self.assertIs(event['_display_depth'], old)
+        self.worker.set_display_depth(self.symbol, 24, 250, self.tick)
+        event = self.send([], [])
+        self.assertEqual(event['_display_depth'].bids[-1][0], 2300.)
+        self.worker.set_display_depth(self.symbol, 24, 1000, self.tick)
+        event = self.send([], [])
+        self.assertEqual(event['_display_depth'].bids[-1][0], 2300.)
+        self.assertEqual(event['_display_depth'].asks[-1][0], 2500.)
+
+    def test_native_view_reads_only_visible_rows_without_a_second_book(self):
+        self.seed(multiplier=1)
+        old = self.events[-1]['_display_depth']
+        self.assertEqual(len(old.bids), 24)
+        self.assertFalse(self.worker._display_buckets['bid'])
+        self.assertIs(self.send([[2300., 2.]], [])['_display_depth'], old)
+        best = old.bids[0][0]
+        event = self.send([[best, 4.]], [])
+        self.assertEqual(event['_display_depth'].bids[0], (best, 4., best*4., True))
+        self.worker.set_display_depth(self.symbol, 24, 250, self.tick)
+        event = self.send([], [])
+        self.assertEqual(event['_display_depth'].bids[-1][0], 2300.)
+
+    def test_small_tick_symbols_and_market_reset(self):
+        for symbol, midpoint, tick in (('SMALLUSDT', .012345, .000001), ('BTCUSDT', 60000., .1)):
+            with self.subTest(symbol=symbol):
+                self.seed(symbol, midpoint, tick, 250)
+                low, high = midpoint-2500*tick, midpoint+2500*tick
+                event = self.send([[low, 10.]], [[high, 20.]])
+                self.assertLess(event['_display_depth'].bids[-1][0], midpoint-1000*tick)
+                self.assertGreater(event['_display_depth'].asks[-1][0], midpoint+1000*tick)
+                self.send([], [], gap=True)
+                self.assertTrue(self.invalidations)
+                self.assertIsNone(self.worker._display_view)
+                self.assertFalse(self.worker._display_buckets['bid'])
+                self.worker.reset_epoch(2, 0, 'OTHERUSDT')
+                self.assertIsNone(self.worker._visible_depth())
 
 
 class _LocalLink(QtCore.QObject):
