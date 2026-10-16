@@ -65,7 +65,7 @@ def _trading_stylesheet(theme: dict[str, str]) -> str:
         QTabWidget#tradingAccountTabs QTabBar,
         QFrame#positionDeskView, QScrollArea#positionDeskScroll,
         QScrollArea#deskTicketScroll {{ background: {t['panel']}; border: 0; }}
-        QToolButton#ticketConditionalType[active="true"], QToolButton#accountHistoryMenu[active="true"] {{ color: {t['cyan']}; border-color: {t['cyan']}; }}
+        QToolButton#ticketConditionalType[active="true"] {{ color: {t['cyan']}; border-color: {t['cyan']}; }}
         QSlider#ticketAllocation {{ background: {t['panel']}; border: 0; }}
         QScrollArea#deskTicketScroll > QWidget, QScrollArea#positionDeskScroll > QWidget {{ background: {t['panel']}; border: 0; }}
         QFrame#ticketFeedback {{ background: {tint('amber', 15)}; border: 1px solid {tint('amber', 65)}; border-radius: 6px; }}
@@ -4324,14 +4324,15 @@ class TradingWorkspace(QtWidgets.QWidget):
         self.account_frame = PositionDeskView(self._position_card, self._order_card)
         self.account_frame.symbol_rules = self.symbol_rules
         self.main_tabs = QtWidgets.QTabWidget()
-        self.main_tabs.setObjectName("tradingAccountTabs")
+        self.main_tabs.setObjectName("tradingDestinations")
         self.main_tabs.setDocumentMode(True)
         self.main_tabs.setIconSize(QtCore.QSize(18, 18))
+        self.main_tabs.tabBar().setAccessibleName("Trade and Positions")
         self.main_tabs.tabBar().setExpanding(False)
         self.main_tabs.tabBar().setDrawBase(False)
         set_text_role(self.main_tabs.tabBar(), TextRole.UI_CONTROL)
-        self.main_tabs.addTab(self.ticket, "Trade")
-        self.main_tabs.addTab(self.account_frame, "Positions")
+        self.main_tabs.addTab(self.ticket, "")
+        self.main_tabs.addTab(self.account_frame, "")
         layout.addWidget(self.main_tabs)
 
         self.refresh_button = QtWidgets.QPushButton()
@@ -4352,23 +4353,7 @@ class TradingWorkspace(QtWidgets.QWidget):
         self.status = self.account_frame.status
         self.balances = self._table(("ASSET", "WALLET", "AVAILABLE", "UPNL"))
         self.tabs.addTab(self.balances, "Balances")
-        self.account_menu_button = QtWidgets.QToolButton()
-        self.account_menu_button.setObjectName("accountHistoryMenu")
-        self.account_menu_button.setText("More")
-        self.account_menu_button.setAccessibleName("Fills and balances")
-        self.account_menu_button.setPopupMode(QtWidgets.QToolButton.ToolButtonPopupMode.InstantPopup)
-        set_text_role(self.account_menu_button, TextRole.UI_CONTROL)
-        menu = QtWidgets.QMenu(self.account_menu_button)
-        self.account_pages = {}
-        for title, page in (("Fills", self.fills), ("Balances", self.balances)):
-            index = self.tabs.indexOf(page)
-            self.tabs.tabBar().setTabVisible(index, False)
-            action = menu.addAction(title)
-            action.setCheckable(True)
-            action.triggered.connect(lambda _checked=False, target=page: self.tabs.setCurrentWidget(target))
-            self.account_pages[page] = action
-        self.account_menu_button.setMenu(menu)
-        self.tabs.setCornerWidget(self.account_menu_button)
+        self.tabs.tabBar().setExpanding(False)
 
         self.cancel_all_button = self.account_frame.cancel_button
         self.order_actions = self.account_frame.more_button
@@ -4489,12 +4474,6 @@ class TradingWorkspace(QtWidgets.QWidget):
         _set_text_if_changed(self.status, f"{scope} · Stale {int(age)}s" if age >= 30.0 else scope)
 
     def _account_tab_changed(self, tab_index: int) -> None:
-        current = self.tabs.currentWidget()
-        extra = self.account_pages.get(current)
-        self.account_menu_button.setText(extra.text() if extra else "More")
-        _set_repolished_property(self.account_menu_button, "active", extra is not None)
-        for page, action in self.account_pages.items():
-            action.setChecked(page is current)
         self._sync_account_actions(tab_index)
         self._refresh_account_freshness()
         self._poll_account_if_open()
@@ -4868,4 +4847,6 @@ class TradingWorkspace(QtWidgets.QWidget):
         self.refresh_button.setIcon(line_icon('refresh', self.theme['muted'], ratio))
         self.main_tabs.setTabIcon(0, asset_svg_icon("trading-account.svg", self.theme["text"], ratio))
         self.main_tabs.setTabIcon(1, asset_svg_icon("trading-open-orders.svg", self.theme["text"], ratio))
+        self.main_tabs.setTabText(0, "")
+        self.main_tabs.setTabText(1, "")
 
