@@ -427,7 +427,13 @@ class _PrismRenderer(QtWidgets.QWidget):
                     for row in (before, after):
                         if row is not None:
                             pad = 1 if heatmap else 0
-                            self._dirty_pixels += QtCore.QRect(0, row.top-pad, self.width(), g['row_height']+2*pad)
+                            top, bottom = row.top-pad, row.top+g['row_height']+pad
+                            if heatmap:
+                                if row.side == 'ask' and row.top == g['table_top'] and g['ask_rows'] == count:
+                                    top = 0
+                                elif row.side == 'bid' and bottom-pad == g['table_bottom'] and g['bid_rows'] == count:
+                                    bottom = g['height']
+                            self._dirty_pixels += QtCore.QRect(0, top, self.width(), bottom-top)
         if now < self._animation_end:
             for row in self.rows:
                 if self._bar_from.get(row.key) != self._bar_to.get(row.key):
@@ -529,7 +535,7 @@ class _PrismRenderer(QtWidgets.QWidget):
             self._depth_path_key = None
             return
         g = self.geometry
-        key = (g['price_left'], g['price_right'], g['width'], g['row_height'],
+        key = (g['price_left'], g['price_right'], g['width'], g['height'], g['rows'], g['row_height'],
                tuple((r.side, r.top, r.depth_ratio, r.depth_complete) for r in self.rows))
         if key == self._depth_path_key:
             return
@@ -562,10 +568,14 @@ class _PrismRenderer(QtWidgets.QWidget):
                 area.lineTo(x, far)
                 outline.lineTo(x, outline.currentPosition().y())
                 outline.lineTo(x, far)
-            area.lineTo(inner, far)
+            # Bleed full lanes through row-rounding space to the panel edges.
+            # Sparse loaded ranges retain their true boundary instead.
+            edge = (g['height'] if bid else 0) if len(rows) == g['rows'] else far
+            area.lineTo(x, edge)
+            area.lineTo(inner, edge)
             area.closeSubpath()
-            outline.lineTo(anchor, far)
-            bounds = self._rect(anchor-width if bid else anchor, min(near, far), width, abs(far-near))
+            outline.lineTo(x, edge)
+            bounds = self._rect(anchor-width if bid else anchor, min(near, edge), width, abs(edge-near))
             self._depth_paths[side] = (area, solid, partial, bounds, anchor, width)
 
     def _paint_depth(self, painter):
