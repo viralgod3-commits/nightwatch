@@ -499,7 +499,7 @@ class _PrismRenderer(QtWidgets.QWidget):
         return QtCore.QRectF(x, y, max(0, w), max(0, h))
 
     def _depth_brush(self, side, anchor, width):
-        key = (self.geometry['price_left'], self.geometry['price_right'], width)
+        key = (self.geometry['price_left'], self.geometry['price_right'], self.geometry['width'])
         if key != self._depth_brush_key:
             self._depth_brush_key = key
             self._depth_brushes.clear()
@@ -507,9 +507,10 @@ class _PrismRenderer(QtWidgets.QWidget):
         if brush is None:
             outer = anchor-width if side == 'bid' else anchor+width
             gradient = QtGui.QLinearGradient(anchor, 0., outer, 0.)
-            gradient.setColorAt(0., _mix(self._bg, self.side_colors[side], .045))
-            gradient.setColorAt(.55, _mix(self._bg, self.side_colors[side], .16))
-            gradient.setColorAt(1., _mix(self._bg, self.side_colors[side], .29))
+            # A continuous tint at the price spine builds gently to the contour.
+            gradient.setColorAt(0., _mix(self._bg, self.side_colors[side], .12))
+            gradient.setColorAt(.5, _mix(self._bg, self.side_colors[side], .22))
+            gradient.setColorAt(1., _mix(self._bg, self.side_colors[side], .34))
             brush = self._depth_brushes[side] = QtGui.QBrush(gradient)
         return brush
 
@@ -525,7 +526,7 @@ class _PrismRenderer(QtWidgets.QWidget):
             self._depth_path_key = None
             return
         g = self.geometry
-        key = (g['price_left'], g['price_right'], g['margin'], g['width'], g['row_height'],
+        key = (g['price_left'], g['price_right'], g['width'], g['row_height'],
                tuple((r.side, r.top, r.depth_ratio, r.depth_complete) for r in self.rows))
         if key == self._depth_path_key:
             return
@@ -536,8 +537,9 @@ class _PrismRenderer(QtWidgets.QWidget):
             if not rows:
                 continue
             bid = side == 'bid'
-            anchor = g['price_left']-10 if bid else g['price_right']+10
-            width = max(0., anchor-g['margin'] if bid else g['width']-g['margin']-anchor)
+            # Depth meets the price spine and uses the entire outer lane.
+            anchor = g['price_left'] if bid else g['price_right']
+            width = max(0., anchor if bid else g['width']-anchor)
             if not width:
                 continue
             near = rows[0].top if bid else rows[0].top+g['row_height']
