@@ -505,21 +505,24 @@ class _PrismRenderer(QtWidgets.QWidget):
             self._depth_brushes.clear()
         brush = self._depth_brushes.get(side)
         if brush is None:
+            inner = self.geometry['price_right' if side == 'bid' else 'price_left']
             outer = anchor-width if side == 'bid' else anchor+width
-            gradient = QtGui.QLinearGradient(anchor, 0., outer, 0.)
-            # A continuous tint at the price spine builds gently to the contour.
-            gradient.setColorAt(0., _mix(self._bg, self.side_colors[side], .12))
-            gradient.setColorAt(.5, _mix(self._bg, self.side_colors[side], .22))
+            join = abs(anchor-inner) / abs(outer-inner)
+            gradient = QtGui.QLinearGradient(inner, 0., outer, 0.)
+            # The same gradient runs under prices and depth, without a seam.
+            gradient.setColorAt(0., _mix(self._bg, self.side_colors[side], .04))
+            gradient.setColorAt(join, _mix(self._bg, self.side_colors[side], .12))
+            gradient.setColorAt(join+(1.-join)*.5, _mix(self._bg, self.side_colors[side], .22))
             gradient.setColorAt(1., _mix(self._bg, self.side_colors[side], .34))
             brush = self._depth_brushes[side] = QtGui.QBrush(gradient)
         return brush
 
     def _prepare_depth_paths(self):
-        """One cached staircase per side, strictly outside the price column.
+        """One continuous background per side; contours stay outside prices.
 
-        Depth has its own composition. It never shares pixels with ladder
-        sizes, size bars or cumulative labels. Dashed sections are known
-        lower bounds beyond the synchronized snapshot's complete frontier.
+        Fill prices and depth as one path so fractional pixel boundaries cannot
+        expose a gap. Dashed sections are known lower bounds beyond the
+        synchronized snapshot's complete frontier.
         """
         if not self.config.get('heatmap', False):
             self._depth_paths.clear()
@@ -543,7 +546,8 @@ class _PrismRenderer(QtWidgets.QWidget):
             if not width:
                 continue
             near = rows[0].top if bid else rows[0].top+g['row_height']
-            area = QtGui.QPainterPath(QtCore.QPointF(anchor, near))
+            inner = g['price_right'] if bid else g['price_left']
+            area = QtGui.QPainterPath(QtCore.QPointF(inner, near))
             solid, partial = QtGui.QPainterPath(), QtGui.QPainterPath()
             solid.moveTo(anchor, near)
             outline = solid
@@ -558,7 +562,7 @@ class _PrismRenderer(QtWidgets.QWidget):
                 area.lineTo(x, far)
                 outline.lineTo(x, outline.currentPosition().y())
                 outline.lineTo(x, far)
-            area.lineTo(anchor, far)
+            area.lineTo(inner, far)
             area.closeSubpath()
             outline.lineTo(anchor, far)
             bounds = self._rect(anchor-width if bid else anchor, min(near, far), width, abs(far-near))
@@ -566,9 +570,9 @@ class _PrismRenderer(QtWidgets.QWidget):
 
     def _paint_depth(self, painter):
         for side, (area, solid, partial, bounds, anchor, width) in self._depth_paths.items():
+            painter.fillPath(area, self._depth_brush(side, anchor, width) if self._display_live else self.surface)
             painter.save()
             painter.setClipRect(bounds, Qt.ClipOperation.IntersectClip)
-            painter.fillPath(area, self._depth_brush(side, anchor, width) if self._display_live else self.surface)
             painter.setPen(self._depth_pens[side] if self._display_live else QtGui.QPen(self.muted))
             painter.drawPath(solid)
             painter.setPen(self._partial_depth_pens[side] if self._display_live else QtGui.QPen(self.muted, 1., Qt.PenStyle.DashLine))
@@ -580,14 +584,16 @@ class _PrismRenderer(QtWidgets.QWidget):
         left, right, m, w = g['price_left'], g['price_right'], g['margin'], g['width']
         y, h = row.top, g['row_height']
         color = self.side_colors[row.side] if self._display_live else self.muted
-        p.fillRect(self._rect(left, y, right-left, h), self.spine)
-        if row.touch:
-            p.fillRect(self._rect(left+3, y+1, right-left-6, h-2),
-                       _mix(self._bg, color, .12))
+        heatmap = self.config.get('heatmap', False)
+        if not heatmap:
+            p.fillRect(self._rect(left, y, right-left, h), self.spine)
+            if row.touch:
+                p.fillRect(self._rect(left+3, y+1, right-left-6, h-2),
+                           _mix(self._bg, color, .12))
         bid = row.side == 'bid'
         area = left-m-8
         bar_max = max(1, area - (78 if g['totals'] else 0))
-        if not self.config.get('heatmap', False):
+        if not heatmap:
             ratio = bars.get(row.key, row.ratio)
             bar = max(0, bar_max * ratio)
             bx = left-5-bar if bid else right+5

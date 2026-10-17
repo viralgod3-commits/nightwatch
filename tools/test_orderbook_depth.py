@@ -349,7 +349,7 @@ class HeatmapChecks(unittest.TestCase):
         self.assertEqual(renderer._depth_brushes, brushes)
         renderer.close()
 
-    def test_depth_is_confined_outside_prices_and_incomplete_sections_are_dashed(self):
+    def test_depth_contours_stay_outside_prices_and_incomplete_sections_are_dashed(self):
         source = snapshot(count=24)
         sides = [tuple((level.price, level.quantity, level.notional, index < 2)
                        for index, level in enumerate(side))
@@ -366,7 +366,9 @@ class HeatmapChecks(unittest.TestCase):
                 self.assertEqual(set(renderer._depth_paths), {'bid', 'ask'})
                 for area, solid, partial, bounds, _anchor, _width in renderer._depth_paths.values():
                     self.assertFalse(bounds.intersects(price_column))
-                    self.assertFalse(area.boundingRect().intersects(price_column))
+                    self.assertTrue(area.boundingRect().intersects(price_column))
+                    self.assertFalse(solid.boundingRect().intersects(price_column))
+                    self.assertFalse(partial.boundingRect().intersects(price_column))
                     self.assertFalse(solid.isEmpty())
                     self.assertFalse(partial.isEmpty())
                 self.assertTrue(all(not row.size_text and not row.total_text for row in renderer.rows))
