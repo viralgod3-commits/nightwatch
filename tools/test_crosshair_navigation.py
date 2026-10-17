@@ -1,10 +1,13 @@
-"""Exercise crosshair restoration through the real Qt chart input/paint path."""
+"""Exercise chart navigation, snapshot handoffs and Qt crosshair restoration."""
 from __future__ import annotations
 
 import os
+from collections import OrderedDict
+from dataclasses import replace
 from pathlib import Path
 import sys
 import time
+from types import MethodType, SimpleNamespace
 import unittest
 
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
@@ -14,7 +17,9 @@ from PySide6 import QtCore, QtGui, QtTest, QtWidgets
 
 from nightwatch.chart.analysis import shutdown_analysis
 from nightwatch.chart.workspace import ChartWorkspace
-from nightwatch.models import Candle
+from nightwatch.models import Candle, CandlePages, shift_candle_time
+from nightwatch.chart.preparation import prepare_snapshot
+from nightwatch.market.data import MarketDataHub
 from nightwatch.theme import THEMES
 
 
@@ -139,6 +144,162 @@ class CrosshairNavigationChecks(unittest.TestCase):
             self.app.sendEvent(self.viewport, QtCore.QEvent(QtCore.QEvent.Type.Leave))
         self.next_paint(release_and_leave, visible=False)
         self.assertIsNone(self.chart._pending_crosshair_position)
+
+
+class CandleHandoffChecks(unittest.TestCase):
+    def setUp(self):
+        self.t = 1800000000.
+        self.partial = Candle(self.t, 100., 102., 99., 101., 10., 1010.)
+        self.final = replace(self.partial, high=105., close=105., volume=15., quote_volume=1575.)
+        self.next = Candle(self.t+60, 105., 106., 104., 106., 5., 530.)
+
+    def hub(self, candle=None, interval='1m'):
+        payload = {'symbol': 'BTCUSDT', 'interval': interval,
+                   'candles': CandlePages([candle or self.partial])}
+        repairs = []
+        hub = SimpleNamespace(symbol='BTCUSDT', interval=interval, _live_candles={},
+            chart_cache=OrderedDict({('BTCUSDT', interval): (1., payload)}),
+            _mark_chart_history_repair=repairs.append)
+        return hub, payload, repairs
+
+    @staticmethod
+    def event(candle, interval='1m', *, closed=False, symbol='BTCUSDT'):
+        return {'s': symbol, 'E': int((candle.time+1)*1000), 'k': {
+            'i': interval, 't': int(candle.time*1000), 'o': str(candle.open),
+            'h': str(candle.high), 'l': str(candle.low), 'c': str(candle.close),
+            'v': str(candle.volume), 'q': str(candle.quote_volume), 'x': closed}}
+
+    def test_adjacent_resume_repairs_the_unfinished_cached_candle_and_keeps_correction(self):
+        hub, cached, repairs = self.hub()
+        MarketDataHub._update_chart_cache(hub, self.event(self.next))
+        self.assertEqual(repairs, [self.t])
+        for canonical in (False, True):
+            with self.subTest(canonical=canonical):
+                source = CandlePages([self.final, self.next]) if canonical else [self.final, self.next]
+                result = prepare_snapshot({'interval': '1m', 'candles': source,
+                                           '_canonical_candles': canonical}, cached['candles'][-2:])
+                self.assertEqual(result['candles'][-2], self.final)
+                self.assertEqual(result['_storage'][:2, 4].tolist(), [105., 106.])
+
+    def test_normal_closed_rollover_and_same_bar_updates_do_not_request_repairs(self):
+        hub, cached, repairs = self.hub()
+        MarketDataHub._update_chart_cache(hub, self.event(self.partial))
+        MarketDataHub._update_chart_cache(hub, self.event(self.final, closed=True))
+        MarketDataHub._update_chart_cache(hub, self.event(self.next))
+        self.assertEqual(repairs, [])
+        self.assertEqual(cached['candles'][-2], self.final)
+
+    def test_gap_repair_includes_an_uncertain_previous_bar(self):
+        for closed in (False, True):
+            with self.subTest(previous_closed=closed):
+                hub, _cached, repairs = self.hub()
+                if closed:
+                    MarketDataHub._update_chart_cache(hub, self.event(self.final, closed=True))
+                MarketDataHub._update_chart_cache(hub, self.event(replace(self.next, time=self.t+180)))
+                self.assertEqual(repairs, [self.t+60 if closed else self.t])
+
+    def test_calendar_rollover_and_unrelated_markets(self):
+        previous = replace(self.partial, time=1767225600.)  # 2026-01-01 UTC
+        hub, _cached, repairs = self.hub(previous, '1M')
+        following = replace(self.next, time=shift_candle_time(previous.time, '1M'))
+        MarketDataHub._update_chart_cache(hub, self.event(following, '1m'))
+        MarketDataHub._update_chart_cache(hub, self.event(following, '1M', symbol='ETHUSDT'))
+        self.assertFalse(hub._live_candles)
+        self.assertEqual(repairs, [])
+        MarketDataHub._update_chart_cache(hub, self.event(following, '1M'))
+        self.assertEqual(repairs, [previous.time])
+
+    def test_live_tail_and_newer_bars_survive_authoritative_history(self):
+        live = replace(self.next, close=108., high=108., volume=8.)
+        newer = replace(live, time=self.t+120, open=108., close=109., high=109.)
+        for canonical in (False, True):
+            with self.subTest(canonical=canonical):
+                source = CandlePages([self.final, self.next]) if canonical else [self.final, self.next]
+                result = prepare_snapshot({'interval': '1m', 'candles': source,
+                    '_canonical_candles': canonical}, (self.partial, live, newer))
+                self.assertEqual(list(result['candles']), [self.final, live, newer])
+
+    def test_older_history_merge_and_real_exchange_price_gaps_are_preserved(self):
+        gap = replace(self.next, open=105.5)
+        result = prepare_snapshot({'interval': '1m', 'candles': [self.final, gap]}, (self.partial,))
+        self.assertEqual(result['candles'][1].open-result['candles'][0].close, .5)
+        older = replace(self.final, time=self.t-60)
+        result = prepare_snapshot({'interval': '1m', '_history_merge': True,
+                                   'candles': [older, self.partial]}, (self.final, self.next))
+        self.assertEqual(list(result['candles']), [older, self.final, self.next])
+
+    def test_final_confirmation_survives_a_cache_job_started_before_the_close(self):
+        hub, cached, _repairs = self.hub()
+        request = dict(key=('BTCUSDT', '1m'), base=cached, base_tail=self.partial,
+            base_count=1, base_tail_rows={self.t: self.partial}, lifecycle=0,
+            requested_at=1., timestamp=None, generation=1, publish=False, callback=None)
+        hub._cache_prepare_active = request
+        hub._lifecycle = 0
+        hub.generation = 1
+        hub.stopping = False
+        hub._patch_chart_tail = MarketDataHub._patch_chart_tail
+        hub._chart_cache_capacity = lambda: 8
+        hub._start_cache_prepare = lambda: None
+        hub._remember = lambda cache, key, payload, capacity: cache.__setitem__(key, (2., payload))
+        worker_result = dict(cached, candles=cached['candles'].snapshot())
+        MarketDataHub._update_chart_cache(hub, self.event(self.final, closed=True))
+        cached['_repair_start'] = self.t-60
+        MarketDataHub._cache_prepared(hub, 1, worker_result)
+        result = hub.chart_cache[('BTCUSDT', '1m')][1]
+        self.assertEqual(result['candles'][-1], self.final)
+        self.assertEqual(result['_closed_kline_time'], self.t)
+        self.assertEqual(result['_repair_start'], self.t-60)
+
+    def test_fast_symbol_and_timeframe_returns_resume_a_cancelled_repair(self):
+        class Timer:
+            active = False
+            def start(self, *_args): self.active = True
+            def stop(self): self.active = False
+            def isActive(self): return self.active
+
+        hub, cached, _repairs = self.hub()
+        hub.stopping = False
+        hub.generation = 0
+        hub.chart_only = True
+        hub._chart_gap_start = None
+        hub._chart_repair_revision = 0
+        hub._chart_repair_attempts = 0
+        hub._chart_repair_timer = Timer()
+        hub._retry_attempts = {}
+        hub.public_reconnect_timer = Timer()
+        hub.market_reconnect_timer = Timer()
+        hub.subscription_timer = Timer()
+        hub._chart_prefetch_queue = []
+        hub._rebuild_chart_prefetch_queue = lambda: None
+        hub._market_sockets_ready = lambda: True
+        hub._close_market_sockets = lambda: None
+        hub._open_market_sockets = lambda _generation: None
+        hub.status = SimpleNamespace(emit=lambda *_args: None)
+        hub.bootstrap_ready = SimpleNamespace(emit=lambda _payload: None)
+        hub._chart_snapshot = MarketDataHub._chart_snapshot
+        hub._mark_chart_history_repair = MethodType(MarketDataHub._mark_chart_history_repair, hub)
+        for key in (('BTCUSDT', '5m'), ('ETHUSDT', '1m')):
+            hub.chart_cache[key] = (time.monotonic(), dict(cached, symbol=key[0], interval=key[1]))
+        MarketDataHub._update_chart_cache(hub, self.event(self.next))
+        self.assertTrue(hub._chart_repair_timer.active)
+        MarketDataHub.switch_market(hub, 'BTCUSDT', '5m')
+        self.assertFalse(hub._chart_repair_timer.active)
+        MarketDataHub.switch_market(hub, 'ETHUSDT', '1m')
+        MarketDataHub.switch_market(hub, 'BTCUSDT', '1m')
+        self.assertEqual(hub._chart_gap_start, self.t)
+        self.assertTrue(hub._chart_needs_repair)
+        self.assertTrue(hub._chart_repair_timer.active)
+        hub.connected = {'market': True}
+        hub._run = lambda fetch, loaded, *args, **kwargs: loaded({'candles': [self.final, self.next]})
+        def publish(key, payload, **options):
+            cached.update(payload)
+            self.assertIn('_repair_start', cached)
+            options['callback']()
+        hub._queue_chart_cache = publish
+        MarketDataHub._repair_chart_history(hub)
+        self.assertNotIn('_repair_start', cached)
+        self.assertFalse(hub._chart_needs_repair)
+        self.assertFalse(hub._chart_repair_timer.active)
 
 
 if __name__ == '__main__':

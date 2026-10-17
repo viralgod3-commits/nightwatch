@@ -282,6 +282,7 @@ def prepare_window(key, closed, window, seconds, logarithmic, lod_index=None):
 
 def prepare_snapshot(payload, current=()):
     source = payload.get("candles", ())
+    history_merge = bool(payload.get('_history_merge'))
     candles = None
     if (payload.get('_canonical_candles') or payload.get('_storage_roll')) and isinstance(source, CandlePages):
         # Cached histories are already sorted/unique. Preserve their native
@@ -290,6 +291,11 @@ def prepare_snapshot(payload, current=()):
         tail = {c.time: c for c in current}
         current = tuple(tail[stamp] for stamp in sorted(tail))
         for candle in current:
+            # Incoming history is authoritative for completed bars. Carry
+            # forward only its mutable tail and newer live bars; an earlier
+            # cached partial candle must not overwrite a repaired final close.
+            if not history_merge and source and candle.time < source[-1].time:
+                continue
             if not source or candle.time > source[-1].time:
                 suffix.append(candle)
             else:
@@ -303,7 +309,8 @@ def prepare_snapshot(payload, current=()):
                 candles = candles.snapshot(len(candles) - MAX_CHART_CANDLES)
     if candles is None:
         rows = {c.time: c for c in source}
-        rows.update((c.time, c) for c in current)
+        latest = -math.inf if history_merge else max(rows, default=-math.inf)
+        rows.update((c.time, c) for c in current if history_merge or c.time >= latest)
         candles = CandlePages(sorted(rows.values(), key=lambda c: c.time)[-MAX_CHART_CANDLES:])
     matrix = _candle_matrix_from_objects(candles)
     storage = np.empty((candle_matrix_capacity(len(matrix)), 7), dtype=np.float64)

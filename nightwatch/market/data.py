@@ -2297,6 +2297,12 @@ class MarketDataHub(QtCore.QObject):
             return
         if current and current.get("oi_history"):
             payload["oi_history"] = current["oi_history"]
+        if current:
+            # Final confirmations and repair obligations can arrive while the
+            # cache job runs. Keep them alongside the patched OHLCV tail.
+            for field in ('_closed_kline_time', '_repair_start'):
+                if current.get(field) is not None:
+                    payload[field] = current[field]
         self._remember(self.chart_cache, key, payload, self._chart_cache_capacity())
         if request["timestamp"] is not None:
             self.chart_cache[key] = (request["timestamp"], payload)
@@ -2738,6 +2744,8 @@ class MarketDataHub(QtCore.QObject):
         if cached:
             self.chart_cache.move_to_end(key)
             self.bootstrap_ready.emit(self._chart_snapshot(cached[1]))
+            if cached[1].get('_repair_start') is not None:
+                self._mark_chart_history_repair(cached[1]['_repair_start'])
             if self.chart_only and now - cached[0] < CHART_CACHE_REFRESH_SECONDS:
                 return
         analysis_cached = self.analysis_cache.get(selected_symbol)
@@ -3440,6 +3448,10 @@ class MarketDataHub(QtCore.QObject):
         self._chart_repair_revision += 1
         if start_time is not None:
             self._chart_gap_start = min(self._chart_gap_start, start_time) if self._chart_gap_start is not None else start_time
+            cached = self.chart_cache.get((self.symbol, self.interval))
+            if cached:
+                previous = cached[1].get('_repair_start')
+                cached[1]['_repair_start'] = min(previous, start_time) if previous is not None else start_time
         if not self._chart_repair_timer.isActive() and not self.stopping:
             delay = min(30000, 1500 * (2 ** min(self._chart_repair_attempts, 5)))
             self._chart_repair_timer.start(delay)
@@ -3456,6 +3468,9 @@ class MarketDataHub(QtCore.QObject):
             gap_start = shift_candle_time(cached_rows[-1].time, interval)
         def after_repair():
             if revision == self._chart_repair_revision:
+                cached = self.chart_cache.get((symbol, interval))
+                if cached:
+                    cached[1].pop('_repair_start', None)
                 self._chart_needs_repair = False
                 self._chart_gap_start = None
                 self._chart_repair_attempts = 0
@@ -3565,15 +3580,22 @@ class MarketDataHub(QtCore.QObject):
             return
         if not candles or candles[-1].time < candle.time:
             if candles:
-                expected_open = shift_candle_time(candles[-1].time, self.interval)
-                if candle.time > expected_open:
-                    self._mark_chart_history_repair(expected_open)
+                previous_open = candles[-1].time
+                expected_open = shift_candle_time(previous_open, self.interval)
+                # A switch can miss the final update of the cached live bar
+                # even when the next received bar is adjacent. Repair that bar
+                # too; contiguous timestamps do not prove its OHLCV is final.
+                previous_closed = payload.get('_closed_kline_time') == previous_open
+                if not previous_closed or candle.time > expected_open:
+                    self._mark_chart_history_repair(expected_open if previous_closed else previous_open)
             candles.append(candle)
             if len(candles) > MAX_CHART_CANDLES:
                 del candles[:len(candles) - MAX_CHART_CANDLES]
         else:
             candles[-1] = candle
 
+        if row.get('x'):
+            payload['_closed_kline_time'] = candle.time
         self.chart_cache[key] = (time.monotonic(), cached[1])
         self.chart_cache.move_to_end(key)
 
