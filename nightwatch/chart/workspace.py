@@ -9266,8 +9266,8 @@ class ChartWorkspace(QtWidgets.QWidget):
         self.live_candle.set_colors(candle_up, candle_down, theme["bg"])
         self.volume_overlay.set_colors(candle_up, candle_down, theme["bg"])
         self._apply_order_rail_theme()
-        self.rendered_window = None
-        self._render_viewport(force=True)
+        # Recolor resident batches; candle geometry and LOD are unchanged.
+        self.graphics.request_redraw()
         bb_pen = pg.mkPen(
             theme["cyan"],
             width=1.15,

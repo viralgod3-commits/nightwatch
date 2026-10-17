@@ -382,6 +382,10 @@ THEME_DISPLAY_NAMES = {
     "Deep Ocean": "Deep Ocean",
     "Copper Dusk": "Copper Dusk",
     "Paper Desk": "Paper Desk",
+    "OLED Black": "OLED Black",
+    "Amethyst": "Amethyst",
+    "Evergreen": "Evergreen",
+    "Cobalt Amber": "Cobalt Amber",
 }
 
 INITIAL_CHART_WARM_CANDLES = 5_800

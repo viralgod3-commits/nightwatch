@@ -2014,9 +2014,11 @@ class OrderPanel(QtWidgets.QWidget):
             line_icon("gear", color, max(1.0, self.devicePixelRatioF()))
         )
 
-    def apply_theme(self, theme: dict[str, str]) -> None:
+    def apply_theme(self, theme: dict[str, str], *, inherited: bool = False) -> None:
         palette = ui_palette(theme)
-        self.setStyleSheet(_trading_stylesheet(palette))
+        stylesheet = "" if inherited else _trading_stylesheet(palette)
+        if self.styleSheet() != stylesheet:
+            self.setStyleSheet(stylesheet)
         self.set_settings_icon(palette['muted'])
 
     def current_order_type(self) -> str:
@@ -4276,9 +4278,12 @@ class TradingWorkspace(QtWidgets.QWidget):
         gateway: TradingGatewayPort,
         parent: QtWidgets.QWidget | None = None,
         symbol_rules: dict[str, SymbolRules] | None = None,
+        *,
+        inherited_theme_stylesheet: bool = False,
     ):
         super().__init__(parent)
         _disable_trading_tooltips(self)
+        self._inherited_theme_stylesheet = bool(inherited_theme_stylesheet)
         self.theme = ui_palette(theme)
         self.gateway = gateway
         self.symbol_rules = symbol_rules if symbol_rules is not None else {}
@@ -4823,10 +4828,27 @@ class TradingWorkspace(QtWidgets.QWidget):
     def _account_event(self, _event: dict[str, Any]) -> None:
         self.account_refresh_timer.start()
 
+    @staticmethod
+    def scoped_theme_stylesheet(theme: dict[str, str]) -> str:
+        """Embed trading rules in the shell's single scoped recolor pass."""
+        rules = []
+        root = 'QWidget#tradingWorkspace'
+        for rule in _trading_stylesheet(theme).split('}'):
+            if '{' not in rule:
+                continue
+            selectors, body = rule.split('{', 1)
+            selectors = ','.join(selector if selector.startswith(root) else root + ' ' + selector
+                                 for selector in (part.strip() for part in selectors.split(',')))
+            rules.append(selectors + '{' + body + '}')
+        return ''.join(rules)
+
     def apply_theme(self, theme: dict[str, str]) -> None:
         self.theme = ui_palette(theme)
-        self.setStyleSheet(_trading_stylesheet(self.theme))
-        self.ticket.apply_theme(self.theme)
+        if not self._inherited_theme_stylesheet:
+            stylesheet = _trading_stylesheet(self.theme)
+            if self.styleSheet() != stylesheet:
+                self.setStyleSheet(stylesheet)
+        self.ticket.apply_theme(self.theme, inherited=True)
         self.fills.apply_theme(self.theme)
         ratio = self.devicePixelRatioF()
         self.refresh_button.setIcon(line_icon('refresh', self.theme['muted'], ratio))

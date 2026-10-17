@@ -1719,6 +1719,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.ui_theme,
             self.trading_gateway,
             symbol_rules=self.symbol_rules,
+            inherited_theme_stylesheet=True,
         )
         self.trading_workspace.position_trade_requested.connect(self._reduce_position_in_trade)
         self.order_panel = self.trading_workspace.ticket
@@ -1832,9 +1833,16 @@ class MainWindow(QtWidgets.QMainWindow):
         self.workspace_stack = QtWidgets.QStackedWidget()
         self.workspace_stack.setObjectName("workspaceStack")
         self.workspace_stack.addWidget(self.chart_column)
-        self.workspace_stack.addWidget(self.market_board)
-        self.workspace_stack.addWidget(self.sector_overview)
-        self.workspace_stack.addWidget(self.rotation_overview)
+        self._research_theme_scopes = []
+        for page in (self.market_board, self.sector_overview, self.rotation_overview):
+            scope = QtWidgets.QWidget()
+            scope.setFocusProxy(page)
+            layout = QtWidgets.QVBoxLayout(scope)
+            layout.setContentsMargins(0, 0, 0, 0)
+            layout.setSpacing(0)
+            layout.addWidget(page)
+            self.workspace_stack.addWidget(scope)
+            self._research_theme_scopes.append(scope)
 
         # The global toolbar spans both splitter columns. Chart-only instrument
         # context belongs to chart_column, exactly matching the chart/axis width.
@@ -2907,24 +2915,7 @@ class MainWindow(QtWidgets.QMainWindow):
         # Unedited status fields follow the palette even when another field has
         # an explicit customization. A resolved snapshot would freeze them all.
         self.developer_ui_status = self._load_developer_ui_status()
-        self._apply_stylesheet()
-        self.chart.apply_theme(self.chart_theme)
-        self.chart_container.apply_theme(self.chart_theme)
-        self.stats.apply_theme(self.ui_theme)
-        self.watchlist.apply_theme(self.ui_theme)
-        self.watchlist_sidebar.apply_theme(self.ui_theme)
-        self.orderbook.apply_theme(self.orderbook_theme)
-        self.large_trades.apply_theme(self.orderbook_theme)
-        if self.market_board is not None:
-            self.market_board.apply_theme(self.ui_theme)
-        self.rotation_overview.apply_theme(self.ui_theme)
-        if self.sector_overview is not None:
-            self.sector_overview.apply_theme(self.ui_theme)
-        self.trading_workspace.apply_theme(self.ui_theme)
-        if self.symbol_search_dialog is not None:
-            self.symbol_search_dialog.apply_theme(self.ui_theme)
-        self._sync_top_metrics()
-        self._update_toolbar_icons()
+        self._apply_theme_presentation()
 
     def set_developer_ui_color(self, key: str, value: str) -> None:
         allowed = {name for name, _label in DEV_UI_COLOR_PROFILE_FIELDS}
@@ -3188,22 +3179,7 @@ class MainWindow(QtWidgets.QMainWindow):
     def _apply_application_theme(self) -> None:
         """Set process-wide defaults once; unchanged themes must not repolish Qt."""
         t = self.ui_theme
-        control_border = t["control_border"]
-        surfaces = getattr(self, "developer_ui_surfaces", DEV_UI_SURFACE_DEFAULTS)
-        section_radius = f"{int(surfaces['block_radius'])}px"
         application = QtWidgets.QApplication.instance()
-        if application is not None:
-            if not hasattr(self, "_native_application_stylesheet"):
-                self._native_application_stylesheet = application.styleSheet()
-            dialog_border = f"border: 2px solid {control_border}; border-radius: {section_radius};"
-            dialog_bg = t["panel2"]
-            stylesheet = (
-                self._native_application_stylesheet +
-                f"\nQDialog, QMessageBox {{ background: {dialog_bg}; color: {t['text']}; {dialog_border} }}"
-                + tooltip_stylesheet(t)
-            )
-            if application.styleSheet() != stylesheet:
-                application.setStyleSheet(stylesheet)
         base_palette = (
             QtGui.QPalette(self._native_application_palette)
             if self._native_application_palette is not None
@@ -3244,15 +3220,25 @@ class MainWindow(QtWidgets.QMainWindow):
         if application is not None and application.palette() != palette:
             application.setPalette(palette)
 
-    def _apply_stylesheet(self) -> None:
+    def _apply_stylesheet(self, *, colors_only: bool = False) -> None:
         t = self.ui_theme
         set_tooltip_theme(t)
         self._apply_application_theme()
         surfaces = getattr(self, "developer_ui_surfaces", DEV_UI_SURFACE_DEFAULTS)
         status = getattr(self, "developer_ui_status", None)
-        stylesheet = build_shell_stylesheet(self.theme_name, t, surfaces, status)
-        if self.styleSheet() != stylesheet:
-            self.setStyleSheet(stylesheet)
+        stylesheet = (build_shell_stylesheet(self.theme_name, t, surfaces, status)
+                      + self.trading_workspace.scoped_theme_stylesheet(t))
+        # A window-level sheet repolishes all hidden research/settings widgets.
+        # Keep the native shell palette-driven and style independent UI roots.
+        self._shell_theme_stylesheet = stylesheet
+        scopes = (self.chart_column, self.right_rail_host, self._terminal_status_bar,
+                  *self._research_theme_scopes)
+        for scope in scopes:
+            self._apply_shell_theme_scope(scope, stylesheet,
+                                          defer_hidden=self._startup_show_seen)
+        for dialog in self.findChildren(QtWidgets.QDialog):
+            self._apply_shell_theme_scope(
+                dialog, self._dialog_theme_stylesheet(dialog, stylesheet))
         if hasattr(self, "main_toolbar"):
             self.main_toolbar.apply_theme(t)
         if hasattr(self, "right_rail_controller"):
@@ -3264,7 +3250,8 @@ class MainWindow(QtWidgets.QMainWindow):
         # QSS owns color/geometry; semantic typography owns font family, size,
         # weight and raster strategy. Apply it after QSS so pixel-sized legacy
         # selectors cannot silently override the active text role.
-        apply_typography(self)
+        if not colors_only:
+            apply_typography(self)
         # Re-polishing from the UI Tuner/theme path must never alter structural
         # splitter hit geometry or the controller-owned column contract.
         if hasattr(self, "right_rail_controller"):
@@ -5032,6 +5019,30 @@ class MainWindow(QtWidgets.QMainWindow):
         # Python handling.
         if event_type not in self._application_filter_events:
             return False
+        if event_type == QtCore.QEvent.Type.Show:
+            pending_stylesheet = getattr(watched, "_pending_shell_stylesheet", None)
+            if pending_stylesheet is not None:
+                del watched._pending_shell_stylesheet
+                if watched.styleSheet() != pending_stylesheet:
+                    watched.setStyleSheet(pending_stylesheet)
+                watched._applied_shell_stylesheet = pending_stylesheet
+            elif (isinstance(watched, (QtWidgets.QDialog, QtWidgets.QMenu))
+                  and self.isAncestorOf(watched)
+                  and hasattr(self, "_shell_theme_stylesheet")):
+                stylesheet = self._dialog_theme_stylesheet(watched, self._shell_theme_stylesheet)
+                if watched.styleSheet() != stylesheet:
+                    watched.setStyleSheet(stylesheet)
+                watched._applied_shell_stylesheet = stylesheet
+            if (isinstance(watched, QtWidgets.QDialog)
+                    and hasattr(watched, "_applied_shell_stylesheet")
+                    and not getattr(watched, "_shell_typography_ready", False)):
+                apply_typography(watched)
+                watched._shell_typography_ready = True
+            pending_theme = getattr(watched, "_pending_application_theme", None)
+            if pending_theme is not None:
+                del watched._pending_application_theme
+                watched.apply_theme(pending_theme)
+                watched._applied_application_theme = dict(pending_theme)
         if (
             event_type == QtCore.QEvent.Type.Show
             and os.name == "nt"
@@ -7248,6 +7259,65 @@ class MainWindow(QtWidgets.QMainWindow):
             ]
         )
 
+    @staticmethod
+    def _dialog_theme_stylesheet(widget: QtWidgets.QWidget, stylesheet: str) -> str:
+        local = widget.styleSheet()
+        if local != getattr(widget, "_applied_shell_stylesheet", None):
+            widget._local_theme_stylesheet = local
+        return stylesheet + getattr(widget, "_local_theme_stylesheet", "")
+
+    @staticmethod
+    def _apply_shell_theme_scope(widget: QtWidgets.QWidget, stylesheet: str,
+                                *, defer_hidden: bool = True) -> None:
+        if widget.isVisible() or not defer_hidden:
+            if hasattr(widget, "_pending_shell_stylesheet"):
+                del widget._pending_shell_stylesheet
+            if widget.styleSheet() != stylesheet:
+                widget.setStyleSheet(stylesheet)
+            widget._applied_shell_stylesheet = stylesheet
+        else:
+            widget._pending_shell_stylesheet = stylesheet
+
+    def _apply_theme_widgets(self) -> None:
+        # Hidden research pages must not restyle/rebuild their tables on the
+        # click path. Replay only the latest palette in Show, before painting.
+        for widget, palette in (
+            (self.chart, self.chart_theme), (self.chart_container, self.chart_theme),
+            (self.stats, self.ui_theme), (self.watchlist, self.ui_theme),
+            (self.watchlist_sidebar, self.ui_theme), (self.orderbook, self.orderbook_theme),
+            (self.large_trades, self.orderbook_theme), (self.market_board, self.ui_theme),
+            (self.rotation_overview, self.ui_theme), (self.sector_overview, self.ui_theme),
+            (self.trading_workspace, self.ui_theme), (self.symbol_search_dialog, self.ui_theme),
+        ):
+            if widget is None:
+                continue
+            if getattr(widget, "_applied_application_theme", None) == palette:
+                if hasattr(widget, "_pending_application_theme"):
+                    del widget._pending_application_theme
+                continue
+            if widget.isVisible():
+                if hasattr(widget, "_pending_application_theme"):
+                    del widget._pending_application_theme
+                widget.apply_theme(palette)
+                widget._applied_application_theme = dict(palette)
+            else:
+                widget._pending_application_theme = palette
+
+    def _apply_theme_presentation(self) -> None:
+        # Present one complete recolor. Restyling individual subtrees must not
+        # expose intermediate colors or generate their own paint passes.
+        updates_enabled = self.updatesEnabled()
+        if updates_enabled:
+            self.setUpdatesEnabled(False)
+        try:
+            self._apply_stylesheet(colors_only=True)
+            self._apply_theme_widgets()
+            self._sync_top_metrics()
+            self._update_toolbar_icons()
+        finally:
+            if updates_enabled:
+                self.setUpdatesEnabled(True)
+
     def apply_theme(self, name: str) -> None:
         if name not in THEMES:
             name = DEFAULT_THEME_NAME
@@ -7258,31 +7328,19 @@ class MainWindow(QtWidgets.QMainWindow):
         self.ui_theme = ui_palette(self.theme, self._effective_ui_color_overrides())
         self._refresh_directional_surface_palettes()
         self.developer_ui_status = self._load_developer_ui_status()
+        state = (name, self.ui_theme, self.chart_theme, self.orderbook_theme,
+                 self.developer_ui_status)
+        if state == getattr(self, "_last_applied_theme_state", None):
+            return
         display_name = THEME_DISPLAY_NAMES[name]
         for theme_name, action in getattr(self, "theme_actions", {}).items():
             blocker = QtCore.QSignalBlocker(action)
             action.setChecked(theme_name == name)
             del blocker
-        self._apply_stylesheet()
-        self.chart.apply_theme(self.chart_theme)
-        self.chart_container.apply_theme(self.chart_theme)
-        self.stats.apply_theme(self.ui_theme)
-        self.watchlist.apply_theme(self.ui_theme)
-        self.watchlist_sidebar.apply_theme(self.ui_theme)
-        self.orderbook.apply_theme(self.orderbook_theme)
-        self.large_trades.apply_theme(self.orderbook_theme)
-        if self.market_board is not None:
-            self.market_board.apply_theme(self.ui_theme)
-        self.rotation_overview.apply_theme(self.ui_theme)
-        if self.sector_overview is not None:
-            self.sector_overview.apply_theme(self.ui_theme)
-        self.trading_workspace.apply_theme(self.ui_theme)
-        if self.symbol_search_dialog is not None:
-            self.symbol_search_dialog.apply_theme(self.ui_theme)
-        self._sync_top_metrics()
-        self._update_toolbar_icons()
+        self._apply_theme_presentation()
         self.statusBar().showMessage(f"THEME · {display_name}", 1800)
         self._sync_settings_window()
+        self._last_applied_theme_state = (name, *(dict(value) for value in state[1:]))
 
     def _on_universe(self, payload: dict[str, Any]) -> None:
         """Prepare exchange rules off-thread, then apply one bounded GUI update."""

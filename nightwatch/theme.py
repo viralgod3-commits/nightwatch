@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from typing import Final
+import re
 from .constants import ORDERBOOK_FIXED_PALETTE
 
 DEFAULT_ORDERBOOK_THEME_NAME = 'Nightwatch'
@@ -373,6 +374,62 @@ THEMES: dict[str, dict[str, object]] = {
         'chart_control': '#F0F3FA', 'chart_control_border': '#B2B5BE', 'chart_text': '#131722',
         'chart_muted': '#5D606B',
     },
+    'OLED Black': {
+        'bg': '#000000', 'panel': '#060809', 'panel2': '#0D1114', 'grid': '#1B252C',
+        'border': '#29343C', 'control': '#151D23', 'control_top': '#1C272E',
+        'control_hover': '#26343E', 'control_border': '#3B4F5D', 'text': '#EDF5F9',
+        'muted': '#B0C1CC', 'green': '#61DBA3', 'red': '#FF8A96', 'cyan': '#80CEFC',
+        'info': '#9BBAF6', 'amber': '#EEC978', 'purple': '#B5A2F0', 'take_profit': '#74D9D1',
+        'risk': '#F7A780', 'active': '#183144', 'orderbook_bg': '#000000', 'book_grid': '#1F2A32',
+        'orderbook_muted': '#9BAFBD', 'orderbook_value_text': '#DBE8F0',
+        'orderbook_badge_text': '#EDF5F9', 'reference_price': '#ACC5D6', 'series_1': '#80CEFC',
+        'series_2': '#B5A2F0', 'series_3': '#EEC978', 'series_4': '#74D9D1', 'chart_bg': '#000000',
+        'chart_grid': '#252525', 'chart_border': '#3A3A3A', 'chart_panel2': '#101010',
+        'chart_control': '#1A1A1A', 'chart_control_border': '#444444', 'chart_text': '#D1D4DC',
+        'chart_muted': '#9598A1',
+    },
+    'Amethyst': {
+        'bg': '#100D17', 'panel': '#191420', 'panel2': '#231C2D', 'grid': '#33293D',
+        'border': '#45374F', 'control': '#2E2539', 'control_top': '#392D45',
+        'control_hover': '#43364F', 'control_border': '#604D70', 'text': '#F1EAF6',
+        'muted': '#C9B7D5', 'green': '#84D5B0', 'red': '#F69BAF', 'cyan': '#C1AAEF',
+        'info': '#9FBFEA', 'amber': '#E9CC90', 'purple': '#D0ADEE', 'take_profit': '#8AD4D1',
+        'risk': '#F2B28E', 'active': '#3B2B51', 'orderbook_bg': '#000000', 'book_grid': '#302538',
+        'orderbook_muted': '#B7A2C6', 'orderbook_value_text': '#E6D9EE',
+        'orderbook_badge_text': '#F5EDFC', 'reference_price': '#D4C0E2', 'series_1': '#9FBFEA',
+        'series_2': '#D0ADEE', 'series_3': '#E9CC90', 'series_4': '#8AD4D1', 'chart_bg': '#131722',
+        'chart_grid': '#2A2E39', 'chart_border': '#363A45', 'chart_panel2': '#1E222D',
+        'chart_control': '#2A2E39', 'chart_control_border': '#434651', 'chart_text': '#D1D4DC',
+        'chart_muted': '#9598A1',
+    },
+    'Evergreen': {
+        'bg': '#0B1411', 'panel': '#111F19', 'panel2': '#182B22', 'grid': '#263C30',
+        'border': '#355240', 'control': '#20382B', 'control_top': '#294535',
+        'control_hover': '#34513F', 'control_border': '#4C735B', 'text': '#E6F0E6',
+        'muted': '#BCD1BC', 'green': '#86D5A1', 'red': '#F59A98', 'cyan': '#A3D3B4',
+        'info': '#9FC2DF', 'amber': '#E9CE8D', 'purple': '#C3B2E1', 'take_profit': '#85D7C8',
+        'risk': '#F2B084', 'active': '#294A36', 'orderbook_bg': '#000000', 'book_grid': '#25392D',
+        'orderbook_muted': '#A5BEAA', 'orderbook_value_text': '#DCEADD',
+        'orderbook_badge_text': '#EFF8EE', 'reference_price': '#BCD4C4', 'series_1': '#9FC2DF',
+        'series_2': '#C3B2E1', 'series_3': '#E9CE8D', 'series_4': '#85D7C8', 'chart_bg': '#000000',
+        'chart_grid': '#252525', 'chart_border': '#3A3A3A', 'chart_panel2': '#101010',
+        'chart_control': '#1A1A1A', 'chart_control_border': '#444444', 'chart_text': '#D1D4DC',
+        'chart_muted': '#9598A1',
+    },
+    'Cobalt Amber': {
+        'bg': '#0B101B', 'panel': '#111B2D', 'panel2': '#19263B', 'grid': '#26364D',
+        'border': '#344961', 'control': '#21324A', 'control_top': '#2A3D57',
+        'control_hover': '#324964', 'control_border': '#4D6C8E', 'text': '#E9F0FC',
+        'muted': '#BBCDE4', 'green': '#85C6FF', 'red': '#F5C779', 'cyan': '#ABBFFE',
+        'info': '#85C6FF', 'amber': '#F5C779', 'purple': '#C4AFF2', 'take_profit': '#81D9CD',
+        'risk': '#F4A893', 'active': '#2C3C64', 'orderbook_bg': '#000000', 'book_grid': '#25374C',
+        'orderbook_muted': '#A5BCD8', 'orderbook_value_text': '#DDE9FA',
+        'orderbook_badge_text': '#F0F6FF', 'reference_price': '#BED1EC', 'series_1': '#85C6FF',
+        'series_2': '#C4AFF2', 'series_3': '#F5C779', 'series_4': '#81D9CD', 'chart_bg': '#131722',
+        'chart_grid': '#2A2E39', 'chart_border': '#363A45', 'chart_panel2': '#1E222D',
+        'chart_control': '#2A2E39', 'chart_control_border': '#434651', 'chart_text': '#D1D4DC',
+        'chart_muted': '#9598A1',
+    },
 }
 THEME_METADATA: dict[str, dict[str, str]] = {
     'Nightwatch': {'style_family': 'dark_terminal',
@@ -391,6 +448,14 @@ THEME_METADATA: dict[str, dict[str, str]] = {
         'identity': 'copper_dusk', 'chart_surface': 'black'},
     'Paper Desk': {'style_family': 'light_terminal',
         'identity': 'paper_desk', 'chart_surface': 'white'},
+    'OLED Black': {'style_family': 'dark_terminal',
+        'identity': 'oled_black', 'chart_surface': 'black'},
+    'Amethyst': {'style_family': 'dark_terminal',
+        'identity': 'amethyst', 'chart_surface': 'gray'},
+    'Evergreen': {'style_family': 'dark_terminal',
+        'identity': 'evergreen', 'chart_surface': 'black'},
+    'Cobalt Amber': {'style_family': 'dark_terminal',
+        'identity': 'cobalt_amber', 'chart_surface': 'gray'},
 }
 
 def theme_style_family(name: str) -> str:
@@ -442,6 +507,36 @@ RIGHT_LAYOUT_PRESETS = {
 from pathlib import Path
 from .constants import DEV_UI_SURFACE_DEFAULTS, DEV_UI_STATUS_GEOMETRY_DEFAULTS
 from .utilities import alpha_color, tooltip_stylesheet, typography_state_weight
+
+def _compact_shell_stylesheet(stylesheet: str) -> str:
+    """Drop declarations superseded by the same selector later in the sheet.
+
+    Keep rule order and distinct selectors intact so specificity, state rules
+    and shorthand declarations retain Qt's cascade. This avoids repeatedly
+    matching the legacy/base declarations replaced by terminal overrides.
+    """
+    stylesheet = re.sub(r'/\*.*?\*/', '', stylesheet, flags=re.S)
+    rules = re.findall(r'([^{}]+)\{([^{}]*)\}', stylesheet)
+    seen: dict[str, set[str]] = {}
+    output = []
+    for selectors, body in reversed(rules):
+        declarations = [tuple(part.strip() for part in declaration.split(':', 1))
+                        for declaration in body.split(';') if ':' in declaration]
+        groups: dict[tuple[tuple[str, str], ...], list[str]] = {}
+        for selector in selectors.split(','):
+            selector = ' '.join(selector.split())
+            properties = seen.setdefault(selector, set())
+            retained = []
+            for key, value in reversed(declarations):
+                if key not in properties:
+                    retained.append((key, value))
+                    properties.add(key)
+            if retained:
+                groups.setdefault(tuple(reversed(retained)), []).append(selector)
+        output.append(''.join(','.join(selectors) + '{' +
+                             ';'.join(f'{key}:{value}' for key, value in declarations) + ';}'
+                             for declarations, selectors in groups.items()))
+    return '\n'.join(reversed(output))
 
 def build_shell_stylesheet(theme_name: str, theme: dict[str, str], surfaces: dict[str, int] | None=None, status: dict[str, object] | None=None) -> str:
     t = theme
@@ -1359,7 +1454,7 @@ def build_shell_stylesheet(theme_name: str, theme: dict[str, str], surfaces: dic
         }
     """
     structural_overrides = structural_overrides.replace('#000000', t['bg'])
-    return f'''
+    stylesheet = f'''
             QMainWindow, QWidget {{
                 background: {t['bg']};
                 color: {t['text']};
@@ -1926,4 +2021,5 @@ def build_shell_stylesheet(theme_name: str, theme: dict[str, str], surfaces: dic
         QWidget#statusContent QLabel#terminalLatency[stale="true"],
         QWidget#statusContent QLabel#statusOrderbookLatency[stale="true"] {{ color: {status_stale_dim}; }}
     """
+    return _compact_shell_stylesheet(stylesheet)
 
