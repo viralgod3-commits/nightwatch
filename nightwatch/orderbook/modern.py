@@ -177,7 +177,7 @@ class _Row:
         return self.side, self.price
 
 
-def _geometry(width, height, density, price_width, totals):
+def _geometry(width, height, density, price_width, totals, *, depth=False):
     """Symmetric depth around a fixed midpoint; exact prices take precedence."""
     margin = 12 if width >= 300 else 8
     price_width = min(max(96, price_width + 24), max(96, width - 100))
@@ -192,7 +192,13 @@ def _geometry(width, height, density, price_width, totals):
         for a, b in ((54, 62), (28, 34)))
     available = max(0, height - header - labels - center - footer)
     count = min(120, int(available // (2 * row_height)))
-    # Spare height stays in the header/footer, never stretches rows on a feed update.
+    if depth:
+        # Reuse the ladder's totals strip without requesting extra price levels.
+        footer = 0
+        available = max(0, height - header - labels - center)
+        if count:
+            row_height = max(row_height, min(40, available // (2 * count)))
+    # Spare pixels stay at the outer edges of the table.
     gap = available - count * 2 * row_height
     top = header + labels + int(gap // 2)
     center_top = top + count * row_height
@@ -355,7 +361,7 @@ class _PrismRenderer(QtWidgets.QWidget):
         examples = [self._price(l.price) for side in levels for l in side[:1]]
         price_width = max((self.metrics.horizontalAdvance('8' * len(t)) for t in examples), default=84)
         g = _geometry(self.width(), self.height(), self.config.get('density'), price_width,
-                      self.config.get('totals', True) and not heatmap)
+                      self.config.get('totals', True) and not heatmap, depth=heatmap)
         count = g['rows']
         visible = [tuple(level for level in side[:count]
                          if math.isfinite(level.price) and level.price > 0
@@ -630,8 +636,12 @@ class _PrismRenderer(QtWidgets.QWidget):
         self._text(p, self._rect(g['price_left']+4, y+3,
                    g['price_right']-g['price_left']-8, h-6), center_price, color,
                    self.hero_font, _ALIGN.AlignHCenter, exact=True)
+        status = ''
         if not self._display_live:
             status = 'LAST KNOWN' if self.source is not None and self.source.ready else 'SYNCING'
+        elif self.config.get('heatmap', False) and not all(self.side_complete):
+            status = 'PARTIAL DEPTH'
+        if status:
             self._text(p, self._rect(g['price_left']+4, y+3,
                        g['price_right']-g['price_left']-8, 13), status, self.muted,
                        self.label_font, _ALIGN.AlignHCenter)
@@ -656,6 +666,8 @@ class _PrismRenderer(QtWidgets.QWidget):
 
     def _paint_footer(self, p):
         g = self.geometry
+        if not g['footer_height']:
+            return
         m, y, w = g['margin'], g['footer_top'], g['width']
         amount_y = y + 3
         bar_y = y + g['footer_height'] - 7
@@ -663,13 +675,6 @@ class _PrismRenderer(QtWidgets.QWidget):
         total = ask+bid
         ratio = bid/total if total > 0 else .5
         p.fillRect(self._rect(m, y, w-m*2, 1), self.line)
-        if self.config.get('heatmap', False):
-            # The cumulative shape carries depth. Only exception information
-            # belongs here; repeating its quantities adds visual noise.
-            if not all(self.side_complete):
-                self._text(p, self._rect(m, amount_y, w-m*2, 19), 'Partial depth · dashed edge',
-                           self.muted, self.label_font, _ALIGN.AlignHCenter)
-            return
         bid_label = f'{_amount(bid)} · {ratio*100:.0f}%' if total else '—'
         ask_label = f'{(1-ratio)*100:.0f}% · {_amount(ask)}' if total else '—'
         if total and not self.side_complete[1]:
@@ -1267,7 +1272,8 @@ class PrismCanvas(QtWidgets.QWidget):
         event.accept()
 
     def visible_rows_per_side(self):
-        return _geometry(self.width(), self.height(), self.density, 84, self.totals)['rows']
+        return _geometry(self.width(), self.height(), self.density, 84, self.totals,
+                         depth=self.heatmap)['rows']
 
     def _publish_rows(self):
         rows = self.visible_rows_per_side()

@@ -7295,7 +7295,9 @@ class MainWindow(QtWidgets.QMainWindow):
                 if hasattr(widget, "_pending_application_theme"):
                     del widget._pending_application_theme
                 continue
-            if widget.isVisible():
+            # These hidden providers own visible market cards and sidebar
+            # colors even though their original QWidget is never displayed.
+            if widget.isVisible() or widget is self.stats or widget is self.watchlist:
                 if hasattr(widget, "_pending_application_theme"):
                     del widget._pending_application_theme
                 widget.apply_theme(palette)
