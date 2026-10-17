@@ -378,6 +378,10 @@ THEME_DISPLAY_NAMES = {
     "Neon Reactor": "Neon Reactor",
     "Arctic Terminal": "Arctic Terminal",
     "Pulse Light": "Pulse Light",
+    "Graphite Pro": "Graphite Pro",
+    "Deep Ocean": "Deep Ocean",
+    "Copper Dusk": "Copper Dusk",
+    "Paper Desk": "Paper Desk",
 }
 
 INITIAL_CHART_WARM_CANDLES = 5_800
