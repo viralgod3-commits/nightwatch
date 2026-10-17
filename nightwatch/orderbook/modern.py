@@ -170,6 +170,7 @@ class _Row:
     top: int
     touch: bool
     depth_ratio: float = 0.
+    depth_complete: bool = True
 
     @property
     def key(self):
@@ -249,6 +250,8 @@ class _PrismRenderer(QtWidgets.QWidget):
         self._animation_end = 0.0
         self._last_chrome = None
         self._last_layout = None
+        self._depth_path_key = None
+        self._depth_paths = {}
         self.frames = 0
         self.last_render_ms = self.max_render_ms = 0.0
         self.apply_theme(theme)
@@ -272,7 +275,10 @@ class _PrismRenderer(QtWidgets.QWidget):
         self.tracks = {s: _mix(p['bg'], p[s], .055) for s in ('bid', 'ask')}
         self._depth_brush_key = None
         self._depth_brushes = {}
-        self._depth_edges = {s: _mix(p['bg'], p[s], .5) for s in ('bid', 'ask')}
+        self._depth_pens = {s: QtGui.QPen(_mix(p['bg'], p[s], .72), 1.) for s in ('bid', 'ask')}
+        self._partial_depth_pens = {s: QtGui.QPen(self._depth_pens[s]) for s in ('bid', 'ask')}
+        for pen in self._partial_depth_pens.values():
+            pen.setStyle(Qt.PenStyle.DashLine)
         self._last_chrome = self._last_layout = None
 
     def _fonts(self):
@@ -340,6 +346,7 @@ class _PrismRenderer(QtWidgets.QWidget):
 
     def prepare(self, now):
         snapshot = self.snapshot
+        heatmap = self.config.get('heatmap', False)
         live = self.book_valid and _deadline(self.source) > now
         self.status = ('LIVE' if self.trade_active else 'TRADES OFF') if live else (
             'STALE' if snapshot is not None and snapshot.ready else 'SYNCING')
@@ -348,7 +355,7 @@ class _PrismRenderer(QtWidgets.QWidget):
         examples = [self._price(l.price) for side in levels for l in side[:1]]
         price_width = max((self.metrics.horizontalAdvance('8' * len(t)) for t in examples), default=84)
         g = _geometry(self.width(), self.height(), self.config.get('density'), price_width,
-                      self.config.get('totals', True))
+                      self.config.get('totals', True) and not heatmap)
         count = g['rows']
         visible = [tuple(level for level in side[:count]
                          if math.isfinite(level.price) and level.price > 0
@@ -367,7 +374,6 @@ class _PrismRenderer(QtWidgets.QWidget):
         value = lambda l: l.notional if quote else l.quantity
         scale = max((value(l) for side in visible for l in side), default=0.)
         side_totals = [sum(value(l) for l in side) for side in visible]
-        heatmap = self.config.get('heatmap', False)
         depth_scale = 0.
         if heatmap:
             fraction = _depth_range(self.config.get('depth_range', 1.))
@@ -387,23 +393,24 @@ class _PrismRenderer(QtWidgets.QWidget):
                 top = (g['center_top']-(index+1)*g['row_height'] if side_index == 0
                        else g['center_bottom']+index*g['row_height'])
                 prepared.append(_Row('ask' if side_index == 0 else 'bid', level.price,
-                    self._price(level.price), ('' if complete else '≥') + _amount(amount),
-                    ('' if cumulative_complete else '≥') + _amount(cumulative), amount,
+                    self._price(level.price), '' if heatmap else ('' if complete else '≥') + _amount(amount),
+                    '' if heatmap else ('' if cumulative_complete else '≥') + _amount(cumulative), amount,
                     amount / scale if scale else 0., top, index == 0,
-                    min(1., cumulative/depth_scale) if depth_scale else 0.))
+                    min(1., cumulative/depth_scale) if depth_scale else 0., cumulative_complete))
         previous = {row.key: row for row in self.rows}
         previous_bars = self._bar_values(now)
-        new_targets = {row.key: row.ratio for row in prepared}
+        new_targets = {} if heatmap else {row.key: row.ratio for row in prepared}
         if new_targets != self._bar_to:
             # Animate only when price membership and geometry are stable.
             # A moved best price switches immediately to the new price/size mapping.
-            animate = (not full and live and self.config.get('motion', True)
+            animate = (not heatmap and not full and live and self.config.get('motion', True)
                        and set(new_targets) == set(self._bar_to))
             self._bar_from = {key: previous_bars.get(key, target) for key, target in new_targets.items()}
             self._bar_to = new_targets
             self._animation_start = now
             self._animation_end = now + .10 if animate else now
         self.rows = tuple(prepared)
+        self._prepare_depth_paths()
         if full:
             self._dirty_pixels = QtGui.QRegion(self.rect())
         else:
@@ -413,7 +420,8 @@ class _PrismRenderer(QtWidgets.QWidget):
                 if before != after:
                     for row in (before, after):
                         if row is not None:
-                            self._dirty_pixels += QtCore.QRect(0, row.top, self.width(), g['row_height'])
+                            pad = 1 if heatmap else 0
+                            self._dirty_pixels += QtCore.QRect(0, row.top-pad, self.width(), g['row_height']+2*pad)
         if now < self._animation_end:
             for row in self.rows:
                 if self._bar_from.get(row.key) != self._bar_to.get(row.key):
@@ -493,11 +501,71 @@ class _PrismRenderer(QtWidgets.QWidget):
         if brush is None:
             outer = anchor-width if side == 'bid' else anchor+width
             gradient = QtGui.QLinearGradient(anchor, 0., outer, 0.)
-            gradient.setColorAt(0., _mix(self._bg, self.side_colors[side], .035))
-            gradient.setColorAt(.55, _mix(self._bg, self.side_colors[side], .12))
-            gradient.setColorAt(1., _mix(self._bg, self.side_colors[side], .25))
+            gradient.setColorAt(0., _mix(self._bg, self.side_colors[side], .045))
+            gradient.setColorAt(.55, _mix(self._bg, self.side_colors[side], .16))
+            gradient.setColorAt(1., _mix(self._bg, self.side_colors[side], .29))
             brush = self._depth_brushes[side] = QtGui.QBrush(gradient)
         return brush
+
+    def _prepare_depth_paths(self):
+        """One cached staircase per side, strictly outside the price column.
+
+        Depth has its own composition. It never shares pixels with ladder
+        sizes, size bars or cumulative labels. Dashed sections are known
+        lower bounds beyond the synchronized snapshot's complete frontier.
+        """
+        if not self.config.get('heatmap', False):
+            self._depth_paths.clear()
+            self._depth_path_key = None
+            return
+        g = self.geometry
+        key = (g['price_left'], g['price_right'], g['margin'], g['width'], g['row_height'],
+               tuple((r.side, r.top, r.depth_ratio, r.depth_complete) for r in self.rows))
+        if key == self._depth_path_key:
+            return
+        self._depth_path_key = key
+        self._depth_paths.clear()
+        for side in ('bid', 'ask'):
+            rows = tuple(row for row in self.rows if row.side == side)
+            if not rows:
+                continue
+            bid = side == 'bid'
+            anchor = g['price_left']-10 if bid else g['price_right']+10
+            width = max(0., anchor-g['margin'] if bid else g['width']-g['margin']-anchor)
+            if not width:
+                continue
+            near = rows[0].top if bid else rows[0].top+g['row_height']
+            area = QtGui.QPainterPath(QtCore.QPointF(anchor, near))
+            solid, partial = QtGui.QPainterPath(), QtGui.QPainterPath()
+            solid.moveTo(anchor, near)
+            outline = solid
+            for row in rows:
+                if not row.depth_complete and outline is solid:
+                    partial.moveTo(solid.currentPosition())
+                    outline = partial
+                x = anchor + (-1 if bid else 1)*width*row.depth_ratio
+                far = row.top+g['row_height'] if bid else row.top
+                # Step at the shared row boundary, then follow its price band.
+                area.lineTo(x, area.currentPosition().y())
+                area.lineTo(x, far)
+                outline.lineTo(x, outline.currentPosition().y())
+                outline.lineTo(x, far)
+            area.lineTo(anchor, far)
+            area.closeSubpath()
+            outline.lineTo(anchor, far)
+            bounds = self._rect(anchor-width if bid else anchor, min(near, far), width, abs(far-near))
+            self._depth_paths[side] = (area, solid, partial, bounds, anchor, width)
+
+    def _paint_depth(self, painter):
+        for side, (area, solid, partial, bounds, anchor, width) in self._depth_paths.items():
+            painter.save()
+            painter.setClipRect(bounds, Qt.ClipOperation.IntersectClip)
+            painter.fillPath(area, self._depth_brush(side, anchor, width) if self._display_live else self.surface)
+            painter.setPen(self._depth_pens[side] if self._display_live else QtGui.QPen(self.muted))
+            painter.drawPath(solid)
+            painter.setPen(self._partial_depth_pens[side] if self._display_live else QtGui.QPen(self.muted, 1., Qt.PenStyle.DashLine))
+            painter.drawPath(partial)
+            painter.restore()
 
     def _paint_row(self, p, row, bars):
         g = self.geometry
@@ -511,33 +579,24 @@ class _PrismRenderer(QtWidgets.QWidget):
         bid = row.side == 'bid'
         area = left-m-8
         bar_max = max(1, area - (78 if g['totals'] else 0))
-        if self.config.get('heatmap', False) and row.depth_ratio > 0:
-            anchor = left-5 if bid else right+5
-            width = bar_max*row.depth_ratio
-            outer = anchor-width if bid else anchor+width
-            p.fillRect(self._rect(outer if bid else anchor, y, width, h),
-                       self._depth_brush(row.side, anchor, bar_max) if self._display_live else self.surface)
-            p.fillRect(self._rect(outer if bid else outer-1, y, 1, h),
-                       self._depth_edges[row.side] if self._display_live else self.muted)
-        ratio = bars.get(row.key, row.ratio)
-        bar = max(0, bar_max * ratio)
-        bx = left-5-bar if bid else right+5
-        if bar > 0:
-            if not self.config.get('heatmap', False):
+        if not self.config.get('heatmap', False):
+            ratio = bars.get(row.key, row.ratio)
+            bar = max(0, bar_max * ratio)
+            bx = left-5-bar if bid else right+5
+            if bar > 0:
                 p.fillRect(self._rect(bx, y+2, bar, h-4), self.tracks[row.side] if self._display_live else self.surface)
-            p.fillRect(self._rect(bx, y+h-6, bar, 3), self.fills[row.side] if self._display_live else self.surface)
-            # One sharp terminal accent makes small depth changes visible.
-            p.fillRect(self._rect(bx if bid else bx+bar-2, y+h-6, min(2, bar), 3), color)
-        if g['totals']:
-            total_x = m if bid else w-m-65
-            self._text(p, self._rect(total_x, y, 65, h-1), row.total_text, self.muted,
-                       self.label_font, _ALIGN.AlignLeft if bid else _ALIGN.AlignRight)
+                p.fillRect(self._rect(bx, y+h-6, bar, 3), self.fills[row.side] if self._display_live else self.surface)
+                p.fillRect(self._rect(bx if bid else bx+bar-2, y+h-6, min(2, bar), 3), color)
+            if g['totals']:
+                total_x = m if bid else w-m-65
+                self._text(p, self._rect(total_x, y, 65, h-1), row.total_text, self.muted,
+                           self.label_font, _ALIGN.AlignLeft if bid else _ALIGN.AlignRight)
+            value_rect = (self._rect(left-bar_max-9, y, bar_max-3, h) if bid
+                          else self._rect(right+12, y, bar_max-3, h))
+            self._text(p, value_rect.adjusted(0, 0, 0, -6), row.size_text, self.ink if self._display_live else self.muted,
+                       self.number_font, _ALIGN.AlignRight if bid else _ALIGN.AlignLeft, exact=True)
         self._text(p, self._rect(left+9, y, right-left-18, h), row.price_text, color,
                    self.price_font, _ALIGN.AlignHCenter, exact=True)
-        value_rect = (self._rect(left-bar_max-9, y, bar_max-3, h) if bid
-                      else self._rect(right+12, y, bar_max-3, h))
-        self._text(p, value_rect.adjusted(0, 0, 0, -6), row.size_text, self.ink if self._display_live else self.muted,
-                   self.number_font, _ALIGN.AlignRight if bid else _ALIGN.AlignLeft, exact=True)
         # A quiet outer marker retains side identity without full table grid lines.
         if row.touch:
             tag = ('BEST BID' if bid else 'BEST ASK') if area >= 72 else ('BID' if bid else 'ASK')
@@ -604,6 +663,13 @@ class _PrismRenderer(QtWidgets.QWidget):
         total = ask+bid
         ratio = bid/total if total > 0 else .5
         p.fillRect(self._rect(m, y, w-m*2, 1), self.line)
+        if self.config.get('heatmap', False):
+            # The cumulative shape carries depth. Only exception information
+            # belongs here; repeating its quantities adds visual noise.
+            if not all(self.side_complete):
+                self._text(p, self._rect(m, amount_y, w-m*2, 19), 'Partial depth · dashed edge',
+                           self.muted, self.label_font, _ALIGN.AlignHCenter)
+            return
         bid_label = f'{_amount(bid)} · {ratio*100:.0f}%' if total else '—'
         ask_label = f'{(1-ratio)*100:.0f}% · {_amount(ask)}' if total else '—'
         if total and not self.side_complete[1]:
@@ -637,6 +703,7 @@ class _PrismRenderer(QtWidgets.QWidget):
         p.fillRect(self.rect(), self._bg)
         g = self.geometry
         bars = self._bar_values(now)
+        self._paint_depth(p)
         for row in self.rows:
             if dirty.intersects(QtCore.QRect(0, row.top, self.width(), g['row_height'])):
                 self._paint_row(p, row, bars)
@@ -1283,10 +1350,10 @@ class OrderBookWidget(QtWidgets.QWidget):
         self.grouping.setMenu(self._group_menu)
         toolbar.addWidget(self.grouping)
         self.heatmap_button = QtWidgets.QToolButton(self.controls)
-        self.heatmap_button.setText('Heatmap')
+        self.heatmap_button.setText('Depth')
         self.heatmap_button.setCheckable(True)
-        self.heatmap_button.setAccessibleName('Show depth heatmap')
-        self.heatmap_button.setToolTip('Cumulative liquidity behind the size bars. Turn off for the price ladder.')
+        self.heatmap_button.setAccessibleName('Show cumulative depth view')
+        self.heatmap_button.setToolTip('Cumulative liquidity shape and prices. Turn off for individual order sizes and bars.')
         self.heatmap_button.toggled.connect(self.set_heatmap_enabled)
         toolbar.addWidget(self.heatmap_button)
         toolbar.addStretch(1)
@@ -1308,7 +1375,7 @@ class OrderBookWidget(QtWidgets.QWidget):
         range_widget = QtWidgets.QWidget(self._options_menu)
         range_layout = QtWidgets.QHBoxLayout(range_widget)
         range_layout.setContentsMargins(10, 6, 10, 6)
-        range_label = QtWidgets.QLabel('Heatmap range', range_widget)
+        range_label = QtWidgets.QLabel('Depth range', range_widget)
         self.depth_range_slider = QtWidgets.QSlider(Qt.Orientation.Horizontal, range_widget)
         self.depth_range_slider.setRange(5, 100)
         self.depth_range_slider.setPageStep(5)
@@ -1365,6 +1432,8 @@ class OrderBookWidget(QtWidgets.QWidget):
         self.unit.setText(quote if self.canvas.values == 'quote' else base)
         self._checked(self.heatmap_button, self.canvas.heatmap)
         self._range_action.setVisible(self.canvas.heatmap)
+        self._totals_action.setVisible(not self.canvas.heatmap)
+        self._motion_action.setVisible(not self.canvas.heatmap)
         blocker = QtCore.QSignalBlocker(self.depth_range_slider)
         self.depth_range_slider.setValue(round(self.canvas.depth_range*100))
         del blocker

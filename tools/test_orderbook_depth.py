@@ -18,7 +18,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from PySide6 import QtCore, QtGui, QtTest, QtWidgets
 
 from nightwatch.models import (
-    ORDER_FLOW_AGGREGATION_MULTIPLIERS, OrderFlowComponentRevisions,
+    ORDER_FLOW_AGGREGATION_MULTIPLIERS, OrderBookDepthView, OrderFlowComponentRevisions,
     OrderFlowDisplayLevel, OrderFlowSnapshot,
 )
 from nightwatch.orderbook.modern import (
@@ -306,7 +306,7 @@ class HeatmapChecks(unittest.TestCase):
                     self.assertFalse(any(rect.intersects(previous) for previous in bounds))
                     bounds.append(rect)
 
-    def test_shared_cumulative_scale_preserves_prices_sizes_and_idle_rendering(self):
+    def test_depth_mode_preserves_prices_but_removes_redundant_sizes(self):
         w = self.widget
         source = snapshot(count=24)
         source = replace(source,
@@ -317,20 +317,26 @@ class HeatmapChecks(unittest.TestCase):
         renderer.configure(w.canvas._sent_config)
         renderer.adopt(source)
         renderer.prepare(now)
-        original = [(row.side, row.price, row.size_text, row.total_text) for row in renderer.rows]
+        original = [(row.side, row.price, row.amount) for row in renderer.rows]
+        self.assertTrue(all(row.size_text for row in renderer.rows))
         grouped = renderer._aggregation.levels
         w.set_heatmap_enabled(True)
         renderer.configure(w.canvas._sent_config)
         renderer.prepare(now)
         self.assertTrue(all(current is old for current, old in zip(renderer._aggregation.levels, grouped)))
-        self.assertEqual([(r.side, r.price, r.size_text, r.total_text) for r in renderer.rows], original)
+        self.assertEqual([(r.side, r.price, r.amount) for r in renderer.rows], original)
+        self.assertTrue(all(not row.size_text and not row.total_text for row in renderer.rows))
+        self.assertFalse(renderer.geometry['totals'])
+        self.assertFalse(renderer._bar_to)
+        self.assertFalse(w._totals_action.isVisible())
+        self.assertFalse(w._motion_action.isVisible())
         self.assertEqual(max(r.depth_ratio for r in renderer.rows if r.side == 'ask'), 1.)
         self.assertEqual(max(r.depth_ratio for r in renderer.rows if r.side == 'bid'), .25)
         totals = renderer.side_totals
         w.set_depth_range(.5)
         renderer.configure(w.canvas._sent_config)
         renderer.prepare(now)
-        self.assertEqual([(r.side, r.price, r.size_text, r.total_text) for r in renderer.rows], original)
+        self.assertEqual([(r.side, r.price, r.amount) for r in renderer.rows], original)
         self.assertEqual(renderer.side_totals, totals)
         self.assertGreater(max(r.depth_ratio for r in renderer.rows if r.side == 'bid'), .25)
         target = QtGui.QImage(renderer.size(), QtGui.QImage.Format_ARGB32_Premultiplied)
@@ -341,6 +347,49 @@ class HeatmapChecks(unittest.TestCase):
         self.assertTrue(renderer._dirty_pixels.isEmpty())
         self.assertLessEqual(renderer._animation_end, now)
         self.assertEqual(renderer._depth_brushes, brushes)
+        renderer.close()
+
+    def test_depth_is_confined_outside_prices_and_incomplete_sections_are_dashed(self):
+        source = snapshot(count=24)
+        sides = [tuple((level.price, level.quantity, level.notional, index < 2)
+                       for index, level in enumerate(side))
+                 for side in (source.bid_levels, source.ask_levels)]
+        source = replace(source, display_depth=OrderBookDepthView(.1, 1, *sides))
+        renderer = _PrismRenderer(orderbook_palette())
+        for width in (220, 360, 900):
+            with self.subTest(width=width):
+                renderer.configure(dict(self.widget.canvas._sent_config, heatmap=True, size=(width, 620)))
+                renderer.adopt(source)
+                renderer.prepare(source.generated_monotonic)
+                g = renderer.geometry
+                price_column = QtCore.QRectF(g['price_left'], 0, g['price_right']-g['price_left'], 620)
+                self.assertEqual(set(renderer._depth_paths), {'bid', 'ask'})
+                for area, solid, partial, bounds, _anchor, _width in renderer._depth_paths.values():
+                    self.assertFalse(bounds.intersects(price_column))
+                    self.assertFalse(area.boundingRect().intersects(price_column))
+                    self.assertFalse(solid.isEmpty())
+                    self.assertFalse(partial.isEmpty())
+                self.assertTrue(all(not row.size_text and not row.total_text for row in renderer.rows))
+        renderer.close()
+
+    def test_depth_updates_do_not_leave_old_contours_in_partial_repaints(self):
+        source = snapshot(count=24)
+        renderer = _PrismRenderer(orderbook_palette())
+        renderer.configure(dict(self.widget.canvas._sent_config, heatmap=True, motion=True))
+        target = QtGui.QImage(renderer.size(), QtGui.QImage.Format_ARGB32_Premultiplied)
+        for step, quantity in enumerate((2., 80., .1, 4.)):
+            now = source.generated_monotonic+step*.01
+            current = replace(source, sequence=step+1,
+                bid_levels=(replace(source.bid_levels[0], quantity=quantity, notional=quantity*source.bid_levels[0].price),
+                            *source.bid_levels[1:]))
+            renderer.adopt(current)
+            renderer.prepare(now)
+            renderer.paint(target, renderer._dirty_pixels, now)
+            renderer._dirty_pixels = QtGui.QRegion()
+            reference = QtGui.QImage(renderer.size(), QtGui.QImage.Format_ARGB32_Premultiplied)
+            renderer.paint(reference, QtGui.QRegion(renderer.rect()), now)
+            self.assertTrue(target == reference, f'Contour damage at update {step}')
+            self.assertLessEqual(renderer._animation_end, now)
         renderer.close()
 
 
