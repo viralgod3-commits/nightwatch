@@ -247,6 +247,96 @@ class _LocalLink(QtCore.QObject):
     def consumed(self, *args, **kwargs): pass
 
 
+class GroupingChecks(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+
+    def setUp(self):
+        with patch('nightwatch.orderbook.backend._OrderBookProcessLink', _LocalLink):
+            self.widget = OrderBookWidget(orderbook_palette())
+        self.widget.set_symbol('BTCUSDT', SimpleNamespace(tick_size=.1))
+        self.widget.resize(360, 600)
+        self.widget.show()
+        self.app.processEvents()
+
+    def tearDown(self):
+        self.widget.close()
+
+    def wheel(self, *, angle=0, pixels=0, at=1.):
+        event = QtGui.QWheelEvent(QtCore.QPointF(100, 100), QtCore.QPointF(100, 100),
+            QtCore.QPoint(0, pixels), QtCore.QPoint(0, angle),
+            QtCore.Qt.MouseButton.NoButton, QtCore.Qt.KeyboardModifier.NoModifier,
+            QtCore.Qt.ScrollPhase.NoScrollPhase, False)
+        with patch('nightwatch.orderbook.modern.time.monotonic', return_value=at):
+            self.widget.canvas.wheelEvent(event)
+        self.assertTrue(event.isAccepted())
+
+    def settle(self):
+        QtTest.QTest.qWait(self.widget._grouping_timer.interval()+10)
+        self.assertFalse(self.widget._grouping_timer.isActive())
+
+    def test_slow_high_resolution_wheel_retains_partial_notches_across_pauses(self):
+        w = self.widget
+        w.set_aggregation_multiplier(100)
+        for index in range(3):
+            self.wheel(angle=-30, at=1.+index*.8)
+            self.assertEqual(w.aggregation_multiplier(), 100)
+            self.assertFalse(w._grouping_timer.isActive())
+        self.wheel(angle=-30, at=3.4)
+        self.settle()
+        self.assertEqual(w.aggregation_multiplier(), 110)
+        self.wheel(angle=120, at=4.2)
+        self.settle()
+        self.assertEqual(w.aggregation_multiplier(), 100)
+
+    def test_trackpad_uses_pixel_distance_and_coalesces_one_depth_request(self):
+        w = self.widget
+        w.set_aggregation_multiplier(250)
+        requests = []
+        w.depth_view_requested.connect(lambda *args: requests.append(args))
+        # Both deltas are present on some trackpads; angle must not win.
+        for index in range(12):
+            self.wheel(angle=-120, pixels=-2, at=1.+index*.002)
+        self.assertEqual(requests, [])
+        self.settle()
+        self.assertEqual(w.aggregation_multiplier(), 280)
+        self.assertEqual(len(requests), 1)
+        self.assertEqual(requests[0][2], 280)
+        saved = w.presentation_state()
+        w.set_aggregation_multiplier(1)
+        w.restore_presentation_state(saved)
+        self.assertEqual(w.aggregation_multiplier(), 280)
+
+    def test_fast_wheel_accelerates_but_reversing_is_immediately_fine(self):
+        w = self.widget
+        w.set_aggregation_multiplier(1000)
+        self.wheel(angle=-120, at=1.)
+        self.wheel(angle=-120, at=1.02)
+        self.settle()
+        self.assertEqual(w.aggregation_multiplier(), 1700)
+        self.wheel(angle=120, at=1.04)
+        self.settle()
+        self.assertEqual(w.aggregation_multiplier(), 1600)
+        w.set_aggregation_multiplier(10000)
+        self.wheel(angle=-120, at=2.)
+        self.wheel(angle=120, at=2.02)
+        self.settle()
+        self.assertEqual(w.aggregation_multiplier(), 9900)
+
+    def test_explicit_selection_and_market_reset_cancel_pending_scroll(self):
+        w = self.widget
+        w.set_aggregation_multiplier(100)
+        self.wheel(angle=-120)
+        w.set_aggregation_multiplier(500)
+        self.settle()
+        self.assertEqual(w.aggregation_multiplier(), 500)
+        self.wheel(angle=-120, at=2.)
+        w.set_symbol('ETHUSDT', SimpleNamespace(tick_size=.01))
+        self.settle()
+        self.assertEqual(w.aggregation_multiplier(), 500)
+
+
 class HeatmapChecks(unittest.TestCase):
     @classmethod
     def setUpClass(cls):

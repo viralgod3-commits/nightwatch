@@ -20,7 +20,7 @@ _STATE_COLUMN_MAX_WIDTH = 120.0
 _PAIRED_ANALYTIC_WIDTH = 70.0
 # Responsive layouts introduce analytical lanes as width becomes available.
 from ..models import (
-    ORDER_FLOW_AGGREGATION_MULTIPLIERS,
+    ORDER_FLOW_AGGREGATION_MULTIPLIERS, ORDER_FLOW_AGGREGATION_PRESETS,
     OrderFlowDisplayLevel, OrderFlowPresentationFrame,
     OrderFlowSnapshot, OrderFlowTradePrint, order_flow_semantic_event,
 )
@@ -1348,7 +1348,7 @@ class OrderBookControlBar(QtWidgets.QFrame):
         self._aggregation_action_group.addAction(self.auto_action)
         self.auto_action.triggered.connect(lambda checked: self.auto_grouping_toggled.emit(True) if checked else None)
         self._aggregation_menu.addSeparator()
-        for multiplier in ORDER_FLOW_AGGREGATION_MULTIPLIERS:
+        for multiplier in ORDER_FLOW_AGGREGATION_PRESETS:
             value = int(multiplier)
             action = self._aggregation_menu.addAction(f'{value}× exchange tick')
             action.setCheckable(True)

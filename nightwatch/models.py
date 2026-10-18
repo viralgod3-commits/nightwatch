@@ -263,7 +263,11 @@ class DiagnosticsPort(Protocol):
     def error(self, category: str, message: str) -> None: ...
 
 
-ORDER_FLOW_AGGREGATION_MULTIPLIERS: tuple[int, ...] = (1, 2, 5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000, 10000)
+ORDER_FLOW_AGGREGATION_PRESETS: tuple[int, ...] = (1, 2, 5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000, 10000)
+# Fine, tick-aligned zoom steps; menus retain the compact quick-jump presets.
+ORDER_FLOW_AGGREGATION_MULTIPLIERS: tuple[int, ...] = (
+    *range(1, 100), *range(100, 1000, 10), *range(1000, 10001, 100),
+)
 BOOK_DEPTH_FRESH_SECONDS = 1.5
 BOOK_BBO_FRESH_SECONDS = 2.0
 

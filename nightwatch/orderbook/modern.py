@@ -17,7 +17,7 @@ from PySide6.QtCore import Qt, Signal
 
 from ..models import (
     BOOK_BBO_FRESH_SECONDS, BOOK_DEPTH_FRESH_SECONDS,
-    ORDER_FLOW_AGGREGATION_MULTIPLIERS, OrderFlowSnapshot,
+    ORDER_FLOW_AGGREGATION_MULTIPLIERS, ORDER_FLOW_AGGREGATION_PRESETS, OrderFlowSnapshot,
     OrderFlowPresentationFrame, book_data_is_fresh, safe_float,
 )
 from ..presentation import DisplayRefreshObserver, display_frame_interval_ms
@@ -918,9 +918,7 @@ class PrismCanvas(QtWidgets.QWidget):
         self._latency_samples = 0
         self._last_latency_ms = 0.
         self._last_painted_sequence = -1
-        self._wheel_angle_remainder = 0
-        self._wheel_pixel_remainder = 0
-        self._last_wheel_time = 0.
+        self._reset_wheel()
         from .backend import _OrderBookProcessLink
         self._process_link = _OrderBookProcessLink(_PrismProcess,
             {'theme': dict(self.theme), 'dpi': self.logicalDpiX()}, self)
@@ -1258,28 +1256,37 @@ class PrismCanvas(QtWidgets.QWidget):
 
     def _reset_wheel(self):
         self._wheel_angle_remainder = self._wheel_pixel_remainder = 0
-        self._last_wheel_time = 0.
+        self._wheel_direction = 0
+        self._wheel_input = ''
+        self._last_wheel_step_time = 0.
 
     def wheelEvent(self, event):
-        # Zoom-in means finer grouping. Accumulate high-resolution wheel and
-        # trackpad samples; one gesture must not jump to the largest multiplier.
+        # Prefer actual trackpad distance when Qt also supplies angle deltas.
+        # Retain small samples across slow pauses, but never across reversals.
         now = time.monotonic()
-        if event.phase() == Qt.ScrollPhase.ScrollBegin or now-self._last_wheel_time > .5:
-            self._reset_wheel()
-        self._last_wheel_time = now
         angle, pixels = event.angleDelta().y(), event.pixelDelta().y()
-        if angle:
-            if angle * self._wheel_angle_remainder < 0:
-                self._wheel_angle_remainder = 0
+        delta = pixels or angle
+        source = 'pixel' if pixels else 'angle'
+        if (event.phase() == Qt.ScrollPhase.ScrollBegin or (delta and
+                (source != self._wheel_input or delta*self._wheel_direction < 0))):
+            self._reset_wheel()
+        if delta:
+            self._wheel_direction = 1 if delta > 0 else -1
+            self._wheel_input = source
+        if pixels:
+            self._wheel_pixel_remainder += pixels
+            steps = math.trunc(self._wheel_pixel_remainder / 8)
+            self._wheel_pixel_remainder -= steps * 8
+        elif angle:
             self._wheel_angle_remainder += angle
             steps = math.trunc(self._wheel_angle_remainder / 120)
             self._wheel_angle_remainder -= steps * 120
-        elif pixels:
-            if pixels * self._wheel_pixel_remainder < 0:
-                self._wheel_pixel_remainder = 0
-            self._wheel_pixel_remainder += pixels
-            steps = math.trunc(self._wheel_pixel_remainder / 40)
-            self._wheel_pixel_remainder -= steps * 40
+            if steps:
+                elapsed = now-self._last_wheel_step_time
+                if self._last_wheel_step_time and elapsed > 0:
+                    # Accelerate deliberate fast wheel turns, not tiny samples.
+                    steps *= max(1, min(6, int(.18/elapsed)))
+                self._last_wheel_step_time = now
         else:
             steps = 0
         if steps:
@@ -1331,6 +1338,11 @@ class OrderBookWidget(QtWidgets.QWidget):
         self._last_depth_capacity = 0
         self._last_depth_view = None
         self.canvas = PrismCanvas(self.theme, self)
+        self._pending_grouping = None
+        self._grouping_timer = QtCore.QTimer(self)
+        self._grouping_timer.setSingleShot(True)
+        self._grouping_timer.setTimerType(Qt.TimerType.PreciseTimer)
+        self._grouping_timer.timeout.connect(self._flush_grouping)
         self.canvas.price_selected.connect(self.price_selected.emit)
         self.canvas.grouping_step_requested.connect(self._step_grouping)
         self.canvas.visible_depth_rows_changed.connect(self._publish_depth_capacity)
@@ -1364,7 +1376,7 @@ class OrderBookWidget(QtWidgets.QWidget):
         self._group_menu = QtWidgets.QMenu(self.grouping)
         self._group_actions = {}
         group = QtGui.QActionGroup(self._group_menu)
-        for multiplier in ORDER_FLOW_AGGREGATION_MULTIPLIERS:
+        for multiplier in ORDER_FLOW_AGGREGATION_PRESETS:
             action = self._group_menu.addAction(str(multiplier))
             action.setCheckable(True)
             group.addAction(action)
@@ -1501,17 +1513,40 @@ class OrderBookWidget(QtWidgets.QWidget):
 
     def _step_grouping(self, step):
         values = ORDER_FLOW_AGGREGATION_MULTIPLIERS
-        index = values.index(self.canvas.aggregation_multiplier)
+        current = self.canvas.aggregation_multiplier
+        index = values.index(self._pending_grouping if self._pending_grouping is not None else current)
         target = values[max(0, min(len(values)-1, index+step))]
-        if target != self.canvas.aggregation_multiplier:
-            self.set_aggregation_multiplier(target, emit=True)
+        if target == current:
+            self._cancel_grouping()
+            return
+        self._pending_grouping = target
+        # Apply only the latest scroll target once per display interval.
+        if not self._grouping_timer.isActive():
+            self._grouping_timer.start(display_frame_interval_ms(self.canvas))
+
+    def _cancel_grouping(self):
+        self._grouping_timer.stop()
+        self._pending_grouping = None
+
+    def _flush_grouping(self):
+        value = self._pending_grouping
+        self._cancel_grouping()
+        if value is not None:
+            self._apply_grouping(value, emit=True)
 
     def _reset_display(self):
         self.restore_presentation_state({}, emit=True)
         self.set_aggregation_multiplier(1, emit=True)
 
     def set_aggregation_multiplier(self, multiplier, *, emit=False):
+        self._cancel_grouping()
+        self.canvas._reset_wheel()
+        self._apply_grouping(multiplier, emit=emit)
+
+    def _apply_grouping(self, multiplier, *, emit):
         value = _multiplier(multiplier)
+        if value == self.canvas.aggregation_multiplier:
+            return
         self._set_option('aggregation_multiplier', value, emit=False)
         if emit:
             self.aggregation_changed.emit(value)
@@ -1546,6 +1581,8 @@ class OrderBookWidget(QtWidgets.QWidget):
             columns=self.column_preferences(), tape_enabled=self._tape_enabled, tape_mode=self._tape_mode)
 
     def restore_presentation_state(self, state, *, emit=False):
+        self._cancel_grouping()
+        self.canvas._reset_wheel()
         values = state if isinstance(state, dict) and state.get('prism_version') == 1 else {}
         self.canvas.values = 'quote' if values.get('values') == 'quote' else 'base'
         self.canvas.density = 'compact' if values.get('density') == 'compact' else 'comfortable'
@@ -1586,6 +1623,7 @@ class OrderBookWidget(QtWidgets.QWidget):
         changed = symbol != self.symbol
         self.symbol = self.canvas.symbol = symbol
         if changed:
+            self._cancel_grouping()
             self._latest_snapshot = None
             self.canvas.reset()
         if changed or rules is not None:
@@ -1700,6 +1738,8 @@ class OrderBookWidget(QtWidgets.QWidget):
 
     def hideEvent(self, event):
         super().hideEvent(event)
+        self._cancel_grouping()
+        self.canvas._reset_wheel()
         if self._tape is not None:
             self._tape.set_panel_active(False)
 
@@ -1712,6 +1752,7 @@ class OrderBookWidget(QtWidgets.QWidget):
         self.canvas.wheelEvent(event)
 
     def reset(self):
+        self._cancel_grouping()
         self._latest_snapshot = None
         self.canvas.reset()
         if self._tape is not None:
