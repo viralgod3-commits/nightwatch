@@ -120,6 +120,10 @@ def _trading_stylesheet(theme: dict[str, str]) -> str:
         QTabWidget#tradingAccountTabs QTabBar::tab:!selected {{ border: 0; border-bottom: 2px solid {t['border']}; }}
         QTabWidget#tradingAccountTabs QTabBar::tab:selected {{ color: {t['text']}; border: 0; border-bottom: 2px solid {t['cyan']}; }}
         QTabBar::tab:hover {{ color: {t['text']}; }}
+        QTabWidget#tradingDestinations QTabBar QToolButton,
+        QTabWidget#tradingAccountTabs QTabBar QToolButton {{
+            padding: 0; min-width: 0; min-height: 0; border-radius: 0;
+        }}
         QTabWidget#tradingAccountTabs::pane {{ border: 0; background: {t['panel']}; }}
         QTabWidget#tradingDestinations QTabBar {{ background: {t['panel']}; border: 0; }}
         QTabWidget#tradingDestinations QTabBar::tab {{
@@ -1826,6 +1830,7 @@ class OrderPanel(QtWidgets.QWidget):
         self._layout_sync_timer.start(0)
 
     def _sync_field_widths(self) -> None:
+        self.conditional_button.setMinimumWidth(self.conditional_button.sizeHint().width())
         available = self._field_rows["amount"].contentsRect().width()
         all_size_modes = (*self.OPEN_SIZE_MODES, *self.REDUCE_SIZE_MODES)
         widest_mode = max((self.size_mode.fontMetrics().horizontalAdvance(label)
@@ -3871,7 +3876,7 @@ class PositionDeskDetails(QtWidgets.QFrame):
         risk_grid.setHorizontalSpacing(10)
         risk_grid.setVerticalSpacing(6)
         for column, (key, text) in enumerate((("liquidation", "Liq. price"), ("distance", "Distance"), ("margin", "Initial margin"))):
-            cap = ElidedLabel(text)
+            cap = QtWidgets.QLabel(text)
             cap.setObjectName("accountCardDetail")
             set_text_role(cap, TextRole.UI_CAPTION)
             value = ElidedLabel("—")
@@ -4323,6 +4328,8 @@ class TradingWorkspace(QtWidgets.QWidget):
         set_text_role(self.main_tabs.tabBar(), TextRole.UI_CONTROL)
         self.main_tabs.addTab(self.ticket, "")
         self.main_tabs.addTab(self.account_frame, "")
+        self.main_tabs.tabBar().setAccessibleTabName(0, "Trade")
+        self.main_tabs.tabBar().setAccessibleTabName(1, "Positions")
         layout.addWidget(self.main_tabs)
 
         self.refresh_button = QtWidgets.QPushButton()
