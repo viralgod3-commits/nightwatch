@@ -57,6 +57,11 @@ def _trading_stylesheet(theme: dict[str, str]) -> str:
         color = QtGui.QColor(t[key])
         return f"rgba({color.red()}, {color.green()}, {color.blue()}, {alpha})"
 
+    # Execution actions use solid theme colors with legible text in both modes.
+    action_text = {key: max(("#101820", "#FFFFFF"),
+                           key=lambda color: _contrast_ratio_hex(color, t[key]))
+                   for key in ("green", "red")}
+
     return f"""
         QWidget#responsiveOrderTicket, QWidget#tradingWorkspace,
         QWidget#accountActivityPanel, QWidget#positionDeskBody,
@@ -75,22 +80,22 @@ def _trading_stylesheet(theme: dict[str, str]) -> str:
         QFrame#tradingMarginRow {{ background: transparent; border: 0; }}
         QLineEdit, QComboBox, QDoubleSpinBox {{
             background: {t['control']}; color: {t['text']}; border: 1px solid {t['control_border']};
-            border-radius: 4px; min-width: 0; min-height: 0; padding: 4px 8px;
+            border-radius: 5px; min-width: 0; min-height: 0; padding: 5px 10px;
             selection-background-color: {t['control_hover']};
         }}
         QLineEdit:hover, QComboBox:hover, QDoubleSpinBox:hover {{ border-color: {t['muted']}; }}
         QLineEdit:focus, QComboBox:focus, QDoubleSpinBox:focus {{ border-color: {t['cyan']}; background: {t['panel2']}; }}
         QLineEdit:disabled, QComboBox:disabled {{ color: {t['muted']}; border-color: {t['border']}; }}
-        QFrame#ticketInputGroup {{ background: {t['control']}; border: 1px solid {t['control_border']}; border-radius: 4px; }}
+        QFrame#ticketInputGroup {{ background: {t['control']}; border: 1px solid {t['control_border']}; border-radius: 5px; }}
         QFrame#ticketInputGroup:hover {{ border-color: {t['muted']}; }}
         QFrame#ticketInputGroup[focused="true"] {{ border-color: {t['cyan']}; }}
         QFrame#ticketInputGroup QLineEdit, QFrame#ticketInputGroup QComboBox {{ background: transparent; border: 0; border-radius: 0; }}
-        QFrame#ticketInputGroup QComboBox {{ border-left: 1px solid {t['control_border']}; }}
+        QFrame#ticketInputGroup QComboBox {{ color: {t['muted']}; border-left: 1px solid {t['control_border']}; }}
         QToolButton#tradeMarkButton {{ background: transparent; color: {t['muted']}; border: 0; border-left: 1px solid {t['control_border']}; border-radius: 0; padding: 0 6px; }}
         QToolButton#tradeMarkButton:hover, QToolButton#tradeMarkButton:focus {{ color: {t['text']}; background: {t['control_hover']}; }}
         QToolButton#tradeMarkButton:disabled {{ color: {t['muted']}; background: transparent; }}
-        QComboBox {{ padding-left: 8px; padding-right: 24px; }}
-        QWidget#responsiveOrderTicket QComboBox {{ padding-right: 24px; }}
+        QComboBox {{ padding-left: 10px; padding-right: 10px; }}
+        QWidget#responsiveOrderTicket QComboBox {{ padding-right: 10px; }}
         QComboBox::drop-down {{ border: 0; width: 0; }}
         QComboBox::down-arrow, QToolButton::menu-indicator, QPushButton::menu-indicator {{ image: none; width: 0; height: 0; }}
         QDoubleSpinBox::up-arrow, QDoubleSpinBox::down-arrow {{ image: none; width: 0; height: 0; }}
@@ -104,20 +109,30 @@ def _trading_stylesheet(theme: dict[str, str]) -> str:
         QPushButton:pressed, QToolButton:pressed {{ background: {t['panel2']}; }}
         QPushButton:focus, QToolButton:focus {{ border-color: {t['cyan']}; }}
         QPushButton:disabled, QToolButton:disabled {{ color: {t['muted']}; border-color: {t['border']}; background: {t['control']}; }}
-        QToolButton#tradeSettingsMini {{ border: 0; background: transparent; padding: 0; min-height: 0; }}
+        QToolButton#tradeSettingsMini {{ border: 0; background: transparent; padding: 0; margin: 0; min-height: 0; }}
+        QToolButton#tradeSettingsMini:hover, QToolButton#tradeSettingsMini:focus {{ background: {t['control_hover']}; }}
+        QComboBox#leverageDropdown, QComboBox#timeInForceCycle, QPushButton#protectionButton {{
+            background: transparent; color: {t['muted']}; border: 1px solid {t['border']};
+            border-radius: 4px; padding: 3px 8px;
+        }}
+        QComboBox#leverageDropdown {{ color: {t['text']}; }}
+        QComboBox#leverageDropdown:hover, QComboBox#timeInForceCycle:hover,
+        QPushButton#protectionButton:hover {{ background: {t['control_hover']}; color: {t['text']}; }}
+        QLabel#ticketAvailableBalance, QLabel#ticketEstimateValue {{ color: {t['text']}; }}
         QPushButton#buySideButton:disabled, QPushButton#sellSideButton:disabled {{ color: {t['muted']}; border-color: {t['border']}; background: {t['control']}; }}
         QPushButton#protectionButton[active="true"] {{ color: {t['cyan']}; border-color: {t['cyan']}; }}
         QPushButton#portfolioSyncButton {{ background: transparent; border: 0; padding: 0; min-width: 28px; max-width: 28px; min-height: 26px; }}
         QPushButton#portfolioSyncButton:hover, QPushButton#portfolioSyncButton:focus {{ background: {t['control_hover']}; }}
-        QCheckBox#ticketReduceOnly {{ background: transparent; color: {t['text']}; spacing: 8px; padding: 3px 0; }}
-        QCheckBox#ticketReduceOnly::indicator {{ width: 15px; height: 15px; background: {t['control']}; border: 1px solid {t['control_border']}; border-radius: 3px; }}
+        QCheckBox#ticketReduceOnly {{ background: transparent; color: {t['muted']}; spacing: 7px; padding: 3px 0; }}
+        QCheckBox#ticketReduceOnly:checked {{ color: {t['text']}; }}
+        QCheckBox#ticketReduceOnly::indicator {{ width: 13px; height: 13px; background: {t['control']}; border: 1px solid {t['control_border']}; border-radius: 3px; }}
         QCheckBox#ticketReduceOnly::indicator:checked {{ background: {t['cyan']}; border-color: {t['cyan']}; }}
         QCheckBox#ticketReduceOnly::indicator:focus {{ border-color: {t['text']}; }}
         QTabWidget#tradingAccountTabs QTabBar::tab {{
             background: transparent; color: {t['muted']}; border: 0;
-            border-bottom: 2px solid {t['border']}; padding: 6px 8px;
+            border-bottom: 2px solid transparent; padding: 7px 8px;
         }}
-        QTabWidget#tradingAccountTabs QTabBar::tab:!selected {{ border: 0; border-bottom: 2px solid {t['border']}; }}
+        QTabWidget#tradingAccountTabs QTabBar::tab:!selected {{ border: 0; border-bottom: 2px solid transparent; }}
         QTabWidget#tradingAccountTabs QTabBar::tab:selected {{ color: {t['text']}; border: 0; border-bottom: 2px solid {t['cyan']}; }}
         QTabBar::tab:hover {{ color: {t['text']}; }}
         QTabWidget#tradingDestinations QTabBar QToolButton,
@@ -128,19 +143,19 @@ def _trading_stylesheet(theme: dict[str, str]) -> str:
         QTabWidget#tradingDestinations QTabBar {{ background: {t['panel']}; border: 0; }}
         QTabWidget#tradingDestinations QTabBar::tab {{
             background: transparent; color: {t['muted']}; border: 0;
-            border-radius: 6px; margin: 4px 2px; padding: 6px 10px;
-            min-width: 20px; min-height: 22px;
+            border-bottom: 2px solid transparent; border-radius: 0; margin: 0;
+            padding: 8px 13px; min-width: 20px; min-height: 18px;
         }}
         QTabWidget#tradingDestinations QTabBar::tab:selected {{
-            color: {t['text']}; background: {t['control']};
+            color: {t['text']}; background: transparent;
             border: 0; border-bottom: 2px solid {t['cyan']};
         }}
         QTabWidget#tradingDestinations QTabBar::tab:hover {{ background: {t['control_hover']}; }}
-        QTabWidget#tradingDestinations::pane {{ border: 0; background: {t['panel']}; }}
+        QTabWidget#tradingDestinations::pane {{ border: 0; border-top: 1px solid {t['border']}; background: {t['panel']}; }}
         QWidget#tradingDestinations > QStackedWidget {{ background: {t['panel']}; border: 0; }}
-        QSlider#ticketAllocation::groove:horizontal {{ height: 4px; background: {t['border']}; border-radius: 2px; }}
+        QSlider#ticketAllocation::groove:horizontal {{ height: 3px; background: {t['border']}; border-radius: 1px; }}
         QSlider#ticketAllocation::sub-page:horizontal {{ background: {t['cyan']}; border-radius: 2px; }}
-        QSlider#ticketAllocation::handle:horizontal {{ width: 12px; height: 12px; margin: -5px 0; background: {t['text']}; border: 2px solid {t['panel']}; border-radius: 7px; }}
+        QSlider#ticketAllocation::handle:horizontal {{ width: 10px; height: 10px; margin: -5px 0; background: {t['text']}; border: 2px solid {t['panel']}; border-radius: 6px; }}
         QSlider#ticketAllocation:focus::handle:horizontal {{ border-color: {t['cyan']}; }}
         QScrollBar:vertical {{ background: transparent; width: 6px; margin: 0; border: 0; }}
         QScrollBar:horizontal {{ background: transparent; height: 6px; margin: 0; border: 0; }}
@@ -154,7 +169,7 @@ def _trading_stylesheet(theme: dict[str, str]) -> str:
         QLabel#accountCardRisk[risk="warning"], QLabel#accountOrderStatus[state="partial"] {{ color: {t['amber_text']}; }}
         QLabel#accountCardRisk[risk="critical"] {{ color: {t['red_text']}; }}
         QFrame#positionDeskRow, QFrame#workingOrderRow {{ background: {t['panel2']}; border: 1px solid {t['border']}; border-radius: 6px; }}
-        QFrame#positionDeskRow[selected="true"], QFrame#workingOrderRow[selected="true"] {{ background: {t['control_hover']}; border-color: {t['cyan']}; }}
+        QFrame#positionDeskRow[selected="true"], QFrame#workingOrderRow[selected="true"] {{ background: {t['panel2']}; border-color: {t['muted']}; }}
         QFrame#positionDeskDetails {{ background: transparent; border: 0; border-top: 1px solid {t['border']}; border-radius: 0; }}
         QFrame#deskRiskMetrics {{ background: transparent; border: 0; border-top: 1px solid {t['border']}; }}
         QListWidget#tradingCardList, QListView#tradingFillList {{ border: 0; background: {t['panel']}; padding: 0 6px 0 0; }}
@@ -169,23 +184,24 @@ def _trading_stylesheet(theme: dict[str, str]) -> str:
         QProgressBar#orderFillProgress::chunk {{ background: {t['cyan']}; }}
         QPushButton#dangerButton {{ color: {t['red_text']}; }}
         QPushButton#dangerButton:hover {{ border-color: {t['red']}; }}
-        QWidget#ticketTypeStrip {{ background: {t['control']}; border: 1px solid {t['control_border']}; border-radius: 7px; }}
+        QWidget#ticketTypeStrip {{ background: transparent; border: 0; border-bottom: 1px solid {t['border']}; }}
         QPushButton#ticketOrderType, QToolButton#ticketConditionalType {{
             color: {t['muted']}; background: transparent; border: 0;
-            border-radius: 6px; padding: 5px 8px;
+            border-bottom: 2px solid transparent; border-radius: 0; padding: 5px 8px;
         }}
         QPushButton#ticketOrderType:checked, QToolButton#ticketConditionalType[active="true"] {{
-            color: {t['text']}; background: {t['control_hover']}; border: 1px solid {t['control_border']};
+            color: {t['text']}; background: transparent; border: 0; border-bottom: 2px solid {t['cyan']};
         }}
         QPushButton#ticketOrderType:hover, QToolButton#ticketConditionalType:hover {{ color: {t['text']}; }}
         QFrame#ticketReview {{ background: transparent; border: 0; }}
-        QFrame#ticketEstimateBox {{ background: {t['control']}; border: 1px solid {t['border']}; border-radius: 6px; }}
+        QFrame#ticketEstimateBox {{ background: transparent; border: 0; border-top: 1px solid {t['border']}; border-radius: 0; }}
         QFrame#ticketExecutionOptions {{ background: transparent; border: 0; }}
-        QWidget#ticketSubmitFooter {{ background: {t['panel']}; border: 0; border-top: 1px solid {t['border']}; }}
-        QPushButton#buySideButton {{ color: {t['green_text']}; border-color: {tint('green', 75)}; background: {tint('green', 42)}; border-radius: 7px; }}
-        QPushButton#sellSideButton {{ color: {t['red_text']}; border-color: {tint('red', 75)}; background: {tint('red', 42)}; border-radius: 7px; }}
-        QPushButton#buySideButton:hover, QPushButton#buySideButton:pressed {{ color: {t['text']}; background: {tint('green', 72)}; }}
-        QPushButton#sellSideButton:hover, QPushButton#sellSideButton:pressed {{ color: {t['text']}; background: {tint('red', 72)}; }}
+        QWidget#ticketSubmitFooter {{ background: {t['panel']}; border: 0; }}
+        QPushButton#buySideButton {{ color: {action_text['green']}; border: 1px solid {t['green']}; background: {t['green']}; border-radius: 5px; }}
+        QPushButton#sellSideButton {{ color: {action_text['red']}; border: 1px solid {t['red']}; background: {t['red']}; border-radius: 5px; }}
+        QPushButton#buySideButton:hover, QPushButton#buySideButton:focus {{ border: 2px solid {action_text['green']}; color: {action_text['green']}; background: {t['green']}; }}
+        QPushButton#sellSideButton:hover, QPushButton#sellSideButton:focus {{ border: 2px solid {action_text['red']}; color: {action_text['red']}; background: {t['red']}; }}
+        QPushButton#buySideButton:pressed, QPushButton#sellSideButton:pressed {{ padding-top: 6px; padding-bottom: 2px; }}
     """
 
 
@@ -919,7 +935,7 @@ class TicketPriceEdit(QtWidgets.QLineEdit):
             decoration.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
             set_text_role(decoration, TextRole.UI_CAPTION)
             decoration.installEventFilter(self)
-        self.setAlignment(Qt.AlignmentFlag.AlignRight)
+        self.setAlignment(Qt.AlignmentFlag.AlignLeft)
         self._sync_unit()
 
     def set_quote_asset(self, asset: str) -> None:
@@ -1059,7 +1075,7 @@ class TicketScrollArea(QtWidgets.QScrollArea):
 
 
 class CompactTradeComboBox(QtWidgets.QComboBox):
-    """A compact native combo with the platform-rendered dropdown indicator."""
+    """Keyboard-friendly compact selectors without decorative arrows."""
 
     def __init__(self, parent: QtWidgets.QWidget | None = None) -> None:
         super().__init__(parent)
@@ -1079,16 +1095,6 @@ class CompactTradeComboBox(QtWidgets.QComboBox):
             super().wheelEvent(event)
         else:
             event.ignore()
-
-    def paintEvent(self, event: QtGui.QPaintEvent) -> None:
-        super().paintEvent(event)
-        # The shell suppresses stylesheet arrows. Paint a native primitive so
-        # leverage, units and trigger source still read as selectable controls.
-        painter = QtGui.QPainter(self)
-        _paint_trade_arrow(self, painter, QtCore.QRect(self.width() - 21,
-                                                     (self.height() - 12) // 2, 12, 12))
-
-
 
 class LeverageComboBox(CompactTradeComboBox):
     """Common leverage presets with a transient typed custom-value popup."""
@@ -1370,7 +1376,7 @@ class OrderPanel(QtWidgets.QWidget):
         self._sync_position_desk()
 
     def _build_ticket(self) -> None:
-        """A responsive entry form with a persistent pair of execution actions."""
+        """One compact reading flow, with execution actions next to the form."""
         def label(text, name="ticketFieldCaption", *, elided=False):
             widget = ElidedLabel(text) if elided else QtWidgets.QLabel(text)
             widget.setObjectName(name)
@@ -1405,12 +1411,12 @@ class OrderPanel(QtWidgets.QWidget):
         self.ticket_scroll.setObjectName("deskTicketScroll")
         self.ticket_scroll.setWidgetResizable(True)
         self.ticket_scroll.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding,
-                                         QtWidgets.QSizePolicy.Policy.Expanding)
+                                         QtWidgets.QSizePolicy.Policy.Preferred)
         self.ticket_scroll.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
         self.ticket_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.ticket_scroll.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.ticket_scroll.setMinimumSize(0, 24)
-        self._ticket_body, self._desk_layout = frame("responsiveOrderTicket", (14, 14, 14, 14), 12)
+        self._ticket_body, self._desk_layout = frame("responsiveOrderTicket", (12, 14, 12, 12), 12)
         content = self._desk_layout
         content.setAlignment(Qt.AlignmentFlag.AlignTop)
         self.ticket_scroll.setWidget(self._ticket_body)
@@ -1422,9 +1428,9 @@ class OrderPanel(QtWidgets.QWidget):
         header.setContentsMargins(0, 0, 0, 0)
         header.setSpacing(8)
         self.account_summary = ElidedLabel("Avail. — USDT")
-        self.account_summary.setObjectName("ticketContext")
+        self.account_summary.setObjectName("ticketAvailableBalance")
         self.account_summary.setAccessibleName("Available margin")
-        set_text_role(self.account_summary, TextRole.UI_CAPTION)
+        set_text_role(self.account_summary, TextRole.UI_CONTROL)
         header.addWidget(self.account_summary, 1)
         self.leverage_field = QtWidgets.QWidget()
         self.leverage_field.setObjectName("tradingInlineField")
@@ -1499,14 +1505,14 @@ class OrderPanel(QtWidgets.QWidget):
         self._sections_body.setObjectName("tradingInlineField")
         self._ticket_sections = QtWidgets.QVBoxLayout(self._sections_body)
         self._ticket_sections.setContentsMargins(0, 0, 0, 0)
-        self._ticket_sections.setSpacing(12)
+        self._ticket_sections.setSpacing(10)
         content.addWidget(self._sections_body)
         self._entry_card, entry = frame("tradingPanelCard", spacing=12)
         self._order_card, self._order_card_layout = frame("tradingPanelCard")
         self._order_form = QtWidgets.QGridLayout()
         self._order_form.setContentsMargins(0, 0, 0, 0)
         self._order_form.setHorizontalSpacing(10)
-        self._order_form.setVerticalSpacing(10)
+        self._order_form.setVerticalSpacing(8)
         self._order_form.setColumnStretch(0, 1)
         self._order_form.setColumnStretch(1, 1)
         self._order_card_layout.addLayout(self._order_form)
@@ -1515,7 +1521,7 @@ class OrderPanel(QtWidgets.QWidget):
         self.size_mode.setAccessibleName("Amount unit or sizing mode")
         self.quantity_edit = QtWidgets.QLineEdit()
         self.quantity_edit.setPlaceholderText("0")
-        self.quantity_edit.setAlignment(Qt.AlignmentFlag.AlignRight)
+        self.quantity_edit.setAlignment(Qt.AlignmentFlag.AlignLeft)
         self.price_edit = TicketPriceEdit("Limit price")
         self.trigger_edit = TicketPriceEdit("Trigger price")
         self.activation_edit = TicketPriceEdit("Activation price")
@@ -1523,6 +1529,7 @@ class OrderPanel(QtWidgets.QWidget):
         for editor in (self.quantity_edit, self.price_edit, self.trigger_edit, self.activation_edit):
             set_text_role(editor, TextRole.TRADING_DESK_VALUE)
             editor.setMinimumWidth(0)
+        set_text_role(self.quantity_edit, TextRole.MARKET_VALUE_LARGE)
         self.callback_rate = TradingRateSpinBox()
         self.callback_rate.setRange(0.1, 10)
         self.callback_rate.setDecimals(1)
@@ -1556,10 +1563,18 @@ class OrderPanel(QtWidgets.QWidget):
             field, box = frame("ticketField", spacing=5)
             field.setParent(self._order_card)
             caption_label = label(caption)
-            box.addWidget(caption_label)
             if name == "amount":
                 self._amount_caption = caption_label
-            box.addWidget(control)
+            if name == "source":
+                source_row = QtWidgets.QHBoxLayout()
+                source_row.setContentsMargins(0, 0, 0, 0)
+                source_row.setSpacing(8)
+                source_row.addWidget(caption_label, 1)
+                source_row.addWidget(control, 1)
+                box.addLayout(source_row)
+            else:
+                box.addWidget(caption_label)
+                box.addWidget(control)
             self._field_rows[name] = field
         entry.addWidget(self._field_rows["amount"])
         self.preset_section, preset = frame("ticketField", spacing=4)
@@ -1601,12 +1616,22 @@ class OrderPanel(QtWidgets.QWidget):
         options.addWidget(self.reduce_only, 0, 0)
         options.addWidget(self._execution_options, 0, 1)
         sizing.addWidget(self.options_bar)
-        self._estimate_box, estimates = frame("ticketEstimateBox", (10, 8, 10, 8), 6)
-        self.order_value = label("Order value —", "ticketContext", elided=True)
-        self.order_cost = label("Margin —", "ticketContext", elided=True)
+        self._estimate_box, estimates = frame("ticketEstimateBox", (0, 12, 0, 0), 0)
+        estimate_grid = QtWidgets.QGridLayout()
+        estimate_grid.setContentsMargins(0, 0, 0, 0)
+        estimate_grid.setHorizontalSpacing(12)
+        estimate_grid.setVerticalSpacing(5)
+        self.order_value = label("—", "ticketEstimateValue", elided=True)
+        self.order_value.setAccessibleName("Estimated order value")
+        self.order_cost = label("—", "ticketEstimateValue", elided=True)
         self.order_cost.setAccessibleName("Estimated order cost")
-        estimates.addWidget(self.order_value)
-        estimates.addWidget(self.order_cost)
+        for column, (caption, value) in enumerate((("Order value", self.order_value),
+                                                  ("Est. margin", self.order_cost))):
+            estimate_grid.addWidget(label(caption), 0, column)
+            set_text_role(value, TextRole.TABLE_VALUE)
+            estimate_grid.addWidget(value, 1, column)
+            estimate_grid.setColumnStretch(column, 1)
+        estimates.addLayout(estimate_grid)
         sizing.addWidget(self._estimate_box)
         self.feedback_box, feedback = frame("ticketFeedback", (10, 8, 10, 8), 6)
         self.account_problem_label = label("", "ticketAccountProblem")
@@ -1630,13 +1655,13 @@ class OrderPanel(QtWidgets.QWidget):
         self._submit_footer = QtWidgets.QWidget()
         self._submit_footer.setObjectName("ticketSubmitFooter")
         footer = QtWidgets.QHBoxLayout(self._submit_footer)
-        footer.setContentsMargins(14, 10, 14, 12)
+        footer.setContentsMargins(12, 0, 12, 12)
         footer.setSpacing(0)
         self.side_selector = QtWidgets.QWidget()
         self.side_selector.setObjectName("tradingInlineField")
         side = QtWidgets.QHBoxLayout(self.side_selector)
         side.setContentsMargins(0, 0, 0, 0)
-        side.setSpacing(10)
+        side.setSpacing(8)
         self.buy_button = QtWidgets.QPushButton("Buy / Long")
         self.sell_button = QtWidgets.QPushButton("Sell / Short")
         self.buy_button.setObjectName("buySideButton")
@@ -1653,14 +1678,14 @@ class OrderPanel(QtWidgets.QWidget):
         self.buy_button.setChecked(True)
         footer.addWidget(self.side_selector, 1)
         root.addWidget(self._submit_footer, 0)
-        root.setStretch(0, 1)
+        root.addStretch(1)
         self._ticket_body.installEventFilter(self)
         self._order_card.installEventFilter(self)
         self.ticket_scroll.viewport().installEventFilter(self)
         self._layout_sync_timer = QTimer(self)
         self._layout_sync_timer.setSingleShot(True)
         self._layout_sync_timer.timeout.connect(self._sync_scroll_height)
-        focus_order = (self.leverage, self.quick_settings_button,
+        focus_order = (self.quick_settings_button, self.leverage,
                        *self.order_type_buttons.values(), self.conditional_button,
                        self.trigger_edit, self.trigger_mark_button, self.price_edit,
                        self.price_mark_button, self.activation_edit, self.activation_mark_button,
@@ -1790,6 +1815,11 @@ class OrderPanel(QtWidgets.QWidget):
         self._sync_field_widths()
         self._reflow_order_fields(self._active_order_fields)
         self._desk_layout.activate()
+        # Cap only the scroll viewport, so spare panel height stays below the
+        # ticket. In short panels the form scrolls and both actions stay visible.
+        height = max(24, self._desk_layout.sizeHint().height())
+        if self.ticket_scroll.maximumHeight() != height:
+            self.ticket_scroll.setMaximumHeight(height)
         self._publish_compact_minimum_height()
 
     def eventFilter(self, watched: QtCore.QObject, event: QtCore.QEvent) -> bool:
@@ -1810,7 +1840,7 @@ class OrderPanel(QtWidgets.QWidget):
                     self.working_type, self.callback_rate, self.time_in_force,
                     self.leverage, self.protection_button, self.price_mark_button,
                     self.trigger_mark_button, self.activation_mark_button)
-        height = max(36, max(widget.fontMetrics().height() for widget in controls) + 16)
+        height = max(40, max(widget.fontMetrics().height() for widget in controls) + 16)
         for widget in controls:
             grouped = isinstance(widget.parentWidget(), TicketInputGroup)
             widget.setFixedHeight(height - 2 if grouped else height)
@@ -1818,9 +1848,11 @@ class OrderPanel(QtWidgets.QWidget):
         for button in (self.price_mark_button, self.trigger_mark_button, self.activation_mark_button):
             button.setFixedWidth(button.fontMetrics().horizontalAdvance("Mark") + 16)
         for button in (self.buy_button, self.sell_button):
-            button.setFixedHeight(height + 8)
+            button.setFixedHeight(height + 6)
         for button in (*self.order_type_buttons.values(), self.conditional_button):
-            button.setFixedHeight(height)
+            button.setFixedHeight(max(34, button.fontMetrics().height() + 16))
+        for control in (self.leverage, self.time_in_force, self.protection_button):
+            control.setFixedHeight(max(28, control.fontMetrics().height() + 12))
         self.margin_bar.sync_geometry()
         self._sync_field_widths()
         self._update_submit_text()
@@ -1832,14 +1864,14 @@ class OrderPanel(QtWidgets.QWidget):
     def _sync_field_widths(self) -> None:
         self.conditional_button.setMinimumWidth(self.conditional_button.sizeHint().width())
         available = self._field_rows["amount"].contentsRect().width()
-        all_size_modes = (*self.OPEN_SIZE_MODES, *self.REDUCE_SIZE_MODES)
-        widest_mode = max((self.size_mode.fontMetrics().horizontalAdvance(label)
-                           for label, _value in all_size_modes), default=60)
-        desired = widest_mode + 44
+        base = self.symbol.removesuffix(self.rules.quote_asset)
+        widest_mode = max(self.size_mode.fontMetrics().horizontalAdvance(text)
+                          for text in (base, self.rules.quote_asset, "Risk %", "Position %"))
+        desired = widest_mode + 20
         self.size_mode.setFixedWidth(max(60, min(desired, max(60, available // 2))))
-        self.leverage.setFixedWidth(self.leverage.fontMetrics().horizontalAdvance("125×") + 44)
-        self.time_in_force.setFixedWidth(self.time_in_force.fontMetrics().horizontalAdvance("GTX") + 44)
-        self.protection_button.setFixedWidth(self.protection_button.fontMetrics().horizontalAdvance(self.protection_button.text()) + 24)
+        self.leverage.setFixedWidth(self.leverage.fontMetrics().horizontalAdvance("125×") + 24)
+        self.time_in_force.setFixedWidth(self.time_in_force.fontMetrics().horizontalAdvance("GTX") + 20)
+        self.protection_button.setFixedWidth(self.protection_button.fontMetrics().horizontalAdvance(self.protection_button.text()) + 20)
         available = self._sizing_card.contentsRect().width()
         options = self.options_bar.layout()
         required = self.reduce_only.sizeHint().width() + self._execution_options.sizeHint().width() + 8
@@ -2467,11 +2499,11 @@ class OrderPanel(QtWidgets.QWidget):
         reference = self._entry_reference(order_type)
         notional = safe_float(quantity) * reference
         leverage = self.gateway.current_leverage(self.symbol)
-        value = (f"Order value ≈ {human_number(notional)} {self.rules.quote_asset}"
-                 if quantity and reference > 0 else "Order value —")
-        cost = (f"Margin ≈ {human_number(notional / leverage)} {self.rules.margin_asset}"
+        value = (f"≈ {human_number(notional)} {self.rules.quote_asset}"
+                 if quantity and reference > 0 else "—")
+        cost = (f"≈ {human_number(notional / leverage)} {self.rules.margin_asset}"
                 if quantity and reference > 0 and leverage > 0 and not self.reduce_only.isChecked()
-                else "Margin —")
+                else "—")
         _set_text_if_changed(self.order_value, value)
         _set_text_if_changed(self.order_cost, cost)
         self._sync_position_desk(quantity)
@@ -4330,6 +4362,14 @@ class TradingWorkspace(QtWidgets.QWidget):
         self.main_tabs.addTab(self.account_frame, "")
         self.main_tabs.tabBar().setAccessibleTabName(0, "Trade")
         self.main_tabs.tabBar().setAccessibleTabName(1, "Positions")
+        self.ticket._ticket_header.layout().removeWidget(self.ticket.quick_settings_button)
+        tab_actions = QtWidgets.QWidget()
+        tab_actions.setObjectName("tradingInlineField")
+        tab_action_layout = QtWidgets.QHBoxLayout(tab_actions)
+        tab_action_layout.setContentsMargins(0, 4, 8, 4)
+        tab_action_layout.setSpacing(0)
+        tab_action_layout.addWidget(self.ticket.quick_settings_button)
+        self.main_tabs.setCornerWidget(tab_actions, Qt.Corner.TopRightCorner)
         layout.addWidget(self.main_tabs)
 
         self.refresh_button = QtWidgets.QPushButton()
