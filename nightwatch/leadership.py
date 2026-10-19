@@ -3931,7 +3931,7 @@ class SectorOverviewWidget(QtWidgets.QWidget):
             cell(row, 0, sector, _sector_overview_sector_color(sector, self.theme, for_text=True))
             for column, timeframe in enumerate(("15m", "1h", "4h", "1d"), 1):
                 value = performances[timeframe].get(sector)
-                    color = (self.theme.get("green", "#22D27A") if value >= 0 else self.theme.get("red", "#FF4F61")) if _sector_overview_finite(value) else None
+                color = (self.theme.get("green", "#22D27A") if value >= 0 else self.theme.get("red", "#FF4F61")) if _sector_overview_finite(value) else None
                 cell(row, column, _sector_overview_pct(value, 1), color)
             current = sector_metrics.get("volume_share")
             previous = sector_metrics.get("previous_volume_share")
@@ -4015,7 +4015,7 @@ class SectorOverviewWidget(QtWidgets.QWidget):
         if hasattr(self, "detail"):
             self.detail.theme = palette
         green = palette.get("green", "#22D27A")
-    red = palette.get("red", "#FF4F61")
+        red = palette.get("red", "#FF4F61")
         self.setStyleSheet(f"""
             QWidget#sectorOverview, QScrollArea#sectorScroll, QWidget#sectorBody {{ background: {palette['bg']}; color: {palette['text']}; border: 0; }}
             QFrame#sectorPanel, QFrame#sectorStatCard, QFrame#sectorTile {{ background: {palette['panel']}; border: 1px solid {palette['control_border']}; border-radius: 6px; }}
