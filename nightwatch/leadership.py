@@ -829,7 +829,7 @@ class LeadershipTimelineWidget(QtWidgets.QWidget):
                     elif column == 10:
                         valid_spark = [value for value in spark if value is not None and math.isfinite(value)]
                         rising = len(valid_spark) >= 2 and valid_spark[-1] >= valid_spark[0]
-                        detail.update(role="spark", spark=spark, foreground=self.theme.get("green", "#22D27A") if rising else self.theme.get("red", "#FF7A85"))
+                        detail.update(role="spark", spark=spark, foreground=self.theme.get("green", "#22D27A") if rising else self.theme.get("red", "#FF4F61"))
                         item.setToolTip("Last 24 completed hourly closes. Gaps remain gaps.")
                     elif column in _LEADER_CONTEXT_COLUMNS:
                         _caption, key, unit, tooltip = _LEADER_CONTEXT_COLUMNS[column]
@@ -1275,7 +1275,7 @@ def _heat_color(value: float | None, theme: dict[str, str]) -> tuple[str, str]:
     accent = (
         theme.get("green", "#22D27A")
         if value > 0.0
-        else theme.get("red", "#FF7A85")
+        else theme.get("red", "#FF4F61")
     )
 
 
@@ -1519,7 +1519,7 @@ class LeadersPairCard(QtWidgets.QFrame):
         change_text = _pct(change, 1)
         if self.change.text() != change_text:
             self.change.setText(change_text)
-        change_style = "color: " + ("#FF7A85" if change is not None and change < 0 else "#22D27A") + ";"
+        change_style = "color: " + ("#FF4F61" if change is not None and change < 0 else "#22D27A") + ";"
         if self.change.styleSheet() != change_style:
             self.change.setStyleSheet(change_style)
         if self.confirmation:
@@ -1529,7 +1529,7 @@ class LeadersPairCard(QtWidgets.QFrame):
             state_style = f"color: {LEADER_COLORS.get(state, '#8E8E96')};"
             if self.state.styleSheet() != state_style:
                 self.state.setStyleSheet(state_style)
-            self.spark.set_values(self.owner.price_path(symbol), "#22D27A" if (metrics.get("usd24") or 0) >= 0 else "#FF7A85")
+            self.spark.set_values(self.owner.price_path(symbol), "#22D27A" if (metrics.get("usd24") or 0) >= 0 else "#FF4F61")
             for key, label in self.metric_labels.items():
                 value = metrics.get(key)
                 label.setText("-" if value is None else _pct(value) if key == "rs4" else f"{value:.1f}%" if key == "volume_share" else f"{value:.2f}x")
@@ -2541,7 +2541,7 @@ def leaders_stylesheet(theme: dict[str, str] | None = None) -> str:
     active = theme.get("active", "#000000")
     active_line = theme.get("active_line", "#E070D8")
     green = theme.get("green", "#22D27A")
-    red = theme.get("red", "#FF7A85")
+    red = theme.get("red", "#FF4F61")
 
     return f"""
         QWidget#leadershipTimeline, QWidget#leadershipBody, QScrollArea#leadershipScroll {{
@@ -3050,7 +3050,7 @@ class _SectorOverviewSectorTile(QtWidgets.QFrame):
     def update_data(self, metrics: dict[str, Any], timeframe_label: str) -> None:
         self.window_caption.setText(f"{timeframe_label} median vs BTC")
         performance = metrics.get("performance")
-        color = self.theme.get("green", "#22D27A") if not _sector_overview_finite(performance) or performance >= 0 else self.theme.get("red", "#FF7A85")
+        color = self.theme.get("green", "#22D27A") if not _sector_overview_finite(performance) or performance >= 0 else self.theme.get("red", "#FF4F61")
         performance_text = _sector_overview_pct(performance, 1)
         if self.performance.text() != performance_text:
             self.performance.setText(performance_text)
@@ -3852,7 +3852,7 @@ class SectorOverviewWidget(QtWidgets.QWidget):
         self.detail.update_data(self.selected_sector, selected, timeframe_label)
 
         btc_trend = prepared["btc_trend"]
-        btc_color = self.theme.get("green", "#22D27A") if not _sector_overview_finite(btc_trend) or btc_trend >= 0 else self.theme.get("red", "#FF7A85")
+        btc_color = self.theme.get("green", "#22D27A") if not _sector_overview_finite(btc_trend) or btc_trend >= 0 else self.theme.get("red", "#FF4F61")
         self.stat_btc.set_metric(_sector_overview_pct(btc_trend, 1), f"/ {timeframe_label}", btc_color)
 
         alt_pct = prepared["alt_pct"]
@@ -3931,7 +3931,7 @@ class SectorOverviewWidget(QtWidgets.QWidget):
             cell(row, 0, sector, _sector_overview_sector_color(sector, self.theme, for_text=True))
             for column, timeframe in enumerate(("15m", "1h", "4h", "1d"), 1):
                 value = performances[timeframe].get(sector)
-                color = (self.theme.get("green", "#22D27A") if value >= 0 else self.theme.get("red", "#FF7A85")) if _sector_overview_finite(value) else None
+                    color = (self.theme.get("green", "#22D27A") if value >= 0 else self.theme.get("red", "#FF4F61")) if _sector_overview_finite(value) else None
                 cell(row, column, _sector_overview_pct(value, 1), color)
             current = sector_metrics.get("volume_share")
             previous = sector_metrics.get("previous_volume_share")
@@ -4015,7 +4015,7 @@ class SectorOverviewWidget(QtWidgets.QWidget):
         if hasattr(self, "detail"):
             self.detail.theme = palette
         green = palette.get("green", "#22D27A")
-        red = palette.get("red", "#FF7A85")
+    red = palette.get("red", "#FF4F61")
         self.setStyleSheet(f"""
             QWidget#sectorOverview, QScrollArea#sectorScroll, QWidget#sectorBody {{ background: {palette['bg']}; color: {palette['text']}; border: 0; }}
             QFrame#sectorPanel, QFrame#sectorStatCard, QFrame#sectorTile {{ background: {palette['panel']}; border: 1px solid {palette['control_border']}; border-radius: 6px; }}

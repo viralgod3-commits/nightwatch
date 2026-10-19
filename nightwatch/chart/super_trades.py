@@ -99,7 +99,7 @@ class SuperTradeOverlay(QtWidgets.QWidget):
     def apply_theme(self, theme) -> None:
         background = QtGui.QColor(theme["bg"])
         self._colors = {}
-        for side, key, fallback in (("buy", "green", "#37D28A"), ("sell", "red", "#FF6176")):
+        for side, key, fallback in (("buy", "green", "#37D28A"), ("sell", "red", "#FF4F61")):
             accent = QtGui.QColor(_ensure_directional_contrast(
                 theme[key], theme["bg"], fallback=fallback, target_ratio=4.5))
             fill = QtGui.QColor(*(round(background_value * .90 + accent_value * .10)
