@@ -33,6 +33,7 @@ from ..utilities import (
     set_text_role,
     typography_controller,
     typography_font,
+    tooltips_allowed,
 )
 from ..models import (
     format_price,
@@ -1792,6 +1793,21 @@ class MetricCard(QtWidgets.QFrame):
             self._sync_metric_width()
         return super().eventFilter(watched, event)
 
+    def event(self, event: QtCore.QEvent) -> bool:
+        if event.type() == QtCore.QEvent.Type.ToolTip:
+            owner = getattr(self, "metric_owner", None)
+            metric_key = getattr(self, "metric_key", "")
+            if self.compact and metric_key in COMPACT_PRIMARY_METRICS and owner is not None:
+                if tooltips_allowed(self):
+                    # Format only after Qt's hover delay, never on market ticks.
+                    QtWidgets.QToolTip.showText(
+                        event.globalPos(), owner.metric_hover_tooltip(metric_key),
+                        self, self.rect(), 12_000,
+                    )
+                event.accept()
+                return True
+        return super().event(event)
+
     def identity_width(self, *, horizontal_margins: tuple[int, int] | None = None) -> int:
         """Measure ticker content with the requested padding, independent of its current width."""
         margins = self.layout().contentsMargins()
@@ -1859,8 +1875,9 @@ class MetricCard(QtWidgets.QFrame):
             if actionable
             else Qt.CursorShape.ArrowCursor
         )
+        hover_detail = self.compact and getattr(self, "metric_key", "") in COMPACT_PRIMARY_METRICS
         for widget in (self, self.title, self.value):
-            widget.setToolTip("Click for details" if actionable else "")
+            widget.setToolTip("Click for details" if actionable and not hover_detail else "")
         self._refresh_popup()
 
     def set_history(self, points, caption, *, percent=False, bars=False, ratio=False):
@@ -1927,6 +1944,7 @@ class MetricCard(QtWidgets.QFrame):
             painter.drawRect(QtCore.QRectF(self.rect()).adjusted(3.5, 3.5, -3.5, -3.5))
 
     def clear_detail(self) -> None:
+        QtWidgets.QToolTip.hideText()
         self.history_options = []
         self.history = []
         self.history_caption = ""
@@ -2095,6 +2113,93 @@ class MarketStatsWidget(QtWidgets.QWidget):
         else:
             self.metric_detail_popup.set_card(card, load=False)
         self.metric_detail_popup.open()
+
+    def metric_hover_tooltip(self, metric_key: str) -> str:
+        """Build a bounded, on-demand snapshot from already-received market data."""
+        card = self.cards[metric_key]
+        detail = dict(getattr(card, "detail_rows", ()))
+        rows: list[tuple[str, str]] = []
+        descriptions = {
+            "volume": "Traded turnover over a rolling 24 hours, not a calendar day.",
+            "oi": "Outstanding futures exposure. Notional also moves with price; OI alone is not directional.",
+            "long_short": "Above 1: more net-long accounts. Below 1: more net-short accounts. Account count, not position size or taker flow.",
+            "funding": "Transfer is based on position notional, not margin. The rate can change; payment applies only if held at settlement.",
+        }
+
+        def add(label: str, value: object) -> None:
+            rows.append((label, str(value)))
+
+        def amount(value: object, *, money: bool = False) -> str:
+            number = safe_float(value, float("nan"))
+            return human_number(number, money=money) if math.isfinite(number) and number >= 0 else "—"
+
+        if metric_key == "volume":
+            ticker = self.last_ticker
+            add("24h turnover · USDT", amount(ticker.get("q"), money=True))
+            for window in ("1h", "4h"):
+                if f"{window} USDT" in detail:
+                    add(f"{window} turnover · USDT", detail[f"{window} USDT"])
+            add("24h base volume", amount(ticker.get("v")))
+            for key, label in (("h", "24h high"), ("l", "24h low")):
+                price = safe_float(ticker.get(key), float("nan"))
+                add(label, format_price(price) if math.isfinite(price) and price > 0 else "—")
+        elif metric_key == "oi":
+            add("Notional · USDT", card.value.text())
+            add("Base quantity", amount(self.last_interest_payload.get("openInterest")))
+            for label in ("5m change", "1h change", "4h change"):
+                if label in detail:
+                    add(label, detail[label])
+            stamp = safe_float(self.last_interest_payload.get("time"))
+            if math.isfinite(stamp) and stamp > 0:
+                add("Snapshot · local", format_local_time(stamp / 1000, "%d %b %H:%M"))
+        elif metric_key == "long_short":
+            samples = self.long_short_series.get("All accounts", [])
+            if samples:
+                sample = samples[-1]
+                add("All accounts · L/S", f"{safe_float(sample.get('longShortRatio')):.3f}")
+                for key, label in (("longAccount", "Long accounts"), ("shortAccount", "Short accounts")):
+                    share = safe_float(sample.get(key), float("nan"))
+                    add(label, f"{share * 100:.1f}%" if math.isfinite(share) and 0 <= share <= 1 else "—")
+                stamp = safe_float(sample.get("timestamp"))
+                add("5m sample · local", format_local_time(stamp / 1000, "%d %b %H:%M"))
+                if time.time() * 1000 - stamp > 900_000:
+                    add("Status", "Last available sample · over 15m old")
+            else:
+                add("Status", "No account-ratio sample available")
+        elif metric_key == "funding":
+            payload = self.last_mark_payload
+            rate = safe_float(payload.get("r"), float("nan"))
+            add("Current rate", _market_funding_rate(rate * 100))
+            direction = "Longs pay shorts" if rate > 0 else "Shorts pay longs" if rate < 0 else "No transfer"
+            add("Payment direction", direction if math.isfinite(rate) else "—")
+            if math.isfinite(rate):
+                transfer = f"{abs(rate) * 10_000:,.6g}"
+                add("Per 10k USDT notional", f"{transfer} USDT")
+            countdown, next_funding = _market_funding_time(safe_float(payload.get("T")))
+            add("Time remaining", countdown or "—")
+            add("Next funding · local", next_funding)
+            if "Mark basis" in detail:
+                add("Mark / index basis", detail["Mark basis"])
+
+        # Escape exchange values; one fixed-width table keeps numbers aligned
+        # across themes without allocating widgets, timers or history requests.
+        body = "".join(
+            '<tr><td style="padding:3px 10px 3px 0">' + html.escape(label)
+            + '</td><td align="right" style="padding:3px 0"><b>'
+            + html.escape(value) + '</b></td></tr>' for label, value in rows
+        )
+        title = self.cards[metric_key].title.text()
+        muted = html.escape(str(self.theme.get("muted", self.theme["text"])), quote=True)
+        return (
+            '<qt><table width="280" cellspacing="0" cellpadding="0">'
+            '<tr><td colspan="2" style="padding-bottom:8px"><b>'
+            + html.escape(title) + f'</b><br><span style="color:{muted}">'
+            + html.escape(perpetual_display_symbol(self.symbol)) + '</span></td></tr>'
+            + body + f'<tr><td colspan="2" style="padding-top:9px; color:{muted}">'
+            + html.escape(descriptions[metric_key])
+            + f'</td></tr><tr><td colspan="2" style="padding-top:8px; color:{muted}">'
+            'Click for history and comparison</td></tr></table></qt>'
+        )
 
     def open_compact_secondary_metrics(self, global_position: QtCore.QPoint) -> None:
         """Open any metrics intentionally omitted from the permanent compact strip."""
