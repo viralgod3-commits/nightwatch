@@ -2705,9 +2705,10 @@ class WatchlistWidget(QtWidgets.QWidget):
 
     def update_tickers(self, updates: list[dict[str, Any]]) -> None:
         changed = False
+        watched = set(self.symbols)
         for ticker in updates:
             symbol = ticker.get("s")
-            if symbol in self.symbols:
+            if symbol in watched:
                 self.tickers[symbol] = ticker
                 self._observe_move(symbol, ticker)
                 changed = True
@@ -3473,24 +3474,42 @@ class WatchlistSidebarWidget(QtWidgets.QWidget):
             if signature == previous and not icon_due:
                 continue
             static_changed = previous is None or (previous[0], previous[-1]) != (symbol, style_key)
-            toggle_item = self.table.item(row, 0)
-            if toggle_item is None:
-                toggle_item = QtWidgets.QTableWidgetItem()
-                toggle_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-                self.table.setItem(row, 0, toggle_item)
+            active_changed = static_changed or previous[-2] != signature[-2]
+            move_changed = static_changed or previous[4] != move_direction
+            old_values = previous[1] if previous is not None else (None,) * 4
             # Use the leading header-toggle column for row icons, leaving
             # pair text aligned with its heading and more room for the name.
-            if static_changed or icon_due:
-                found = coin_icon_exists(symbol)
-                toggle_item.setIcon(watchlist_coin_icon(symbol, self.source.theme))
-                self._icon_refresh_after[symbol] = float("inf") if found else now + 60.0
-                if not found:
-                    self.source.request_icon(symbol)
-            toggle_item.setBackground(
-                current_bg if symbol == active_symbol else QtGui.QBrush()
-            )
+            if static_changed or icon_due or active_changed:
+                toggle_item = self.table.item(row, 0)
+                if toggle_item is None:
+                    toggle_item = QtWidgets.QTableWidgetItem()
+                    toggle_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                    self.table.setItem(row, 0, toggle_item)
+                if static_changed or icon_due:
+                    found = coin_icon_exists(symbol)
+                    toggle_item.setIcon(watchlist_coin_icon(symbol, self.source.theme))
+                    self._icon_refresh_after[symbol] = float("inf") if found else now + 60.0
+                    if not found:
+                        self.source.request_icon(symbol)
+                if active_changed:
+                    toggle_item.setBackground(
+                        current_bg if symbol == active_symbol else QtGui.QBrush()
+                    )
 
             for column, value in enumerate(values, start=1):
+                # A live price does not invalidate the pair, percentage colors,
+                # alignment or row background. Keep unchanged cells out of Qt:
+                # even equal setters cross PySide and can dirty table geometry.
+                text_changed = static_changed or old_values[column - 1] != value
+                background_changed = active_changed or (column == 3 and move_changed)
+                foreground_changed = static_changed or (
+                    (column == 1 and active_changed)
+                    or (column == 3 and previous[2][0] != change_colors[0])
+                    or (column == 4 and (previous[2][1] != change_colors[1]
+                                         or previous[3] != bool(ticker)))
+                )
+                if not (text_changed or background_changed or foreground_changed):
+                    continue
                 item = self.table.item(row, column)
                 if item is None:
                     item = QtWidgets.QTableWidgetItem()
@@ -3504,60 +3523,48 @@ class WatchlistSidebarWidget(QtWidgets.QWidget):
                             font.setPointSizeF(max(1.0, font.pointSizeF() - 0.75))
                     item.setFont(font)
                     self.table.setItem(row, column, item)
-                if item.text() != value:
+                if text_changed and item.text() != value:
                     item.setText(value)
                     if column in (2, 3, 4):
                         dirty_columns.add(column)
                         self._numeric_cell_advances.pop((row, column), None)
-                if item.toolTip():
-                    item.setToolTip("")
-                item.setBackground(
-                    current_bg
-                    if symbol == active_symbol
-                    else QtGui.QBrush()
-                )
-                if column == 3 and move_direction:
-                    signal_color = self.source.theme[
-                        "green" if move_direction > 0 else "red"
-                    ]
-                    item.setBackground(alpha_color(signal_color, 46))
-                    item.setToolTip(
-                        "Unusual five-minute move"
-                    )
-                if column == 1:
-                    item.setData(Qt.ItemDataRole.UserRole, symbol)
-                    item.setTextAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
-                    if static_changed or icon_due:
-                        item.setIcon(QtGui.QIcon())
-                        item.setToolTip("Right-click to remove from watchlist")
-                    item.setForeground(
-                        QtGui.QColor(self.source.theme["cyan"])
-                        if symbol == active_symbol
-                        else QtGui.QBrush()
-                    )
-                elif column == 3 and change_1h is not None:
-                    item.setForeground(
-                        QtGui.QColor(
-                            self.source.theme["green"]
-                            if change_1h >= 0
-                            else self.source.theme["red"]
-                        )
-                    )
-                elif column == 4 and ticker:
-                    item.setForeground(
-                        QtGui.QColor(
-                            self.source.theme["green"]
-                            if change_24h >= 0
-                            else self.source.theme["red"]
-                        )
-                    )
-                else:
-                    item.setForeground(QtGui.QBrush())
-                if column > 1:
+                if background_changed:
+                    if column == 3 and move_direction:
+                        signal_color = self.source.theme[
+                            "green" if move_direction > 0 else "red"
+                        ]
+                        background = alpha_color(signal_color, 46)
+                    else:
+                        background = current_bg if symbol == active_symbol else QtGui.QBrush()
+                    item.setBackground(background)
+                if column == 3 and move_changed:
+                    item.setToolTip("Unusual five-minute move" if move_direction else "")
+                if static_changed:
                     item.setTextAlignment(
-                        Qt.AlignmentFlag.AlignRight
+                        (Qt.AlignmentFlag.AlignLeft if column == 1 else Qt.AlignmentFlag.AlignRight)
                         | Qt.AlignmentFlag.AlignVCenter
                     )
+                    if column == 1:
+                        item.setData(Qt.ItemDataRole.UserRole, symbol)
+                        item.setIcon(QtGui.QIcon())
+                        item.setToolTip("Right-click to remove from watchlist")
+                if foreground_changed:
+                    if column == 1:
+                        foreground = (
+                            QtGui.QColor(self.source.theme["cyan"])
+                            if symbol == active_symbol else QtGui.QBrush()
+                        )
+                    elif column == 3 and change_1h is not None:
+                        foreground = QtGui.QColor(
+                            self.source.theme["green"] if change_1h >= 0 else self.source.theme["red"]
+                        )
+                    elif column == 4 and ticker:
+                        foreground = QtGui.QColor(
+                            self.source.theme["green"] if change_24h >= 0 else self.source.theme["red"]
+                        )
+                    else:
+                        foreground = QtGui.QBrush()
+                    item.setForeground(foreground)
             if static_changed:
                 self.table.setRowHeight(row, 23)
         self._row_display_signatures = signatures
