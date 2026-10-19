@@ -5027,7 +5027,7 @@ class MainWindow(QtWidgets.QMainWindow):
                     watched.setStyleSheet(pending_stylesheet)
                 watched._applied_shell_stylesheet = pending_stylesheet
             elif (isinstance(watched, (QtWidgets.QDialog, QtWidgets.QMenu))
-                  and self.isAncestorOf(watched)
+                  and self._popup_belongs_to_terminal(watched)
                   and hasattr(self, "_shell_theme_stylesheet")):
                 stylesheet = self._dialog_theme_stylesheet(watched, self._shell_theme_stylesheet)
                 if watched.styleSheet() != stylesheet:

@@ -1761,9 +1761,6 @@ def _workspace_finish(owner):
         widget.setAccessibleName(widget.accessibleName() or widget.text() or widget.toolTip())
         if widget.objectName() == "sectorPeerSymbol":
             widget.setMinimumHeight(26)
-            widget.setStyleSheet("QPushButton {background: transparent; color: #EDEDED; border: 0; padding: 0; text-align: left;}"
-                                "QPushButton:hover {text-decoration: underline;}"
-                                "QPushButton:disabled {color: #8E8E96;}")
             continue
         if isinstance(widget, (QtWidgets.QPushButton, QtWidgets.QToolButton)):
             widget.setProperty("workspaceControl", True)
@@ -4034,7 +4031,13 @@ class SectorOverviewWidget(QtWidgets.QWidget):
                 background: {palette['panel2']}; border: 1px solid {palette['border']}; border-radius: 4px;
             }}
             QLabel#sectorMetricLabel, QLabel#sectorPeerRank {{ color: {palette['muted']}; }}
-            QLabel#sectorDetailMetric, QLabel#sectorPeerSymbol {{ color: {palette['text']}; }}
+            QLabel#sectorDetailMetric {{ color: {palette['text']}; }}
+            QPushButton#sectorPeerSymbol {{
+                background: transparent; color: {palette['text']}; border: 0;
+                padding: 0; text-align: left;
+            }}
+            QPushButton#sectorPeerSymbol:hover {{ text-decoration: underline; }}
+            QPushButton#sectorPeerSymbol:disabled {{ color: {palette['muted']}; }}
             QLabel#sectorPeerValue {{ color: {palette['text']}; }}
             QLabel#sectorPeerValue[direction="positive"] {{ color: {green}; }}
             QLabel#sectorPeerValue[direction="negative"] {{ color: {red}; }}
@@ -4641,7 +4644,7 @@ class RotationBubbleChart(QtWidgets.QWidget):
                 if r.contains(box) and self._label_clear(box, occupied, circles, segments):
                     occupied.append(box)
                     self._labels.append((point, box))
-                    p.setPen(QtGui.QColor("#FFFFFF" if point["symbol"] == self.selected else ROTATION_PALETTE["text"]))
+                    p.setPen(QtGui.QColor(ROTATION_PALETTE["text"]))
                     p.drawText(box, Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, text)
                     break
 
