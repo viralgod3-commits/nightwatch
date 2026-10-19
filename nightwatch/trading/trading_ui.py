@@ -2048,7 +2048,11 @@ class OrderPanel(QtWidgets.QWidget):
             self.gateway.problem.emit("Add Binance API credentials before changing leverage.")
             return
         current = self.gateway.current_leverage(self.symbol)
-        if current == leverage and self.symbol in self.gateway.cross_ready:
+        # The cached setting may still match while another value is in flight.
+        # Queue this selection so the earlier acknowledgement cannot replace it.
+        if (current == leverage and self.symbol in self.gateway.cross_ready
+                and self.symbol not in self.gateway.cross_pending
+                and self.symbol not in self.gateway.queued_leverage):
             self._update_execution_state()
             return
         self.gateway.apply_cross_leverage(self.symbol, leverage)

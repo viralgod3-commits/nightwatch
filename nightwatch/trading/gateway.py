@@ -2669,9 +2669,9 @@ class TradingGateway(QtCore.QObject):
             self.leverage_changed.emit(symbol, actual_leverage, True, "")
             queued = self.queued_leverage.pop(symbol, 0)
             if queued and queued != actual_leverage:
-                QTimer.singleShot(
-                    0, lambda target=queued: self.apply_cross_leverage(symbol, target)
-                )
+                # Keep the next selection pending before yielding to account
+                # refreshes or order input on the GUI event loop.
+                self.apply_cross_leverage(symbol, queued)
 
         def failed(message: str) -> None:
             self.tasks.discard(task)
@@ -2712,9 +2712,7 @@ class TradingGateway(QtCore.QObject):
             self.state_changed.emit(f"ARMED · {symbol} CROSS READY")
             queued = self.queued_leverage.pop(symbol, 0)
             if queued:
-                QTimer.singleShot(
-                    0, lambda target=queued: self.apply_cross_leverage(symbol, target)
-                )
+                self.apply_cross_leverage(symbol, queued)
 
         def failed(message: str) -> None:
             self.tasks.discard(task)
