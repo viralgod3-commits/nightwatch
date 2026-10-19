@@ -57,11 +57,6 @@ def _trading_stylesheet(theme: dict[str, str]) -> str:
         color = QtGui.QColor(t[key])
         return f"rgba({color.red()}, {color.green()}, {color.blue()}, {alpha})"
 
-    # Execution actions use solid theme colors with legible text in both modes.
-    action_text = {key: max(("#101820", "#FFFFFF"),
-                           key=lambda color: _contrast_ratio_hex(color, t[key]))
-                   for key in ("green", "red")}
-
     return f"""
         QWidget#responsiveOrderTicket, QWidget#tradingWorkspace, QFrame#ticketBody,
         QWidget#accountActivityPanel, QWidget#positionDeskBody,
@@ -202,11 +197,10 @@ def _trading_stylesheet(theme: dict[str, str]) -> str:
         QFrame#ticketEstimateBox {{ background: transparent; border: 0; border-top: 1px solid {t['border']}; border-radius: 0; }}
         QFrame#ticketExecutionOptions {{ background: transparent; border: 0; }}
         QWidget#ticketSubmitFooter {{ background: {t['panel']}; border: 0; }}
-        QPushButton#buySideButton {{ color: {action_text['green']}; border: 1px solid {t['green']}; background: {t['green']}; border-radius: 5px; }}
-        QPushButton#sellSideButton {{ color: {action_text['red']}; border: 1px solid {t['red']}; background: {t['red']}; border-radius: 5px; }}
-        QPushButton#buySideButton:hover, QPushButton#buySideButton:focus {{ border: 2px solid {action_text['green']}; color: {action_text['green']}; background: {t['green']}; }}
-        QPushButton#sellSideButton:hover, QPushButton#sellSideButton:focus {{ border: 2px solid {action_text['red']}; color: {action_text['red']}; background: {t['red']}; }}
-        QPushButton#buySideButton:pressed, QPushButton#sellSideButton:pressed {{ padding-top: 6px; padding-bottom: 2px; }}
+        QPushButton#buySideButton {{ color: {t['green_text']}; border-color: {tint('green', 75)}; background: {tint('green', 42)}; border-radius: 7px; }}
+        QPushButton#sellSideButton {{ color: {t['red_text']}; border-color: {tint('red', 75)}; background: {tint('red', 42)}; border-radius: 7px; }}
+        QPushButton#buySideButton:hover, QPushButton#buySideButton:pressed {{ color: {t['text']}; background: {tint('green', 72)}; }}
+        QPushButton#sellSideButton:hover, QPushButton#sellSideButton:pressed {{ color: {t['text']}; background: {tint('red', 72)}; }}
     """
 
 
