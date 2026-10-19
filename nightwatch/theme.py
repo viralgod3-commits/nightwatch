@@ -202,8 +202,10 @@ def candle_directional_palette(chart: dict[str, object], mode: str='theme') -> d
     """Return a chart palette with candle-only directional presentation."""
     output = dict(chart)
     use_classic = str(mode).casefold() == 'classic'
-    up_source = CLASSIC_DIRECTIONAL_GREEN if use_classic else output.get('candle_up', output.get('green'))
-    down_source = CLASSIC_DIRECTIONAL_RED if use_classic else output.get('candle_down', output.get('red'))
+    # Theme mode must follow the active directional tokens exactly. Do not
+    # prefer a stale candle-specific value left in a persisted palette.
+    up_source = CLASSIC_DIRECTIONAL_GREEN if use_classic else output.get('green')
+    down_source = CLASSIC_DIRECTIONAL_RED if use_classic else output.get('red')
     background = output.get('bg', output.get('chart_bg', '#000000'))
     output['candle_up'] = (_ensure_directional_contrast(up_source, background, fallback=CLASSIC_DIRECTIONAL_GREEN) if use_classic else _normalize_hex_color(up_source, CLASSIC_DIRECTIONAL_GREEN))
     output['candle_down'] = (_ensure_directional_contrast(down_source, background, fallback=CLASSIC_DIRECTIONAL_RED) if use_classic else _normalize_hex_color(down_source, CLASSIC_DIRECTIONAL_RED))
