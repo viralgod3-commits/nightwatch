@@ -254,8 +254,11 @@ class _PrismRenderer(QtWidgets.QWidget):
         self._bar_to = {}
         self._animation_start = 0.0
         self._animation_end = 0.0
+        self._animation_region = QtGui.QRegion()
+        self._rows_region = QtGui.QRegion()
         self._last_chrome = None
         self._last_layout = None
+        self._prepared_levels = None
         self._depth_path_key = None
         self._depth_paths = {}
         self.frames = 0
@@ -296,6 +299,10 @@ class _PrismRenderer(QtWidgets.QWidget):
             self.price_font.setPixelSize(13)
         self.hero_font = typography_font(TextRole.ORDERBOOK_CENTER_PRICE)
         self.metrics = QtGui.QFontMetricsF(self.price_font)
+        # Custom font sizes may draw beyond a nominal text row. Keep a generous
+        # glyph margin when rejecting chrome outside the requested paint area.
+        self._chrome_overdraw = math.ceil(max(QtGui.QFontMetricsF(font).height()
+            for font in (self.label_font, self.number_font, self.hero_font))) + 2
         self._text_cache.clear()
         self._last_layout = None
 
@@ -350,12 +357,9 @@ class _PrismRenderer(QtWidgets.QWidget):
         return {key: self._bar_from.get(key, target) + (target-self._bar_from.get(key, target))*eased
                 for key, target in self._bar_to.items()}
 
-    def prepare(self, now):
+    def _prepare_rows(self, now, live):
         snapshot = self.snapshot
         heatmap = self.config.get('heatmap', False)
-        live = self.book_valid and _deadline(self.source) > now
-        self.status = ('LIVE' if self.trade_active else 'TRADES OFF') if live else (
-            'STALE' if snapshot is not None and snapshot.ready else 'SYNCING')
         levels = self._aggregation.levels
         # Stable price envelope prevents lane widths jittering when digits change.
         examples = [self._price(l.price) for side in levels for l in side[:1]]
@@ -434,28 +438,58 @@ class _PrismRenderer(QtWidgets.QWidget):
                                 elif row.side == 'bid' and bottom-pad == g['table_bottom'] and g['bid_rows'] == count:
                                     bottom = g['height']
                             self._dirty_pixels += QtCore.QRect(0, top, self.width(), bottom-top)
+        self.side_totals = side_totals
+        self.side_complete = tuple(all(getattr(level, 'complete', True) for level in side) for side in visible)
+        self._last_layout = layout
+        self._prepared_levels = levels
+        self._animation_region = QtGui.QRegion()
+        self._rows_region = QtGui.QRegion(QtCore.QRect(
+            0, g['table_top'], self.width(), g['center_top']-g['table_top']))
+        self._rows_region += QtCore.QRect(
+            0, g['center_bottom'], self.width(), g['table_bottom']-g['center_bottom'])
         if now < self._animation_end:
             for row in self.rows:
                 if self._bar_from.get(row.key) != self._bar_to.get(row.key):
-                    self._dirty_pixels += QtCore.QRect(0, row.top, self.width(), g['row_height'])
+                    self._animation_region += QtCore.QRect(0, row.top, self.width(), g['row_height'])
+        margin = self._chrome_overdraw
+        self._center_paint_rect = QtCore.QRect(
+            0, g['center_top']-margin, self.width(), g['center_height']+2*margin)
+        self._footer_paint_rect = QtCore.QRect(
+            0, g['footer_top']-margin, self.width(), g['footer_height']+2*margin)
+
+    def prepare(self, now):
+        snapshot = self.snapshot
+        live = self.book_valid and _deadline(self.source) > now
+        self.status = ('LIVE' if self.trade_active else 'TRADES OFF') if live else (
+            'STALE' if snapshot is not None and snapshot.ready else 'SYNCING')
+        levels = self._aggregation.levels
+        # Immutable depth rows only change on adoption/configuration. Animation,
+        # transport acknowledgements and freshness deadlines need no formatting
+        # or row allocation; retain those results until an input changes.
+        if (self._last_layout is None or self._prepared_levels is None
+                or self._prepared_levels[0] is not levels[0]
+                or self._prepared_levels[1] is not levels[1]
+                or self.geometry['width'] != self.width()
+                or self.geometry['height'] != self.height()):
+            self._prepare_rows(now, live)
+        g = self.geometry
+        if now < self._animation_end:
+            self._dirty_pixels += self._animation_region
         # The final animation frame must paint the exact target too.
         elif getattr(self, '_was_animating', False):
-            for row in self.rows:
-                self._dirty_pixels += QtCore.QRect(0, row.top, self.width(), g['row_height'])
+            self._dirty_pixels += self._rows_region
         self._was_animating = now < self._animation_end
-        self.side_totals = side_totals
-        self.side_complete = tuple(all(getattr(level, 'complete', True) for level in side) for side in visible)
         self._display_live = live
         chrome = (self.status, snapshot.best_bid if snapshot else 0,
                   snapshot.best_ask if snapshot else 0, self._last_trade(now),
                   self._trade_delta(),
-                  tuple(side_totals), self.side_complete, len(visible[0]), len(visible[1]))
+                  tuple(self.side_totals), self.side_complete, g['ask_rows'], g['bid_rows'])
         if chrome != self._last_chrome:
             for top, height in ((0, g['header']), (g['center_top'], g['center_height']), (g['footer_top'], g['footer_height'])):
                 self._dirty_pixels += QtCore.QRect(0, top, self.width(), height)
             if self._last_chrome is not None and self._last_chrome[0] != self.status:
                 self._dirty_pixels = QtGui.QRegion(self.rect())
-        self._last_chrome, self._last_layout = chrome, layout
+        self._last_chrome = chrome
 
     def _last_trade(self, now):
         snapshot = self.source
@@ -730,8 +764,10 @@ class _PrismRenderer(QtWidgets.QWidget):
         for row in self.rows:
             if dirty.intersects(QtCore.QRect(0, row.top, self.width(), g['row_height'])):
                 self._paint_row(p, row, bars)
-        self._paint_center(p, now)
-        self._paint_footer(p)
+        if dirty.intersects(self._center_paint_rect):
+            self._paint_center(p, now)
+        if dirty.intersects(self._footer_paint_rect):
+            self._paint_footer(p)
         self._paint_depth_limits(p)
         if not self.rows and g['rows'] >= 2:
             message = 'Synchronizing order book…' if self.status == 'SYNCING' else 'No depth available'
