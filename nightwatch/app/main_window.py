@@ -1473,7 +1473,7 @@ class MainWindow(QtWidgets.QMainWindow):
             Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
         )
         for index, (name, width) in enumerate(
-            (("CHART", 80), ("LEADERS", 94), ("SECTORS", 94), ("ROTATION", 100))
+            (("CHART", 80), ("LEADERS", 94), ("SECTORS", 94), ("ROTATION", 100), ("PERFORMANCE", 126))
         ):
             button = QtWidgets.QPushButton(name.title())
             button.setObjectName("workspaceNavButton")
@@ -1843,6 +1843,14 @@ class MainWindow(QtWidgets.QMainWindow):
             layout.addWidget(page)
             self.workspace_stack.addWidget(scope)
             self._research_theme_scopes.append(scope)
+
+        # An empty host is the entire startup cost of Performance. The page,
+        # charts and history reader are created only on its first activation.
+        self.performance_page = None
+        self.performance_host = QtWidgets.QWidget()
+        performance_layout = QtWidgets.QVBoxLayout(self.performance_host)
+        performance_layout.setContentsMargins(0, 0, 0, 0)
+        self.workspace_stack.addWidget(self.performance_host)
 
         # The global toolbar spans both splitter columns. Chart-only instrument
         # context belongs to chart_column, exactly matching the chart/axis width.
@@ -3083,7 +3091,7 @@ class MainWindow(QtWidgets.QMainWindow):
             ("Alt+R", "Fit the primary chart"),
             ("Ctrl+Tab", "Next workspace"),
             ("Ctrl+Shift+Tab", "Previous workspace"),
-            ("Alt+1 / Alt+2 / Alt+3 / Alt+4", "Chart / Leaders / Sectors / Rotation"),
+            ("Alt+1 … Alt+5", "Chart / Leaders / Sectors / Rotation / Performance"),
             ("Ctrl+P", "Cycle quick right-panel layout"),
             ("Ctrl+PageDown", "Next saved right-panel preset"),
             ("Ctrl+PageUp", "Previous saved right-panel preset"),
@@ -3320,7 +3328,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._apply_chart_layout_state()
         stored_workspace = self.settings.value("active_workspace", 0, int)
         # Preserve the selected global workspace, including Rotation.
-        if stored_workspace not in (0, 1, 2, 3):
+        if stored_workspace not in (0, 1, 2, 3, 4):
             stored_workspace = 0
         self._switch_workspace(stored_workspace)
         self._sync_right_layout_actions()
@@ -3417,7 +3425,13 @@ class MainWindow(QtWidgets.QMainWindow):
         self.settings.sync()
 
     def _switch_workspace(self, index: int) -> None:
-        index = max(0, min(3, int(index)))
+        index = max(0, min(4, int(index)))
+        if index == 4 and self.performance_page is None:
+            from ..trading.trading_ui import TradingPerformanceWorkspace
+            self.performance_page = TradingPerformanceWorkspace(self.trading_gateway, self.settings)
+            self.performance_host.layout().addWidget(self.performance_page)
+        if self.performance_page is not None:
+            self.performance_page.set_active(index == 4)
         self.setProperty("chartTooltipsSuppressed", not self.learning_mode)
         if not self.learning_mode:
             QtWidgets.QToolTip.hideText()
@@ -3451,7 +3465,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.chart.set_presentation_active(chart_workspace)
         QTimer.singleShot(0, self._sync_market_depth_networking)
 
-        name = ("CHART", "LEADERS", "SECTORS", "ROTATION")[index]
+        name = ("CHART", "LEADERS", "SECTORS", "ROTATION", "PERFORMANCE")[index]
         button = self.workspace_buttons.get(name)
         if button is not None and not button.isChecked():
             button.setChecked(True)
@@ -5140,7 +5154,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 self.statusBar().showMessage("30s FPS benchmark started", 1800)
                 return True
             if (modifiers == Qt.KeyboardModifier.AltModifier
-                    and int(Qt.Key.Key_1) <= key <= int(Qt.Key.Key_4)):
+                    and int(Qt.Key.Key_1) <= key <= int(Qt.Key.Key_5)):
                 self._switch_workspace(key-int(Qt.Key.Key_1))
                 return True
             if (
@@ -10220,6 +10234,8 @@ class MainWindow(QtWidgets.QMainWindow):
             return
         self._closing = True
         self._shutdown_started = True
+        if self.performance_page is not None:
+            self.performance_page.set_active(False)
         self._ticker_prepare_job.close()
         self.history_cancel_requested = True
         # Cancel reads/retries and disconnect every worker signal

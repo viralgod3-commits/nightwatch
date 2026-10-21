@@ -4984,3 +4984,979 @@ class TradingWorkspace(QtWidgets.QWidget):
         self.main_tabs.setTabText(0, "Trade")
         self.main_tabs.setTabText(1, "Account")
 
+
+
+# Performance is deliberately hosted here with the other trading workspaces.
+# Nothing below constructs widgets, starts workers or reads history at import time.
+_PERFORMANCE_STYLES = (
+    dict(name='Aurora', bg='#090e1c', card='#111a2c', raised='#18253b', border='#24324b',
+         text='#edf4ff', muted='#91a3bd', accent='#7de3fa', green='#66e5b6', red='#ff637e', radius=14),
+    dict(name='Journal', bg='#151413', card='#201e1b', raised='#2c2925', border='#3c3730',
+         text='#f5eee2', muted='#b3a79a', accent='#ecc294', green='#b7d88b', red='#f47c69', radius=9),
+    dict(name='Vector', bg='#090d0c', card='#101714', raised='#19231d', border='#2b3b30',
+         text='#edf7ed', muted='#91a998', accent='#d5f781', green='#9ce6a3', red='#ff6c75', radius=3),
+)
+
+
+def _performance_number(value, *, signed=False, decimals=2) -> str:
+    value = float(value)
+    if abs(value) < 0.5 * 10 ** -decimals:
+        value = 0.0
+    return f'{value:+,.{decimals}f}' if signed else f'{value:,.{decimals}f}'
+
+
+def _performance_demo() -> list[dict]:
+    from datetime import datetime, timedelta, timezone
+    import random
+    rng = random.Random(731)
+    today = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+    markets = [('BTCUSDT', 68000), ('ETHUSDT', 3200), ('SOLUSDT', 154), ('SUIUSDT', 2.1), ('XRPUSDT', 0.6)]
+    rows = []
+    for index in range(176):
+        symbol, price = markets[rng.randrange(len(markets))]
+        opened = today - timedelta(days=89 - index // 2, hours=-rng.randrange(5, 21), minutes=-rng.randrange(60))
+        quantity = Decimal(str(round(rng.uniform(500, 6500) / price, 5)))
+        win = rng.random() < .62
+        pnl = Decimal(str(round(rng.uniform(12, 310) if win else -rng.uniform(15, 220), 2)))
+        buy = rng.random() < .56
+        entry = Decimal(str(price))
+        exit_price = (entry + pnl / quantity * (1 if buy else -1)).quantize(Decimal('.00001'))
+        for leg in range(2):
+            at = opened + (timedelta(minutes=rng.randrange(8, 280)) if leg else timedelta())
+            fill_price = exit_price if leg else entry
+            fee = (quantity * fill_price * Decimal('.0004')).quantize(Decimal('.00000001'))
+            rows.append(dict(symbol=symbol, trade_id=str(index * 2 + leg), order_id=str(index * 2 + leg),
+                             client_id=f'demo-{index}-{leg}', time_ms=int(at.timestamp() * 1000),
+                             side='BUY' if buy != bool(leg) else 'SELL', position_side='LONG' if buy else 'SHORT',
+                             price=str(fill_price), qty=str(quantity), realized=str(pnl if leg else 0),
+                             fee=str(fee), fee_asset='USDT', settlement='USDT', maker=int(rng.random() < .35),
+                             closing=leg))
+    return sorted(rows, key=lambda row: row['time_ms'])
+
+
+def _performance_summary(source: list[dict], days: int, market: str, side: str, currency: str) -> dict:
+    """Worker-only aggregation. Decimal accounting; floats only at the drawing edge."""
+    from datetime import datetime, timezone
+    from collections import defaultdict
+    cutoff = int(time.time() * 1000) - days * 86_400_000 if days else 0
+    # A one-way exit at the entry price has zero exchange realized P&L. Use
+    # the full recorded inventory before filtering so it still counts as an
+    # exit, including when the opening fill falls outside the chosen period.
+    positions = defaultdict(Decimal)
+    classified = []
+    for original in sorted(source, key=lambda row: (row['time_ms'], int(row['trade_id']))):
+        row = dict(original)
+        key = (row['symbol'], row['position_side'])
+        signed = Decimal(row['qty']) * (1 if row['side'] == 'BUY' else -1)
+        held = positions[key]
+        closes_recorded = held * signed < 0
+        row['closing'] = bool(row['closing'] or closes_recorded)
+        if not row['closing'] or closes_recorded:
+            positions[key] += signed
+        classified.append(row)
+    rows = [row for row in classified if row['time_ms'] >= cutoff
+            and row['settlement'] == currency and (not market or row['symbol'] == market)
+            and (not side or row['side'] == side)]
+    rows.sort(key=lambda row: (row['time_ms'], int(row['trade_id'])))
+    zero = Decimal(0)
+    net = gross = fees = volume = peak = drawdown = zero
+    days_map, markets_map, fees_map, exits = (defaultdict(lambda: zero) for _ in range(4))
+    day_counts = defaultdict(int)
+    exit_orders = set()
+    hours = [[0.0] * 24 for _ in range(7)]
+    hour_counts = [[0] * 24 for _ in range(7)]
+    curve, dips = [], []
+    if rows:
+        curve.append((rows[0]['time_ms'] - 1, 0.0))
+        dips.append((rows[0]['time_ms'] - 1, 0.0))
+    makers = 0
+    for row in rows:
+        realized, fee = Decimal(row['realized']), Decimal(row['fee'])
+        paid = fee if row['fee_asset'] == currency else zero
+        result = realized - paid
+        net += result
+        gross += realized
+        fees += paid
+        volume += Decimal(row['qty']) * Decimal(row['price'])
+        fees_map[row['fee_asset'] or 'Unknown'] += fee
+        peak = max(peak, net)
+        drawdown = max(drawdown, peak - net)
+        curve.append((row['time_ms'], float(net)))
+        dips.append((row['time_ms'], float(net - peak)))
+        stamp = datetime.fromtimestamp(row['time_ms'] / 1000, timezone.utc)
+        day = stamp.date().isoformat()
+        days_map[day] += result
+        day_counts[day] += 1
+        markets_map[row['symbol']] += result
+        hours[stamp.weekday()][stamp.hour] += float(result)
+        hour_counts[stamp.weekday()][stamp.hour] += 1
+        order_key = (row['symbol'], row['order_id'])
+        exits[order_key] += result
+        if row['closing']:
+            exit_orders.add(order_key)
+        makers += bool(row['maker'])
+        row.update(net=float(result), day=day, date_text=stamp.strftime('%d %b %Y  %H:%M:%S'))
+    exits = {key: value for key, value in exits.items() if key in exit_orders}
+    wins = sum(value > 0 for value in exits.values())
+    losses = sum(value < 0 for value in exits.values())
+    gain = sum((v for v in exits.values() if v > 0), zero)
+    loss = -sum((v for v in exits.values() if v < 0), zero)
+
+    def decimate(points):
+        if len(points) <= 800:
+            return points
+        step = max(1, len(points) // 350)
+        reduced = [points[0]]
+        for start in range(1, len(points) - 1, step):
+            bucket = points[start:min(start + step, len(points) - 1)]
+            if bucket:
+                extremes = {min(range(len(bucket)), key=lambda i: bucket[i][1]),
+                            max(range(len(bucket)), key=lambda i: bucket[i][1])}
+                reduced.extend(bucket[i] for i in sorted(extremes))
+        return [*reduced, points[-1]]
+
+    return dict(rows=list(reversed(rows)), net=float(net), gross=float(gross), fees=float(fees),
+                fee_assets={key: float(value) for key, value in fees_map.items() if value},
+                volume=float(volume), drawdown=float(drawdown), curve=decimate(curve), dips=decimate(dips),
+                days={key: float(value) for key, value in sorted(days_map.items())}, day_counts=dict(day_counts),
+                markets=sorted(((key, float(value)) for key, value in markets_map.items()), key=lambda p: p[1], reverse=True),
+                hours=hours, hour_counts=hour_counts, wins=wins, losses=losses, exits=len(exits),
+                win_rate=wins / len(exits) * 100 if exits else None,
+                factor=float(gain / loss) if loss else (float('inf') if gain else None),
+                average=float(sum(exits.values(), zero) / len(exits)) if exits else None,
+                maker=makers / len(rows) * 100 if rows else 0, currency=currency,
+                all_markets=sorted({row['symbol'] for row in source if row['settlement'] == currency}))
+
+
+class _PerformanceTableModel(QtCore.QAbstractTableModel):
+    HEADERS = ('Executed · UTC', 'Market', 'Action', 'Price', 'Quantity', 'Realized', 'Fee', 'Net')
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.rows = []
+        self.colors = _PERFORMANCE_STYLES[0]
+        self.currency = 'USDT'
+
+    def set_rows(self, rows, colors, currency):
+        self.beginResetModel()
+        self.rows, self.colors, self.currency = rows, colors, currency
+        self.endResetModel()
+
+    def rowCount(self, parent=QtCore.QModelIndex()):
+        return 0 if parent.isValid() else len(self.rows)
+
+    def columnCount(self, parent=QtCore.QModelIndex()):
+        return 0 if parent.isValid() else len(self.HEADERS)
+
+    def headerData(self, section, orientation, role=Qt.ItemDataRole.DisplayRole):
+        if role == Qt.ItemDataRole.DisplayRole and orientation == Qt.Orientation.Horizontal:
+            return self.HEADERS[section] + (f' · {self.currency}' if section in (5, 7) else '')
+        return None
+
+    def data(self, index, role=Qt.ItemDataRole.DisplayRole):
+        if not index.isValid():
+            return None
+        row, col = self.rows[index.row()], index.column()
+        if role == Qt.ItemDataRole.DisplayRole:
+            def precise(value):
+                return format(Decimal(value).normalize(), 'f')
+            return (row['date_text'], row['symbol'], row['side'].title() + (' / Exit' if row['closing'] else ' / Entry'),
+                    precise(row['price']), precise(row['qty']), _performance_number(row['realized'], signed=True),
+                    f"{precise(row['fee'])} {row['fee_asset']}",
+                    _performance_number(row['net'], signed=True))[col]
+        if role == Qt.ItemDataRole.TextAlignmentRole:
+            return int(Qt.AlignmentFlag.AlignVCenter | (Qt.AlignmentFlag.AlignRight if col >= 3 else Qt.AlignmentFlag.AlignLeft))
+        if role == Qt.ItemDataRole.ForegroundRole:
+            value = float(row['realized']) if col == 5 else row['net']
+            color = self.colors['muted'] if col in (0, 3, 4, 6) else self.colors['text']
+            if col in (5, 7) and value:
+                color = self.colors['green' if value > 0 else 'red']
+            return QtGui.QColor(color)
+        if role == Qt.ItemDataRole.ToolTipRole:
+            return f"Order {row['order_id']} · Fill {row['trade_id']}\n{row['position_side']} · {'Maker' if row['maker'] else 'Taker'}"
+        return None
+
+    def sort(self, column, order=Qt.SortOrder.AscendingOrder):
+        fields = ('time_ms', 'symbol', 'side', 'price', 'qty', 'realized', 'fee', 'net')
+        self.layoutAboutToBeChanged.emit()
+        self.rows.sort(key=lambda row: Decimal(str(row[fields[column]])) if column >= 3 else row[fields[column]],
+                       reverse=order == Qt.SortOrder.DescendingOrder)
+        self.layoutChanged.emit()
+
+
+class _PerformancePlot(QtWidgets.QWidget):
+    day_selected = Signal(str)
+
+    def __init__(self, kind, title, parent=None):
+        super().__init__(parent)
+        self.kind, self.title = kind, title
+        self.summary = {}
+        self.colors = _PERFORMANCE_STYLES[0]
+        self.hover_index = -1
+        self.hit_days = []
+        self.hover_regions = []
+        self._hover_text = ''
+        self.plot_rect = QtCore.QRectF()
+        self.month = QtCore.QDate.currentDate()
+        self.metric_values = ('', '', '')
+        self.setMouseTracking(kind != 'metric')
+        self.setProperty('informationalToolTip', True)
+        self.setMinimumWidth(200)
+        self.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Expanding)
+
+    def configure(self, summary, colors):
+        self.summary, self.colors = summary, colors
+        self.hover_index = -1
+        self.hover_regions = []
+        if self.kind == 'metric' and not summary:
+            self.metric_values = ('—', '', '')
+        self.setAccessibleName(self.title)
+        self.update()
+
+    def _text(self, p, rect, value, size=12, color=None, *, bold=False, align=None, mono=False):
+        font = QtGui.QFont('Iosevka' if mono or self.colors['name'] == 'Vector' else 'Inter')
+        font.setPixelSize(size)
+        font.setWeight(QtGui.QFont.Weight.DemiBold if bold else QtGui.QFont.Weight.Normal)
+        p.setFont(font)
+        p.setPen(QtGui.QColor(color or self.colors['text']))
+        p.drawText(QtCore.QRectF(rect), align or (Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter), str(value))
+
+    def paintEvent(self, event):
+        p = QtGui.QPainter(self)
+        p.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing)
+        p.setRenderHint(QtGui.QPainter.RenderHint.TextAntialiasing)
+        c, w, h = self.colors, self.width(), self.height()
+        p.setPen(QtGui.QPen(QtGui.QColor(c['border']), 1))
+        p.setBrush(QtGui.QColor(c['card']))
+        p.drawRoundedRect(QtCore.QRectF(.5, .5, w - 1, h - 1), c['radius'], c['radius'])
+        self._text(p, QtCore.QRectF(20, 14, w - 40, 22), self.title.upper(), 11, c['muted'], bold=True)
+        if self.kind == 'metric':
+            value, detail, color = self.metric_values
+            self._text(p, QtCore.QRectF(20, 39, w - 40, 40), value, 29, color or c['text'], bold=True)
+            self._text(p, QtCore.QRectF(20, 82, w - 40, 20), detail, 11, c['muted'])
+        elif self.kind in {'equity', 'drawdown'}:
+            self._line(p)
+        elif self.kind == 'ring':
+            self._ring(p)
+        elif self.kind == 'calendar':
+            self._calendar(p)
+        elif self.kind == 'markets':
+            self._markets(p)
+        elif self.kind == 'daily':
+            self._daily(p)
+        elif self.kind == 'hours':
+            self._hours(p)
+        p.end()
+
+    def _line(self, p):
+        from datetime import datetime, timezone
+        s, c = self.summary, self.colors
+        equity = self.kind == 'equity'
+        points = s.get('curve' if equity else 'dips', [])
+        top = 112 if equity else 52
+        rect = QtCore.QRectF(20, top, max(1, self.width() - 100), max(1, self.height() - top - 34))
+        self.plot_rect = rect
+        value = s.get('net' if equity else 'drawdown', 0)
+        if equity:
+            self._text(p, QtCore.QRectF(20, 40, self.width() - 40, 45),
+                       _performance_number(value, signed=True), 36, c['green' if value >= 0 else 'red'], bold=True)
+            self._text(p, QtCore.QRectF(22, 83, self.width() - 44, 18),
+                       f"{s.get('currency', 'USDT')} · realized P&L less settlement-currency fees", 11, c['muted'])
+        low = min([v for _, v in points] + [0])
+        high = max([v for _, v in points] + [0])
+        pad = max((high - low) * .12, .01)
+        low, high = low - pad, high + pad
+        t0, t1 = (points[0][0], max(points[-1][0], points[0][0] + 1)) if points else (0, 1)
+
+        def location(stamp, amount):
+            return QtCore.QPointF(rect.left() + (stamp - t0) / (t1 - t0) * rect.width(),
+                                 rect.bottom() - (amount - low) / (high - low) * rect.height())
+
+        for index in range(4):
+            amount = high - (high - low) * index / 3
+            y = location(t0, amount).y()
+            p.setPen(QtGui.QPen(QtGui.QColor(c['border']), .7))
+            p.drawLine(QtCore.QPointF(rect.left(), y), QtCore.QPointF(rect.right(), y))
+            self._text(p, QtCore.QRectF(rect.right() + 10, y - 9, 67, 18), _performance_number(amount, decimals=0), 10, c['muted'], mono=True)
+        if not points:
+            self._text(p, rect, 'Your first recorded fills start the curve.', 13, c['muted'], align=Qt.AlignmentFlag.AlignCenter)
+            return
+        path = QtGui.QPainterPath(location(*points[0]))
+        for point in points[1:]:
+            path.lineTo(location(*point))
+        color = QtGui.QColor(c['accent'] if equity else c['red'])
+        area = QtGui.QPainterPath(path)
+        area.lineTo(rect.right(), rect.bottom())
+        area.lineTo(rect.left(), rect.bottom())
+        area.closeSubpath()
+        gradient = QtGui.QLinearGradient(rect.topLeft(), rect.bottomLeft())
+        color.setAlpha(65)
+        gradient.setColorAt(0, color)
+        color.setAlpha(0)
+        gradient.setColorAt(1, color)
+        p.fillPath(area, gradient)
+        p.setPen(QtGui.QPen(QtGui.QColor(c['accent'] if equity else c['red']), 2))
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.drawPath(path)
+        for stamp, alignment, x in [(t0, Qt.AlignmentFlag.AlignLeft, rect.left()),
+                                     (t1, Qt.AlignmentFlag.AlignRight, rect.right() - 100)]:
+            self._text(p, QtCore.QRectF(x, rect.bottom() + 7, 100, 20),
+                       datetime.fromtimestamp(stamp / 1000, timezone.utc).strftime('%d %b %Y'),
+                       10, c['muted'], align=alignment | Qt.AlignmentFlag.AlignVCenter)
+        if 0 <= self.hover_index < len(points):
+            stamp, amount = points[self.hover_index]
+            point = location(stamp, amount)
+            p.setPen(QtGui.QPen(QtGui.QColor(c['muted']), 1, Qt.PenStyle.DashLine))
+            p.drawLine(QtCore.QPointF(point.x(), rect.top()), QtCore.QPointF(point.x(), rect.bottom()))
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(QtGui.QColor(c['accent']))
+            p.drawEllipse(point, 4, 4)
+            label = f"{datetime.fromtimestamp(stamp / 1000, timezone.utc):%d %b %H:%M} UTC   {_performance_number(amount, signed=True)}"
+            box = QtCore.QRectF(max(rect.left(), min(point.x() - 125, rect.right() - 250)), rect.top() + 6, 250, 28)
+            p.setBrush(QtGui.QColor(c['raised']))
+            p.drawRoundedRect(box, 4, 4)
+            self._text(p, box.adjusted(9, 0, -9, 0), label, 11)
+
+    def _ring(self, p):
+        c, s = self.colors, self.summary
+        side = min(self.width() - 72, self.height() - 120, 190)
+        side = max(60, side)
+        r = QtCore.QRectF((self.width() - side) / 2, 55, side, side)
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        pen = QtGui.QPen(QtGui.QColor(c['border']), 13)
+        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        p.setPen(pen)
+        p.drawEllipse(r)
+        rate = s.get('win_rate')
+        if rate is not None:
+            pen.setColor(QtGui.QColor(c['green']))
+            p.setPen(pen)
+            p.drawArc(r, 90 * 16, -int(rate / 100 * 360 * 16))
+        self._text(p, r.adjusted(0, -9, 0, -9), f'{rate:.1f}%' if rate is not None else '—', 32,
+                   bold=True, align=Qt.AlignmentFlag.AlignCenter)
+        self._text(p, r.adjusted(0, 48, 0, 0), 'exit win rate', 11, c['muted'], align=Qt.AlignmentFlag.AlignCenter)
+        self._text(p, QtCore.QRectF(20, r.bottom() + 24, self.width() - 40, 22),
+                   f"{s.get('wins', 0)} wins   /   {s.get('losses', 0)} losses", 12, align=Qt.AlignmentFlag.AlignCenter)
+        self._text(p, QtCore.QRectF(20, r.bottom() + 46, self.width() - 40, 20),
+                   f"{s.get('exits', 0)} executed exit orders", 11, c['muted'], align=Qt.AlignmentFlag.AlignCenter)
+
+    def _daily(self, p):
+        c, s = self.colors, self.summary
+        data = list(s.get('days', {}).items())[-42:]
+        rect = QtCore.QRectF(20, 60, self.width() - 40, self.height() - 95)
+        magnitude = max([abs(v) for _, v in data] + [.01])
+        center = rect.center().y()
+        p.setPen(QtGui.QPen(QtGui.QColor(c['border']), 1))
+        p.drawLine(QtCore.QPointF(rect.left(), center), QtCore.QPointF(rect.right(), center))
+        count = max(1, len(data))
+        width = rect.width() / count
+        self.hover_regions = []
+        for index, (day, value) in enumerate(data):
+            size = abs(value) / magnitude * (rect.height() / 2 - 2)
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(QtGui.QColor(c['green' if value >= 0 else 'red']))
+            p.drawRoundedRect(QtCore.QRectF(rect.left() + index * width + 1, center - size if value >= 0 else center,
+                                           max(1, width - 3), max(1, size)), 2, 2)
+            self.hover_regions.append((QtCore.QRectF(rect.left() + index * width, rect.top(), width, rect.height()),
+                                       f'{day} UTC · {_performance_number(value, signed=True)} {s.get("currency", "")}' ))
+        caption = f"{data[0][0]}  —  {data[-1][0]} · last {len(data)} active days" if data else 'No executions in this period'
+        self._text(p, QtCore.QRectF(20, self.height() - 29, self.width() - 40, 18), caption, 10, c['muted'])
+
+    def _markets(self, p):
+        c = self.colors
+        rows = self.summary.get('markets', [])[:5]
+        maximum = max([abs(v) for _, v in rows] + [.01])
+        slot = max(28, min(40, (self.height() - 55) / max(1, len(rows))))
+        for index, (symbol, value) in enumerate(rows):
+            y = 48 + index * slot
+            self._text(p, QtCore.QRectF(20, y, 105, 20), symbol, 11, bold=True)
+            self._text(p, QtCore.QRectF(self.width() - 125, y, 105, 20), _performance_number(value, signed=True),
+                       12, c['green' if value >= 0 else 'red'], align=Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter, mono=True)
+            r = QtCore.QRectF(134, y + 6, max(1, self.width() - 273), 7)
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(QtGui.QColor(c['raised']))
+            p.drawRoundedRect(r, 3, 3)
+            r.setWidth(r.width() * abs(value) / maximum)
+            p.setBrush(QtGui.QColor(c['green' if value >= 0 else 'red']))
+            p.drawRoundedRect(r, 3, 3)
+        if not rows:
+            self._text(p, QtCore.QRectF(20, 65, self.width() - 40, 40), 'Market results appear after your first fill.', 12, c['muted'])
+
+    def _calendar(self, p):
+        import calendar
+        c, s = self.colors, self.summary
+        year, month = self.month.year(), self.month.month()
+        first, count = calendar.monthrange(year, month)
+        gap = 7
+        width = (self.width() - 40 - gap * 6) / 7
+        height = (self.height() - 88 - gap * 5) / 6
+        magnitude = max([abs(v) for day, v in s.get('days', {}).items() if day.startswith(f'{year:04}-{month:02}')] + [.01])
+        self.hit_days = []
+        self.hover_regions = []
+        for i, label in enumerate(('MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT', 'SUN')):
+            self._text(p, QtCore.QRectF(20 + i * (width + gap), 42, width, 22), label, 10, c['muted'])
+        for day in range(1, count + 1):
+            slot = first + day - 1
+            rect = QtCore.QRectF(20 + (slot % 7) * (width + gap), 72 + (slot // 7) * (height + gap), width, height)
+            key = f'{year:04}-{month:02}-{day:02}'
+            value = s.get('days', {}).get(key)
+            background = QtGui.QColor(c['raised'])
+            if value is not None:
+                background = QtGui.QColor(c['green' if value >= 0 else 'red'])
+                background.setAlpha(25 + int(abs(value) / magnitude * 60))
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(background)
+            p.drawRoundedRect(rect, 5, 5)
+            self._text(p, rect.adjusted(9, 4, -9, 4 - height + 20), day, 10, c['muted'])
+            if value is not None:
+                self.hit_days.append((rect, key))
+                self.hover_regions.append((rect, f'{key} UTC · {_performance_number(value, signed=True)} '
+                                           f'{s.get("currency", "")} · {s.get("day_counts", {}).get(key, 0)} fills'))
+                self._text(p, QtCore.QRectF(rect.x() + 9, rect.y() + height * .35, width - 18, 23),
+                           _performance_number(value, signed=True, decimals=0), 16,
+                           c['green' if value >= 0 else 'red'], bold=True)
+                if height >= 65:
+                    self._text(p, QtCore.QRectF(rect.x() + 9, rect.bottom() - 22, width - 18, 17),
+                               f"{s.get('day_counts', {}).get(key, 0)} fills", 10, c['muted'])
+
+    def _hours(self, p):
+        c, s = self.colors, self.summary
+        grid = s.get('hours', [[0.] * 24 for _ in range(7)])
+        counts = s.get('hour_counts', [[0] * 24 for _ in range(7)])
+        width = (self.width() - 62) / 24
+        height = max(8, (self.height() - 95) / 7)
+        maximum = max([abs(v) for row in grid for v in row] + [.01])
+        self.hover_regions = []
+        for day in range(7):
+            self._text(p, QtCore.QRectF(16, 53 + day * height, 28, height), 'MTWTFSS'[day], 10, c['muted'])
+            for hour in range(24):
+                value = grid[day][hour]
+                color = QtGui.QColor(c['raised'])
+                if counts[day][hour]:
+                    color = QtGui.QColor(c['green' if value >= 0 else 'red'])
+                    color.setAlpha(40 + int(abs(value) / maximum * 215))
+                p.setPen(Qt.PenStyle.NoPen)
+                p.setBrush(color)
+                rect = QtCore.QRectF(44 + hour * width, 53 + day * height, width - 3, height - 3)
+                p.drawRoundedRect(rect, 2, 2)
+                self.hover_regions.append((rect, f'{("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")[day]} '
+                                           f'{hour:02}:00–{hour:02}:59 UTC · {_performance_number(value, signed=True)} '
+                                           f'{s.get("currency", "")} · {counts[day][hour]} fills'))
+        for hour in (0, 6, 12, 18):
+            self._text(p, QtCore.QRectF(44 + hour * width, self.height() - 32, 50, 20), f'{hour:02}:00', 10, c['muted'])
+
+    def mouseMoveEvent(self, event):
+        if self.kind in {'equity', 'drawdown'}:
+            from bisect import bisect_left
+            points = self.summary.get('curve' if self.kind == 'equity' else 'dips', [])
+            index = -1
+            if points and self.plot_rect.contains(event.position()):
+                target = points[0][0] + (event.position().x() - self.plot_rect.x()) / self.plot_rect.width() * (points[-1][0] - points[0][0])
+                index = min(len(points) - 1, bisect_left(points, target, key=lambda point: point[0]))
+            if self.hover_index != index:
+                self.hover_index = index
+                self.update()
+        elif self.kind == 'calendar':
+            hit = next((day for rect, day in self.hit_days if rect.contains(event.position())), '')
+            self.setCursor(Qt.CursorShape.PointingHandCursor if hit else Qt.CursorShape.ArrowCursor)
+        detail = next((text for rect, text in self.hover_regions if rect.contains(event.position())), '')
+        if detail != self._hover_text:
+            self._hover_text = detail
+            if detail:
+                QtWidgets.QToolTip.showText(event.globalPosition().toPoint(), detail, self)
+            else:
+                QtWidgets.QToolTip.hideText()
+        super().mouseMoveEvent(event)
+
+    def mousePressEvent(self, event):
+        if self.kind == 'calendar' and event.button() == Qt.MouseButton.LeftButton:
+            day = next((day for rect, day in self.hit_days if rect.contains(event.position())), '')
+            if day:
+                self.day_selected.emit(day)
+        super().mousePressEvent(event)
+
+    def leaveEvent(self, event):
+        self._hover_text = ''
+        QtWidgets.QToolTip.hideText()
+        if self.hover_index >= 0:
+            self.hover_index = -1
+            self.update()
+        super().leaveEvent(event)
+
+
+class TradingPerformanceWorkspace(QtWidgets.QWidget):
+    """Lazy, event-driven performance workspace; no hidden polling or animation."""
+
+    def __init__(self, gateway, settings=None, parent=None):
+        super().__init__(parent)
+        from datetime import datetime, timezone
+        self.gateway, self.settings = gateway, settings
+        self.setObjectName('tradingPerformance')
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self._active = False
+        self._task = None
+        self._cancelled = None
+        self._generation = 0
+        self._scope = ''
+        self._rows = []
+        self._summary = {}
+        self._demo_rows = None
+        self._again = False
+        self._want_network = False
+        self._selected_day = ''
+        self._warning = ''
+        self._variant = max(0, min(2, settings.value('performance/variant_v1', 0, int))) if settings else 0
+        now = datetime.now(timezone.utc)
+        self._month = QtCore.QDate(now.year, now.month, 1)
+        self._pool = QtCore.QThreadPool(self)
+        self._pool.setMaxThreadCount(1)
+        self._pool.setExpiryTimeout(1000)
+        self._refresh_timer = QTimer(self)
+        self._refresh_timer.setSingleShot(True)
+        self._refresh_timer.setInterval(180)
+        self._refresh_timer.timeout.connect(self._reload)
+        root = QtWidgets.QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
+        scroll = QtWidgets.QScrollArea()
+        scroll.setObjectName('performanceScroll')
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
+        root.addWidget(scroll)
+        body = QtWidgets.QWidget()
+        body.setObjectName('performanceBody')
+        scroll.setWidget(body)
+        layout = QtWidgets.QVBoxLayout(body)
+        layout.setContentsMargins(24, 22, 24, 24)
+        layout.setSpacing(16)
+        header = QtWidgets.QHBoxLayout()
+        self.title = QtWidgets.QLabel('Performance')
+        self.title.setObjectName('performanceTitle')
+        header.addWidget(self.title)
+        header.addStretch()
+        self.demo_button = QtWidgets.QPushButton('Dummy data')
+        self.demo_button.setCheckable(True)
+        self.demo_button.setObjectName('performanceDemo')
+        self.demo_button.setAccessibleName('Toggle dummy performance data')
+        self.demo_button.toggled.connect(self._toggle_demo)
+        self.variant_button = QtWidgets.QPushButton()
+        self.variant_button.setAccessibleName('Switch performance layout variant')
+        self.variant_button.clicked.connect(self._cycle_variant)
+        header.addWidget(self.demo_button)
+        header.addWidget(self.variant_button)
+        layout.addLayout(header)
+        filters = QtWidgets.QHBoxLayout()
+        filters.setSpacing(8)
+        self.period = QtWidgets.QComboBox()
+        for label, days in [('All time', 0), ('Last 7 days', 7), ('Last 30 days', 30), ('Last 90 days', 90)]:
+            self.period.addItem(label, days)
+        self.period.setAccessibleName('Performance date range')
+        self.market = QtWidgets.QComboBox()
+        self.market.addItem('All markets', '')
+        self.market.setAccessibleName('Performance market filter')
+        self.side = QtWidgets.QComboBox()
+        for label, value in [('Both sides', ''), ('Buy executions', 'BUY'), ('Sell executions', 'SELL')]:
+            self.side.addItem(label, value)
+        self.side.setAccessibleName('Performance execution side')
+        self.currency = QtWidgets.QComboBox()
+        self.currency.addItems(['USDT', 'USDC'])
+        self.currency.setAccessibleName('Performance settlement currency')
+        for widget in (self.period, self.market, self.side, self.currency):
+            widget.currentIndexChanged.connect(self._filter_changed)
+            filters.addWidget(widget)
+        filters.addStretch()
+        self.source_label = QtWidgets.QLabel()
+        self.source_label.setObjectName('performanceMuted')
+        filters.addWidget(self.source_label)
+        self.refresh_button = QtWidgets.QPushButton('Refresh')
+        self.refresh_button.clicked.connect(lambda: self._schedule(reconcile=True, immediate=True))
+        filters.addWidget(self.refresh_button)
+        layout.addLayout(filters)
+        self.notice = QtWidgets.QLabel()
+        self.notice.setWordWrap(True)
+        self.notice.setObjectName('performanceNotice')
+        layout.addWidget(self.notice)
+        self.visual_host = QtWidgets.QWidget()
+        self.visual_layout = QtWidgets.QGridLayout(self.visual_host)
+        self.visual_layout.setContentsMargins(0, 0, 0, 0)
+        self.visual_layout.setSpacing(12)
+        layout.addWidget(self.visual_host)
+        table_header = QtWidgets.QHBoxLayout()
+        self.history_title = QtWidgets.QLabel('Execution history')
+        self.history_title.setObjectName('performanceSection')
+        table_header.addWidget(self.history_title)
+        table_header.addStretch()
+        self.day_button = QtWidgets.QPushButton('Clear day filter')
+        self.day_button.clicked.connect(lambda: self._select_day(''))
+        self.day_button.hide()
+        table_header.addWidget(self.day_button)
+        self.history_count = QtWidgets.QLabel()
+        self.history_count.setObjectName('performanceMuted')
+        table_header.addWidget(self.history_count)
+        layout.addLayout(table_header)
+        self.table = QtWidgets.QTableView()
+        self.table.setObjectName('performanceTable')
+        self.table.setMinimumHeight(290)
+        self.table.setMaximumHeight(430)
+        self.table.setShowGrid(False)
+        self.table.setAlternatingRowColors(True)
+        self.table.verticalHeader().hide()
+        self.table.verticalHeader().setDefaultSectionSize(36)
+        self.table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectionBehavior.SelectRows)
+        self.table.setEditTriggers(QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.model = _PerformanceTableModel(self.table)
+        self.table.setModel(self.model)
+        header_view = self.table.horizontalHeader()
+        header_view.setSectionResizeMode(QtWidgets.QHeaderView.ResizeMode.Interactive)
+        header_view.setStretchLastSection(True)
+        for col, width in enumerate((195, 115, 115, 120, 105, 135, 155, 140)):
+            self.table.setColumnWidth(col, width)
+        self.table.setSortingEnabled(True)
+        self.table.sortByColumn(0, Qt.SortOrder.DescendingOrder)
+        layout.addWidget(self.table)
+        self.details = QtWidgets.QLabel()
+        self.details.setObjectName('performanceMuted')
+        self.details.setWordWrap(True)
+        self.details.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        layout.addWidget(self.details)
+        self._plots = []
+        self._metrics = {}
+        self._build_variant()
+        gateway.performance_changed.connect(self._history_changed)
+        gateway.performance_problem.connect(self._history_problem)
+        gateway.credentials_changed.connect(self._account_changed)
+        QtWidgets.QApplication.instance().aboutToQuit.connect(lambda: self.set_active(False))
+
+    def _build_variant(self):
+        while self.visual_layout.count():
+            widget = self.visual_layout.takeAt(0).widget()
+            if widget is not None:
+                widget.hide()
+                widget.deleteLater()
+        for index in range(6):
+            self.visual_layout.setColumnStretch(index, 0)
+            self.visual_layout.setRowStretch(index, 0)
+        self._plots, self._metrics = [], {}
+        self.calendar = None
+        c = _PERFORMANCE_STYLES[self._variant]
+        self.variant_button.setText(f'Layout {self._variant + 1} / 3 · {c["name"]}  ↻')
+        self.setStyleSheet(f'''
+            QWidget#tradingPerformance, QWidget#performanceBody, QScrollArea#performanceScroll {{ background: {c['bg']}; color: {c['text']}; border: 0; }}
+            QWidget#tradingPerformance QLabel {{ background: transparent; color: {c['text']}; border: 0; padding: 0; font: 12px Inter; }}
+            QWidget#tradingPerformance QLabel#performanceTitle {{ font: 600 27px Inter; }}
+            QWidget#tradingPerformance QLabel#performanceSection {{ font: 600 15px Inter; }}
+            QWidget#tradingPerformance QLabel#performanceMuted {{ color: {c['muted']}; font: 11px Inter; }}
+            QWidget#tradingPerformance QLabel#performanceNotice {{ color: {c['accent']}; padding: 8px 12px; background: {c['raised']}; border-radius: 5px; }}
+            QWidget#tradingPerformance QPushButton, QWidget#tradingPerformance QComboBox {{
+                color: {c['text']}; background: {c['card']}; border: 1px solid {c['border']}; border-radius: 5px;
+                font: 12px Inter; padding: 8px 12px; min-height: 17px;
+            }}
+            QWidget#tradingPerformance QPushButton:hover, QWidget#tradingPerformance QComboBox:hover {{ border-color: {c['accent']}; background: {c['raised']}; }}
+            QWidget#tradingPerformance QPushButton:focus, QWidget#tradingPerformance QComboBox:focus {{ border-color: {c['accent']}; }}
+            QWidget#tradingPerformance QPushButton:checked {{ color: {c['bg']}; background: {c['accent']}; border-color: {c['accent']}; }}
+            QWidget#tradingPerformance QPushButton:disabled {{ color: {c['muted']}; }}
+            QWidget#tradingPerformance QComboBox::drop-down {{ width: 0; border: 0; }}
+            QWidget#tradingPerformance QComboBox::down-arrow {{ image: none; width: 0; height: 0; }}
+            QWidget#tradingPerformance QComboBox QAbstractItemView {{ color: {c['text']}; background: {c['card']}; selection-background-color: {c['raised']}; border: 1px solid {c['border']}; padding: 5px; }}
+            QTableView#performanceTable {{ color: {c['text']}; background: {c['card']}; alternate-background-color: {c['bg']}; border: 1px solid {c['border']}; border-radius: 5px; selection-background-color: {c['raised']}; font: 12px Iosevka; }}
+            QTableView#performanceTable::item {{ padding: 0 10px; border: 0; }}
+            QTableView#performanceTable QHeaderView::section {{ background: {c['card']}; color: {c['muted']}; border: 0; border-bottom: 1px solid {c['border']}; padding: 12px 10px; font: 11px Inter; }}
+            QWidget#tradingPerformance QScrollBar:vertical {{ background: {c['bg']}; width: 8px; border: 0; }}
+            QWidget#tradingPerformance QScrollBar::handle:vertical {{ background: {c['border']}; min-height: 24px; border-radius: 4px; }}
+            QWidget#tradingPerformance QScrollBar::add-line:vertical, QWidget#tradingPerformance QScrollBar::sub-line:vertical {{ height: 0; }}
+        ''')
+
+        def plot(kind, title, row, col, rows=1, cols=1, height=220):
+            widget = _PerformancePlot(kind, title)
+            widget.setMinimumHeight(height)
+            self.visual_layout.addWidget(widget, row, col, rows, cols)
+            self._plots.append(widget)
+            return widget
+
+        def metric(key, title, row, col, cols=1):
+            widget = plot('metric', title, row, col, cols=cols, height=116)
+            widget.setMaximumHeight(128)
+            self._metrics[key] = widget
+            return widget
+
+        if self._variant == 0:
+            for col, (key, title) in enumerate((('average', 'Average exit'), ('factor', 'Exit profit factor'),
+                                               ('drawdown', 'Peak drawdown'), ('volume', 'Executed volume'))):
+                metric(key, title, 0, col)
+                self.visual_layout.setColumnStretch(col, 1)
+            plot('equity', 'Cumulative P&L', 1, 0, cols=3, height=350)
+            plot('ring', 'Outcome distribution', 1, 3, height=350)
+            plot('daily', 'Daily performance', 2, 0, cols=2, height=230)
+            plot('markets', 'Market contribution · top 5', 2, 2, cols=2, height=230)
+        elif self._variant == 1:
+            metric('net', 'Net realized · selected period', 0, 0)
+            metric('win_rate', 'Exit win rate', 1, 0)
+            metric('average', 'Average exit', 2, 0)
+            metric('fees', 'Trading fees', 3, 0)
+            container = QtWidgets.QWidget()
+            column = QtWidgets.QVBoxLayout(container)
+            column.setContentsMargins(0, 0, 0, 0)
+            nav = QtWidgets.QHBoxLayout()
+            previous = QtWidgets.QPushButton('‹')
+            previous.setAccessibleName('Previous performance month')
+            previous.clicked.connect(lambda: self._change_month(-1))
+            following = QtWidgets.QPushButton('›')
+            following.setAccessibleName('Next performance month')
+            following.clicked.connect(lambda: self._change_month(1))
+            self.month_label = QtWidgets.QLabel()
+            self.month_label.setObjectName('performanceSection')
+            nav.addWidget(self.month_label)
+            nav.addStretch()
+            nav.addWidget(previous)
+            nav.addWidget(following)
+            column.addLayout(nav)
+            self.calendar = _PerformancePlot('calendar', 'Daily net P&L · click a day to inspect fills')
+            self.calendar.setMinimumHeight(460)
+            self.calendar.day_selected.connect(self._select_day)
+            self._plots.append(self.calendar)
+            column.addWidget(self.calendar, 1)
+            self.visual_layout.addWidget(container, 0, 1, 4, 3)
+            self._change_month(0)
+            self.visual_layout.setColumnStretch(0, 1)
+            for col in (1, 2, 3):
+                self.visual_layout.setColumnStretch(col, 1)
+            plot('equity', 'Cumulative P&L', 4, 0, cols=4, height=270)
+        else:
+            plot('equity', 'P&L / execution curve', 0, 0, rows=2, cols=2, height=270)
+            metric('factor', 'Exit profit factor', 0, 2)
+            metric('win_rate', 'Exit win rate', 0, 3)
+            metric('drawdown', 'Peak drawdown', 1, 2)
+            metric('maker', 'Maker executions', 1, 3)
+            plot('hours', 'Execution P&L / weekday × hour · UTC', 2, 0, cols=2, height=248)
+            plot('markets', 'Market attribution · top 5', 2, 2, cols=2, height=248)
+            plot('drawdown', 'Drawdown from P&L high', 3, 0, cols=4, height=175)
+            for col in range(4):
+                self.visual_layout.setColumnStretch(col, 1)
+        if self._summary:
+            self._present(self._summary)
+        else:
+            for widget in self._plots:
+                widget.configure({}, c)
+
+    def _change_month(self, delta):
+        self._month = self._month.addMonths(delta)
+        if self.calendar is not None:
+            self.calendar.month = self._month
+            self.month_label.setText(self._month.toString('MMMM yyyy'))
+            self.calendar.update()
+
+    def _cycle_variant(self):
+        self._variant = (self._variant + 1) % len(_PERFORMANCE_STYLES)
+        if self.settings:
+            self.settings.setValue('performance/variant_v1', self._variant)
+        self._build_variant()
+
+    def _filters(self):
+        return (int(self.period.currentData() or 0), str(self.market.currentData() or ''),
+                str(self.side.currentData() or ''), self.currency.currentText())
+
+    def _filter_changed(self):
+        self._selected_day = ''
+        self._schedule(immediate=True)
+
+    def _toggle_demo(self):
+        self._cancel_work()
+        self._selected_day = ''
+        self._warning = ''
+        self._summary = {}
+        self.model.set_rows([], _PERFORMANCE_STYLES[self._variant], self.currency.currentText())
+        for widget in self._plots:
+            widget.configure({}, _PERFORMANCE_STYLES[self._variant])
+        self.notice.setText('Preparing dummy data…' if self.demo_button.isChecked() else 'Loading recorded execution history…')
+        self.notice.show()
+        self._schedule(reconcile=not self.demo_button.isChecked(), immediate=True)
+
+    def _account_changed(self, *_args):
+        self._cancel_work()
+        self._rows, self._summary, self._scope = [], {}, ''
+        self.model.set_rows([], _PERFORMANCE_STYLES[self._variant], self.currency.currentText())
+        for widget in self._plots:
+            widget.configure({}, _PERFORMANCE_STYLES[self._variant])
+        self._schedule(reconcile=True, immediate=True)
+
+    def _history_changed(self):
+        if not self.demo_button.isChecked():
+            self._schedule(reconcile=True)
+
+    def _history_problem(self, message):
+        self._warning = message
+        if self._active and not self.demo_button.isChecked():
+            self.notice.setText(message)
+            self.notice.show()
+
+    def _schedule(self, *, reconcile=False, immediate=False):
+        if not self._active:
+            return
+        self._want_network |= reconcile
+        if self._task is not None:
+            self._again = True
+        elif not self._refresh_timer.isActive() or immediate:
+            self._refresh_timer.start(0 if immediate else 180)
+
+    def _cancel_work(self):
+        self._refresh_timer.stop()
+        self._generation += 1
+        if self._cancelled is not None:
+            self._cancelled.set()
+        if self._task is not None:
+            self._task.cancel()
+        self._task = None
+        self._again = self._want_network = False
+        self.refresh_button.setEnabled(True)
+
+    def set_active(self, active):
+        active = bool(active)
+        if self._active == active:
+            return
+        self._active = active
+        if active:
+            self._schedule(reconcile=True, immediate=True)
+        else:
+            self._cancel_work()
+
+    def hideEvent(self, event):
+        self.set_active(False)
+        super().hideEvent(event)
+
+    def showEvent(self, event):
+        self.set_active(True)
+        super().showEvent(event)
+
+    def _reload(self):
+        if not self._active or self._task is not None:
+            return
+        import threading
+        from ..networking.binance import launch_task
+        self._generation += 1
+        generation = self._generation
+        cancelled = self._cancelled = threading.Event()
+        filters, demo = self._filters(), self.demo_button.isChecked()
+        reconcile, self._want_network = self._want_network, False
+        journal = getattr(self.gateway, '_journal', None)
+        key, secret = self.gateway.api_key, self.gateway.api_secret
+        rest = self.gateway.rest
+        self.refresh_button.setEnabled(False)
+        self.source_label.setText('Loading history…' if not demo else 'Preparing demo…')
+        demo_rows = self._demo_rows
+
+        def read():
+            warnings = []
+            if demo:
+                rows = demo_rows if demo_rows is not None else _performance_demo()
+                scope = 'demo'
+            elif journal is not None:
+                if reconcile and key and secret and not cancelled.is_set():
+                    warnings = journal.reconcile_performance(rest, key, secret, cancelled)
+                rows = journal.performance_snapshot()['fills'] if not cancelled.is_set() else []
+                scope = journal.scope
+            else:
+                rows, scope = [], ''
+            if cancelled.is_set():
+                raise RuntimeError('Performance read cancelled.')
+            return rows, scope, _performance_summary(rows, *filters), warnings
+
+        def done(result):
+            if generation != self._generation or not self._active:
+                return
+            self._task = None
+            self.refresh_button.setEnabled(True)
+            rows, scope, summary, warnings = result
+            if demo:
+                self._demo_rows = rows
+            else:
+                self._rows, self._scope = rows, scope
+            self._warning = '; '.join(warnings[:3])
+            if filters == self._filters() and demo == self.demo_button.isChecked():
+                self._present(summary)
+            else:
+                self._again = True
+            if self._again:
+                self._again = False
+                self._schedule(immediate=True)
+
+        def failed(message):
+            if generation != self._generation or not self._active:
+                return
+            self._task = None
+            self.refresh_button.setEnabled(True)
+            self._warning = f'History could not be refreshed: {message}'
+            self.notice.setText(self._warning)
+            self.notice.show()
+            self.source_label.setText('History unavailable' if not self._summary else 'Showing previous history')
+
+        self._task = launch_task(read, done, failed, self._pool, defer_rate_waits=True,
+                                 source='trading performance', valid=lambda: self._active and generation == self._generation)
+
+    def _present(self, summary):
+        self._summary = summary
+        c = _PERFORMANCE_STYLES[self._variant]
+        unit = summary['currency']
+        available = summary['all_markets']
+        selected = self.market.currentData() or ''
+        if available != [self.market.itemData(i) for i in range(1, self.market.count())]:
+            blocker = QtCore.QSignalBlocker(self.market)
+            self.market.clear()
+            self.market.addItem('All markets', '')
+            for market in available:
+                self.market.addItem(market, market)
+            self.market.setCurrentIndex(max(0, self.market.findData(selected)))
+            del blocker
+            if selected and selected not in available and available:
+                self._schedule(immediate=True)
+        factor = summary['factor']
+        definitions = {
+            'net': (_performance_number(summary['net'], signed=True), unit, c['green' if summary['net'] >= 0 else 'red']),
+            'win_rate': (f"{summary['win_rate']:.1f}%" if summary['win_rate'] is not None else '—',
+                         f"{summary['wins']} wins / {summary['exits']} exit orders", ''),
+            'factor': ('—' if factor is None else ('∞' if factor == float('inf') else f'{factor:.2f}'),
+                       'Exit gains / exit losses', c['accent']),
+            'drawdown': (_performance_number(summary['drawdown']), f'{unit} · peak to trough', c['red']),
+            'volume': (human_number(summary['volume']), f'{unit} · filled notional', ''),
+            'average': (_performance_number(summary['average'], signed=True) if summary['average'] is not None else '—',
+                        f'{unit} · per exit order', ''),
+            'fees': (_performance_number(summary['fees']), f'{unit} · paid on recorded fills', ''),
+            'maker': (f"{summary['maker']:.1f}%", 'Share of recorded fills', c['accent']),
+        }
+        for key, widget in self._metrics.items():
+            widget.metric_values = definitions[key]
+        for widget in self._plots:
+            widget.configure(summary, c)
+        demo = self.demo_button.isChecked()
+        self.source_label.setText('DEMO / synthetic executions' if demo else
+                                  f"Nightwatch orders / {'Testnet' if self.gateway.testnet else 'Mainnet'} / UTC")
+        warning = self._warning or (getattr(self.gateway, 'performance_error', '') if not demo else '')
+        if demo:
+            notice = 'Dummy data is on. These synthetic trades are separate from your recorded history.'
+        elif warning:
+            notice = f'Saved executions are shown. History recovery is incomplete: {warning}'
+        elif not summary['rows']:
+            notice = ('No recorded fills match these filters.' if self._rows else
+                      'No recorded executions yet. Trades placed through Nightwatch will appear here; use Dummy data to explore the layouts.')
+        else:
+            notice = ''
+        self.notice.setText(notice)
+        self.notice.setVisible(bool(notice))
+        fees = ' · '.join(f"{_performance_number(value, decimals=8).rstrip('0').rstrip('.')} {asset}"
+                          for asset, value in sorted(summary['fee_assets'].items())) or '0'
+        foreign = any(asset != unit and value for asset, value in summary['fee_assets'].items())
+        self.details.setText(f'Fees paid: {fees}.  '
+                             + (f'Non-{unit} fees are listed separately and are not converted into P&L.  ' if foreign else '')
+                             + 'P&L excludes funding and unrealized positions. Exit statistics combine partial fills by exit order, '
+                               'after its settlement-currency fees. History covers orders recorded by Nightwatch from this version onward.')
+        self._select_day(self._selected_day)
+
+    def _select_day(self, day):
+        self._selected_day = day
+        rows = self._summary.get('rows', [])
+        if day:
+            rows = [row for row in rows if row['day'] == day]
+        self.model.set_rows(list(rows), _PERFORMANCE_STYLES[self._variant], self.currency.currentText())
+        self.model.sort(self.table.horizontalHeader().sortIndicatorSection(), self.table.horizontalHeader().sortIndicatorOrder())
+        self.day_button.setVisible(bool(day))
+        self.history_title.setText('Execution history' + (f' / {day}' if day else ''))
+        self.history_count.setText(f'{len(rows):,} fills')

@@ -10,7 +10,7 @@ import re
 import sqlite3
 import threading
 import time
-from collections import deque
+from collections import OrderedDict, deque
 from collections.abc import Callable
 from dataclasses import asdict
 from decimal import Decimal, InvalidOperation
@@ -68,11 +68,196 @@ class _PlacementJournal:
         self.scope = scope
         self._diagnostics = diagnostics
 
+    @staticmethod
+    def _performance_schema(db) -> None:
+        db.execute('CREATE TABLE IF NOT EXISTS performance_orders ('
+                   'scope TEXT NOT NULL, client_id TEXT NOT NULL, symbol TEXT NOT NULL, '
+                   'algo INTEGER NOT NULL, created_ms INTEGER NOT NULL, closing INTEGER NOT NULL, '
+                   "order_id TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'PENDING', "
+                   "filled_qty TEXT NOT NULL DEFAULT '0', update_ms INTEGER NOT NULL DEFAULT 0, "
+                   'reconciled INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(scope, client_id))')
+        db.execute('CREATE INDEX IF NOT EXISTS performance_order_identity '
+                   'ON performance_orders(scope, symbol, order_id)')
+        db.execute('CREATE TABLE IF NOT EXISTS performance_fills ('
+                   'scope TEXT NOT NULL, symbol TEXT NOT NULL, trade_id TEXT NOT NULL, '
+                   'order_id TEXT NOT NULL, client_id TEXT NOT NULL, time_ms INTEGER NOT NULL, '
+                   'side TEXT NOT NULL, position_side TEXT NOT NULL, price TEXT NOT NULL, qty TEXT NOT NULL, '
+                   'realized TEXT NOT NULL, fee TEXT NOT NULL, fee_asset TEXT NOT NULL, '
+                   'maker INTEGER NOT NULL, closing INTEGER NOT NULL, settlement TEXT NOT NULL, '
+                   'PRIMARY KEY(scope, symbol, trade_id))')
+        db.execute('CREATE INDEX IF NOT EXISTS performance_fill_order '
+                   'ON performance_fills(scope, symbol, order_id)')
+
+    def _performance_register(self, db, details: dict) -> None:
+        context = details.get('context') or {}
+        for order in details.get('expected_orders') or [details.get('expected') or details.get('order') or {}]:
+            client = str(order.get('clientAlgoId') or order.get('newClientOrderId')
+                         or details.get('client_id') or '')
+            symbol = str(order.get('symbol') or context.get('symbol') or '')
+            if not client or not symbol:
+                continue
+            closing = (exchange_bool(order.get('reduceOnly')) is True
+                       or exchange_bool(order.get('closePosition')) is True
+                       or context.get('position_intent') in {'CLOSE', 'REDUCE'}
+                       or bool(context.get('protective_leg') or context.get('emergency_close'))
+                       or (order.get('positionSide'), order.get('side')) in {('LONG', 'SELL'), ('SHORT', 'BUY')})
+            db.execute('INSERT OR IGNORE INTO performance_orders '
+                       '(scope, client_id, symbol, algo, created_ms, closing) VALUES (?, ?, ?, ?, ?, ?)',
+                       (self.scope, client, symbol, int(bool(order.get('clientAlgoId')
+                        or details.get('method') == 'algoOrder.place')),
+                        int(order.get('time') or order.get('createTime') or time.time() * 1000), int(closing)))
+
+    def _performance_update(self, db, payload: dict) -> int:
+        """Only identities saved before transmission can enter performance history."""
+        changed = 0
+        for client in payload.get('rejected', []):
+            db.execute("UPDATE performance_orders SET status='REJECTED', reconciled=1 "
+                       "WHERE scope=? AND client_id=? AND order_id='' AND filled_qty='0'",
+                       (self.scope, client))
+        for source in payload.get('orders', []):
+            row = normalize_order(source)
+            client = str(row.get('clientAlgoId') or row.get('clientOrderId') or '')
+            symbol = str(row.get('symbol') or '')
+            owner = db.execute('SELECT * FROM performance_orders WHERE scope=? AND client_id=? AND symbol=?',
+                               (self.scope, client, symbol)).fetchone()
+            if owner is None and row.get('orderId'):
+                owner = db.execute('SELECT * FROM performance_orders WHERE scope=? AND symbol=? AND order_id=?',
+                                   (self.scope, symbol, str(row['orderId']))).fetchone()
+            if owner is None:
+                continue
+            order_id = str((row.get('actualOrderId') if row.get('algoId') else row.get('orderId')) or '')
+            if order_id == '0':
+                order_id = ''
+            stamp = int(row.get('updateTime') or row.get('time') or 0)
+            quantity = str(row.get('executedQty') or owner['filled_qty'])
+            if not valid_order_fills({'executedQty': quantity}):
+                continue
+            # Late REST acknowledgements must not roll a stream update backwards.
+            if stamp < owner['update_ms']:
+                continue
+            values = (order_id or owner['order_id'], str(row.get('status') or owner['status']),
+                      quantity, stamp)
+            if values != (owner['order_id'], owner['status'], owner['filled_qty'], owner['update_ms']):
+                db.execute('UPDATE performance_orders SET order_id=?, status=?, filled_qty=?, update_ms=?, '
+                           'reconciled=0 WHERE scope=? AND client_id=?', (*values, self.scope, owner['client_id']))
+                changed += 1
+        for row in payload.get('fills', []):
+            symbol, order_id = str(row.get('symbol') or ''), str(row.get('orderId') or '')
+            owner = db.execute('SELECT client_id, closing FROM performance_orders '
+                               'WHERE scope=? AND symbol=? AND order_id=?',
+                               (self.scope, symbol, order_id)).fetchone()
+            if owner is None:
+                continue
+            try:
+                trade_id, stamp = str(int(row['id'])), int(row['time'])
+                values = [Decimal(str(row[key])) for key in ('price', 'qty', 'realizedPnl', 'commission')]
+                if (int(trade_id) < 0 or stamp <= 0 or any(not value.is_finite() for value in values)
+                        or min(values[:2]) <= 0 or row.get('side') not in {'BUY', 'SELL'}):
+                    continue
+            except (KeyError, TypeError, ValueError, InvalidOperation, OverflowError):
+                continue
+            settlement = 'USDC' if symbol.split('_')[0].endswith('USDC') else 'USDT'
+            cursor = db.execute('INSERT OR IGNORE INTO performance_fills VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+                       (self.scope, symbol, trade_id, order_id, owner['client_id'], stamp,
+                        row['side'], str(row.get('positionSide') or 'BOTH'), *(str(v) for v in values),
+                        str(row.get('commissionAsset') or ''), int(exchange_bool(row.get('maker')) is True),
+                        int(owner['closing'] or values[2] != 0), settlement))
+            changed += cursor.rowcount
+        return changed
+
+    def performance_snapshot(self) -> dict:
+        """Worker-only snapshot; never called by hidden dashboard widgets."""
+        with sqlite3.connect(self.path, timeout=5.0) as db:
+            db.row_factory = sqlite3.Row
+            self._performance_schema(db)
+            rows = [dict(row) for row in db.execute('SELECT * FROM performance_fills WHERE scope=? '
+                                                   'ORDER BY time_ms, CAST(trade_id AS INTEGER)', (self.scope,))]
+            orders = [dict(row) for row in db.execute('SELECT * FROM performance_orders WHERE scope=? '
+                                                    'AND reconciled=0 ORDER BY created_ms', (self.scope,))]
+        return {'fills': rows, 'pending': orders, 'scope': self.scope}
+
+    def reconcile_performance(self, rest, api_key: str, api_secret: str, cancelled) -> list[str]:
+        """Recover missed fills of our own orders, only on an explicit visible read."""
+        warnings = []
+        now = int(time.time() * 1000)
+        day = 86_400_000
+        for saved in self.performance_snapshot()['pending']:
+            if cancelled.is_set():
+                break
+            symbol, client = saved['symbol'], saved['client_id']
+            try:
+                algo = bool(saved['algo'])
+                params = {'clientAlgoId': client} if algo else {'symbol': symbol, 'origClientOrderId': client}
+                source = rest.performance_history_read(api_key, api_secret,
+                          '/fapi/v1/algoOrder' if algo else '/fapi/v1/order', params)
+                row = normalize_order(source)
+                if (row.get('symbol') != symbol
+                        or str(row.get('clientAlgoId') if algo else row.get('clientOrderId')) != client):
+                    raise RuntimeError('Order identity could not be verified')
+                if algo and row.get('actualOrderId') and str(row['actualOrderId']) != '0':
+                    child = normalize_order(rest.performance_history_read(api_key, api_secret, '/fapi/v1/order',
+                                            {'symbol': symbol, 'orderId': row['actualOrderId']}))
+                    if child.get('symbol') != symbol or str(child.get('orderId')) != str(row['actualOrderId']):
+                        raise RuntimeError('Conditional execution identity could not be verified')
+                    row.update(executedQty=child.get('executedQty', '0'), status=child.get('status', ''),
+                               updateTime=child.get('updateTime', row.get('updateTime', 0)))
+                self.run('performance', payload=_journal_json({'orders': [row]}))
+                order_id = str((row.get('actualOrderId') if algo else row.get('orderId')) or '')
+                expected = Decimal(str(row.get('executedQty') or '0'))
+                if not expected.is_finite() or expected < 0:
+                    raise RuntimeError('Invalid executed quantity')
+                with sqlite3.connect(self.path, timeout=5.0) as db:
+                    recorded = sum((Decimal(r[0]) for r in db.execute('SELECT qty FROM performance_fills '
+                        'WHERE scope=? AND symbol=? AND order_id=?', (self.scope, symbol, order_id))), Decimal(0))
+                if expected > recorded and order_id and order_id != '0':
+                    if saved['created_ms'] < now - 90 * day:
+                        warnings.append(f'{symbol}: older missing fills may be outside exchange retention')
+                    start = max(saved['created_ms'] - 60_000, now - 90 * day)
+                    end = min(now, int(row.get('updateTime') or now) + 1)
+                    while start < end and recorded < expected and not cancelled.is_set():
+                        window_end = min(end, start + 7 * day - 1)
+                        params = {'symbol': symbol, 'orderId': order_id, 'startTime': start,
+                                  'endTime': window_end, 'limit': 1000}
+                        while not cancelled.is_set():
+                            page = rest.performance_history_read(api_key, api_secret, '/fapi/v1/userTrades', params)
+                            if not isinstance(page, list):
+                                raise RuntimeError('Invalid fills response')
+                            fills = [r for r in page if str(r.get('orderId')) == order_id
+                                     and r.get('symbol') == symbol and start <= int(r.get('time', 0)) <= window_end]
+                            self.run('performance', payload=_journal_json({'fills': fills}))
+                            if len(page) < 1000 or any(int(r.get('time', 0)) > window_end for r in page):
+                                break
+                            next_id = max(int(r['id']) for r in page) + 1
+                            if next_id <= int(params.get('fromId', -1)):
+                                raise RuntimeError('Fill pagination did not advance')
+                            params = {'symbol': symbol, 'orderId': order_id, 'fromId': next_id, 'limit': 1000}
+                        with sqlite3.connect(self.path, timeout=5.0) as db:
+                            recorded = sum((Decimal(r[0]) for r in db.execute('SELECT qty FROM performance_fills '
+                                'WHERE scope=? AND symbol=? AND order_id=?', (self.scope, symbol, order_id))), Decimal(0))
+                        start = window_end + 1
+                if not cancelled.is_set():
+                    if recorded < expected:
+                        warnings.append(f'{symbol}: some execution history is unavailable')
+                    elif row.get('status') in {'FILLED', 'CANCELED', 'EXPIRED', 'EXPIRED_IN_MATCH', 'REJECTED', 'FINISHED'}:
+                        with sqlite3.connect(self.path, timeout=5.0) as db:
+                            # A newer stream update must remain eligible for reconciliation.
+                            db.execute('UPDATE performance_orders SET reconciled=1 WHERE scope=? AND client_id=? '
+                                       'AND update_ms=? AND filled_qty=?',
+                                       (self.scope, client, int(row.get('updateTime') or 0), str(row.get('executedQty') or '0')))
+            except Exception as exc:
+                if not cancelled.is_set():
+                    warnings.append(f'{symbol}: {exc}')
+                # Do not fan out requests after connectivity/rate-limit/auth failures.
+                if binance_error_code(exc) not in {-2011, -2013}:
+                    break
+        return list(dict.fromkeys(warnings))
+
     def run(self, operation: str, request_id: str = "", payload: str = "", fingerprint: str = ""):
         started = time.perf_counter()
         os.makedirs(os.path.dirname(self.path), exist_ok=True)
         connection = sqlite3.connect(self.path, timeout=5.0)
         try:
+            connection.row_factory = sqlite3.Row
             connection.execute("PRAGMA synchronous=FULL")
             with connection:
                 connection.execute(
@@ -83,18 +268,26 @@ class _PlacementJournal:
                 connection.execute('CREATE TABLE IF NOT EXISTS protection_intents ('
                                    'scope TEXT NOT NULL, client_id TEXT NOT NULL, payload TEXT NOT NULL, '
                                    'PRIMARY KEY(scope, client_id))')
+                self._performance_schema(connection)
+                if operation == 'performance':
+                    return self._performance_update(connection, json.loads(payload))
                 if operation == "load":
                     placements = connection.execute(
                         "SELECT request_id, payload FROM unresolved_placements WHERE scope=?", (self.scope,)
                     ).fetchall()
                     protections = connection.execute('SELECT client_id, payload FROM protection_intents WHERE scope=?', (self.scope,)).fetchall()
-                    return {'placements': placements, 'protections': protections}
+                    for _key, value in [*placements, *protections]:
+                        self._performance_register(connection, json.loads(value))
+                    identities = connection.execute('SELECT client_id, symbol, order_id FROM performance_orders '
+                                                    'WHERE scope=?', (self.scope,)).fetchall()
+                    return {'placements': placements, 'protections': protections, 'performance': identities}
                 if operation == "put":
                     connection.execute(
                         "INSERT INTO unresolved_placements VALUES (?, ?, ?, ?)",
                         (self.scope, request_id, fingerprint, payload),
                     )
                     details = json.loads(payload)
+                    self._performance_register(connection, details)
                     context = details.get('context') or {}
                     if context.get('protections') or context.get('protective_leg'):
                         client_id = str(details.get('client_id') or '')
@@ -110,6 +303,7 @@ class _PlacementJournal:
                 elif operation == 'tranche':
                     records = json.loads(payload)
                     for record in records:
+                        self._performance_register(connection, record)
                         connection.execute('INSERT INTO protection_intents VALUES (?, ?, ?) '
                                            'ON CONFLICT(scope, client_id) DO UPDATE SET payload=excluded.payload',
                                            (self.scope, record['client_id'], _journal_json(record)))
@@ -142,6 +336,8 @@ class TradingGateway(QtCore.QObject):
     problem = Signal(str)
     credentials_changed = Signal(str)
     protections_recovered = Signal(object)
+    performance_changed = Signal()
+    performance_problem = Signal(str)
 
     def __init__(self, testnet: bool = False, parent: QtCore.QObject | None = None, *, diagnostics: DiagnosticsPort | None = None):
         super().__init__(parent)
@@ -247,7 +443,109 @@ class TradingGateway(QtCore.QObject):
         self._protection_recovery_pending = False
         self._protection_recovery_task = None
         self._protection_reserved_slots = 0
+        self.performance_error = ''
+        self._performance_clients: set[str] = set()
+        self._performance_order_clients: dict[tuple[str, str], str] = {}
+        self._performance_seen: OrderedDict[tuple, object] = OrderedDict()
+        self._performance_pending_orders = {}
+        self._performance_pending_fills = {}
+        self._performance_pending_rejected = set()
+        self._performance_record_task = None
+        self.request_succeeded.connect(self._capture_performance_result)
+        self.snapshot_ready.connect(self._capture_performance_result)
         QTimer.singleShot(0, self, self._restore_placement_journal)
+
+    def _capture_performance_result(self, *args) -> None:
+        result = args[-1] if args else None
+        if not isinstance(result, dict):
+            return
+        orders = [*result.get('orders', []), *result.get('algoOrders', [])]
+        if result.get('orderId') or result.get('algoId'):
+            orders.append(result)
+        self._capture_performance({'orders': orders, 'fills': result.get('fills') or []})
+
+    def _capture_performance(self, payload: dict) -> None:
+        journal = self._journal
+        if journal is None or self.stopping or not any(payload.values()):
+            return
+        orders, fills = [], []
+        for source in payload.get('orders', []):
+            row = normalize_order(source)
+            symbol = str(row.get('symbol') or '')
+            client = str(row.get('clientAlgoId') or row.get('clientOrderId') or '')
+            if client not in self._performance_clients:
+                client = self._performance_order_clients.get((symbol, str(row.get('orderId') or '')), '')
+            if not client:
+                continue
+            order_id = str((row.get('actualOrderId') if row.get('algoId') else row.get('orderId')) or '')
+            if order_id and order_id != '0':
+                self._performance_order_clients[(symbol, order_id)] = client
+            key = ('order', client)
+            signature = tuple(str(row.get(field) or '') for field in
+                              ('status', 'executedQty', 'orderId', 'actualOrderId', 'updateTime'))
+            if self._performance_seen.get(key) != signature:
+                self._performance_seen[key] = signature
+                orders.append(row)
+        for row in payload.get('fills', []):
+            if not isinstance(row, dict):
+                continue
+            identity = (str(row.get('symbol') or ''), str(row.get('orderId') or ''))
+            key = ('fill', identity[0], str(row.get('id')))
+            if identity in self._performance_order_clients and key not in self._performance_seen:
+                self._performance_seen[key] = True
+                fills.append(row)
+        rejected = [client for client in payload.get('rejected', []) if client in self._performance_clients]
+        if not orders and not fills and not rejected:
+            return
+        while len(self._performance_seen) > 4096:
+            self._performance_seen.popitem(last=False)
+        for row in orders:
+            identity = str(row.get('clientAlgoId') or row.get('clientOrderId') or row.get('orderId'))
+            previous = self._performance_pending_orders.get(identity)
+            if previous is None or safe_float(row.get('updateTime')) >= safe_float(previous.get('updateTime')):
+                self._performance_pending_orders[identity] = row
+        for row in fills:
+            self._performance_pending_fills[(row.get('symbol'), str(row.get('id')))] = row
+        self._performance_pending_rejected.update(rejected)
+        self._flush_performance_capture()
+
+    def _flush_performance_capture(self) -> None:
+        journal = self._journal
+        if (self._performance_record_task is not None or journal is None or self.stopping
+                or not (self._performance_pending_orders or self._performance_pending_fills
+                        or self._performance_pending_rejected)):
+            return
+        payload = {'orders': list(self._performance_pending_orders.values()),
+                   'fills': list(self._performance_pending_fills.values()),
+                   'rejected': list(self._performance_pending_rejected)}
+        self._performance_pending_orders.clear()
+        self._performance_pending_fills.clear()
+        self._performance_pending_rejected.clear()
+
+        def saved(changed):
+            self._performance_record_task = None
+            if changed:
+                self.performance_error = ''
+                self.performance_changed.emit()
+            self._flush_performance_capture()
+
+        def failed(message):
+            self._performance_record_task = None
+            self._performance_seen.clear()
+            self.performance_error = f'Trade history could not be saved: {message}'
+            self.performance_problem.emit(self.performance_error)
+
+        # Serialized with the existing write-before-send journal. No polling,
+        # analytics, network reads or dashboard construction on this path.
+        try:
+            encoded = _journal_json(payload)
+        except (TypeError, ValueError, OverflowError) as exc:
+            failed(str(exc))
+            return
+        task = self._launch_task(lambda: journal.run('performance', payload=encoded),
+                                 saved, failed, self._journal_pool)
+        self._performance_record_task = task
+        self.tasks.add(task)
 
     def _journal_failed(self, message: str) -> None:
         self._journal_loading = False
@@ -273,6 +571,10 @@ class TradingGateway(QtCore.QObject):
 
         def restored(saved) -> None:
             try:
+                for client, symbol, order_id in saved.get('performance', []):
+                    self._performance_clients.add(client)
+                    if order_id:
+                        self._performance_order_clients[(symbol, order_id)] = client
                 records = {client_id: json.loads(payload) for client_id, payload in saved['protections']}
                 for record in records.values():
                     record['context'] = _restore_rules(record.get('context') or {})
@@ -307,6 +609,7 @@ class TradingGateway(QtCore.QObject):
                 self.unresolved_fingerprints[details["fingerprint"]] = request_id
                 unknown_count += 1
             self._journal_loading = False
+            self.performance_changed.emit()
             if records:
                 self._recover_protections()
             if unknown_count:
@@ -683,6 +986,8 @@ class TradingGateway(QtCore.QObject):
         self._journal_requests.add(request_id)
 
         def committed(_result) -> None:
+            self._performance_clients.update(str(client) for client in
+                                             (details.get('client_ids') or [details.get('client_id')]) if client)
             if context.get('protections') or context.get('protective_leg'):
                 client_id = str(details.get('client_id') or '')
                 self._protection_records.setdefault(client_id, {'kind': 'leg' if context.get('protective_leg') else 'entry',
@@ -821,6 +1126,15 @@ class TradingGateway(QtCore.QObject):
         self.cross_ready.clear()
         self.cross_pending.clear()
         self._journal = None
+        self.performance_error = ''
+        self._performance_clients.clear()
+        self._performance_order_clients.clear()
+        self._performance_seen.clear()
+        self._performance_pending_orders.clear()
+        self._performance_pending_fills.clear()
+        self._performance_pending_rejected.clear()
+        self._performance_record_task = None
+        self.performance_changed.emit()
         self._journal_loading = True
         self._journal_error = ""
         self._restore_placement_journal()
@@ -1169,6 +1483,8 @@ class TradingGateway(QtCore.QObject):
         details = dict(metadata or self.request_details.get(request_id, {}))
         if not uncertain:
             self._collateral_reservations.pop(request_id, None)
+            if details.get('method') in {'order.place', 'algoOrder.place', 'batchOrders.place'}:
+                self._capture_performance({'rejected': details.get('client_ids') or [details.get('client_id')]})
         context = details.get("context")
         client_id = str(details.get('client_id') or '')
         record = self._protection_records.get(client_id)
@@ -1961,6 +2277,7 @@ class TradingGateway(QtCore.QObject):
                     self._begin_batch_reconciliation(request_id, details, 'Binance returned unverifiable results inside a partial batch.')
                     return
                 accepted = len(accepted_rows)
+                self._capture_performance({'orders': accepted_rows})
                 transport_uncertain = any(
                     bool(row.get('_uncertain')) or (not row.get('_notSent') and execution_outcome_uncertain(row))
                     for row in errors
@@ -2974,6 +3291,16 @@ class TradingGateway(QtCore.QObject):
                     )
                 else:
                     self._finish_request(request_id, {**order, '_transport': 'ACCOUNT STREAM'})
+        if event_type in {'ORDER_TRADE_UPDATE', 'ALGO_UPDATE'}:
+            fills = []
+            if event_type == 'ORDER_TRADE_UPDATE' and order.get('x') == 'TRADE':
+                fills.append({'symbol': order.get('symbol'), 'orderId': order.get('orderId'),
+                              'id': order.get('t'), 'time': order.get('T') or payload.get('T'),
+                              'side': order.get('side'), 'positionSide': order.get('positionSide'),
+                              'price': order.get('L'), 'qty': order.get('l'),
+                              'realizedPnl': order.get('rp'), 'commission': order.get('n', '0'),
+                              'commissionAsset': order.get('N', ''), 'maker': order.get('m', False)})
+            self._capture_performance({'orders': [order], 'fills': fills})
         if event_type == "ACCOUNT_CONFIG_UPDATE":
             self.rest.invalidate_position_mode_cache()
             configuration = payload.get("ac") or {}

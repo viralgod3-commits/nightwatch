@@ -1356,6 +1356,12 @@ class BinanceRest:
     def signed_request(self, api_key: str, api_secret: str, path: str, params: dict[str, Any] | None=None, method: str='GET', order_count: int=0, *, before_send: Callable[[], None] | None = None) -> Any:
         return run_async(self._signed_request_async(api_key, api_secret, path, params, method, order_count, before_send=before_send))
 
+    def performance_history_read(self, api_key: str, api_secret: str, path: str, params: dict[str, Any]) -> Any:
+        """Read-only, low-priority reconciliation while Performance is visible."""
+        if path not in {'/fapi/v1/order', '/fapi/v1/algoOrder', '/fapi/v1/userTrades'}:
+            raise ValueError('Unsupported performance history endpoint.')
+        return run_async(self._signed_request_async(api_key, api_secret, path, params, priority='analytics'))
+
     async def _signed_request_async(self, api_key: str, api_secret: str, path: str, params: dict[str, Any] | None=None, method: str='GET', order_count: int=0, *, priority: str='manual', before_send: Callable[[], None] | None = None) -> Any:
         values = self._encoded_params(params or {})
         values.setdefault('recvWindow', '5000')
