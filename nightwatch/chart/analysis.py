@@ -155,7 +155,7 @@ def indicator_analysis(token, generation, source_update, requests, first, last, 
 
 
 def profile_analysis(matrix, bins, levels):
-    centers, volumes = volume_profile(_candles(matrix), bins)
+    centers, volumes = volume_profile(matrix, bins)
     return centers, volumes, profile_levels(centers, volumes, levels)
 
 

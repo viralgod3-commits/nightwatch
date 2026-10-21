@@ -30,7 +30,10 @@ def candle_arrays(candles: list[Candle]) -> tuple[np.ndarray, ...]:
 
 def atr_values(candles: list[Candle], period: int = 14) -> np.ndarray:
     period = max(1, int(period))
-    _, _, high, low, close, _, _ = candle_arrays(candles)
+    count = len(candles)
+    high = np.fromiter((c.high for c in candles), dtype=float, count=count)
+    low = np.fromiter((c.low for c in candles), dtype=float, count=count)
+    close = np.fromiter((c.close for c in candles), dtype=float, count=count)
     if len(close) == 0:
         return np.array([], dtype=float)
     previous = np.r_[close[0], close[:-1]]
@@ -490,16 +493,24 @@ def bollinger_values(candles: list[Candle], period: int = 20, deviations: float 
     return middle, upper, lower
 
 
-def volume_profile(candles: list[Candle], bins: int = 48) -> tuple[np.ndarray, np.ndarray]:
+def volume_profile(candles: list[Candle] | np.ndarray, bins: int = 48) -> tuple[np.ndarray, np.ndarray]:
     """OHLCV estimate: distribute each candle's volume across its price range.
 
     One algorithm at every history size; chunking affects memory, not results.
     This is an estimate, not exchange trade-by-price volume.
     """
-    if not candles:
+    if not len(candles):
         return np.array([], dtype=float), np.array([], dtype=float)
     bins = max(1, int(bins))
-    _, _, high, low, _, volumes, _ = candle_arrays(candles)
+    if isinstance(candles, np.ndarray):
+        # Analysis workers already own an OHLCV matrix. Keep it numeric instead
+        # of materializing every candle only to extract these three columns.
+        high, low, volumes = (np.asarray(candles[:, column], dtype=float) for column in (2, 3, 5))
+    else:
+        count = len(candles)
+        high = np.fromiter((c.high for c in candles), dtype=float, count=count)
+        low = np.fromiter((c.low for c in candles), dtype=float, count=count)
+        volumes = np.fromiter((c.volume for c in candles), dtype=float, count=count)
     valid = np.isfinite(high) & np.isfinite(low) & np.isfinite(volumes) & (high >= low) & (volumes > 0)
     high, low, volumes = high[valid], low[valid], volumes[valid]
     if not len(volumes):
@@ -892,7 +903,9 @@ def _vwap_components(candles, anchor="week"):
 
 
 def donchian_values(candles, period=20):
-    _, _, high, low, _, _, _ = candle_arrays(candles)
+    count = len(candles)
+    high = np.fromiter((c.high for c in candles), dtype=float, count=count)
+    low = np.fromiter((c.low for c in candles), dtype=float, count=count)
     upper = rolling_previous_extreme(high, period, True)
     lower = rolling_previous_extreme(low, period, False)
     return upper, (upper + lower) * 0.5, lower
@@ -964,16 +977,17 @@ class PriceStudyCache:
                 cached = key, arrays, state
                 self.entries[name] = cached
         if cached is None or cached[0] != key:
-            closes = np.fromiter((c.close for c in candles), dtype=float)
             state = None
             if name == "Bollinger Bands":
                 arrays = bollinger_values(candles, int(settings["period"]), float(settings["deviations"]))
             elif name == "ATR":
                 arrays = (atr_values(candles, int(settings["period"])),)
             elif name == "RSI":
+                closes = np.fromiter((c.close for c in candles), dtype=float, count=len(candles))
                 rsi, gains, losses = _rsi_components(closes, int(settings["period"]))
                 arrays, state = (rsi,), (gains, losses)
             elif name == "EMA Trend":
+                closes = np.fromiter((c.close for c in candles), dtype=float, count=len(candles))
                 arrays = tuple(ema_series(closes, int(settings[k])) for k in ("fast", "medium", "slow"))
             elif name == "VWAP":
                 values, groups, volumes, quotes = _vwap_components(candles, settings.get("anchor", "week"))
