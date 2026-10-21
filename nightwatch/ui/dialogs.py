@@ -1738,7 +1738,8 @@ class NightwatchSettingsDialog(QtWidgets.QDialog):
         "trading connection order entry account actions execution live testnet credentials quick trading magnetic rail",
         "alerts delivery notifications market data history download candles CSV research database",
         "advanced guidance application help order book guide chart performance benchmark FPS frame timing capture "
-        "developer tools UI tuner diagnostics magnetic rail",
+        "developer tools UI tuner diagnostics magnetic rail colors surfaces status bar geometry typography "
+        "fonts rendering profiles import export ray effect arm transition cancel effect",
     )
 
     def __init__(
@@ -1765,6 +1766,7 @@ class NightwatchSettingsDialog(QtWidgets.QDialog):
         self.setMinimumSize(self._preferred_minimum_size)
         self._action_widgets: dict[QtGui.QAction, QtWidgets.QWidget] = {}
         self._action_widget_labels: dict[QtGui.QAction, str] = {}
+        self._action_selector_syncs = []
         self._settings_search: QtWidgets.QLineEdit | None = None
         self._directional_mode_combos: dict[str, QtWidgets.QComboBox] = {}
         self._appearance_actions: dict[QtGui.QAction, _SettingsPreviewChoice] = {}
@@ -2162,10 +2164,10 @@ class NightwatchSettingsDialog(QtWidgets.QDialog):
             category_match = bool(query and query in category)
             if not query or category_match:
                 page_match = True
-            elif index == self.CATEGORIES.index("Workspace") or index not in self._built_pages:
-                page_match = query in self._page_search_metadata(index)
             else:
-                page_match = query in self._searchable_text(page)
+                page_match = query in self._page_search_metadata(index)
+                if not page_match and index in self._built_pages:
+                    page_match = query in self._searchable_text(page)
             item = self.categories.item(index)
             if item is not None:
                 item.setHidden(not page_match)
@@ -2174,11 +2176,15 @@ class NightwatchSettingsDialog(QtWidgets.QDialog):
             if page_match and index == current:
                 current_visible = True
 
-
-            for group in page.findChildren(QtWidgets.QGroupBox):
-                if group.objectName() != "settingsGroup":
-                    continue
-                group.setVisible(not query or category_match or query in self._searchable_text(group))
+            groups = [group for group in page.findChildren(QtWidgets.QGroupBox)
+                      if group.objectName() == "settingsGroup"]
+            matching_groups = {group for group in groups
+                               if query and query in self._searchable_text(group)}
+            for group in groups:
+                # Metadata also indexes synonyms and controls in nested dialogs.
+                # Keep the page useful when no group contains the literal query.
+                group.setVisible(not query or category_match or not matching_groups
+                                 or group in matching_groups)
 
         if query and not current_visible and first_match >= 0:
             self.categories.setCurrentRow(first_match)
@@ -2231,7 +2237,8 @@ class NightwatchSettingsDialog(QtWidgets.QDialog):
             widget.setToolTip(action.toolTip())
             widget.clicked.connect(lambda _checked=False, a=action: a.trigger())
         self._action_widgets[action] = widget
-        self._action_widget_labels[action] = label
+        if text is not None:
+            self._action_widget_labels[action] = label
         layout.addWidget(widget)
         action.changed.connect(lambda a=action: self._sync_action_widget(a))
         return widget
@@ -2267,6 +2274,7 @@ class NightwatchSettingsDialog(QtWidgets.QDialog):
             combo.addItem(action.text().replace("&", ""))
         def sync():
             with QtCore.QSignalBlocker(combo):
+                combo.setEnabled(any(action.isEnabled() and action.isVisible() for action in choices))
                 for index, action in enumerate(choices):
                     combo.setItemText(index, action.text().replace("&", ""))
                     item = combo.model().item(index)
@@ -2274,6 +2282,7 @@ class NightwatchSettingsDialog(QtWidgets.QDialog):
                     item.setToolTip(action.toolTip())
                     if action.isChecked():
                         combo.setCurrentIndex(index)
+        self._action_selector_syncs.append(sync)
         for action in choices:
             action.changed.connect(sync)
         combo.activated.connect(lambda index: choices[index].trigger() if not choices[index].isChecked() else None)
@@ -2422,7 +2431,7 @@ class NightwatchSettingsDialog(QtWidgets.QDialog):
         for action, label in (
             (self.host.ruler_action, "Measure / ruler"),
             (self.host.fibonacci_action, "Fibonacci"),
-            (self.host.horizontal_action, "Horizontal level"),
+            (self.host.horizontal_action, "Magnetic order rail"),
         ):
             self._bind_action(drawing_layout, action, text=label)
         self._bind_action(drawing_layout, self.host.clear_drawings_action, text="Clear chart drawings")
@@ -2691,7 +2700,7 @@ class NightwatchSettingsDialog(QtWidgets.QDialog):
         scroll.setObjectName("settingsScroll")
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         scroll.setMinimumSize(0, 0)
         scroll.setSizePolicy(
             QtWidgets.QSizePolicy.Policy.Expanding,
@@ -2911,6 +2920,8 @@ class NightwatchSettingsDialog(QtWidgets.QDialog):
         try:
             for action in tuple(self._action_widgets):
                 self._sync_action_widget(action)
+            for sync_selector in self._action_selector_syncs:
+                sync_selector()
             self._sync_directional_modes()
             candle_palette = candle_directional_palette(
                 chart_palette(self.host.ui_theme, self.host.theme_name),

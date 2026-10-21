@@ -2228,6 +2228,8 @@ class MainWindow(QtWidgets.QMainWindow):
     def _apply_chart_layout_state(self) -> None:
         enabled = self.testing_flags.get("multiple_chart_layouts", True)
         self.chart_layout_menu.setEnabled(enabled)
+        for action in self.chart_layout_actions.values():
+            action.setEnabled(enabled)
         effective = self.chart_layout_mode if enabled else "Single"
         self._set_chart_layout(effective, persist=False)
 

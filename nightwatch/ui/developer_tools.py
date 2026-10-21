@@ -130,6 +130,8 @@ class UiTunerDialog(QtWidgets.QWidget):
         for name in DEV_UI_STATUS_PRESETS:
             self.status_density.addItem(name, name)
         self._set_combo_data(self.status_density, host.current_developer_ui_status_preset())
+        self.status_density.setEnabled(False)
+        self.status_density.setToolTip('Fixed in this version.')
         self.status_density.currentIndexChanged.connect(lambda _index: self._status_density_changed())
         status_layout.addRow('Density', self.status_density)
         for key, default in DEV_UI_STATUS_FONT_DEFAULTS.items():
@@ -201,7 +203,8 @@ class UiTunerDialog(QtWidgets.QWidget):
         typography_root.setContentsMargins(10, 10, 10, 10)
         typography_root.setSpacing(12)
         self.typography_roles = QtWidgets.QListWidget()
-        self.typography_roles.setFixedWidth(210)
+        self.typography_roles.setMinimumWidth(150)
+        self.typography_roles.setMaximumWidth(210)
         for role, label in TYPOGRAPHY_ROLE_LABELS.items():
             item = QtWidgets.QListWidgetItem(label)
             item.setData(Qt.ItemDataRole.UserRole, role)
@@ -315,7 +318,7 @@ class UiTunerDialog(QtWidgets.QWidget):
         self.typography_roles.currentRowChanged.connect(lambda _row: self._load_typography_role())
         self.typography_roles.setCurrentRow(0)
         self._load_typography_role()
-        actions = QtWidgets.QHBoxLayout()
+        actions = QtWidgets.QGridLayout()
         copy_geometry = QtWidgets.QPushButton('COPY CHART GEOMETRY')
         copy_geometry.setToolTip('Copy price-plot/ViewBox scene geometry for diagnosing dead strips')
         copy_geometry.clicked.connect(self._copy_chart_geometry)
@@ -334,13 +337,12 @@ class UiTunerDialog(QtWidgets.QWidget):
         reset_geometry = QtWidgets.QPushButton('RESET GEOMETRY')
         reset_geometry.setEnabled(False)
         reset_geometry.setToolTip('Fixed in this version.')
-        actions.addWidget(copy_geometry)
-        actions.addWidget(import_profile)
-        actions.addWidget(export_profile)
-        actions.addStretch(1)
-        actions.addWidget(reset_colors)
-        actions.addWidget(reset_surfaces)
-        actions.addWidget(reset_geometry)
+        actions.addWidget(copy_geometry, 0, 0)
+        actions.addWidget(import_profile, 0, 1)
+        actions.addWidget(export_profile, 0, 2)
+        actions.addWidget(reset_colors, 1, 0)
+        actions.addWidget(reset_surfaces, 1, 1)
+        actions.addWidget(reset_geometry, 1, 2)
         root.addLayout(actions)
 
     def _selected_typography_role(self) -> str:
@@ -876,8 +878,11 @@ class MagneticRailPresetsDialog(QtWidgets.QDialog):
     def _remove(self):
         if len(self._presets) <= 1:
             return
+        active = self.active.currentText()
         self._presets.pop(self._name(), None)
         self._refresh()
+        if active in self._presets:
+            self.active.setCurrentText(active)
 
     def _restore_defaults(self):
         self._presets = {k: normalized_order_rail_order_preset(v) for k, v in ORDER_RAIL_ORDER_PRESET_DEFAULTS.items()}

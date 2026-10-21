@@ -564,6 +564,7 @@ class QuickTradingSettingsDialog(QtWidgets.QDialog):
             button.clicked.connect(
                 lambda _checked=False, target=value: self.leverage.setValue(target)
             )
+            button.clicked.connect(self._sync_quick_controls)
             self.quick_leverage_buttons.append(button)
             leverage_layout.addWidget(button)
         self.order_mode = QtWidgets.QComboBox()
