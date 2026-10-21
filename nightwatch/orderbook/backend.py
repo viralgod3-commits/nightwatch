@@ -328,6 +328,7 @@ class OrderFlowAnalyzer:
         self._snapshot_level_cache_hits = 0
         self._snapshot_level_partial_refreshes = 0
         self._snapshot_level_full_refreshes = 0
+        self._normalized_level_cache: dict[int, tuple] = {}
         self._recent_print_cache_hits = 0
         self._metrics_cache_revision = -1
         self._metrics_cache_expires = -math.inf
@@ -409,6 +410,7 @@ class OrderFlowAnalyzer:
         self._snapshot_level_cache_revision = -1
         self._snapshot_level_cache_time = -math.inf
         self._snapshot_level_cache_limit = 0
+        self._normalized_level_cache.clear()
         self._current_level_order_revision += 1
         self._current_level_value_revision += 1
         self._current_level_sorted_revision = -1
@@ -2338,19 +2340,38 @@ class OrderFlowAnalyzer:
         depth_scale = max(max_cumulative_depth, 1e-09)
         bids: list[OrderFlowDisplayLevel] = []
         asks: list[OrderFlowDisplayLevel] = []
+        normalized: dict[int, tuple] = {}
         for level, cumulative in zip(bases, cumulative_values):
-            display = replace(
-                level,
-                liquidity_intensity=self._intensity(level.notional, liquidity_scale),
-                delta_intensity=self._intensity(level.delta_notional_5s, delta_scale),
-                trade_intensity=self._intensity(level.trade_notional_5s, trade_scale),
-                cumulative_depth_notional=cumulative,
-                depth_intensity=math.sqrt(_clamp(cumulative / depth_scale)),
+            inputs = (
+                self._intensity(level.notional, liquidity_scale),
+                self._intensity(level.delta_notional_5s, delta_scale),
+                self._intensity(level.trade_notional_5s, trade_scale),
+                cumulative,
+                math.sqrt(_clamp(cumulative / depth_scale)),
             )
+            key = id(level)
+            cached = self._normalized_level_cache.get(key)
+            if cached is not None and cached[0] is level and cached[1] == inputs:
+                display = cached[2]
+            else:
+                display = replace(
+                    level,
+                    liquidity_intensity=inputs[0],
+                    delta_intensity=inputs[1],
+                    trade_intensity=inputs[2],
+                    cumulative_depth_notional=inputs[3],
+                    depth_intensity=inputs[4],
+                )
+                # Retain the immutable base as well as its normalized output;
+                # object ids cannot alias a later base while cached here.
+                cached = (level, inputs, display)
+            normalized[key] = cached
             if display.side == 'bid':
                 bids.append(display)
             else:
                 asks.append(display)
+        # Only the current base generation is retained, at most 2,000 levels.
+        self._normalized_level_cache = normalized
         return tuple(bids), tuple(asks), (liquidity_scale, delta_scale, trade_scale)
 
     def _reuse_normalized_display_levels(
