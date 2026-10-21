@@ -83,19 +83,29 @@ def _window(series: dict[int, Candle], end: int, hours: int) -> list[Candle]:
     return rows
 
 
-def _relative(series: dict[int, Candle], btc: dict[int, Candle], end: int, hours: int = 1) -> float | None:
-    rows, base = _window(series, end, hours), _window(btc, end, hours)
-    if not rows or not base:
+def _relative(series: dict[int, Candle], btc: dict[int, Candle], end: int, hours: int = 1,
+              *, benchmark_returns=None) -> float | None:
+    rows = _window(series, end, hours)
+    key = (end, hours)
+    if benchmark_returns is None or key not in benchmark_returns:
+        base = _window(btc, end, hours)
+        ratio = base[-1].close / base[0].open if base else None
+        if benchmark_returns is not None:
+            benchmark_returns[key] = ratio
+    else:
+        ratio = benchmark_returns[key]
+    if not rows or ratio is None:
         return None
-    return ((rows[-1].close / rows[0].open) / (base[-1].close / base[0].open) - 1) * 100
+    return ((rows[-1].close / rows[0].open) / ratio - 1) * 100
 
 
-def _metrics(series: dict[int, Candle], btc: dict[int, Candle], end: int, high_beta: bool = False) -> dict[str, Any]:
-    rs1 = _relative(series, btc, end)
-    rs4 = _relative(series, btc, end, 4)
-    rs24 = _relative(series, btc, end, 24)
-    recent = _relative(series, btc, end, 2)
-    previous = _relative(series, btc, end - 2 * HOUR, 2)
+def _metrics(series: dict[int, Candle], btc: dict[int, Candle], end: int, high_beta: bool = False,
+             *, benchmark_returns=None) -> dict[str, Any]:
+    rs1 = _relative(series, btc, end, benchmark_returns=benchmark_returns)
+    rs4 = _relative(series, btc, end, 4, benchmark_returns=benchmark_returns)
+    rs24 = _relative(series, btc, end, 24, benchmark_returns=benchmark_returns)
+    recent = _relative(series, btc, end, 2, benchmark_returns=benchmark_returns)
+    previous = _relative(series, btc, end - 2 * HOUR, 2, benchmark_returns=benchmark_returns)
     rows = _window(series, end, 4)
     rows24 = _window(series, end, 24)
     baseline = _window(series, end - HOUR, 24)
@@ -260,8 +270,12 @@ def _prepare_leaders(state, cached=None):
         return {**cached, "ordered": model._ordered(), "dashboard": _prepare_dashboard(model)}
     end, hours = model.cursor, model.hours
     btc = model.series.get(BENCHMARK, {})
+    # Completed histories are fixed during this preparation. Cache only scalar
+    # benchmark ratios, scoped to this invocation so later patches cannot stale.
+    benchmark_returns = {}
     model.metrics = {symbol: _metrics(model.series.get(symbol, {}), btc, end,
-                     model.identity(symbol)[1].lower() in {"ai", "meme", "memes"}) for symbol in model.symbols}
+                     model.identity(symbol)[1].lower() in {"ai", "meme", "memes"},
+                     benchmark_returns=benchmark_returns) for symbol in model.symbols}
     for symbol, metrics in model.metrics.items():
         share, delta = _spot_share(model.spot_series.get(symbol, {}), model.series.get(symbol, {}), end)
         metrics.update(spot_share=share, spot_delta=delta)
@@ -291,9 +305,9 @@ def _prepare_leaders(state, cached=None):
     for symbol in all_ordered:
         series = model.series.get(symbol, {})
         high_beta = model.identity(symbol)[1].lower() in {"ai", "meme", "memes"}
-        previous = _metrics(series, btc, end - 4 * HOUR, high_beta)
+        previous = _metrics(series, btc, end - 4 * HOUR, high_beta, benchmark_returns=benchmark_returns)
         for at in range(end - 3 * HOUR, end + 1, HOUR):
-            current = _metrics(series, btc, at, high_beta)
+            current = _metrics(series, btc, at, high_beta, benchmark_returns=benchmark_returns)
             if current["state"] != previous["state"] and current["state"] in {"Improving", "Cooling", "Leading"}:
                 events.append((at, symbol, current["state"].lower()))
             elif current["rs1"] is not None and previous["rs1"] is not None and current["rs1"] > 0 >= previous["rs1"]:
@@ -2761,12 +2775,21 @@ def _sector_overview_relative(
     end: int,
     step: int,
     count: int,
+    *,
+    benchmark_returns=None,
 ) -> float | None:
     rows = _sector_overview_series_window(series, end, step, count)
-    base = _sector_overview_series_window(btc, end, step, count)
-    if not rows or not base:
+    key = (end, step, count)
+    if benchmark_returns is None or key not in benchmark_returns:
+        base = _sector_overview_series_window(btc, end, step, count)
+        ratio = base[-1].close / base[0].open if base else None
+        if benchmark_returns is not None:
+            benchmark_returns[key] = ratio
+    else:
+        ratio = benchmark_returns[key]
+    if not rows or ratio is None:
         return None
-    return ((rows[-1].close / rows[0].open) / (base[-1].close / base[0].open) - 1.0) * 100.0
+    return ((rows[-1].close / rows[0].open) / ratio - 1.0) * 100.0
 
 
 def _sector_overview_volume(series: dict[int, Candle], end: int, step: int, count: int) -> float | None:
@@ -3309,6 +3332,7 @@ class _SectorAnalysis:
 
     def __init__(self, state):
         self.__dict__.update(state)
+        self._benchmark_returns = {}
 
     def _dataset(self, symbol: str, timeframe: str) -> tuple[dict[int, Candle], int, int, int]:
         label, step, count = _SECTOR_OVERVIEW_TIMEFRAMES[timeframe]
@@ -3320,7 +3344,8 @@ class _SectorAnalysis:
     def _relative_value(self, symbol: str, timeframe: str, end: int | None = None) -> float | None:
         series, default_end, step, count = self._dataset(symbol, timeframe)
         btc, _btc_end, _step, _count = self._dataset(_SECTOR_OVERVIEW_BENCHMARK, timeframe)
-        return _sector_overview_relative(series, btc, default_end if end is None else end, step, count)
+        return _sector_overview_relative(series, btc, default_end if end is None else end, step, count,
+                                         benchmark_returns=self._benchmark_returns)
 
     def _volume_value(self, symbol: str, timeframe: str, end: int | None = None) -> float | None:
         series, default_end, step, count = self._dataset(symbol, timeframe)
@@ -4191,11 +4216,12 @@ def _prepare_rotation(state):
     end, hours = state["cursor"], state["hours"]
     histories, btc = state["series"], state["series"].get(BENCHMARK, {})
     metrics, points, charts = {}, [], {}
+    benchmark_returns = {}
     for symbol in state["symbols"]:
         series = histories.get(symbol, {})
-        item = _metrics(series, btc, end)
-        x = _relative(series, btc, end, hours)
-        prior = _relative(series, btc, end - HOUR, hours)
+        item = _metrics(series, btc, end, benchmark_returns=benchmark_returns)
+        x = _relative(series, btc, end, hours, benchmark_returns=benchmark_returns)
+        prior = _relative(series, btc, end - HOUR, hours, benchmark_returns=benchmark_returns)
         y = x - prior if x is not None and prior is not None else None
         share, delta = _spot_share(state["spot_series"].get(symbol, {}), series, end)
         item.update(x=x, y=y, spot_share=share, spot_delta=delta,
@@ -4207,9 +4233,12 @@ def _prepare_rotation(state):
         metrics[symbol] = item
         if _rotation_finite(x) and _rotation_finite(y):
             trail = []
+            relative_values = {end: x, end-HOUR: prior}
+            for at in range(end-4*HOUR, end-HOUR, HOUR):
+                relative_values[at] = _relative(series, btc, at, hours, benchmark_returns=benchmark_returns)
             for at in range(end - 3 * HOUR, end + 1, HOUR):
-                tx = _relative(series, btc, at, hours)
-                r0 = _relative(series, btc, at - HOUR, hours)
+                tx = relative_values[at]
+                r0 = relative_values[at-HOUR]
                 ty = tx - r0 if tx is not None and r0 is not None else None
                 trail.append((tx, ty) if _rotation_finite(tx) and _rotation_finite(ty) else None)
             points.append(dict(symbol=symbol, x=x, y=y, trail=trail,
