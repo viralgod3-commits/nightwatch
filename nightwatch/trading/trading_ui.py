@@ -5198,6 +5198,9 @@ class _PerformancePlot(QtWidgets.QWidget):
         self._hover_text = ''
         self.plot_rect = QtCore.QRectF()
         self.month = QtCore.QDate.currentDate()
+        self.selected_day = ''
+        self.daily_buckets = []
+        self.bucket_days = 1
         self.metric_values = ('', '', '')
         self.setMouseTracking(kind != 'metric')
         self.setProperty('informationalToolTip', True)
@@ -5208,6 +5211,30 @@ class _PerformancePlot(QtWidgets.QWidget):
         self.summary, self.colors = summary, colors
         self.hover_index = -1
         self.hover_regions = []
+        if self.kind == 'overview':
+            # Bin long histories once per data change, never on a pointer move.
+            # Both charts retain the same UTC time axis and at most 120 bars.
+            days = list(summary.get('days', {}).items())
+            self.daily_buckets = []
+            self.bucket_days = 1
+            if days:
+                first = QtCore.QDate.fromString(days[0][0], 'yyyy-MM-dd')
+                last = QtCore.QDate.fromString(days[-1][0], 'yyyy-MM-dd')
+                self.bucket_days = max(1, (first.daysTo(last) + 120) // 120)
+                buckets = {}
+                for day, value in days:
+                    date = QtCore.QDate.fromString(day, 'yyyy-MM-dd')
+                    bucket = first.daysTo(date) // self.bucket_days
+                    buckets[bucket] = buckets.get(bucket, 0.0) + value
+                for bucket, value in buckets.items():
+                    start = first.addDays(bucket * self.bucket_days)
+                    end = min(start.addDays(self.bucket_days - 1), last)
+                    stamp = (start.toJulianDay() - 2440588) * 86_400_000
+                    span = (start.daysTo(end) + 1) * 86_400_000
+                    label = start.toString('dd MMM yyyy')
+                    if end != start:
+                        label += ' – ' + end.toString('dd MMM yyyy')
+                    self.daily_buckets.append((stamp, span, value, label))
         if self.kind == 'metric' and not summary:
             self.metric_values = ('—', '', '')
         self.setAccessibleName(self.title)
@@ -5229,6 +5256,13 @@ class _PerformancePlot(QtWidgets.QWidget):
         p.setPen(QtGui.QPen(QtGui.QColor(c['border']), 1))
         p.setBrush(QtGui.QColor(c['card']))
         p.drawRoundedRect(QtCore.QRectF(.5, .5, w - 1, h - 1), c['radius'], c['radius'])
+        if self.kind in {'overview', 'quality', 'market_strip', 'period', 'calendar', 'review'}:
+            custom = {'overview': self._overview, 'quality': self._quality,
+                      'market_strip': self._market_strip, 'period': self._period,
+                      'calendar': self._calendar, 'review': self._review}
+            custom[self.kind](p)
+            p.end()
+            return
         self._text(p, QtCore.QRectF(20, 14, w - 40, 22), self.title.upper(), 11, c['muted'], bold=True)
         if self.kind == 'metric':
             value, detail, color = self.metric_values
@@ -5236,17 +5270,211 @@ class _PerformancePlot(QtWidgets.QWidget):
             self._text(p, QtCore.QRectF(20, 82, w - 40, 20), detail, 11, c['muted'])
         elif self.kind in {'equity', 'drawdown'}:
             self._line(p)
-        elif self.kind == 'ring':
-            self._ring(p)
-        elif self.kind == 'calendar':
-            self._calendar(p)
         elif self.kind == 'markets':
             self._markets(p)
-        elif self.kind == 'daily':
-            self._daily(p)
         elif self.kind == 'hours':
             self._hours(p)
         p.end()
+
+    def _value(self, p, rect, value, size=32, color=None):
+        """Keep large amounts inside their allotted column at narrow widths."""
+        font = QtGui.QFont('Inter')
+        font.setPixelSize(size)
+        font.setWeight(QtGui.QFont.Weight.DemiBold)
+        width = QtGui.QFontMetricsF(font).horizontalAdvance(str(value))
+        size = max(11, min(size, int(size * rect.width() / max(1, width))))
+        self._text(p, rect, value, size, color, bold=True)
+
+    def _rule(self, p, left, top, right):
+        p.setPen(QtGui.QPen(QtGui.QColor(self.colors['border']), 1))
+        p.drawLine(QtCore.QPointF(left, top), QtCore.QPointF(right, top))
+
+    def _overview(self, p):
+        from datetime import datetime, timezone
+        s, c, w, h = self.summary, self.colors, self.width(), self.height()
+        net, unit = s.get('net', 0), s.get('currency', 'USDT')
+        self._text(p, QtCore.QRectF(24, 18, w - 48, 20), f'NET REALIZED / {unit}', 11, c['muted'], bold=True)
+        self._value(p, QtCore.QRectF(24, 42, w - 280, 58),
+                    _performance_number(net, signed=True) if s.get('rows') else '—', 48,
+                    c['green' if net >= 0 else 'red'])
+        self._text(p, QtCore.QRectF(26, 101, w - 52, 20), 'Cumulative P&L · after fees', 12, c['muted'])
+        for x, key, label in ((w - 248, 'gross', 'GROSS P&L'), (w - 126, 'fees', 'FEES')):
+            self._text(p, QtCore.QRectF(x, 47, 104, 18), label, 10, c['muted'])
+            self._value(p, QtCore.QRectF(x, 70, 104, 25),
+                        _performance_number(s.get(key, 0), signed=key == 'gross'), 18)
+
+        points = s.get('curve', [])
+        rect = QtCore.QRectF(24, 142, w - 112, h - 282)
+        self.plot_rect = rect
+        t0 = points[0][0] // 86_400_000 * 86_400_000 if points else 0
+        t1 = (points[-1][0] // 86_400_000 + 1) * 86_400_000 if points else 1
+        self.time_bounds = (t0, t1)
+        low = min([v for _, v in points] + [0])
+        high = max([v for _, v in points] + [0])
+        padding = max((high - low) * .14, 1)
+        low, high = low - padding, high + padding
+
+        def location(stamp, value):
+            return QtCore.QPointF(rect.left() + (stamp - t0) / (t1 - t0) * rect.width(),
+                                 rect.bottom() - (value - low) / (high - low) * rect.height())
+
+        for index in range(4):
+            value = high - (high - low) * index / 3
+            y = location(t0, value).y()
+            self._rule(p, rect.left(), y, rect.right())
+            self._text(p, QtCore.QRectF(rect.right() + 12, y - 9, 66, 18),
+                       human_number(value), 10, c['muted'], mono=True)
+        self.hover_regions = []
+        if points:
+            line = QtGui.QPainterPath(location(*points[0]))
+            for point in points[1:]:
+                line.lineTo(location(*point))
+            area = QtGui.QPainterPath(line)
+            area.lineTo(location(points[-1][0], low))
+            area.lineTo(location(points[0][0], low))
+            area.closeSubpath()
+            gradient = QtGui.QLinearGradient(rect.topLeft(), rect.bottomLeft())
+            tint = QtGui.QColor(c['accent'])
+            tint.setAlpha(38)
+            gradient.setColorAt(0, tint)
+            tint.setAlpha(0)
+            gradient.setColorAt(1, tint)
+            p.fillPath(area, gradient)
+            p.setPen(QtGui.QPen(QtGui.QColor(c['accent']), 2))
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.drawPath(line)
+            tip = location(*points[-1])
+            p.setBrush(QtGui.QColor(c['card']))
+            p.drawEllipse(tip, 4, 4)
+            if 0 <= self.hover_index < len(points):
+                stamp, amount = points[self.hover_index]
+                point = location(stamp, amount)
+                p.setPen(QtGui.QPen(QtGui.QColor(c['muted']), 1, Qt.PenStyle.DashLine))
+                p.drawLine(QtCore.QPointF(point.x(), rect.top()), QtCore.QPointF(point.x(), h - 38))
+                p.setPen(Qt.PenStyle.NoPen)
+                p.setBrush(QtGui.QColor(c['accent']))
+                p.drawEllipse(point, 4, 4)
+                label = f'{datetime.fromtimestamp(stamp / 1000, timezone.utc):%d %b %H:%M}   {_performance_number(amount, signed=True)}'
+                box = QtCore.QRectF(max(rect.left(), min(point.x() - 118, rect.right() - 236)), rect.top() + 5, 236, 27)
+                p.setBrush(QtGui.QColor(c['raised']))
+                p.drawRoundedRect(box, 4, 4)
+                self._text(p, box.adjusted(10, 0, -10, 0), label, 11)
+        else:
+            self._text(p, rect, 'Your performance curve starts with your first fill.', 12, c['muted'],
+                       align=Qt.AlignmentFlag.AlignCenter)
+
+        label = 'DAILY P&L' if self.bucket_days == 1 else f'P&L / {self.bucket_days}-DAY INTERVALS'
+        self._text(p, QtCore.QRectF(24, h - 126, w - 48, 18), label, 9, c['muted'], bold=True)
+        bars = QtCore.QRectF(rect.left(), h - 100, rect.width(), 60)
+        center = bars.center().y()
+        self._rule(p, bars.left(), center, bars.right())
+        magnitude = max([abs(value) for _, _, value, _ in self.daily_buckets] + [1])
+        for stamp, span, value, label in self.daily_buckets:
+            x = location(stamp + span / 2, 0).x()
+            width = max(1, min(26, span / (t1 - t0) * bars.width() - 2))
+            height = max(1, abs(value) / magnitude * 28)
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(QtGui.QColor(c['green' if value >= 0 else 'red']))
+            p.drawRoundedRect(QtCore.QRectF(x - width / 2, center - height if value >= 0 else center, width, height), 1.5, 1.5)
+            self.hover_regions.append((QtCore.QRectF(x - width / 2, bars.top(), width, bars.height()),
+                                       f'{label} UTC · {_performance_number(value, signed=True)} {unit}'))
+        if points:
+            for stamp, x, align in ((t0, rect.left(), Qt.AlignmentFlag.AlignLeft),
+                                    (t1 - 1, rect.right() - 140, Qt.AlignmentFlag.AlignRight)):
+                self._text(p, QtCore.QRectF(x, h - 28, 140, 17),
+                           datetime.fromtimestamp(stamp / 1000, timezone.utc).strftime('%d %b %Y'),
+                           10, c['muted'], align=align | Qt.AlignmentFlag.AlignVCenter)
+
+    def _quality(self, p):
+        c, s, w, h = self.colors, self.summary, self.width(), self.height()
+        self._text(p, QtCore.QRectF(24, 18, w - 48, 22), 'Exit quality', 15, bold=True)
+        rate, exits = s.get('win_rate'), s.get('exits', 0)
+        self._value(p, QtCore.QRectF(24, 51, w - 48, 54), f'{rate:.1f}%' if rate is not None else '—', 46)
+        self._text(p, QtCore.QRectF(26, 108, w - 52, 18), 'EXIT WIN RATE', 10, c['muted'])
+        x, width = 24., w - 48
+        segments = ((s.get('wins', 0), 'green'), (s.get('losses', 0), 'red'),
+                    (max(0, exits - s.get('wins', 0) - s.get('losses', 0)), 'muted'))
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(QtGui.QColor(c['raised']))
+        p.drawRoundedRect(QtCore.QRectF(x, 144, width, 8), 4, 4)
+        for count, color in segments:
+            length = width * count / max(1, exits)
+            if length:
+                p.setBrush(QtGui.QColor(c[color]))
+                p.drawRoundedRect(QtCore.QRectF(x, 144, max(1, length - 2), 8), 3, 3)
+                x += length
+        self._text(p, QtCore.QRectF(24, 162, w - 48, 19),
+                   f"{s.get('wins', 0)} wins  /  {s.get('losses', 0)} losses  /  {exits} exits", 10, c['muted'])
+        self._rule(p, 24, 198, w - 24)
+        factor, average = s.get('factor'), s.get('average')
+        columns = (('PROFIT FACTOR', '—' if factor is None else ('∞' if factor == float('inf') else f'{factor:.2f}')),
+                   ('AVG EXIT / ' + s.get('currency', 'USDT'), '—' if average is None else _performance_number(average, signed=True)))
+        for index, (label, value) in enumerate(columns):
+            x = 24 + index * (w - 48) / 2
+            self._text(p, QtCore.QRectF(x, 219, (w - 56) / 2, 18), label, 9, c['muted'])
+            self._value(p, QtCore.QRectF(x, 244, (w - 56) / 2, 34), value, 27)
+        self._rule(p, 24, h - 136, w - 24)
+        self._text(p, QtCore.QRectF(24, h - 120, w - 48, 18), 'MAX DRAWDOWN / ' + s.get('currency', 'USDT'), 9, c['muted'])
+        self._value(p, QtCore.QRectF(24, h - 98, w - 48, 30), _performance_number(s.get('drawdown', 0)), 24, c['red'])
+        values = s.get('dips', [])
+        if values:
+            chart = QtCore.QRectF(24, h - 53, w - 48, 28)
+            magnitude = max([abs(v) for _, v in values] + [1])
+            start, end = values[0][0], max(values[0][0] + 1, values[-1][0])
+            path = QtGui.QPainterPath()
+            for index, (stamp, value) in enumerate(values):
+                point = QtCore.QPointF(chart.left() + (stamp - start) / (end - start) * chart.width(),
+                                      chart.top() + abs(value) / magnitude * chart.height())
+                path.moveTo(point) if index == 0 else path.lineTo(point)
+            p.setPen(QtGui.QPen(QtGui.QColor(c['red']), 1.2))
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.drawPath(path)
+
+    def _market_strip(self, p):
+        c, s, w = self.colors, self.summary, self.width()
+        rows = s.get('markets', [])[:5]
+        self._text(p, QtCore.QRectF(24, 15, w - 48, 20), 'Market contribution · top 5', 13, bold=True)
+        self._text(p, QtCore.QRectF(w - 180, 15, 156, 20), 'NET P&L / ' + s.get('currency', 'USDT'), 9, c['muted'],
+                   align=Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        if not rows:
+            self._text(p, QtCore.QRectF(24, 60, w - 48, 30), 'Your markets will appear here after the first execution.', 12, c['muted'])
+            return
+        slot = (w - 48) / max(3, len(rows))
+        maximum = max([abs(value) for _, value in rows] + [1])
+        for index, (symbol, value) in enumerate(rows):
+            x = 24 + slot * index
+            self._text(p, QtCore.QRectF(x, 51, slot - 24, 18), f'{index + 1:02}  {symbol}', 11, c['muted'])
+            self._value(p, QtCore.QRectF(x, 75, slot - 24, 30), _performance_number(value, signed=True), 24,
+                        c['green' if value >= 0 else 'red'])
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(QtGui.QColor(c['raised']))
+            p.drawRoundedRect(QtCore.QRectF(x, 119, slot - 28, 4), 2, 2)
+            p.setBrush(QtGui.QColor(c['green' if value >= 0 else 'red']))
+            p.drawRoundedRect(QtCore.QRectF(x, 119, (slot - 28) * abs(value) / maximum, 4), 2, 2)
+            if index:
+                p.setPen(QtGui.QPen(QtGui.QColor(c['border']), 1))
+                p.drawLine(QtCore.QPointF(x - 14, 53), QtCore.QPointF(x - 14, 122))
+
+    def _period(self, p):
+        c, s, w = self.colors, self.summary, self.width()
+        factor, average, rate = s.get('factor'), s.get('average'), s.get('win_rate')
+        columns = ((f"PERIOD NET / {s.get('currency', 'USDT')}", _performance_number(s.get('net', 0), signed=True) if s.get('rows') else '—',
+                    f"{len(s.get('rows', [])):,} fills · {human_number(s.get('volume', 0))} notional"),
+                   ('EXIT WIN RATE', f'{rate:.1f}%' if rate is not None else '—', f"{s.get('wins', 0)} / {s.get('exits', 0)} exits"),
+                   ('PROFIT FACTOR', '—' if factor is None else ('∞' if factor == float('inf') else f'{factor:.2f}'), 'Exit gains / losses'),
+                   ('AVERAGE EXIT', '—' if average is None else _performance_number(average, signed=True), s.get('currency', 'USDT')),
+                   ('TRADING FEES', _performance_number(s.get('fees', 0)), s.get('currency', 'USDT')))
+        first, rest = (w - 48) * .32, (w - 48) * .17
+        for index, (title, value, detail) in enumerate(columns):
+            x = 24 if index == 0 else 24 + first + (index - 1) * rest
+            width = (first if index == 0 else rest) - 24
+            self._text(p, QtCore.QRectF(x, 14, width, 18), title, 10, c['muted'])
+            color = c['green' if s.get('net', 0) >= 0 else 'red'] if index == 0 else c['text']
+            self._value(p, QtCore.QRectF(x, 34, width, 44), value, 36 if index == 0 else 28, color)
+            self._text(p, QtCore.QRectF(x, 82, width, 16), detail, 10, c['muted'])
+            if index:
+                p.setPen(QtGui.QPen(QtGui.QColor(c['border']), 1))
+                p.drawLine(QtCore.QPointF(x - 16, 20), QtCore.QPointF(x - 16, 90))
 
     def _line(self, p):
         from datetime import datetime, timezone
@@ -5317,51 +5545,6 @@ class _PerformancePlot(QtWidgets.QWidget):
             p.drawRoundedRect(box, 4, 4)
             self._text(p, box.adjusted(9, 0, -9, 0), label, 11)
 
-    def _ring(self, p):
-        c, s = self.colors, self.summary
-        side = min(self.width() - 72, self.height() - 120, 190)
-        side = max(60, side)
-        r = QtCore.QRectF((self.width() - side) / 2, 55, side, side)
-        p.setBrush(Qt.BrushStyle.NoBrush)
-        pen = QtGui.QPen(QtGui.QColor(c['border']), 13)
-        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
-        p.setPen(pen)
-        p.drawEllipse(r)
-        rate = s.get('win_rate')
-        if rate is not None:
-            pen.setColor(QtGui.QColor(c['green']))
-            p.setPen(pen)
-            p.drawArc(r, 90 * 16, -int(rate / 100 * 360 * 16))
-        self._text(p, r.adjusted(0, -9, 0, -9), f'{rate:.1f}%' if rate is not None else '—', 32,
-                   bold=True, align=Qt.AlignmentFlag.AlignCenter)
-        self._text(p, r.adjusted(0, 48, 0, 0), 'exit win rate', 11, c['muted'], align=Qt.AlignmentFlag.AlignCenter)
-        self._text(p, QtCore.QRectF(20, r.bottom() + 24, self.width() - 40, 22),
-                   f"{s.get('wins', 0)} wins   /   {s.get('losses', 0)} losses", 12, align=Qt.AlignmentFlag.AlignCenter)
-        self._text(p, QtCore.QRectF(20, r.bottom() + 46, self.width() - 40, 20),
-                   f"{s.get('exits', 0)} executed exit orders", 11, c['muted'], align=Qt.AlignmentFlag.AlignCenter)
-
-    def _daily(self, p):
-        c, s = self.colors, self.summary
-        data = list(s.get('days', {}).items())[-42:]
-        rect = QtCore.QRectF(20, 60, self.width() - 40, self.height() - 95)
-        magnitude = max([abs(v) for _, v in data] + [.01])
-        center = rect.center().y()
-        p.setPen(QtGui.QPen(QtGui.QColor(c['border']), 1))
-        p.drawLine(QtCore.QPointF(rect.left(), center), QtCore.QPointF(rect.right(), center))
-        count = max(1, len(data))
-        width = rect.width() / count
-        self.hover_regions = []
-        for index, (day, value) in enumerate(data):
-            size = abs(value) / magnitude * (rect.height() / 2 - 2)
-            p.setPen(Qt.PenStyle.NoPen)
-            p.setBrush(QtGui.QColor(c['green' if value >= 0 else 'red']))
-            p.drawRoundedRect(QtCore.QRectF(rect.left() + index * width + 1, center - size if value >= 0 else center,
-                                           max(1, width - 3), max(1, size)), 2, 2)
-            self.hover_regions.append((QtCore.QRectF(rect.left() + index * width, rect.top(), width, rect.height()),
-                                       f'{day} UTC · {_performance_number(value, signed=True)} {s.get("currency", "")}' ))
-        caption = f"{data[0][0]}  —  {data[-1][0]} · last {len(data)} active days" if data else 'No executions in this period'
-        self._text(p, QtCore.QRectF(20, self.height() - 29, self.width() - 40, 18), caption, 10, c['muted'])
-
     def _markets(self, p):
         c = self.colors
         rows = self.summary.get('markets', [])[:5]
@@ -5384,40 +5567,130 @@ class _PerformancePlot(QtWidgets.QWidget):
 
     def _calendar(self, p):
         import calendar
-        c, s = self.colors, self.summary
+        c, s, w, h = self.colors, self.summary, self.width(), self.height()
         year, month = self.month.year(), self.month.month()
         first, count = calendar.monthrange(year, month)
-        gap = 7
-        width = (self.width() - 40 - gap * 6) / 7
-        height = (self.height() - 88 - gap * 5) / 6
-        magnitude = max([abs(v) for day, v in s.get('days', {}).items() if day.startswith(f'{year:04}-{month:02}')] + [.01])
-        self.hit_days = []
-        self.hover_regions = []
-        for i, label in enumerate(('MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT', 'SUN')):
-            self._text(p, QtCore.QRectF(20 + i * (width + gap), 42, width, 22), label, 10, c['muted'])
+        weeks = (first + count + 6) // 7
+        column = (w - 48) / 8
+        row_height = (h - 64) / weeks
+        prefix = f'{year:04}-{month:02}'
+        values = {day: value for day, value in s.get('days', {}).items() if day.startswith(prefix)}
+        magnitude = max([abs(v) for v in values.values()] + [1])
+        self.hit_days, self.hover_regions = [], []
+        for index, label in enumerate(('MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT', 'SUN', 'WEEK NET')):
+            self._text(p, QtCore.QRectF(24 + index * column + 8, 15, column - 12, 20), label, 9, c['muted'], bold=True)
+        for row in range(weeks + 1):
+            self._rule(p, 24, 48 + row * row_height, w - 24)
+        for col in range(1, 8):
+            p.setPen(QtGui.QPen(QtGui.QColor(c['border']), 1))
+            x = 24 + col * column
+            p.drawLine(QtCore.QPointF(x, 48), QtCore.QPointF(x, h - 16))
+        totals = [0.] * weeks
+        fills = [0] * weeks
         for day in range(1, count + 1):
             slot = first + day - 1
-            rect = QtCore.QRectF(20 + (slot % 7) * (width + gap), 72 + (slot // 7) * (height + gap), width, height)
-            key = f'{year:04}-{month:02}-{day:02}'
-            value = s.get('days', {}).get(key)
-            background = QtGui.QColor(c['raised'])
+            rect = QtCore.QRectF(24 + (slot % 7) * column, 48 + (slot // 7) * row_height, column, row_height)
+            key = f'{prefix}-{day:02}'
+            value = values.get(key)
+            inner = rect.adjusted(3, 3, -3, -3)
+            selected = key == self.selected_day
+            if selected:
+                p.setPen(QtGui.QPen(QtGui.QColor(c['accent']), 1.5))
+                p.setBrush(QtGui.QColor(c['raised']))
+                p.drawRoundedRect(inner, 5, 5)
+            elif value is not None:
+                tint = QtGui.QColor(c['green' if value >= 0 else 'red'])
+                tint.setAlpha(10)
+                p.fillRect(inner, tint)
+            date_color = c['accent'] if selected else c['muted']
+            self._text(p, QtCore.QRectF(rect.x() + 10, rect.y() + 8, column - 20, 18), f'{day:02}', 11, date_color)
             if value is not None:
-                background = QtGui.QColor(c['green' if value >= 0 else 'red'])
-                background.setAlpha(25 + int(abs(value) / magnitude * 60))
-            p.setPen(Qt.PenStyle.NoPen)
-            p.setBrush(background)
-            p.drawRoundedRect(rect, 5, 5)
-            self._text(p, rect.adjusted(9, 4, -9, 4 - height + 20), day, 10, c['muted'])
-            if value is not None:
-                self.hit_days.append((rect, key))
-                self.hover_regions.append((rect, f'{key} UTC · {_performance_number(value, signed=True)} '
+                totals[slot // 7] += value
+                fills[slot // 7] += s.get('day_counts', {}).get(key, 0)
+                self.hit_days.append((inner, key))
+                self.hover_regions.append((inner, f'{key} UTC · {_performance_number(value, signed=True)} '
                                            f'{s.get("currency", "")} · {s.get("day_counts", {}).get(key, 0)} fills'))
-                self._text(p, QtCore.QRectF(rect.x() + 9, rect.y() + height * .35, width - 18, 23),
-                           _performance_number(value, signed=True, decimals=0), 16,
-                           c['green' if value >= 0 else 'red'], bold=True)
-                if height >= 65:
-                    self._text(p, QtCore.QRectF(rect.x() + 9, rect.bottom() - 22, width - 18, 17),
-                               f"{s.get('day_counts', {}).get(key, 0)} fills", 10, c['muted'])
+                self._value(p, QtCore.QRectF(rect.x() + 10, rect.y() + row_height * .38, column - 20, 25),
+                            _performance_number(value, signed=True, decimals=0), 21, c['green' if value >= 0 else 'red'])
+                if row_height > 78:
+                    self._text(p, QtCore.QRectF(rect.x() + 10, rect.bottom() - 30, column - 20, 16),
+                               f"{s.get('day_counts', {}).get(key, 0)} fills", 9, c['muted'])
+                p.setPen(Qt.PenStyle.NoPen)
+                p.setBrush(QtGui.QColor(c['green' if value >= 0 else 'red']))
+                length = max(2, (column - 20) * abs(value) / magnitude)
+                p.drawRoundedRect(QtCore.QRectF(rect.x() + 10, rect.bottom() - 10, length, 3), 1.5, 1.5)
+            else:
+                self._text(p, QtCore.QRectF(rect.x() + 10, rect.y() + row_height * .38, column - 20, 25), '—', 15, c['border'])
+        for row, total in enumerate(totals):
+            x, y = 24 + 7 * column + 10, 48 + row * row_height
+            self._text(p, QtCore.QRectF(x, y + 10, column - 20, 16), f'W{self.month.addDays(row * 7 - first).weekNumber()[0]:02}', 9, c['muted'])
+            self._value(p, QtCore.QRectF(x, y + row_height * .38, column - 20, 25),
+                        _performance_number(total, signed=True, decimals=0) if fills[row] else '—', 18)
+            if row_height > 78:
+                self._text(p, QtCore.QRectF(x, y + row_height - 30, column - 20, 16), f'{fills[row]} fills', 9, c['muted'])
+
+    def _review(self, p):
+        c, s, w, h = self.colors, self.summary, self.width(), self.height()
+        prefix = self.month.toString('yyyy-MM')
+        days = [(day, value) for day, value in s.get('days', {}).items() if day.startswith(prefix)]
+        month_net = sum(value for _, value in days)
+        selected = self.selected_day if self.selected_day in dict(days) else ''
+        date = QtCore.QDate.fromString(selected, 'yyyy-MM-dd') if selected else self.month
+        value = s.get('days', {}).get(selected, 0) if selected else month_net
+        label = date.toString('ddd / dd MMM').upper() if selected else 'MONTH IN REVIEW'
+        self._text(p, QtCore.QRectF(24, 18, w - 48, 20), label, 11, c['muted'], bold=True)
+        self._value(p, QtCore.QRectF(24, 48, w - 48, 46),
+                    _performance_number(value, signed=True) if days else '—', 36, c['green' if value >= 0 else 'red'])
+        detail = f"{s.get('day_counts', {}).get(selected, 0)} fills / " if selected else 'Month net / '
+        self._text(p, QtCore.QRectF(26, 99, w - 52, 20), detail + s.get('currency', 'USDT'), 11, c['muted'])
+        self._rule(p, 24, 139, w - 24)
+        self._text(p, QtCore.QRectF(24, 154, w - 48, 19), 'MONTH PROGRESS', 9, c['muted'], bold=True)
+        chart = QtCore.QRectF(24, 193, w - 48, max(50, h - 386))
+        running, points = 0., [(0, 0.)]
+        # End at the last recorded day; never draw a flat projection through
+        # future dates or imply activity in a month with no matching fills.
+        last_day = int(days[-1][0][-2:]) if days else 0
+        for day in range(1, last_day + 1):
+            running += s.get('days', {}).get(f'{prefix}-{day:02}', 0)
+            points.append((day, running))
+        low, high = min(value for _, value in points), max(value for _, value in points)
+        spread = max(1, high - low)
+        path = QtGui.QPainterPath()
+        for index, (day, value) in enumerate(points):
+            point = QtCore.QPointF(chart.left() + day / self.month.daysInMonth() * chart.width(),
+                                  chart.bottom() - (value - low) / spread * chart.height())
+            path.moveTo(point) if index == 0 else path.lineTo(point)
+        self._rule(p, chart.left(), chart.bottom(), chart.right())
+        if days:
+            p.setPen(QtGui.QPen(QtGui.QColor(c['accent']), 1.8))
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.drawPath(path)
+        else:
+            self._text(p, chart, 'No activity this month', 11, c['muted'], align=Qt.AlignmentFlag.AlignCenter)
+        if selected:
+            day = date.day()
+            point = QtCore.QPointF(chart.left() + day / self.month.daysInMonth() * chart.width(),
+                                  chart.bottom() - (points[day][1] - low) / spread * chart.height())
+            p.setBrush(QtGui.QColor(c['card']))
+            p.drawEllipse(point, 4, 4)
+        self._text(p, QtCore.QRectF(24, chart.bottom() + 9, w - 48, 17),
+                   '01  /  ' + self.month.toString('MMMM yyyy').upper(), 9, c['muted'])
+        positive = sum(value > 0 for _, value in days)
+        for index, (title, number) in enumerate((('ACTIVE DAYS', str(len(days))),
+                                               ('POSITIVE DAYS', f'{positive} / {len(days)}'))):
+            x, width = 24 + index * (w - 48) / 2, (w - 48) / 2
+            self._text(p, QtCore.QRectF(x, h - 157, width, 17), title, 9, c['muted'])
+            self._value(p, QtCore.QRectF(x, h - 135, width - 8, 29), number, 23)
+        self._rule(p, 24, h - 90, w - 24)
+        for index, (label, pick) in enumerate((('Best', max), ('Worst', min))):
+            day, value = pick(days, key=lambda pair: pair[1]) if days else ('', 0)
+            y = h - 77 + index * 31
+            date = QtCore.QDate.fromString(day, 'yyyy-MM-dd').toString('dd MMM') if day else '—'
+            self._text(p, QtCore.QRectF(24, y, w * .5 - 24, 20), f'{label} / {date}', 10, c['muted'])
+            self._text(p, QtCore.QRectF(w * .5, y, w * .5 - 24, 20),
+                       _performance_number(value, signed=True) if day else '—', 12,
+                       c['green' if value > 0 else 'red' if value < 0 else 'muted'], bold=True,
+                       align=Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
 
     def _hours(self, p):
         c, s = self.colors, self.summary
@@ -5446,12 +5719,13 @@ class _PerformancePlot(QtWidgets.QWidget):
             self._text(p, QtCore.QRectF(44 + hour * width, self.height() - 32, 50, 20), f'{hour:02}:00', 10, c['muted'])
 
     def mouseMoveEvent(self, event):
-        if self.kind in {'equity', 'drawdown'}:
+        if self.kind in {'equity', 'drawdown', 'overview'}:
             from bisect import bisect_left
-            points = self.summary.get('curve' if self.kind == 'equity' else 'dips', [])
+            points = self.summary.get('dips' if self.kind == 'drawdown' else 'curve', [])
             index = -1
             if points and self.plot_rect.contains(event.position()):
-                target = points[0][0] + (event.position().x() - self.plot_rect.x()) / self.plot_rect.width() * (points[-1][0] - points[0][0])
+                start, end = self.time_bounds if self.kind == 'overview' else (points[0][0], points[-1][0])
+                target = start + (event.position().x() - self.plot_rect.x()) / self.plot_rect.width() * (end - start)
                 index = min(len(points) - 1, bisect_left(points, target, key=lambda point: point[0]))
             if self.hover_index != index:
                 self.hover_index = index
@@ -5638,6 +5912,7 @@ class TradingPerformanceWorkspace(QtWidgets.QWidget):
             self.visual_layout.setRowStretch(index, 0)
         self._plots, self._metrics = [], {}
         self.calendar = None
+        self.month_review = None
         c = _PERFORMANCE_STYLES[self._variant]
         self.variant_button.setText(f'Layout {self._variant + 1} / 3 · {c["name"]}  ↻')
         self.setStyleSheet(f'''
@@ -5680,22 +5955,20 @@ class TradingPerformanceWorkspace(QtWidgets.QWidget):
             return widget
 
         if self._variant == 0:
-            for col, (key, title) in enumerate((('average', 'Average exit'), ('factor', 'Exit profit factor'),
-                                               ('drawdown', 'Peak drawdown'), ('volume', 'Executed volume'))):
-                metric(key, title, 0, col)
+            overview = plot('overview', 'Cumulative and daily P&L', 0, 0, cols=3, height=448)
+            overview.setMinimumWidth(520)
+            quality = plot('quality', 'Exit quality and drawdown', 0, 3, height=448)
+            quality.setMinimumWidth(280)
+            plot('market_strip', 'Market contribution', 1, 0, cols=4, height=148)
+            for col in range(3):
                 self.visual_layout.setColumnStretch(col, 1)
-            plot('equity', 'Cumulative P&L', 1, 0, cols=3, height=350)
-            plot('ring', 'Outcome distribution', 1, 3, height=350)
-            plot('daily', 'Daily performance', 2, 0, cols=2, height=230)
-            plot('markets', 'Market contribution · top 5', 2, 2, cols=2, height=230)
+            self.visual_layout.setColumnStretch(3, 1)
         elif self._variant == 1:
-            metric('net', 'Net realized · selected period', 0, 0)
-            metric('win_rate', 'Exit win rate', 1, 0)
-            metric('average', 'Average exit', 2, 0)
-            metric('fees', 'Trading fees', 3, 0)
+            plot('period', 'Selected period performance', 0, 0, cols=4, height=110)
             container = QtWidgets.QWidget()
             column = QtWidgets.QVBoxLayout(container)
             column.setContentsMargins(0, 0, 0, 0)
+            column.setSpacing(12)
             nav = QtWidgets.QHBoxLayout()
             previous = QtWidgets.QPushButton('‹')
             previous.setAccessibleName('Previous performance month')
@@ -5705,22 +5978,30 @@ class TradingPerformanceWorkspace(QtWidgets.QWidget):
             following.clicked.connect(lambda: self._change_month(1))
             self.month_label = QtWidgets.QLabel()
             self.month_label.setObjectName('performanceSection')
+            self.month_label.setStyleSheet('font: 600 24px Inter;')
             nav.addWidget(self.month_label)
             nav.addStretch()
             nav.addWidget(previous)
             nav.addWidget(following)
             column.addLayout(nav)
-            self.calendar = _PerformancePlot('calendar', 'Daily net P&L · click a day to inspect fills')
-            self.calendar.setMinimumHeight(460)
+            spread = QtWidgets.QHBoxLayout()
+            spread.setSpacing(12)
+            self.calendar = _PerformancePlot('calendar', 'Daily P&L ledger · click a day to inspect fills')
+            self.calendar.setMinimumHeight(468)
+            self.calendar.setMinimumWidth(560)
             self.calendar.day_selected.connect(self._select_day)
             self._plots.append(self.calendar)
-            column.addWidget(self.calendar, 1)
-            self.visual_layout.addWidget(container, 0, 1, 4, 3)
+            self.month_review = _PerformancePlot('review', 'Month and selected day review')
+            self.month_review.setMinimumWidth(260)
+            self.month_review.setMinimumHeight(468)
+            self._plots.append(self.month_review)
+            spread.addWidget(self.calendar, 3)
+            spread.addWidget(self.month_review, 1)
+            column.addLayout(spread)
+            self.visual_layout.addWidget(container, 1, 0, 1, 4)
             self._change_month(0)
-            self.visual_layout.setColumnStretch(0, 1)
-            for col in (1, 2, 3):
+            for col in range(4):
                 self.visual_layout.setColumnStretch(col, 1)
-            plot('equity', 'Cumulative P&L', 4, 0, cols=4, height=270)
         else:
             plot('equity', 'P&L / execution curve', 0, 0, rows=2, cols=2, height=270)
             metric('factor', 'Exit profit factor', 0, 2)
@@ -5742,8 +6023,12 @@ class TradingPerformanceWorkspace(QtWidgets.QWidget):
         self._month = self._month.addMonths(delta)
         if self.calendar is not None:
             self.calendar.month = self._month
+            self.month_review.month = self._month
             self.month_label.setText(self._month.toString('MMMM yyyy'))
             self.calendar.update()
+            self.month_review.update()
+            if delta and self._selected_day:
+                self._select_day('')
 
     def _cycle_variant(self):
         self._variant = (self._variant + 1) % len(_PERFORMANCE_STYLES)
@@ -5952,6 +6237,10 @@ class TradingPerformanceWorkspace(QtWidgets.QWidget):
 
     def _select_day(self, day):
         self._selected_day = day
+        if self.calendar is not None:
+            self.calendar.selected_day = self.month_review.selected_day = day
+            self.calendar.update()
+            self.month_review.update()
         rows = self._summary.get('rows', [])
         if day:
             rows = [row for row in rows if row['day'] == day]
