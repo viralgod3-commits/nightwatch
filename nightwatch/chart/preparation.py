@@ -337,14 +337,31 @@ def decimate_series(times, values, pixel_width):
     # pair when necessary. Multiple anchor resets may fall in a single bucket.
     points_per_bucket = 8 if has_gaps else 4
     edges = np.linspace(0, count, max(1, (budget-2)//points_per_bucket)+1, dtype=np.int64)
-    chosen = [0, count-1]
-    for start, end in zip(edges[:-1], edges[1:]):
-        segment = values[start:end]
-        finite = np.flatnonzero(finite_mask[start:end])
-        chosen.extend((int(start), int(end-1)))
-        if finite.size:
-            chosen.extend((int(start+finite[np.argmin(segment[finite])]), int(start+finite[np.argmax(segment[finite])])))
-    selected = np.asarray(sorted(set(chosen)), dtype=np.int64)
+    chosen = [np.array([0, count-1], dtype=np.int64), edges[:-1], edges[1:]-1]
+    if has_gaps and not finite_mask.any():
+        selected = np.unique(np.concatenate(chosen))
+        return times[selected], values[selected], True
+    # Reduce many small buckets together. Repeat the last sample to pad shorter
+    # buckets: argmin/argmax still select the same first extremum as before.
+    # Bound gathered samples and masks instead of allocating a history-sized grid.
+    bucket_width = int(np.max(np.diff(edges)))
+    batch_size = max(1, 65_536 // bucket_width)
+    offsets = np.arange(bucket_width)
+    for first in range(0, len(edges)-1, batch_size):
+        last = min(first+batch_size, len(edges)-1)
+        indices = np.minimum(edges[first:last, None]+offsets, edges[first+1:last+1, None]-1)
+        samples = values[indices]
+        if has_gaps:
+            finite = finite_mask[indices]
+            rows = np.flatnonzero(finite.any(axis=1))
+            minimum = np.argmin(np.where(finite, samples, np.inf), axis=1)
+            maximum = np.argmax(np.where(finite, samples, -np.inf), axis=1)
+        else:
+            rows = np.arange(len(indices))
+            minimum = np.argmin(samples, axis=1)
+            maximum = np.argmax(samples, axis=1)
+        chosen.extend((indices[rows, minimum[rows]], indices[rows, maximum[rows]]))
+    selected = np.unique(np.concatenate(chosen))
     if has_gaps:
         last_missing = np.maximum.accumulate(np.where(finite_mask, -1, np.arange(count)))
         left, right = selected[:-1], selected[1:]
