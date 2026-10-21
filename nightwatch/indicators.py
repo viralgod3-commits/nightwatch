@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import time
 from collections import deque
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -888,7 +889,23 @@ def _vwap_components(candles, anchor="week"):
     times, _, high, low, close, volume, quote = candle_arrays(candles)
     if not len(times):
         return times.copy(), times.copy(), volume, quote
-    groups = np.fromiter((_local_vwap_anchor(timestamp, anchor) for timestamp in times), dtype=float, count=len(times))
+
+    def anchored_groups():
+        previous = None
+        group = math.nan
+        for timestamp in times:
+            local = time.localtime(float(timestamp))
+            offset = getattr(local, "tm_gmtoff", None)
+            key = (local.tm_year, local.tm_yday, offset)
+            # The original anchor depends only on the local date and UTC
+            # offset. Include the offset so DST transitions keep their exact
+            # existing boundary, including repeated hours on the same date.
+            if key != previous or offset is None:
+                group = _local_vwap_anchor(timestamp, anchor)
+                previous = key
+            yield group
+
+    groups = np.fromiter(anchored_groups(), dtype=float, count=len(times))
     volume = np.maximum(volume, 0)
     quote = np.where(quote > 0, quote, (high + low + close) / 3.0 * volume)
     starts = np.flatnonzero(np.r_[True, groups[1:] != groups[:-1]])
