@@ -71,11 +71,15 @@ def _stamp(end: int, full: bool = False) -> str:
 
 def _window(series: dict[int, Candle], end: int, hours: int) -> list[Candle]:
     keys = range(end - (hours - 1) * HOUR, end + 1, HOUR)
-    rows = [series.get(key) for key in keys]
-    if any(row is None or not all(math.isfinite(value) for value in
-           (row.open, row.close, row.high, row.quote_volume))
-           or row.open <= 0 or row.close <= 0 or row.quote_volume < 0 for row in rows):
-        return []
+    rows = []
+    for key in keys:
+        row = series.get(key)
+        if (row is None or not math.isfinite(row.open)
+                or not math.isfinite(row.close) or not math.isfinite(row.high)
+                or not math.isfinite(row.quote_volume)
+                or row.open <= 0 or row.close <= 0 or row.quote_volume < 0):
+            return []
+        rows.append(row)
     return rows
 
 
@@ -2732,20 +2736,16 @@ def _sector_overview_series_window(
     if count <= 0:
         return []
     keys = range(end - (count - 1) * step, end + 1, step)
-    rows = [series.get(key) for key in keys]
-    if any(
-        row is None
-        or row.open <= 0
-        or row.close <= 0
-        or row.quote_volume < 0
-        or not all(
-            math.isfinite(value)
-            for value in (row.open, row.close, row.high, row.low, row.quote_volume)
-        )
-        for row in rows
-    ):
-        return []
-    return rows  # type: ignore[return-value]
+    rows = []
+    for key in keys:
+        row = series.get(key)
+        if (row is None or row.open <= 0 or row.close <= 0 or row.quote_volume < 0
+                or not math.isfinite(row.open) or not math.isfinite(row.close)
+                or not math.isfinite(row.high) or not math.isfinite(row.low)
+                or not math.isfinite(row.quote_volume)):
+            return []
+        rows.append(row)
+    return rows
 
 
 def _sector_overview_return(series: dict[int, Candle], end: int, step: int, count: int) -> float | None:
