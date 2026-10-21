@@ -5,7 +5,7 @@ import math
 import time
 import weakref
 from collections import OrderedDict, deque
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from typing import Any
 
 from ..models import OrderBookDepthView, OrderFlowDisplayLevel, OrderFlowLevelMetrics, OrderFlowSnapshot, OrderFlowTradePrint
@@ -2354,7 +2354,7 @@ class OrderFlowAnalyzer:
             if cached is not None and cached[0] is level and cached[1] == inputs:
                 display = cached[2]
             else:
-                display = replace(
+                display = replace_record(
                     level,
                     liquidity_intensity=inputs[0],
                     delta_intensity=inputs[1],
@@ -2392,7 +2392,7 @@ class OrderFlowAnalyzer:
             if old is None:
                 return self._normalize_display_levels(bases)
             if self._price_key(base.price) in dirty:
-                display = replace(
+                display = replace_record(
                     base,
                     liquidity_intensity=old.liquidity_intensity,
                     delta_intensity=old.delta_intensity,
@@ -2628,7 +2628,7 @@ class OrderFlowAnalyzer:
                     continue
                 if mutable is None:
                     mutable = list(output)
-                mutable[index] = replace(trade, outcome=outcome,
+                mutable[index] = replace_record(trade, outcome=outcome,
                                          outcome_direction=self._print_outcome_directions.get(sequence, 0))
             if mutable is not None:
                 output = tuple(mutable)
@@ -3395,7 +3395,7 @@ import multiprocessing
 import threading
 from .ipc import (
     SnapshotDecoder, SnapshotDelta, SnapshotEncoder, SnapshotSeedRequired,
-    install_snapshot_reducers,
+    install_snapshot_reducers, replace_record,
 )
 
 

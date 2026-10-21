@@ -1,7 +1,7 @@
 """Fast, lossless multiprocessing transport for immutable order-flow records."""
 from __future__ import annotations
 
-from dataclasses import dataclass, fields
+from dataclasses import dataclass, fields, replace
 from multiprocessing.reduction import ForkingPickler
 from operator import attrgetter
 from types import MemberDescriptorType
@@ -105,6 +105,27 @@ def _wire_constructor(model):
 
 
 _WIRE_CONSTRUCTORS = {model: _wire_constructor(model) for model in _RECORD_NAMES}
+_RECORD_INDICES = {model: {name: index for index, name in enumerate(names)}
+                   for model, names in _RECORD_NAMES.items()}
+
+
+def replace_record(record, **changes):
+    """Copy hot immutable records through their already-validated slot schema."""
+    model = type(record)
+    construct = _WIRE_CONSTRUCTORS.get(model)
+    if construct is None or construct is model:
+        return replace(record, **changes)
+    values = list(_RECORD_VALUES[model](record))
+    indices = _RECORD_INDICES[model]
+    try:
+        for name, value in changes.items():
+            values[indices[name]] = value
+    except KeyError:
+        # Preserve dataclasses.replace's validation and error for unknown fields.
+        return replace(record, **changes)
+    return construct(*values)
+
+
 _SCALAR_VALUES = attrgetter(*_SCALAR_NAMES)
 _FRAME_VALUES = attrgetter(*_FRAME_NAMES)
 _SYMBOL_INDEX = _SCALAR_NAMES.index("symbol")
