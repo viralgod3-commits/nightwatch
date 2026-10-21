@@ -5043,21 +5043,21 @@ def _performance_summary(source: list[dict], days: int, market: str, side: str, 
     # the full recorded inventory before filtering so it still counts as an
     # exit, including when the opening fill falls outside the chosen period.
     positions = defaultdict(Decimal)
-    classified = []
-    for original in sorted(source, key=lambda row: (row['time_ms'], int(row['trade_id']))):
-        row = dict(original)
+    rows = []
+    for row in sorted(source, key=lambda row: (row['time_ms'], int(row['trade_id']))):
         key = (row['symbol'], row['position_side'])
         signed = Decimal(row['qty']) * (1 if row['side'] == 'BUY' else -1)
         held = positions[key]
         closes_recorded = held * signed < 0
-        row['closing'] = bool(row['closing'] or closes_recorded)
-        if not row['closing'] or closes_recorded:
+        closing = bool(row['closing'] or closes_recorded)
+        if not closing or closes_recorded:
             positions[key] += signed
-        classified.append(row)
-    rows = [row for row in classified if row['time_ms'] >= cutoff
-            and row['settlement'] == currency and (not market or row['symbol'] == market)
-            and (not side or row['side'] == side)]
-    rows.sort(key=lambda row: (row['time_ms'], int(row['trade_id'])))
+        if (row['time_ms'] >= cutoff and row['settlement'] == currency
+                and (not market or row['symbol'] == market)
+                and (not side or row['side'] == side)):
+            # Filtering preserves the sorted inventory walk. Copy only fills
+            # that will be presented; earlier fills still classify later exits.
+            rows.append({**row, 'closing': closing})
     zero = Decimal(0)
     net = gross = fees = volume = peak = drawdown = zero
     days_map, markets_map, fees_map, exits = (defaultdict(lambda: zero) for _ in range(4))
@@ -5158,12 +5158,19 @@ class _PerformanceTableModel(QtCore.QAbstractTableModel):
             return None
         row, col = self.rows[index.row()], index.column()
         if role == Qt.ItemDataRole.DisplayRole:
-            def precise(value):
-                return format(Decimal(value).normalize(), 'f')
-            return (row['date_text'], row['symbol'], row['side'].title() + (' / Exit' if row['closing'] else ' / Entry'),
-                    precise(row['price']), precise(row['qty']), _performance_number(row['realized'], signed=True),
-                    f"{precise(row['fee'])} {row['fee_asset']}",
-                    _performance_number(row['net'], signed=True))[col]
+            if col == 0:
+                return row['date_text']
+            if col == 1:
+                return row['symbol']
+            if col == 2:
+                return row['side'].title() + (' / Exit' if row['closing'] else ' / Entry')
+            if col in (3, 4):
+                return format(Decimal(row['price' if col == 3 else 'qty']).normalize(), 'f')
+            if col == 5:
+                return _performance_number(row['realized'], signed=True)
+            if col == 6:
+                return f"{format(Decimal(row['fee']).normalize(), 'f')} {row['fee_asset']}"
+            return _performance_number(row['net'], signed=True)
         if role == Qt.ItemDataRole.TextAlignmentRole:
             return int(Qt.AlignmentFlag.AlignVCenter | (Qt.AlignmentFlag.AlignRight if col >= 3 else Qt.AlignmentFlag.AlignLeft))
         if role == Qt.ItemDataRole.ForegroundRole:
