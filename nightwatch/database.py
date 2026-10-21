@@ -590,16 +590,11 @@ class AppDatabase:
         with self._connect() as connection:
             rows = connection.execute(
                 f"""
-                SELECT m.event_type, m.event_time, m.payload_json
-                FROM market_events m
-                JOIN (
-                    SELECT MAX(id) AS selected_id
-                    FROM market_events
-                    WHERE symbol = ? AND event_type IN ({placeholders})
-                      AND event_time BETWEEN ? AND ?
-                    GROUP BY event_type, event_time
-                ) selected ON selected.selected_id = m.id
-                ORDER BY m.event_time
+                SELECT event_type, event_time, payload_json
+                FROM market_events
+                WHERE symbol = ? AND event_type IN ({placeholders})
+                  AND event_time BETWEEN ? AND ?
+                ORDER BY event_time
                 """,
                 (symbol, *event_types, start_ms, end_ms),
             ).fetchall()
