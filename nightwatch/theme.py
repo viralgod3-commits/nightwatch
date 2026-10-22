@@ -99,7 +99,20 @@ def orderbook_palette(source: object = None, theme: dict[str, object] | None = N
 CANDLE_STYLES: Final[dict[str, dict[str, object]]] = {'Inked': {'width': 0.64, 'body_alpha': 248, 'outline': 0.9, 'wick': 0.85, 'close_tick': True, 'pixel_snap': False, 'antialias': True}, 'Hollow': {'width': 0.74, 'body_alpha': 255, 'outline': 1.0, 'wick': 1.0, 'hollow_up': True, 'hollow_down': False, 'pixel_snap': True, 'antialias': False}, 'Luminous': {'width': 0.6, 'body_alpha': 232, 'outline': 0.85, 'wick': 0.85, 'glow_alpha': 34, 'glow_width': 2.2, 'pixel_snap': False, 'antialias': True}}
 import colorsys
 UI_COLOR_KEYS = ('bg', 'panel', 'panel2', 'shell_gap', 'grid', 'border', 'control', 'control_top', 'control_hover', 'control_border', 'text', 'muted', 'green', 'red', 'depth_green', 'depth_red', 'cyan', 'info', 'amber', 'purple', 'take_profit', 'risk', 'chart_bg', 'chart_grid', 'chart_border', 'chart_panel2', 'chart_control', 'chart_control_border', 'chart_text', 'chart_muted', 'chart_green', 'chart_red', 'chart_cyan', 'chart_amber', 'chart_purple', 'current_price_line', 'current_price_text', 'reference_price', 'series_1', 'series_2', 'series_3', 'series_4', 'candle_up', 'candle_down', 'topbar', 'header', 'raised', 'separator', 'active', 'active_line', 'book_bid', 'book_ask', 'book_mid', 'book_grid', 'orderbook_bg', 'orderbook_muted', 'orderbook_value_text', 'orderbook_badge_text', 'orderflow_absorption', 'orderflow_stacking', 'orderflow_pulling', 'orderflow_depletion', 'orderflow_wall', 'orderflow_rpi', 'orderflow_entry', 'orderflow_take_profit', 'orderflow_stop', 'orderflow_liquidation', 'orderflow_order', 'rail_neutral', 'rail_buy', 'rail_sell', 'rail_take_profit', 'rail_stop', 'rail_secondary', 'rail_warning', 'metric_price', 'metric_volume', 'metric_taker_buy', 'metric_taker_sell', 'metric_taker_neutral', 'metric_funding_positive', 'metric_funding_negative', 'metric_funding_neutral', )
-_DEFAULT_SOURCE_COLORS: dict[str, str] = {'bg': '#07090C', 'panel': '#0C1016', 'panel2': '#11161D', 'grid': '#1C2631', 'border': '#1C2631', 'control': '#171E27', 'control_top': '#1D2631', 'control_hover': '#253141', 'control_border': '#2B3947', 'text': '#EAF0F6', 'muted': '#9AA6B2', 'green': '#28D07F', 'red': '#FF5A6E', 'depth_green': '#28D07F', 'depth_red': '#FF5A6E', 'cyan': '#66C2FF', 'info': '#66C2FF', 'amber': '#F0B34A', 'purple': '#9B8CFF', 'take_profit': '#48D6C2', 'risk': '#FF855A', 'chart_bg': '#07090C', 'chart_grid': '#1B2530', 'chart_border': '#24303D', 'chart_panel2': '#0E131A', 'chart_control': '#111923', 'chart_control_border': '#2B3947', 'chart_text': '#C8D2DC', 'chart_muted': '#7D8996', 'current_price_line': '#66C2FF', 'current_price_text': '#EAF0F6', 'reference_price': '#B7C6D4', 'series_1': '#66C2FF', 'series_2': '#9B8CFF', 'series_3': '#F0B34A', 'series_4': '#4ED6C8', 'orderbook_bg': '#090D12', 'book_grid': '#1C2631', 'orderbook_muted': '#7D8996', 'orderbook_value_text': '#D5DEE7', 'orderbook_badge_text': '#EAF0F6', }
+NIGHTWATCH_COLORS: Final[dict[str, str]] = {
+    'bg': '#0B0C0D', 'panel': '#121316', 'panel2': '#181A1E', 'grid': '#272A30',
+    'border': '#30343C', 'control': '#1D2024', 'control_top': '#22252A',
+    'control_hover': '#26292F', 'control_border': '#434853', 'text': '#ECEBE7', 'muted': '#A5AEBC',
+    'green': '#56CF98', 'red': '#FF5563', 'cyan': '#DEB980', 'info': '#80B1EC', 'amber': '#E5C071',
+    'purple': '#B4A1E8', 'take_profit': '#69CABB', 'risk': '#F29D76', 'active': '#22252B',
+    'orderbook_bg': '#000000', 'book_grid': '#24272D', 'orderbook_muted': '#A5AEBC',
+    'orderbook_value_text': '#ECEBE7', 'orderbook_badge_text': '#ECEBE7',
+    'reference_price': '#A5AEBC', 'series_1': '#80B1EC', 'series_2': '#B4A1E8',
+    'series_3': '#E5C071', 'series_4': '#69CABB', 'chart_bg': '#000000', 'chart_grid': '#252525',
+    'chart_border': '#3A3A3A', 'chart_panel2': '#101010', 'chart_control': '#1A1A1A',
+    'chart_control_border': '#444444', 'chart_text': '#D1D4DC', 'chart_muted': '#9598A1',
+}
+_DEFAULT_SOURCE_COLORS: dict[str, str] = dict(NIGHTWATCH_COLORS)
 _DERIVED_COLOR_SOURCES: dict[str, str] = {'shell_gap': 'panel2', 'topbar': 'bg', 'header': 'panel2', 'raised': 'control_top', 'separator': 'border', 'active': 'control_hover', 'active_line': 'cyan', 'depth_green': 'green', 'depth_red': 'red', 'chart_green': 'green', 'chart_red': 'red', 'chart_cyan': 'cyan', 'chart_amber': 'amber', 'chart_purple': 'purple', 'current_price_line': 'cyan', 'current_price_text': 'chart_text', 'book_bid': 'green', 'book_ask': 'red', 'book_mid': 'cyan', 'orderflow_absorption': 'info', 'orderflow_stacking': 'purple', 'orderflow_pulling': 'amber', 'orderflow_depletion': 'risk', 'orderflow_wall': 'text', 'orderflow_rpi': 'purple', 'orderflow_entry': 'cyan', 'orderflow_take_profit': 'take_profit', 'orderflow_stop': 'risk', 'orderflow_liquidation': 'risk', 'orderflow_order': 'text', 'rail_neutral': 'cyan', 'rail_buy': 'green', 'rail_sell': 'red', 'rail_take_profit': 'take_profit', 'rail_stop': 'risk', 'rail_secondary': 'purple', 'rail_warning': 'amber', 'candle_up': 'green', 'candle_down': 'red', 'metric_price': 'text', 'metric_volume': 'text', 'metric_taker_buy': 'green', 'metric_taker_sell': 'red', 'metric_taker_neutral': 'text', 'metric_funding_positive': 'green', 'metric_funding_negative': 'red', 'metric_funding_neutral': 'text', }
 
 def _normalize_hex_color(value: object, fallback: str) -> str:
@@ -125,7 +138,7 @@ def resolve_theme(theme: dict[str, object], overrides: dict[str, object] | None=
         -> normalize/validate
     """
     allowed = set(UI_COLOR_KEYS)
-    base = {key: value for key, value in dict(theme or {}).items() if key in allowed}
+    base = {key: value for key, value in dict(theme or NIGHTWATCH_COLORS).items() if key in allowed}
     user = {key: value for key, value in dict(overrides or {}).items() if key in allowed}
     explicit = set(base) | set(user)
     resolved: dict[str, object] = dict(_DEFAULT_SOURCE_COLORS)
@@ -263,19 +276,6 @@ def chart_palette(resolved: dict[str, object], theme_name: str | None=None) -> d
 DEFAULT_THEME_NAME = 'Nightwatch'
 # Presets are static data; semantic children still follow user overrides in resolve_theme.
 # Neutral chart canvases and black dark-theme ladders keep market data in focus.
-NIGHTWATCH_COLORS: Final[dict[str, str]] = {
-    'bg': '#0B0C0D', 'panel': '#121316', 'panel2': '#181A1E', 'grid': '#272A30',
-    'border': '#30343C', 'control': '#1D2024', 'control_top': '#22252A',
-    'control_hover': '#26292F', 'control_border': '#434853', 'text': '#ECEBE7', 'muted': '#A5AEBC',
-    'green': '#56CF98', 'red': '#FF5563', 'cyan': '#DEB980', 'info': '#80B1EC', 'amber': '#E5C071',
-    'purple': '#B4A1E8', 'take_profit': '#69CABB', 'risk': '#F29D76', 'active': '#22252B',
-    'orderbook_bg': '#000000', 'book_grid': '#24272D', 'orderbook_muted': '#A5AEBC',
-    'orderbook_value_text': '#ECEBE7', 'orderbook_badge_text': '#ECEBE7',
-    'reference_price': '#A5AEBC', 'series_1': '#80B1EC', 'series_2': '#B4A1E8',
-    'series_3': '#E5C071', 'series_4': '#69CABB', 'chart_bg': '#000000', 'chart_grid': '#252525',
-    'chart_border': '#3A3A3A', 'chart_panel2': '#101010', 'chart_control': '#1A1A1A',
-    'chart_control_border': '#444444', 'chart_text': '#D1D4DC', 'chart_muted': '#9598A1',
-}
 THEMES: dict[str, dict[str, object]] = {
     'Nightwatch': dict(NIGHTWATCH_COLORS),
     'Neon Reactor': {
@@ -433,6 +433,10 @@ THEMES: dict[str, dict[str, object]] = {
         'chart_muted': '#9598A1',
     },
 }
+# Resolve the named/default book once, just like an explicit Nightwatch override.
+# Bare constructors keep their cheap preset-copy path and the same semantic colors.
+ORDERBOOK_THEMES[DEFAULT_ORDERBOOK_THEME_NAME].update(orderbook_palette(theme=NIGHTWATCH_COLORS))
+
 THEME_METADATA: dict[str, dict[str, str]] = {
     'Nightwatch': {'style_family': 'dark_terminal',
         'identity': 'nightwatch', 'chart_surface': 'black'},
