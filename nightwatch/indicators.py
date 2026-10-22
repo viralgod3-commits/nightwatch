@@ -1011,6 +1011,11 @@ class PriceStudyCache:
             return ()
         key = self.cache_key(candles, settings)
         cached = self.entries.get(name)
+        # Donchian excludes the mutable candle. Reuse an unchanged history
+        # after its first tail update, preserving that updater's edge cases.
+        if (name == "Donchian Channels" and cached is not None
+                and cached[0] == key and cached[2] is not None):
+            return cached[1]
         if cached is not None and cached[0] != key:
             old, arrays, state = cached
             mode = self._incremental_mode(candles, key, cached)
@@ -1049,6 +1054,8 @@ class PriceStudyCache:
             return arrays
         _, arrays, state = cached
         self._update_tail(candles, len(candles)-1, name, settings, arrays, state)
+        if name == "Donchian Channels":
+            self.entries[name] = key, arrays, ()
         return arrays
 
     @staticmethod
