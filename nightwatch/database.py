@@ -348,12 +348,19 @@ class AppDatabase:
 
     def candle_coverage(self, symbol: str, interval: str) -> tuple[int, int, int]:
         with self._connect() as connection:
+            # Separate endpoint aggregates can seek in the primary key instead
+            # of comparing every timestamp during the required count scan.
             row = connection.execute(
                 """
-                SELECT MIN(open_time) AS first_time, MAX(open_time) AS last_time, COUNT(*) AS rows
-                FROM candle_cache WHERE symbol = ? AND interval = ?
+                SELECT
+                    (SELECT MIN(open_time) FROM candle_cache
+                     WHERE symbol = :symbol AND interval = :interval) AS first_time,
+                    (SELECT MAX(open_time) FROM candle_cache
+                     WHERE symbol = :symbol AND interval = :interval) AS last_time,
+                    (SELECT COUNT(*) FROM candle_cache
+                     WHERE symbol = :symbol AND interval = :interval) AS rows
                 """,
-                (symbol, interval),
+                {"symbol": symbol, "interval": interval},
             ).fetchone()
         return (
             int(row["first_time"] or 0),
