@@ -75,9 +75,15 @@ def _restore_snapshot(db, name):
                 raise ValueError("Invalid overview history")
             rows = []
             for row in values:
-                if len(row) != 7 or not all(math.isfinite(float(value)) for value in row):
+                if len(row) != 7:
                     raise ValueError("Invalid overview candle")
-                candle = Candle(*(float(value) for value in row))
+                converted = []
+                for value in row:
+                    number = float(value)
+                    if not math.isfinite(number):
+                        raise ValueError("Invalid overview candle")
+                    converted.append(number)
+                candle = Candle(*converted)
                 if (min(candle.open, candle.high, candle.low, candle.close) <= 0
                         or min(candle.volume, candle.quote_volume) < 0
                         or candle.low > min(candle.open, candle.close)
