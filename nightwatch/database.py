@@ -354,6 +354,12 @@ class AppDatabase:
                     "Target timeframe must be an exact multiple of the source timeframe."
                 )
             target_sizes[target_interval] = target_ms
+        if not target_sizes:
+            return {}
+        buckets: dict[str, list[Candle]] = {target: [] for target in targets}
+        states: dict[str, tuple[int, Candle | None, int]] = {
+            target: (-1, None, 0) for target in targets
+        }
         with self._connect() as connection:
             rows = connection.execute(
                 """
@@ -363,37 +369,38 @@ class AppDatabase:
                 ORDER BY open_time
                 """,
                 (symbol, source_interval),
-            ).fetchall()
-        buckets: dict[str, list[Candle]] = {target: [] for target in targets}
-        states: dict[str, tuple[int, Candle | None, int]] = {
-            target: (-1, None, 0) for target in targets
-        }
-        for row in rows:
-            open_time = int(row["open_time"])
-            for target_interval, target_ms in target_sizes.items():
-                current_bucket, current, count = states[target_interval]
-                bucket = open_time - open_time % target_ms
-                if bucket != current_bucket:
-                    if current is not None and count == target_ms // source_ms:
-                        buckets[target_interval].append(current)
-                    current_bucket = bucket
-                    count = 0
-                    current = Candle(
-                        time=bucket / 1000.0,
-                        open=float(row["open"]),
-                        high=float(row["high"]),
-                        low=float(row["low"]),
-                        close=float(row["close"]),
-                        volume=float(row["volume"]),
-                        quote_volume=float(row["quote_volume"]),
-                    )
-                elif current is not None:
-                    current.high = max(current.high, float(row["high"]))
-                    current.low = min(current.low, float(row["low"]))
-                    current.close = float(row["close"])
-                    current.volume += float(row["volume"])
-                    current.quote_volume += float(row["quote_volume"])
-                states[target_interval] = (current_bucket, current, count + 1)
+            )
+            # Keep one read snapshot without retaining every raw source row.
+            # Numeric tuples also avoid repeated named lookups/conversions for
+            # each target timeframe while preserving the accumulation order.
+            rows.row_factory = None
+            for row in rows:
+                open_time = int(row[0])
+                high, low, closed, volume, quote_volume = map(float, row[2:])
+                for target_interval, target_ms in target_sizes.items():
+                    current_bucket, current, count = states[target_interval]
+                    bucket = open_time - open_time % target_ms
+                    if bucket != current_bucket:
+                        if current is not None and count == target_ms // source_ms:
+                            buckets[target_interval].append(current)
+                        current_bucket = bucket
+                        count = 0
+                        current = Candle(
+                            time=bucket / 1000.0,
+                            open=float(row[1]),
+                            high=high,
+                            low=low,
+                            close=closed,
+                            volume=volume,
+                            quote_volume=quote_volume,
+                        )
+                    elif current is not None:
+                        current.high = max(current.high, high)
+                        current.low = min(current.low, low)
+                        current.close = closed
+                        current.volume += volume
+                        current.quote_volume += quote_volume
+                    states[target_interval] = (current_bucket, current, count + 1)
         for target_interval, target_ms in target_sizes.items():
             _current_bucket, current, count = states[target_interval]
             if current is not None and count == target_ms // source_ms:
