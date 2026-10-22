@@ -169,7 +169,7 @@ class RailIntent(str, Enum):
     TOGGLE_REDUCE = 'toggle_reduce'
 
 
-INTERACTIVE_KEYS = ('size_cycle', 'leverage_cycle', 'reduce')
+INTERACTIVE_KEYS = ('execute', 'size_cycle', 'leverage_cycle', 'reduce')
 
 
 def control_intent(key: str) -> RailIntent | None:
@@ -520,6 +520,7 @@ class MagneticRailLineOverlay(QtWidgets.QWidget):
             self._rail_press = None
             self._rail_drag = False
             if dragged:
+                hud.body_drag_moved.emit(event.globalPosition())
                 hud.body_drag_finished.emit(True)
             else:
                 hud._show_working_order_details()
@@ -912,30 +913,19 @@ class MagneticRailLineOverlay(QtWidgets.QWidget):
 class MagneticOrderRailPanel(QtWidgets.QWidget):
     """Compact right-edge order rail with inline execution parameters.
 
-    Price-axis geometry and the rail/body connection remain independent of these
-    controls. The controls occupy only free space between the side dot and the
-    canonical native-axis price text band.
+    The draft is a small order ticket; accepted orders contract onto the native
+    price axis. Controls stay inside the body even when the price is offscreen.
     """
 
 
-    COMPACT_WIDTH = 244
     COMPACT_HEIGHT = 51
-    BODY_WIDTH = 242.2
-    BODY_HEIGHT = 45.9
-
-
-    CONTROL_BOX_HEIGHT = 24.0
-    CONTROL_BOX_WIDTH = 44.5
-    CONTROL_MIN_BOX_WIDTH = 40.0
-    REDUCE_WIDTH = 26.5
-    REDUCE_HEIGHT = 24.0
-    DOT_CENTER_INSET = 18.7
-    DOT_RADIUS = 4.1
-    SIZE_LEFT_INSET = 48.8
-    SIZE_LEVERAGE_GAP = 4.5
-    LEVERAGE_REDUCE_GAP = 8.2
-    BODY_DIVIDER_INSET = 192.7
-    PRICE_CONTROL_MIN_CLEARANCE = 8.0
+    CONTROL_BOX_HEIGHT = 28.0
+    CONTROL_GAP = 4.0
+    ORDER_TYPE_LABELS = {
+        'LIMIT': 'LIMIT', 'STOP': 'STOP LIMIT', 'STOP_MARKET': 'STOP MKT',
+        'TAKE_PROFIT': 'TP LIMIT', 'TAKE_PROFIT_MARKET': 'TP MKT',
+        'TRAILING_STOP_MARKET': 'TRAILING',
+    }
     ARM_DURATION_MS = 520
     DISARM_DURATION_MS = 160
     SIZE_VALUES = (25, 50, 75, 100)
@@ -984,6 +974,11 @@ class MagneticOrderRailPanel(QtWidgets.QWidget):
         self.phase = 0.0
         self._hover_key = ''
         self._pressed_key = ''
+        self._control_menu: QtWidgets.QMenu | None = None
+        self._wheel_key = ''
+        self._wheel_remainder = 0
+        self._layout_cache_key = None
+        self._layout_cache: dict[str, Any] = {}
         self._body_dragging = False
         self._body_click_pending = False
         self._body_press_global: QtCore.QPointF | None = None
@@ -998,6 +993,9 @@ class MagneticOrderRailPanel(QtWidgets.QWidget):
         self._commit_started = 0.0
 
         self._axis_font = _chart_axis_font()
+        self._control_font = typography_font(TextRole.RAIL_CONTROL)
+        self._label_font = typography_font(TextRole.RAIL_LABEL)
+        self._refresh_control_metrics()
         self._paint_text_color = QtGui.QColor()
         self._paint_muted_color = QtGui.QColor()
         self._paint_surface_color = QtGui.QColor()
@@ -1016,6 +1014,7 @@ class MagneticOrderRailPanel(QtWidgets.QWidget):
 
         self.setCursor(Qt.CursorShape.ArrowCursor)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.setAccessibleName('Magnetic order rail')
         self.hide()
 
 
@@ -1033,7 +1032,22 @@ class MagneticOrderRailPanel(QtWidgets.QWidget):
 
     def _refresh_typography_cache(self) -> None:
         self._axis_font = _chart_axis_font()
+        self._control_font = typography_font(TextRole.RAIL_CONTROL)
+        self._label_font = typography_font(TextRole.RAIL_LABEL)
+        self._refresh_control_metrics()
+        self.geometry_changed.emit()
         self.update()
+
+    def _refresh_control_metrics(self) -> None:
+        metrics = QtGui.QFontMetricsF(self._control_font)
+        labels = QtGui.QFontMetricsF(self._label_font)
+        self._control_widths = (
+            max(64.0, max(labels.horizontalAdvance(t) for t in self.ORDER_TYPE_LABELS.values()) + 16.0),
+            max(46.0, metrics.horizontalAdvance('100%') + 16.0),
+            max(42.0, metrics.horizontalAdvance('125×') + 16.0),
+            max(54.0, metrics.horizontalAdvance('Reduce') + 16.0),
+        )
+        self._layout_cache_key = None
 
     def _refresh_theme_color_cache(self) -> None:
         t = self.theme
@@ -1122,6 +1136,7 @@ class MagneticOrderRailPanel(QtWidgets.QWidget):
         self.update()
 
     def apply_order_preset(self, preset: dict[str, Any], *, side: str, preset_name: str='') -> None:
+        self._close_control_menu()
         values = normalized_order_rail_order_preset(preset)
         self.side = 'SELL' if str(side).upper() == 'SELL' else 'BUY'
         self.order_type = str(values['orderType'])
@@ -1149,6 +1164,8 @@ class MagneticOrderRailPanel(QtWidgets.QWidget):
         if pending == self.submission_pending:
             return
         self.submission_pending = pending
+        if pending:
+            self._close_control_menu()
         self._hover_key = ''
         self._pressed_key = ''
         self.update()
@@ -1158,6 +1175,8 @@ class MagneticOrderRailPanel(QtWidgets.QWidget):
         if pending == self.cancellation_pending:
             return
         self.cancellation_pending = pending
+        if pending:
+            self._close_control_menu()
         self._hover_key = ''
         self._pressed_key = ''
         self.update()
@@ -1294,94 +1313,68 @@ class MagneticOrderRailPanel(QtWidgets.QWidget):
         if dragging == self._external_dragging:
             return
         self._external_dragging = dragging
+        self.setCursor(Qt.CursorShape.ClosedHandCursor if dragging else Qt.CursorShape.OpenHandCursor)
         self.update()
 
     def expansion_anchor(self) -> float:
         return 0.5
 
-    def desired_size(self, available_width: int, available_height: int) -> QtCore.QSize:
-        return QtCore.QSize(
-            max(1, min(self.COMPACT_WIDTH, int(available_width))),
-            max(1, min(self.COMPACT_HEIGHT, int(available_height))),
-        )
+    def desired_size(self, available_width: int, available_height: int, *, axis_width: float=70.0) -> QtCore.QSize:
+        required = sum(self._control_widths) + self.CONTROL_GAP * 3 + 30.0 + axis_width
+        width = max(1, min(int(math.ceil(required)), int(available_width)))
+        stacked = width + 0.5 < required and not (self.armed or self._arm_submission_preview)
+        height = 79 if stacked else self.COMPACT_HEIGHT
+        return QtCore.QSize(width, max(1, min(height, int(available_height))))
 
-    def _layout(self) -> dict[str, QtCore.QRectF]:
-        full_rect = QtCore.QRectF(self.rect())
-        price_h = min(self.BODY_HEIGHT, max(1.0, full_rect.height() - 6.0))
-        base_price_w = min(self.BODY_WIDTH, max(1.0, full_rect.width() - 2.0))
-        top = max(3.0, min(full_rect.bottom() - price_h - 3.0, self.line_anchor_y - price_h * 0.5))
-        right = full_rect.right() - 0.5
-        base_left = right - base_price_w
-        arm_progress = self.arm_visual_progress()
+    def _layout(self) -> dict[str, Any]:
+        blocked = bool(self.armed or self.submission_pending or self.cancellation_pending or self._implosion_progress > 0.001)
+        key = (self.width(), self.height(), self.line_anchor_y, self._axis_left,
+               self._axis_text_left, self._axis_text_width, self._arm_visual_progress,
+               self._implosion_progress, blocked)
+        if key == self._layout_cache_key:
+            return self._layout_cache
+        right = float(self.width()) - 0.5
+        base_left = min(10.0, right - 1.0)
         left = base_left
-        if self._axis_left is not None and arm_progress > 0.0:
-            axis_target_left = max(base_left, min(right - 1.0, self._axis_left))
-            left += (axis_target_left - left) * arm_progress
+        if self._axis_left is not None:
+            target = max(base_left, min(right - 1.0, self._axis_left))
+            left += (target - left) * self.arm_visual_progress()
         if self._implosion_progress > 0.0:
             left += (right - 1.0 - left) * self._implosion_progress
+        if self._axis_text_left is not None and self._implosion_progress <= 0.0:
+            left = max(base_left, min(left, self._axis_text_left - 9.0))
+        price = QtCore.QRectF(left, 3.0, max(1.0, right - left), max(1.0, self.height() - 6.0))
+        center_y = price.center().y()
         if self._axis_text_left is not None and self._axis_text_width > 1.0:
-            if self._implosion_progress <= 0.0:
-                left = max(base_left, min(left, self._axis_text_left - 9.0))
-            value = QtCore.QRectF(self._axis_text_left, self.line_anchor_y - 10.0, self._axis_text_width, 20.0)
+            value = QtCore.QRectF(self._axis_text_left, center_y - 10.0, self._axis_text_width, 20.0)
         else:
-            value_left = max(left + 12.0, right - 88.0)
-            value = QtCore.QRectF(value_left, self.line_anchor_y - 10.0, max(1.0, right - value_left - 5.0), 20.0)
-        price = QtCore.QRectF(left, top, max(1.0, right - left), price_h)
-
-
-        empty = QtCore.QRectF()
-        size_rect = leverage_rect = reduce_rect = empty
-        controls_blocked = bool(
-            self.armed
-            or self.submission_pending
-            or self.cancellation_pending
-            or self._implosion_progress > 0.001
-        )
-
-        if self._axis_left is not None:
-            divider_x = max(price.left() + 1.0, min(price.right() - 1.0, self._axis_left))
-        else:
-            divider_x = min(
-                price.left() + self.BODY_DIVIDER_INSET,
-                value.left() - self.PRICE_CONTROL_MIN_CLEARANCE,
-            )
-            divider_x = max(price.left() + 1.0, divider_x)
-
-        if not controls_blocked:
-            control_h = min(self.CONTROL_BOX_HEIGHT, max(18.0, price.height() - 12.0))
-            box_w = min(self.CONTROL_BOX_WIDTH, max(self.CONTROL_MIN_BOX_WIDTH, self.CONTROL_BOX_WIDTH))
-            reduce_h = min(self.REDUCE_HEIGHT, control_h)
-            reduce_w = min(self.REDUCE_WIDTH, reduce_h + 2.5)
-            control_top = self.line_anchor_y - control_h * 0.5
-
-            x_size = price.left() + self.SIZE_LEFT_INSET
-            x_leverage = x_size + box_w + self.SIZE_LEVERAGE_GAP
-            x_reduce = x_leverage + box_w + self.LEVERAGE_REDUCE_GAP
-            controls_end = x_reduce + reduce_w
-
-
-            max_end = divider_x - 8.0
-            if controls_end > max_end:
-                shift = controls_end - max_end
-                x_size -= shift
-                x_leverage -= shift
-                x_reduce -= shift
-
-            min_start = price.left() + self.DOT_CENTER_INSET + self.DOT_RADIUS + 10.0
-            if x_size >= min_start and x_reduce + reduce_w <= max_end:
-                size_rect = QtCore.QRectF(x_size, control_top, box_w, control_h)
-                leverage_rect = QtCore.QRectF(x_leverage, control_top, box_w, control_h)
-                reduce_top = self.line_anchor_y - reduce_h * 0.5
-                reduce_rect = QtCore.QRectF(x_reduce, reduce_top, reduce_w, reduce_h)
-
-        return {
-            'price': price,
-            'price_value': value,
-            'size_cycle': size_rect,
-            'leverage_cycle': leverage_rect,
-            'reduce': reduce_rect,
-            'divider_x': divider_x,
-        }
+            value_left = max(left + 12.0, right - 70.0)
+            value = QtCore.QRectF(value_left, center_y - 10.0, max(1.0, right - value_left - 5.0), 20.0)
+        divider = self._axis_left if self._axis_left is not None else value.left() - 8.0
+        divider = max(left + 1.0, min(right - 1.0, divider))
+        result = {name: QtCore.QRectF() for name in INTERACTIVE_KEYS}
+        result.update(price=price, price_value=value, divider_x=divider)
+        if not blocked:
+            start_x, end_x = left + 8.0, divider - 8.0
+            space = max(1.0, end_x - start_x)
+            required = sum(self._control_widths) + self.CONTROL_GAP * 3
+            height = min(self.CONTROL_BOX_HEIGHT, max(1.0, price.height() - 8.0))
+            if space + 0.5 >= required:
+                x = start_x
+                for name, width in zip(INTERACTIVE_KEYS, self._control_widths):
+                    control_h = min(price.height() - 6.0, 36.0) if name == 'execute' else height
+                    result[name] = QtCore.QRectF(x, center_y - control_h * 0.5, width, control_h)
+                    x += width + self.CONTROL_GAP
+            else:
+                # Narrow chart panes retain every control in two compact rows.
+                column = max(1.0, (space - self.CONTROL_GAP) * 0.5)
+                height = min(height, max(1.0, (price.height() - 10.0) * 0.5))
+                for name, col, row in (('execute', 0, 0), ('reduce', 1, 0),
+                                       ('size_cycle', 0, 1), ('leverage_cycle', 1, 1)):
+                    y = center_y - height - 2.0 if row == 0 else center_y + 2.0
+                    result[name] = QtCore.QRectF(start_x + col * (column + self.CONTROL_GAP), y, column, height)
+        self._layout_cache_key, self._layout_cache = key, result
+        return result
 
     def _shape_path(self, rect: QtCore.QRectF) -> QtGui.QPainterPath:
         path = QtGui.QPainterPath()
@@ -1396,61 +1389,105 @@ class MagneticOrderRailPanel(QtWidgets.QWidget):
         return bool(not price.isEmpty() and self._shape_path(price).contains(point))
 
     def _hit_key(self, point: QtCore.QPointF) -> str:
-        layout = self._layout()
-        key = hit_control_key(
-            point,
-            layout,
-            blocked=bool(self.armed or self.submission_pending or self.cancellation_pending),
-        )
-        if key == 'reduce':
-            rect = layout['reduce']
-            radius = min(rect.width(), rect.height()) * 0.5
-            center = rect.center()
-            dx = float(point.x() - center.x())
-            dy = float(point.y() - center.y())
-            if dx * dx + dy * dy > radius * radius:
-                key = ''
-
-
-        return '' if self.reduce_only and key == 'leverage_cycle' else key
+        return hit_control_key(point, self._layout(), blocked=bool(
+            self.armed or self.submission_pending or self.cancellation_pending))
 
     @staticmethod
     def _cycle_value(current: int, values: tuple[int, ...], step: int=1) -> int:
-        current = int(current)
-        try:
-            index = values.index(current)
-        except ValueError:
-            index = min(range(len(values)), key=lambda i: abs(values[i] - current))
-        return values[(index + step) % len(values)]
+        # Wheel adjustments saturate: scrolling up at 100% must not select 25%.
+        options = tuple(sorted(set(values) | {int(current)}))
+        index = options.index(int(current))
+        return options[max(0, min(len(options) - 1, index + step))]
+
+    def _set_control_value(self, key: str, value: int) -> None:
+        if self.armed or self.submission_pending or self.cancellation_pending:
+            return
+        if key == 'size_cycle' and value in self.SIZE_VALUES:
+            if value == self.size_percent:
+                return
+            self.size_percent = value
+        elif key == 'leverage_cycle' and not self.reduce_only and 1 <= value <= 125:
+            if value == self.leverage:
+                return
+            self.leverage = value
+            self.leverage_requested.emit(value)
+        else:
+            return
+        self.state_changed.emit()
+        self.update()
 
     def _activate(self, key: str, *, step: int=1) -> None:
         if self.armed or self.submission_pending or self.cancellation_pending:
             return
         intent = control_intent(key)
-        if intent is None:
-            return
-        changed = False
         if intent is RailIntent.CYCLE_SIZE:
-            value = self._cycle_value(self.size_percent, self.SIZE_VALUES, step)
-            if value != self.size_percent:
-                self.size_percent = value
-                changed = True
+            self._set_control_value(key, self._cycle_value(self.size_percent, self.SIZE_VALUES, step))
         elif intent is RailIntent.CYCLE_LEVERAGE:
-            value = self._cycle_value(self.leverage, self.LEVERAGE_VALUES, step)
-            if value != self.leverage:
-                self.leverage = value
-                self.leverage_requested.emit(value)
-                changed = True
+            self._set_control_value(key, self._cycle_value(self.leverage, self.LEVERAGE_VALUES, step))
         elif intent is RailIntent.TOGGLE_REDUCE:
             self._entry_reduce_only = not self._entry_reduce_only
             self.reduce_only = self._entry_reduce_only
             if self.reduce_only:
                 self.take_profit_enabled = False
                 self.stop_loss_enabled = False
-            changed = True
-        if changed:
             self.state_changed.emit()
             self.update()
+
+    def _close_control_menu(self) -> None:
+        if self._control_menu is not None:
+            self._control_menu.close()
+            self._control_menu = None
+
+    def _show_value_menu(self, key: str) -> None:
+        if self.armed or self.submission_pending or self.cancellation_pending:
+            return
+        if key == 'leverage_cycle' and self.reduce_only:
+            return
+        self._close_control_menu()
+        sizing = key == 'size_cycle'
+        current = self.size_percent if sizing else self.leverage
+        values = self.SIZE_VALUES if sizing else tuple(sorted(set(self.LEVERAGE_VALUES) | {current}))
+        menu = QtWidgets.QMenu(self)
+        self._control_menu = menu
+        menu.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+        menu.setFont(self._control_font)
+        menu.setStyleSheet(
+            f"QMenu {{ background:{self._paint_opaque_color.name()}; color:{self._paint_text_color.name()}; "
+            f"border:1px solid {self.theme.get('control_border', self._paint_muted_color.name())}; padding:4px; }} "
+            f"QMenu::item {{ padding:6px 14px; }} QMenu::item:selected {{ background:{self.theme.get('control_hover', '#30363d')}; }}"
+        )
+        title = ('Position size' if self.reduce_only else 'Available margin') if sizing else 'Leverage'
+        menu.addSection(title)
+        for value in values:
+            action = menu.addAction(f'{value}{"%" if sizing else "×"}')
+            action.setCheckable(True)
+            action.setChecked(value == current)
+            action.triggered.connect(lambda checked=False, v=value: self._set_control_value(key, v))
+            if value == current:
+                menu.setActiveAction(action)
+        menu.aboutToHide.connect(self._control_menu_hidden)
+        anchor = self._layout()[key].bottomLeft().toPoint() + QtCore.QPoint(0, 5)
+        menu.popup(self.mapToGlobal(anchor))
+
+    def _control_menu_hidden(self) -> None:
+        self._control_menu = None
+        self._hover_key = self._pressed_key = ''
+        self.update()
+
+    def _control_hint(self, key: str) -> str:
+        if key == 'execute':
+            return f'Submit {self.side} {self.ORDER_TYPE_LABELS.get(self.order_type, self.order_type)} · Ctrl+A'
+        if key == 'size_cycle':
+            return 'Size from the position to close' if self.reduce_only else 'Size from available margin'
+        if key == 'leverage_cycle':
+            return 'Position leverage is unchanged when reducing' if self.reduce_only else 'Choose leverage · scroll to adjust'
+        if key == 'reduce':
+            return 'Reduce only · close an existing position without increasing exposure'
+        if self.submission_pending:
+            return 'Submitting order · awaiting exchange confirmation'
+        if self.cancellation_pending:
+            return 'Cancelling order · awaiting exchange confirmation'
+        return 'Click for order details · drag to amend' if self.armed else 'Drag to set price · Esc to discard'
 
     def _start_body_drag(self, current_global: QtCore.QPointF) -> None:
         if self._body_dragging or self.submission_pending or self.cancellation_pending:
@@ -1483,9 +1520,15 @@ class MagneticOrderRailPanel(QtWidgets.QWidget):
         if key != self._hover_key:
             self._hover_key = key
             self.update()
+        disabled = self.submission_pending or self.cancellation_pending or (self.reduce_only and key == 'leverage_cycle')
+        cursor = Qt.CursorShape.ArrowCursor if disabled else Qt.CursorShape.PointingHandCursor if key else Qt.CursorShape.OpenHandCursor
+        if self.cursor().shape() != cursor:
+            self.setCursor(cursor)
         super().mouseMoveEvent(event)
 
     def leaveEvent(self, event: QtCore.QEvent) -> None:
+        self._wheel_key = ''
+        self._wheel_remainder = 0
         if not self._body_dragging and not self._body_click_pending:
             self._hover_key = ''
             self._pressed_key = ''
@@ -1526,12 +1569,14 @@ class MagneticOrderRailPanel(QtWidgets.QWidget):
             return
         if self._body_dragging:
             self._body_dragging = False
+            self._body_press_global = None
             try:
                 if QtWidgets.QWidget.mouseGrabber() is self:
                     self.releaseMouse()
             except RuntimeError:
                 pass
             self.set_external_dragging(False)
+            self.body_drag_moved.emit(event.globalPosition())
             self.body_drag_finished.emit(True)
             self._pressed_key = ''
             self._body_press_global = None
@@ -1539,8 +1584,7 @@ class MagneticOrderRailPanel(QtWidgets.QWidget):
             event.accept()
             return
         if self._body_click_pending:
-            if self.armed:
-                self._show_working_order_details()
+            show_details = self.armed and self._interactive_surface_contains(event.position())
             self._body_click_pending = False
             self._body_press_global = None
             try:
@@ -1548,13 +1592,20 @@ class MagneticOrderRailPanel(QtWidgets.QWidget):
                     self.releaseMouse()
             except RuntimeError:
                 pass
+            if show_details:
+                self._show_working_order_details()
             self.update()
             event.accept()
             return
         key, pressed = self._hit_key(event.position()), self._pressed_key
         self._pressed_key = ''
         if pressed and key == pressed:
-            self._activate(key)
+            if key == 'execute':
+                self.execution_requested.emit(self.side)
+            elif key in {'size_cycle', 'leverage_cycle'}:
+                self._show_value_menu(key)
+            else:
+                self._activate(key)
         self.update()
         event.accept()
 
@@ -1603,10 +1654,32 @@ class MagneticOrderRailPanel(QtWidgets.QWidget):
         if delta == 0:
             event.ignore()
             return
-        self._activate(key, step=1 if delta > 0 else -1)
+        if key != self._wheel_key or (delta > 0) != (self._wheel_remainder > 0):
+            self._wheel_remainder = 0
+        self._wheel_key = key
+        self._wheel_remainder += delta
+        steps = math.trunc(self._wheel_remainder / 120)
+        if steps:
+            self._wheel_remainder -= steps * 120
+            self._activate(key, step=steps)
         event.accept()
 
+    def cancel_body_interaction(self) -> None:
+        was_dragging = self._body_dragging
+        self._body_dragging = self._body_click_pending = False
+        self._body_press_global = None
+        self._pressed_key = ''
+        if QtWidgets.QWidget.mouseGrabber() is self:
+            self.releaseMouse()
+        self.set_external_dragging(False)
+        if was_dragging:
+            self.body_drag_finished.emit(False)
+        self.update()
+
     def event(self, event: QtCore.QEvent) -> bool:
+        if event.type() == QtCore.QEvent.Type.ToolTip:
+            QtWidgets.QToolTip.showText(event.globalPos(), self._control_hint(self._hit_key(QtCore.QPointF(event.pos()))), self)
+            return True
         if event.type() in {QtCore.QEvent.Type.UngrabMouse, QtCore.QEvent.Type.WindowDeactivate} and (self._body_dragging or self._body_click_pending):
             was_dragging = self._body_dragging
             self._body_dragging = False
@@ -1620,6 +1693,7 @@ class MagneticOrderRailPanel(QtWidgets.QWidget):
         return super().event(event)
 
     def hideEvent(self, event: QtGui.QHideEvent) -> None:
+        self._close_control_menu()
         was_dragging = self._body_dragging
         self._body_dragging = False
         self._body_click_pending = False
@@ -1635,6 +1709,10 @@ class MagneticOrderRailPanel(QtWidgets.QWidget):
         super().hideEvent(event)
 
     def keyPressEvent(self, event: QtGui.QKeyEvent) -> None:
+        if event.key() == Qt.Key.Key_Escape and (self._body_dragging or self._body_click_pending):
+            self.cancel_body_interaction()
+            event.accept()
+            return
         if event.key() in {Qt.Key.Key_Delete, Qt.Key.Key_Backspace}:
             if not self.cancellation_pending:
                 self.remove_requested.emit()
@@ -1667,86 +1745,31 @@ class MagneticOrderRailPanel(QtWidgets.QWidget):
             self.update()
 
     def _draw_shell(self, painter: QtGui.QPainter, rect: QtCore.QRectF, accent: QtGui.QColor) -> None:
-
-        path = self._shape_path(rect)
-        cyan = self._paint_cyan_color
-        visually_armed = bool(self.armed or self._arm_submission_preview)
-        rim = (self._paint_green_color if self.side == 'BUY' else self._paint_red_color) if visually_armed else cyan
-        painter.setPen(Qt.PenStyle.NoPen)
+        # Solid surfaces and a single fine rim keep the ticket crisp and cheap.
         painter.setBrush(self._paint_panel_fill)
-        painter.drawPath(path)
-
-        painter.save()
-        painter.setClipPath(path)
-
-
-        entrance = QtGui.QRadialGradient(
-            QtCore.QPointF(rect.left() + 8.0, self.line_anchor_y),
-            min(72.0, rect.width() * 0.30),
-        )
-        entrance.setColorAt(0.0, self._alpha(cyan, 72))
-        entrance.setColorAt(0.24, self._alpha(cyan, 34))
-        entrance.setColorAt(0.58, self._alpha(cyan, 9))
-        entrance.setColorAt(1.0, self._alpha(cyan, 0))
-        painter.fillRect(rect, entrance)
-
-
-        top_glint = QtGui.QLinearGradient(rect.left(), rect.top(), rect.right(), rect.top())
-        top_glint.setColorAt(0.0, self._alpha(cyan, 155))
-        top_glint.setColorAt(0.20, self._alpha(cyan, 95))
-        top_glint.setColorAt(0.62, self._alpha(cyan, 32))
-        top_glint.setColorAt(1.0, self._alpha(cyan, 12))
-        painter.setPen(QtGui.QPen(QtGui.QBrush(top_glint), 0.85))
-        painter.drawLine(QtCore.QLineF(rect.left() + 14.0, rect.top() + 0.8, rect.right() - 18.0, rect.top() + 0.8))
-        painter.restore()
-
-
-        painter.setBrush(Qt.BrushStyle.NoBrush)
-        painter.setPen(QtGui.QPen(self._alpha(rim, 22), 2.4))
-        painter.drawPath(path)
-        painter.setPen(QtGui.QPen(self._alpha(rim, 132), 0.82))
-        painter.drawPath(path)
-        inner = rect.adjusted(1.3, 1.3, -1.3, -1.3)
-        painter.setPen(QtGui.QPen(self._alpha(rim, 92 if visually_armed else 66), 0.55))
-        painter.drawRoundedRect(inner, 14.0, 14.0)
+        painter.setPen(QtGui.QPen(self._alpha(accent, 130 if self._external_dragging else 75), 1.0))
+        painter.drawPath(self._shape_path(rect))
 
     def _draw_inline_control(self, painter: QtGui.QPainter, key: str, rect: QtCore.QRectF, label: str, *, active: bool=False, disabled: bool=False) -> None:
         if rect.isEmpty():
             return
-        cyan = self._paint_cyan_color
-        hovered = (self._hover_key == key) and not disabled
-        pressed = (self._pressed_key == key) and not disabled
-
-        painter.setFont(typography_font(TextRole.RAIL_CONTROL))
-
-        if key == 'reduce':
-            radius = min(7.0, rect.height() * 0.32)
-            if active or hovered:
-                glow_rect = rect.adjusted(-1.4, -1.4, 1.4, 1.4)
-                painter.setPen(Qt.PenStyle.NoPen)
-                painter.setBrush(self._alpha(cyan, 36 if active else 18))
-                painter.drawRoundedRect(glow_rect, radius + 1.4, radius + 1.4)
-            fill = QtGui.QLinearGradient(rect.left(), rect.top(), rect.left(), rect.bottom())
-            fill.setColorAt(0.0, self._alpha(cyan, 22 if not pressed else 34))
-            fill.setColorAt(1.0, self._alpha(self._paint_surface_color, 244))
-            painter.setBrush(fill)
-            painter.setPen(QtGui.QPen(self._alpha(cyan, 118 if not active else 205), 0.72 if not active else 0.95))
-            painter.drawRoundedRect(rect, radius, radius)
-            painter.setPen(cyan if active else self._paint_text_color)
+        hovered = self._hover_key == key and not disabled
+        pressed = self._pressed_key == key and not disabled
+        action = key == 'execute'
+        accent = (self._paint_green_color if self.side == 'BUY' else self._paint_red_color) if action else self._paint_cyan_color
+        painter.setBrush(self._alpha(accent, 44 if pressed or active else 28 if hovered or action else 12))
+        painter.setPen(QtGui.QPen(self._alpha(accent, 150 if active or hovered else 90 if action else 35), 0.8))
+        painter.drawRoundedRect(rect, 6.0, 6.0)
+        painter.setFont(self._control_font)
+        painter.setPen(self._paint_muted_color if disabled else accent if action or active else self._paint_text_color)
+        if action:
+            side_rect = QtCore.QRectF(rect.left(), rect.center().y() - 15.0, rect.width(), 16.0)
+            painter.drawText(side_rect, Qt.AlignmentFlag.AlignCenter, self.side)
+            painter.setFont(self._label_font)
+            type_rect = QtCore.QRectF(rect.left(), rect.center().y() + 1.0, rect.width(), 13.0)
+            painter.drawText(type_rect, Qt.AlignmentFlag.AlignCenter, self.ORDER_TYPE_LABELS.get(self.order_type, self.order_type))
+        else:
             painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, label)
-            return
-
-
-        radius = rect.height() * 0.5
-        fill = QtGui.QLinearGradient(rect.left(), rect.top(), rect.left(), rect.bottom())
-        fill.setColorAt(0.0, self._alpha(cyan, 44 if hovered else 34))
-        fill.setColorAt(0.48, self._alpha(cyan, 28 if pressed else 20))
-        fill.setColorAt(1.0, self._alpha(self._paint_surface_color, 236))
-        painter.setBrush(fill)
-        painter.setPen(QtGui.QPen(self._alpha(cyan, 46 if not hovered else 82), 0.55))
-        painter.drawRoundedRect(rect, radius, radius)
-        painter.setPen(self._paint_muted_color if disabled else cyan)
-        painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, label)
 
     def _draw_commit_pulse(self, painter: QtGui.QPainter, rect: QtCore.QRectF, accent: QtGui.QColor) -> None:
         if not self._commit_flash or self._commit_started <= 0.0:
@@ -1774,32 +1797,27 @@ class MagneticOrderRailPanel(QtWidgets.QWidget):
         layout = self._layout()
         price_rect = layout['price']
         visually_armed = bool(self.armed or self._arm_submission_preview)
-        compact_accent = pending_color if self.submission_pending else (green if self.side == 'BUY' else red) if visually_armed else cyan
+        compact_accent = pending_color if self.submission_pending or self.cancellation_pending else (green if self.side == 'BUY' else red) if visually_armed else cyan
         if self._implosion_progress > 0.0:
             painter.setOpacity(max(0.0, (1.0 - self._implosion_progress) ** 1.35))
-        painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(self._paint_opaque_color)
-        painter.drawPath(self._shape_path(price_rect))
+        # A short tether keeps the exact price line connected to a clamped body.
+        center_y = price_rect.center().y()
+        if abs(center_y - self.line_anchor_y) > 1.0:
+            tether = QtGui.QPainterPath(QtCore.QPointF(0.0, self.line_anchor_y))
+            tether.lineTo(max(1.0, price_rect.left() - 5.0), self.line_anchor_y)
+            tether.lineTo(price_rect.left() + 6.0, center_y)
+            painter.setPen(QtGui.QPen(compact_accent, 1.0))
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawPath(tether)
         self._draw_shell(painter, price_rect, compact_accent)
-
-
-        if not visually_armed:
-            side_color = green if self.side == 'BUY' else red
-            dot_center = QtCore.QPointF(price_rect.left() + self.DOT_CENTER_INSET, self.line_anchor_y)
-            painter.setPen(Qt.PenStyle.NoPen)
-            painter.setBrush(self._alpha(side_color, 30))
-            painter.drawEllipse(dot_center, self.DOT_RADIUS + 1.5, self.DOT_RADIUS + 1.5)
-            painter.setBrush(side_color)
-            painter.drawEllipse(dot_center, self.DOT_RADIUS, self.DOT_RADIUS)
-
-        self._draw_inline_control(painter, 'size_cycle', layout['size_cycle'], f'{self.size_percent}%', active=False)
-        self._draw_inline_control(painter, 'leverage_cycle', layout['leverage_cycle'], f'{self.leverage}x', active=False, disabled=self.reduce_only)
-        self._draw_inline_control(painter, 'reduce', layout['reduce'], 'R', active=self.reduce_only)
+        self._draw_inline_control(painter, 'execute', layout['execute'], self.side)
+        self._draw_inline_control(painter, 'size_cycle', layout['size_cycle'], f'{self.size_percent}%')
+        self._draw_inline_control(painter, 'leverage_cycle', layout['leverage_cycle'], f'{self.leverage}×', disabled=self.reduce_only)
+        self._draw_inline_control(painter, 'reduce', layout['reduce'], 'Reduce', active=self.reduce_only)
         if not layout['reduce'].isEmpty():
-            divider_x = float(layout.get('divider_x', layout['price_value'].left() - 4.25))
-            painter.setPen(QtGui.QPen(self._alpha(cyan, 92), 0.72))
-            painter.drawLine(QtCore.QLineF(divider_x, self.line_anchor_y - 11.0, divider_x, self.line_anchor_y + 11.0))
-
+            divider_x = float(layout['divider_x'])
+            painter.setPen(QtGui.QPen(self._alpha(cyan, 65), 0.8))
+            painter.drawLine(QtCore.QLineF(divider_x, center_y - 11.0, divider_x, center_y + 11.0))
 
         raw_price = self.price_text or (format_price(self.price) if self.price > 0 else '—') if self._axis_text_left is not None else self._paint_price_text
         painter.setFont(self._axis_font)
@@ -1810,7 +1828,7 @@ class MagneticOrderRailPanel(QtWidgets.QWidget):
             arrow_rect = QtCore.QRectF(max(price_rect.left() + 2.0, value_rect.left() - arrow_width), value_rect.top(), arrow_width - 2.0, value_rect.height())
             painter.setPen(muted)
             painter.drawText(arrow_rect, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter, arrow)
-        painter.setPen(text)
+        painter.setPen(pending_color if self.submission_pending or self.cancellation_pending else text)
         painter.drawText(value_rect, Qt.AlignmentFlag.AlignVCenter | (Qt.AlignmentFlag.AlignLeft if self._axis_text_left is not None else Qt.AlignmentFlag.AlignRight), raw_price)
         self._draw_commit_pulse(painter, price_rect, compact_accent)
         painter.setOpacity(1.0)

@@ -257,16 +257,6 @@ def build_magnetic_rail_order_request(
         )
     elif role == "SL" and order_type not in {"STOP", "STOP_MARKET", "TRAILING_STOP_MARKET"}:
         order_type = "STOP_MARKET" if order_type == "TAKE_PROFIT_MARKET" else "STOP"
-    elif role == "ENTRY" and order_type in {
-        "STOP",
-        "STOP_MARKET",
-        "TAKE_PROFIT",
-        "TAKE_PROFIT_MARKET",
-        "TRAILING_STOP_MARKET",
-    }:
-
-
-        order_type = "LIMIT"
 
     market_quantity = order_type in {
         "STOP_MARKET",

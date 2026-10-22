@@ -1535,6 +1535,7 @@ class ChartWorkspace(QtWidgets.QWidget):
         self.order_rail_order_preset = normalized_order_rail_order_preset(ORDER_RAIL_ORDER_PRESET_DEFAULTS["Limit Entry"])
         self._order_rail_dragging = False
         self._order_rail_drag_start_value: float | None = None
+        self._order_rail_drag_pointer_offset = 0.0
         self._order_rail_pending_drag_position: QtCore.QPointF | None = None
         self._order_rail_phase = 0.0
         self._order_rail_last_frame = time.monotonic()
@@ -4370,6 +4371,8 @@ class ChartWorkspace(QtWidgets.QWidget):
             watched is viewport
             and self.drawing_mode is None
             and self.order_rail_value is not None
+            and self.order_rail_hud is not None
+            and not (self.order_rail_hud.armed or self.order_rail_hud.submission_pending or self.order_rail_hud.cancellation_pending)
             and event.type() == QtCore.QEvent.Type.MouseButtonPress
             and event.button() == Qt.MouseButton.LeftButton
         ):
@@ -4384,6 +4387,7 @@ class ChartWorkspace(QtWidgets.QWidget):
                 ):
                     self._order_rail_dragging = True
                     self._order_rail_drag_start_value = self.order_rail_value
+                    self._order_rail_drag_pointer_offset = float(position.y()) - line_y
                     self._order_rail_pending_drag_position = QtCore.QPointF(position)
 
 
@@ -5102,12 +5106,19 @@ class ChartWorkspace(QtWidgets.QWidget):
             hud is None
             or hud.armed
             or hud.submission_pending
+            or hud.cancellation_pending
+            or self._order_rail_dragging
             or self.order_rail_raw_price() <= 0.0
         ):
             return
         hud.side = "SELL" if str(side).upper() == "SELL" else "BUY"
+        preview_started = not hud.arm_submission_preview_active()
+        if preview_started:
+            hud.set_arm_submission_preview(True, animated=True)
         state = self.magnetic_order_rail_state()
         self.order_rail_execution_requested.emit(state)
+        if preview_started and not hud.submission_pending and not hud.armed and hud.arm_submission_preview_active():
+            hud.set_arm_submission_preview(False, animated=True)
 
     def set_order_rail_submission_pending(self, draft_id: int, pending: bool) -> None:
         if int(draft_id) != int(self._active_order_rail_draft_id):
@@ -5572,23 +5583,52 @@ class ChartWorkspace(QtWidgets.QWidget):
             return
         offset, parent_bounds, plot_rect, axis_rect, axis_text_band, hud_right, available_width, available_height = layout_geometry
         line_y = line_y_view + offset.y()
-        desired = hud.desired_size(available_width, available_height)
+        axis_width = hud_right - axis_rect.left() if not axis_rect.isEmpty() else 70.0
+        desired = hud.desired_size(available_width, available_height, axis_width=axis_width)
         if hud.size() != desired:
             hud.resize(desired)
 
 
-        original_compact_width = 164.0
-        connection_right = (
-            plot_rect.right()
-            - max(0.0, float(desired.width()) - original_compact_width)
+        x = int(round(hud_right - desired.width()))
+        min_x = int(math.floor(plot_rect.left() + 3.0))
+        max_x = max(min_x, int(math.floor(parent_bounds.right() - desired.width() - 1.0)))
+        x = max(min_x, min(max_x, x))
+
+        if axis_text_band is not None:
+            axis_text_left, axis_text_right = axis_text_band
+            hud.set_axis_text_band(
+                axis_text_left - float(x),
+                max(1.0, axis_text_right - axis_text_left),
+                axis_left=(float(axis_rect.left()) - float(x)) if not axis_rect.isEmpty() else None,
+            )
+        else:
+            hud.set_axis_text_band(None, axis_left=None)
+
+        visible_anchor = max(plot_rect.top(), min(plot_rect.bottom(), line_y))
+        offscreen = -1 if line_y < plot_rect.top() else 1 if line_y > plot_rect.bottom() else 0
+        anchor = hud.expansion_anchor()
+        target_top = (
+            visible_anchor
+            - desired.height() * anchor
+            + int(self.order_rail_config["vertical_offset"])
         )
+        min_top = int(math.ceil(plot_rect.top()))
+        max_top = max(min_top, int(math.floor(plot_rect.bottom() - desired.height())))
+        y = max(min_top, min(max_top, int(round(target_top))))
+        target = QtCore.QPoint(x, y)
+        if hud.pos() != target:
+            hud.move(target)
+        hud.set_line_anchor(visible_anchor - y, offscreen)
+
+        hud.set_price(float(price), rail_price_text)
+
+        # Join the animated line to the actual body, including wide price axes
+        # and the contracting accepted-order presentation.
+        body = hud._layout()['price']
+        clamped = abs(body.center().y() - hud.line_anchor_y) > 1.0
+        connection_right = float(x) + (1.0 if clamped else body.left() + 8.0)
+        connection_right = max(plot_rect.left() + 1.0, min(plot_rect.right(), connection_right))
         visually_armed = bool(hud.armed or hud.arm_submission_preview_active())
-        if visually_armed:
-            connection_right = plot_rect.right()
-        connection_right = max(
-            plot_rect.left() + 1.0,
-            min(plot_rect.right(), connection_right),
-        )
 
         glow = (
             10.0
@@ -5632,38 +5672,6 @@ class ChartWorkspace(QtWidgets.QWidget):
         else:
             visual.hide()
 
-        x = int(round(hud_right - desired.width()))
-        min_x = int(math.floor(plot_rect.left() + 3.0))
-        max_x = max(min_x, int(math.floor(parent_bounds.right() - desired.width() - 1.0)))
-        x = max(min_x, min(max_x, x))
-
-        if axis_text_band is not None:
-            axis_text_left, axis_text_right = axis_text_band
-            hud.set_axis_text_band(
-                axis_text_left - float(x),
-                max(1.0, axis_text_right - axis_text_left),
-                axis_left=(float(axis_rect.left()) - float(x)) if not axis_rect.isEmpty() else None,
-            )
-        else:
-            hud.set_axis_text_band(None, axis_left=None)
-
-        visible_anchor = max(plot_rect.top(), min(plot_rect.bottom(), line_y))
-        offscreen = -1 if line_y < plot_rect.top() else 1 if line_y > plot_rect.bottom() else 0
-        anchor = hud.expansion_anchor()
-        target_top = (
-            visible_anchor
-            - desired.height() * anchor
-            + int(self.order_rail_config["vertical_offset"])
-        )
-        min_top = int(math.ceil(plot_rect.top() + 3.0))
-        max_top = max(min_top, int(math.floor(plot_rect.bottom() - desired.height() - 3.0)))
-        y = max(min_top, min(max_top, int(round(target_top))))
-        target = QtCore.QPoint(x, y)
-        if hud.pos() != target:
-            hud.move(target)
-        hud.set_line_anchor(visible_anchor - y, offscreen)
-
-        hud.set_price(float(price), rail_price_text)
         if not hud.isVisible():
             hud.show()
         hud.raise_()
@@ -5728,8 +5736,13 @@ class ChartWorkspace(QtWidgets.QWidget):
         self._begin_interaction_priority()
         self._order_rail_dragging = True
         self._order_rail_drag_start_value = self.order_rail_value
-
-
+        geometry = self._order_rail_view_geometry()
+        self._order_rail_drag_pointer_offset = 0.0
+        if geometry is not None:
+            plot_rect, line_y = geometry
+            anchor_y = max(plot_rect.top(), min(plot_rect.bottom(), line_y))
+            pointer = self._order_rail_hud_viewport_position(global_position)
+            self._order_rail_drag_pointer_offset = float(pointer.y()) - anchor_y
         self._set_crosshair_visible(False)
 
 
@@ -5779,6 +5792,7 @@ class ChartWorkspace(QtWidgets.QWidget):
         if self.order_rail_value is None:
             return False
         view = self.price_plot.getViewBox()
+        position = QtCore.QPointF(position.x(), position.y() - self._order_rail_drag_pointer_offset)
         scene_position = self.graphics.mapToScene(position.toPoint())
         view_scene = view.sceneBoundingRect()
 
@@ -5790,7 +5804,7 @@ class ChartWorkspace(QtWidgets.QWidget):
         raw = self._snap_order_rail_price(
             raw_price(float(point.y()), self.logarithmic)
         )
-        if raw <= 0:
+        if raw <= 0 or raw == self.order_rail_value:
             return False
         self.order_rail_value = raw
         self._position_order_rail_hud()
@@ -5814,6 +5828,7 @@ class ChartWorkspace(QtWidgets.QWidget):
             self.order_rail_hud.set_external_dragging(False)
             self.order_rail_hud.flash_commit()
         self._order_rail_drag_start_value = None
+        self._order_rail_drag_pointer_offset = 0.0
         self._position_order_rail_hud()
         self._schedule_order_rail_animation_frame()
 
@@ -5825,9 +5840,16 @@ class ChartWorkspace(QtWidgets.QWidget):
         self._order_rail_dragging = False
         self._order_rail_pending_drag_position = None
         self._order_rail_drag_start_value = None
+        self._order_rail_drag_pointer_offset = 0.0
         self._release_order_rail_mouse()
         if self.order_rail_hud is not None:
-            self.order_rail_hud.set_external_dragging(False)
+            self.order_rail_hud.cancel_body_interaction()
+        visual = self.order_rail_visual
+        if visual is not None and getattr(visual, '_rail_press', None) is not None:
+            visual._rail_press = None
+            visual._rail_drag = False
+            if QtWidgets.QWidget.mouseGrabber() is visual:
+                visual.releaseMouse()
         self._position_order_rail_hud()
         self._schedule_order_rail_animation_frame()
 

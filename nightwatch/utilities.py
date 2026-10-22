@@ -228,7 +228,7 @@ TYPOGRAPHY_DEFAULTS: dict[str, dict[str, Any]] = {
     TextRole.ORDERBOOK_CENTER_PRICE: _font_profile("numeric", 20.0, 600, hinting="full", fixed_pitch=True, size_mode="pixel"),
     TextRole.MAGNETIC_RAIL_PRICE: _font_profile("numeric", 8.5, 500, hinting="full", fixed_pitch=True),
     TextRole.RAIL_LABEL: _font_profile("ui", 7.5, 500, hinting="vertical"),
-    TextRole.RAIL_CONTROL: _font_profile("ui", 6.75, 600, hinting="vertical"),
+    TextRole.RAIL_CONTROL: _font_profile("ui", 8.25, 600, hinting="vertical"),
     TextRole.ALERT_TEXT: {
         **_font_profile("ui", 9.0, 400, hinting="vertical"),
         # Grayscale antialiasing avoids RGB fringe/shimmer on small text.
