@@ -1189,30 +1189,36 @@ def _prepare_chart_cache(base, incoming, live, requested_at):
     """
     sources = (base.get("candles", ()), incoming.get("candles", ()))
     candles = None
-    packed = all(
-        (isinstance(rows, CandlePages) and (not rows or len(rows) >= 4096))
-        or (isinstance(rows, (list, tuple)) and not rows)
+    packed = any(isinstance(rows, CandlePages) and len(rows) >= 4096 for rows in sources) and all(
+        (isinstance(rows, CandlePages) and len(rows) >= 4096)
+        or (isinstance(rows, (CandlePages, list, tuple)) and len(rows) < 4096
+            and all(type(c.time) in (float, int) for c in rows))
         for rows in sources
     )
-    if packed and any(sources):
+    if packed:
         # Large worker histories already use float64 transport. Keep them
         # numeric instead of materializing every Candle for a dict and sort.
         live = tuple(live)
-        matrix = np.concatenate([rows.to_matrix() for rows in sources if len(rows)])
-        if (np.all(np.abs(matrix[:, 0]) < 2**53)
-                and all(type(c.time) in (float, int) and abs(c.time) < 2**53 for _, c in live)):
-            latest = float(matrix[:, 0].max())
-            tail = [c for stamp, c in live if stamp >= requested_at or c.time > latest]
-            if tail:
-                matrix = np.concatenate((matrix, _candle_matrix_from_objects(tail)))
-            # Stable order makes the last incoming/live row win each timestamp,
-            # matching dict.update without changing the live eligibility rule.
-            matrix = matrix[np.argsort(matrix[:, 0], kind="stable")]
-            keep = np.r_[matrix[1:, 0] != matrix[:-1, 0], True]
-            matrix = matrix[keep][-MAX_CHART_CANDLES:]
-            if len(matrix) >= 4096:
-                candles = CandlePages.from_matrix(matrix)
+        try:
+            matrix = np.concatenate([_candle_matrix_from_objects(rows) for rows in sources if len(rows)])
+            if (np.all(np.abs(matrix[:, 0]) < 2**53)
+                    and all(type(c.time) in (float, int) and abs(c.time) < 2**53 for _, c in live)):
+                latest = float(matrix[:, 0].max())
+                tail = [c for stamp, c in live if stamp >= requested_at or c.time > latest]
+                if tail:
+                    matrix = np.concatenate((matrix, _candle_matrix_from_objects(tail)))
+                # Stable order makes the last incoming/live row win each timestamp,
+                # matching dict.update without changing the live eligibility rule.
+                matrix = matrix[np.argsort(matrix[:, 0], kind="stable")]
+                keep = np.r_[matrix[1:, 0] != matrix[:-1, 0], True]
+                matrix = matrix[keep][-MAX_CHART_CANDLES:]
+                if len(matrix) >= 4096:
+                    candles = CandlePages.from_matrix(matrix)
+        except (AttributeError, TypeError, ValueError, OverflowError):
+            # The general merge may discard an overwritten malformed row.
+            pass
     if candles is None:
+        matrix = None
         rows = {candle.time: candle for candle in sources[0]}
         rows.update((candle.time, candle) for candle in sources[1])
         latest = max(rows, default=0)
