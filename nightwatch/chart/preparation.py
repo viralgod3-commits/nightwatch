@@ -101,7 +101,8 @@ def prepare_bars(candles, slots=None, logarithmic=False, volume=False):
     source, widths = source[:count], widths[:count]
     valid = np.isfinite(source[:, :6]).all(axis=1) & np.isfinite(widths) & (widths > 0)
     valid &= (source[:, 5] > 0) if volume else (np.min(source[:, 1:5], axis=1) > 0)
-    source, widths = source[valid], widths[valid]
+    if len(source) < 4096 or not valid.all():
+        source, widths = source[valid], widths[valid]
     data = np.empty((len(source), 7), dtype=np.float64)
     data[:, 0] = source[:, 0]
     if volume:
