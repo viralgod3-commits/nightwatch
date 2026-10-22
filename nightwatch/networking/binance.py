@@ -10,7 +10,7 @@ import json
 import logging
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from typing import Any, Coroutine
 from urllib.parse import urlsplit
 import httpx
@@ -957,7 +957,7 @@ class BinanceVisionArchive:
                 break
         return keys
 
-    def _csv_rows(self, archive_key: str) -> list[dict[str, str]]:
+    def _csv_rows(self, archive_key: str) -> Iterator[dict[str, str]]:
         payload = self._read(VISION_FILES + archive_key)
         with zipfile.ZipFile(io.BytesIO(payload)) as archive:
             if sum(info.file_size for info in archive.infolist()) > 256 * 1024 * 1024:
@@ -966,10 +966,10 @@ class BinanceVisionArchive:
                 raise RuntimeError(f'Damaged Binance Vision archive: {archive_key}')
             names = [name for name in archive.namelist() if name.endswith('.csv')]
             if not names:
-                return []
+                return
             with archive.open(names[0]) as raw:
-                text = io.TextIOWrapper(raw, encoding='utf-8-sig', newline='')
-                return [dict(row) for row in csv.DictReader(text)]
+                with io.TextIOWrapper(raw, encoding='utf-8-sig', newline='') as text:
+                    yield from csv.DictReader(text)
 
     def import_open_interest(self, symbol: str, stopped: Callable[[], bool], status: Callable[[str], None]) -> tuple[int, int]:
         prefix = f'data/futures/um/daily/metrics/{symbol}/'
