@@ -1632,11 +1632,13 @@ class OrderFlowAnalyzer:
                 if self._sample_level_liquidity(state, now, 0.0):
                     self._snapshot_dirty_price_keys.add(price_key)
             if infer_change:
-                self._append_activity(state, now, visible_delta=(current_quantity - previous_quantity) * price)
+                if current_quantity != previous_quantity:
+                    self._append_activity(state, now, visible_delta=(current_quantity - previous_quantity) * price)
                 residual = current_quantity - previous_quantity + executed_quantity
                 added_quantity = max(0.0, residual)
                 cancelled_quantity = max(0.0, -residual)
-                self._add_liquidity_activity(state, now, side, price, added_quantity=added_quantity, executed_quantity=executed_quantity)
+                if added_quantity > 0.0 or executed_quantity > 0.0:
+                    self._add_liquidity_activity(state, now, side, price, added_quantity=added_quantity, executed_quantity=executed_quantity)
                 if cancelled_quantity > 0.0:
                     self._queue_cancellation(side, price_key, price, cancelled_quantity, now)
         if current_keys != self._current_keys[side]:
