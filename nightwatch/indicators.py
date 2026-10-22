@@ -526,8 +526,13 @@ def volume_profile(candles: list[Candle] | np.ndarray, bins: int = 48) -> tuple[
         hi, lo, volume = high[start:start+1024], low[start:start+1024], volumes[start:start+1024]
         overlap = np.maximum(0.0, np.minimum(hi[:, None], edges[1:]) - np.maximum(lo[:, None], edges[:-1]))
         spans = overlap.sum(axis=1)
-        weights = np.divide(overlap, spans[:, None], out=np.zeros_like(overlap), where=spans[:, None] > 0)
-        profile += (weights * volume[:, None]).sum(axis=0)
+        # Reuse the overlap buffer for weights and weighted volumes. Masked
+        # rows must still become zero, including nonfinite span results.
+        positive = spans > 0
+        np.divide(overlap, spans[:, None], out=overlap, where=positive[:, None])
+        overlap[~positive] = 0.0
+        overlap *= volume[:, None]
+        profile += overlap.sum(axis=0)
         flat = spans <= 0
         indices = np.clip(np.searchsorted(edges, lo[flat], side="right") - 1, 0, bins - 1)
         np.add.at(profile, indices, volume[flat])
