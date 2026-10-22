@@ -3222,6 +3222,11 @@ class MainWindow(QtWidgets.QMainWindow):
         )
         palette.setColor(
             QtGui.QPalette.ColorGroup.Disabled,
+            QtGui.QPalette.ColorRole.WindowText,
+            QtGui.QColor(t["muted"]),
+        )
+        palette.setColor(
+            QtGui.QPalette.ColorGroup.Disabled,
             QtGui.QPalette.ColorRole.ButtonText,
             QtGui.QColor(t["muted"]),
         )

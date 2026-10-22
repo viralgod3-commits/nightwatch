@@ -1320,8 +1320,13 @@ def build_shell_stylesheet(theme_name: str, theme: dict[str, str], surfaces: dic
 
         QCheckBox, QRadioButton {{
             color: {t['text']};
+            background: none;
+            border: 0;
             spacing: 6px;
             padding: 2px 0;
+        }}
+        QLabel:disabled, QCheckBox:disabled, QRadioButton:disabled {{
+            color: {t['muted']};
         }}
         QCheckBox::indicator, QRadioButton::indicator {{
             width: 12px;
@@ -1334,12 +1339,21 @@ def build_shell_stylesheet(theme_name: str, theme: dict[str, str], surfaces: dic
             border: 1px solid {active_line};
         }}
         QCheckBox::indicator:checked {{
-            background: {t['text']};
-            border-color: {t['text']};
+            background: {active_line};
+            border-color: {active_line};
         }}
         QRadioButton::indicator:checked {{
-            background: {t['text']};
-            border-color: {t['text']};
+            background: {active_line};
+            border-color: {active_line};
+        }}
+        QRadioButton::indicator {{ border-radius: 7px; }}
+        QCheckBox::indicator:disabled, QRadioButton::indicator:disabled {{
+            background: {t['panel2']};
+            border: 1px solid {t['border']};
+        }}
+        QCheckBox::indicator:checked:disabled, QRadioButton::indicator:checked:disabled {{
+            background: {t['control_border']};
+            border-color: {t['control_border']};
         }}
 
         QGroupBox {{
