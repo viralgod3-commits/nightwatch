@@ -542,6 +542,7 @@ def _compact_shell_stylesheet(stylesheet: str) -> str:
 
 def build_shell_stylesheet(theme_name: str, theme: dict[str, str], surfaces: dict[str, int] | None=None, status: dict[str, object] | None=None) -> str:
     t = theme
+    terminal_style = theme_style_family(theme_name) in {'dark_terminal', 'light_terminal'}
     surface_style = surfaces if surfaces is not None else DEV_UI_SURFACE_DEFAULTS
     market_caption_color = "rgba(%d, %d, %d, %d)" % alpha_color(t['text'], 153).getRgb()
     timeframe_controls = f"""
@@ -607,7 +608,7 @@ def build_shell_stylesheet(theme_name: str, theme: dict[str, str], surfaces: dic
     depth_green = t.get('depth_green', t['green'])
     depth_red = t.get('depth_red', t['red'])
     block_border_width = max(0, int(surface_style['block_border_width']))
-    if is_nightwatch_dark_theme(theme_name):
+    if terminal_style:
         radius = f"{int(surface_style['element_radius'])}px"
         section_radius = f"{int(surface_style['block_radius'])}px"
     else:
@@ -615,7 +616,7 @@ def build_shell_stylesheet(theme_name: str, theme: dict[str, str], surfaces: dic
         section_radius = '1px'
     block_border = '0' if block_border_width <= 0 else f"{block_border_width}px solid {t['border']}"
     block_separator = '0' if block_border_width <= 0 else f'{block_border_width}px solid {separator}'
-    menu_bar_bg = t['topbar'] if is_nightwatch_dark_theme(theme_name) else t['bg']
+    menu_bar_bg = t['topbar'] if terminal_style else t['bg']
     header_bg = t.get('header', t['panel2'])
     raised_bg = t.get('raised', t['control'])
     active_bg = t.get('active', t['control_hover'])
@@ -640,9 +641,9 @@ def build_shell_stylesheet(theme_name: str, theme: dict[str, str], surfaces: dic
     sg = {**DEV_UI_STATUS_GEOMETRY_DEFAULTS, **{key: value for key, value in status_values.items() if key in DEV_UI_STATUS_GEOMETRY_DEFAULTS}}
     status_margin = f"{int(sg['outer_top'])}px {int(sg['outer_right'])}px {int(sg['outer_bottom'])}px {int(sg['outer_left'])}px"
     nightwatch_overrides = ''
-    if is_nightwatch_dark_theme(theme_name):
+    if terminal_style:
         nightwatch_overrides = f'''
-        /* Dark-terminal chrome: compact panels, crisp outlines and small
+        /* Terminal chrome: compact panels, crisp outlines and small
            radii. Widget placement, spacing and chart rendering stay owned
            by the existing layout and chart code. */
         QWidget#sectionHeader {{
