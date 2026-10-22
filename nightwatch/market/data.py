@@ -3528,7 +3528,8 @@ class MarketDataHub(QtCore.QObject):
                 combined.update({c.time: c for c in rows})
                 rows = sorted(combined.values(), key=lambda c: c.time)[-MAX_CHART_CANDLES:]
                 payload["candles"] = rows
-                payload["candle_matrix"] = _candle_matrix_from_objects(rows)
+                # The cache merge builds numeric pages and discards this field.
+                payload.pop("candle_matrix", None)
             if rows:
                 if interval == "1M":
                     has_gap = any(
