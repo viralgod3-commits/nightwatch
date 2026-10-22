@@ -69,8 +69,6 @@ class AppDatabase:
                     event_time INTEGER NOT NULL,
                     payload_json TEXT NOT NULL
                 );
-                CREATE INDEX IF NOT EXISTS market_events_range
-                    ON market_events(symbol, event_type, event_time);
 
                 CREATE TABLE IF NOT EXISTS event_coverage (
                     symbol TEXT NOT NULL,
@@ -122,6 +120,15 @@ class AppDatabase:
                 """
             ).fetchone()
             if unique_index is None:
+                # Only the legacy deduplication needs this temporary index.
+                # Rebuilding it on an upgraded store scans the entire event
+                # history at every startup, immediately before dropping it.
+                connection.execute(
+                    """
+                    CREATE INDEX IF NOT EXISTS market_events_range
+                    ON market_events(symbol, event_type, event_time)
+                    """
+                )
                 connection.execute(
                     """
                     DELETE FROM market_events
