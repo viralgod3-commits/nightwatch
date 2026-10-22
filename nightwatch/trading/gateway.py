@@ -165,13 +165,15 @@ class _PlacementJournal:
             changed += cursor.rowcount
         return changed
 
-    def performance_snapshot(self) -> dict:
+    def performance_snapshot(self, *, include_fills: bool = True) -> dict:
         """Worker-only snapshot; never called by hidden dashboard widgets."""
         with sqlite3.connect(self.path, timeout=5.0) as db:
             db.row_factory = sqlite3.Row
             self._performance_schema(db)
-            rows = [dict(row) for row in db.execute('SELECT * FROM performance_fills WHERE scope=? '
-                                                   'ORDER BY time_ms, CAST(trade_id AS INTEGER)', (self.scope,))]
+            rows = []
+            if include_fills:
+                rows = [dict(row) for row in db.execute('SELECT * FROM performance_fills WHERE scope=? '
+                                                       'ORDER BY time_ms, CAST(trade_id AS INTEGER)', (self.scope,))]
             orders = [dict(row) for row in db.execute('SELECT * FROM performance_orders WHERE scope=? '
                                                     'AND reconciled=0 ORDER BY created_ms', (self.scope,))]
         return {'fills': rows, 'pending': orders, 'scope': self.scope}
@@ -181,7 +183,7 @@ class _PlacementJournal:
         warnings = []
         now = int(time.time() * 1000)
         day = 86_400_000
-        for saved in self.performance_snapshot()['pending']:
+        for saved in self.performance_snapshot(include_fills=False)['pending']:
             if cancelled.is_set():
                 break
             symbol, client = saved['symbol'], saved['client_id']
