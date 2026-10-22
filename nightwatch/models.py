@@ -860,7 +860,7 @@ class _CandleMatrixPage(Sequence):
         if value is None:
             # setdefault preserves identity if two snapshot readers materialize
             # the same immutable row concurrently.
-            value = self._objects.setdefault(index, Candle(*map(float, self.data[index])))
+            value = self._objects.setdefault(index, Candle(*self.data[index].tolist()))
         return value
 
     def __reduce__(self):
