@@ -901,14 +901,18 @@ def _local_vwap_anchor(timestamp: float, anchor: str) -> float:
 
 
 def _vwap_components(candles, anchor="week"):
-    times, _, high, low, close, volume, quote = candle_arrays(candles)
-    if not len(times):
-        return times.copy(), times.copy(), volume, quote
+    count = len(candles)
+    times = np.fromiter((c.time for c in candles), dtype=float, count=count)
+    if not count:
+        empty = np.array([], dtype=float)
+        return times.copy(), times.copy(), empty, empty
+    volume = np.fromiter((c.volume for c in candles), dtype=float, count=count)
+    quote = np.fromiter((c.quote_volume for c in candles), dtype=float, count=count)
 
     def anchored_groups():
         previous = None
         group = math.nan
-        for timestamp in times:
+        for timestamp in memoryview(times):
             local = time.localtime(float(timestamp))
             offset = getattr(local, "tm_gmtoff", None)
             key = (local.tm_year, local.tm_yday, offset)
@@ -922,7 +926,12 @@ def _vwap_components(candles, anchor="week"):
 
     groups = np.fromiter(anchored_groups(), dtype=float, count=len(times))
     volume = np.maximum(volume, 0)
-    quote = np.where(quote > 0, quote, (high + low + close) / 3.0 * volume)
+    positive_quote = quote > 0
+    if not positive_quote.all():
+        high = np.fromiter((c.high for c in candles), dtype=float, count=count)
+        low = np.fromiter((c.low for c in candles), dtype=float, count=count)
+        close = np.fromiter((c.close for c in candles), dtype=float, count=count)
+        quote = np.where(positive_quote, quote, (high + low + close) / 3.0 * volume)
     starts = np.flatnonzero(np.r_[True, groups[1:] != groups[:-1]])
     counts = np.diff(np.r_[starts, len(times)])
     cv, cq = np.cumsum(volume), np.cumsum(quote)
