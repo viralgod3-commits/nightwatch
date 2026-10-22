@@ -866,6 +866,14 @@ def rolling_previous_extreme(values: np.ndarray, period: int, maximum: bool) -> 
     period = max(2, int(period))
     candidates: deque[int] = deque()
     native = type(values) is np.ndarray and values.ndim == 1 and values.dtype == np.float64
+    # Bound C-level reductions to short, finite price windows. Long windows
+    # and unusual values retain the linear deque algorithm and its tie rules.
+    if (period <= 32 and len(values) >= 512 and native and values.flags.c_contiguous
+            and values.min() > 0 and math.isfinite(float(values.max()))):
+        windows = np.lib.stride_tricks.sliding_window_view(values, period)[:-1]
+        reducer = np.max if maximum else np.min
+        reducer(windows, axis=1, out=output[period:])
+        return output
     source = memoryview(values) if native else values
     for index, value in enumerate(source):
         while candidates and candidates[0] < index - period:
