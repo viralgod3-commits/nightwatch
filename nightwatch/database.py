@@ -166,15 +166,32 @@ class AppDatabase:
             )
             for candle in candles
         ]
-        with self._connect() as connection:
-            connection.executemany(
-                """
-                INSERT OR REPLACE INTO candle_cache
+        statement = """
+            INSERT OR REPLACE INTO candle_cache
+            (symbol, interval, open_time, open, high, low, close, volume, quote_volume)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """
+        # Keep incremental writes cheap; full chart refreshes usually contain
+        # unchanged history and need not rewrite every cached candle.
+        if len(rows) > 128:
+            statement = """
+                INSERT INTO candle_cache
                 (symbol, interval, open_time, open, high, low, close, volume, quote_volume)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                rows,
-            )
+                ON CONFLICT(symbol, interval, open_time) DO UPDATE SET
+                    open = excluded.open,
+                    high = excluded.high,
+                    low = excluded.low,
+                    close = excluded.close,
+                    volume = excluded.volume,
+                    quote_volume = excluded.quote_volume
+                WHERE (candle_cache.open, candle_cache.high, candle_cache.low,
+                       candle_cache.close, candle_cache.volume, candle_cache.quote_volume)
+                   IS NOT (excluded.open, excluded.high, excluded.low,
+                           excluded.close, excluded.volume, excluded.quote_volume)
+            """
+        with self._connect() as connection:
+            connection.executemany(statement, rows)
 
     def load_candles(
         self,
