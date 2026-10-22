@@ -14,7 +14,9 @@ _states = OrderedDict()
 
 
 def _candles(matrix):
-    return [Candle(*map(float, row)) for row in matrix]
+    # Sources are float64 matrices; convert rows without boxing each element
+    # as a NumPy scalar before converting it back to a Python float.
+    return [Candle(*row.tolist()) for row in matrix]
 
 
 def _remember_state(token, state):
