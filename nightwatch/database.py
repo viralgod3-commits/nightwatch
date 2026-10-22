@@ -10,8 +10,10 @@ import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 
+import numpy as np
+
 from .constants import INTERVAL_SECONDS
-from .models import Candle
+from .models import Candle, CandlePages
 
 
 class AppDatabase:
@@ -223,6 +225,30 @@ class AppDatabase:
                 )
                 for open_time, opened, high, low, closed, volume, quote_volume in rows
             ]
+
+    def load_candle_pages(
+        self,
+        symbol: str,
+        interval: str,
+        start_ms: int,
+        end_ms: int,
+        limit: int,
+    ) -> CandlePages:
+        """Load the latest bounded chart history directly into numeric pages."""
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT open_time, open, high, low, close, volume, quote_volume
+                FROM candle_cache
+                WHERE symbol = ? AND interval = ? AND open_time BETWEEN ? AND ?
+                ORDER BY open_time DESC LIMIT ?
+                """,
+                (symbol, interval, start_ms, end_ms, max(0, int(limit))),
+            )
+            rows.row_factory = None
+            matrix = np.fromiter(rows, dtype=np.dtype((np.float64, 7)))
+        matrix[:, 0] /= 1000.0
+        return CandlePages.from_matrix(matrix[::-1])
 
     def load_workspace_snapshot(self, name: str) -> dict | None:
         with self._connect() as connection:

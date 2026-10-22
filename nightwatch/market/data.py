@@ -2657,25 +2657,24 @@ class MarketDataHub(QtCore.QObject):
             end_ms - int(MAX_CHART_CANDLES * seconds * 1000 * 1.15),
         )
         try:
-            candles = self.db.load_candles(
+            candles = self.db.load_candle_pages(
                 symbol,
                 interval,
                 start_ms,
                 end_ms,
+                MAX_CHART_CANDLES,
             )
         except Exception as exc:
             if self._diagnostics is not None:
                 self._diagnostics.increment("market.chart_cache.read_errors")
                 self._diagnostics.error("CHART CACHE", f"{symbol} {interval} read: {exc}")
             return None
-        candles = list(candles[-MAX_CHART_CANDLES:])
         if len(candles) < 8:
             return None
         return {
             "symbol": symbol,
             "interval": interval,
             "candles": candles,
-            "candle_matrix": _candle_matrix_from_objects(candles),
             "oi_history": [],
             "_persistent_cache": True,
         }
