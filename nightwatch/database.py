@@ -192,19 +192,20 @@ class AppDatabase:
                 ORDER BY open_time
                 """,
                 (symbol, interval, start_ms, end_ms),
-            ).fetchall()
-        return [
-            Candle(
-                time=row["open_time"] / 1000.0,
-                open=row["open"],
-                high=row["high"],
-                low=row["low"],
-                close=row["close"],
-                volume=row["volume"],
-                quote_volume=row["quote_volume"],
             )
-            for row in rows
-        ]
+            rows.row_factory = None
+            return [
+                Candle(
+                    time=open_time / 1000.0,
+                    open=opened,
+                    high=high,
+                    low=low,
+                    close=closed,
+                    volume=volume,
+                    quote_volume=quote_volume,
+                )
+                for open_time, opened, high, low, closed, volume, quote_volume in rows
+            ]
 
     def load_workspace_snapshot(self, name: str) -> dict | None:
         with self._connect() as connection:
@@ -601,6 +602,7 @@ class AppDatabase:
         end_ms: int,
     ) -> list[dict[str, Any]]:
         placeholders = ",".join("?" for _ in event_types)
+        events: list[dict[str, Any]] = []
         with self._connect() as connection:
             rows = connection.execute(
                 f"""
@@ -611,20 +613,23 @@ class AppDatabase:
                 ORDER BY event_time
                 """,
                 (symbol, *event_types, start_ms, end_ms),
-            ).fetchall()
-        events: list[dict[str, Any]] = []
-        for row in rows:
-            try:
-                payload = json.loads(row["payload_json"])
-            except (TypeError, json.JSONDecodeError):
-                continue
-            events.append(
-                {
-                    "event_type": row["event_type"],
-                    "event_time": row["event_time"],
-                    "payload": payload,
-                }
             )
+            rows.row_factory = None
+            # Batch SQLite's C-level row extraction without retaining all raw
+            # JSON strings alongside the fully decoded event history.
+            while batch := rows.fetchmany(2048):
+                for event_type, event_time, payload_json in batch:
+                    try:
+                        payload = json.loads(payload_json)
+                    except (TypeError, json.JSONDecodeError):
+                        continue
+                    events.append(
+                        {
+                            "event_type": event_type,
+                            "event_time": event_time,
+                            "payload": payload,
+                        }
+                    )
         return events
 
     def storage_bytes(self) -> int:
