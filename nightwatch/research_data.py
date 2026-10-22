@@ -10,14 +10,17 @@ def completed_history(candles, step: int, end: int, start: int = 0):
     """Reject malformed, unaligned and still-open bars before caching or analysis."""
     result = {}
     for row in candles:
-        values = (row.time, row.open, row.high, row.low, row.close, row.volume, row.quote_volume)
-        if (not all(math.isfinite(value) for value in values)
+        if (not math.isfinite(row.time) or not math.isfinite(row.open)
+                or not math.isfinite(row.high) or not math.isfinite(row.low)
+                or not math.isfinite(row.close) or not math.isfinite(row.volume)
+                or not math.isfinite(row.quote_volume)
                 or not 0 <= row.time <= min(end, 2**53) / 1000):
             continue
         opened = int(round(row.time * 1000))
         stamp = opened + step
         if (opened % step or not start < stamp <= end
-                or min(values[1:5]) <= 0 or min(values[5:]) < 0
+                or row.open <= 0 or row.high <= 0 or row.low <= 0 or row.close <= 0
+                or row.volume < 0 or row.quote_volume < 0
                 or row.low > min(row.open, row.close)
                 or row.high < max(row.open, row.close)):
             continue
@@ -28,13 +31,16 @@ def completed_history(candles, step: int, end: int, start: int = 0):
 def parse_completed_candles(payload, step: int, end: int):
     if not isinstance(payload, list):
         raise ValueError("Unexpected candle response")
-    candles = []
-    for row in payload:
-        try:
-            if not isinstance(row, (list, tuple)) or len(row) < 8:
+
+    def decoded():
+        for row in payload:
+            try:
+                if not isinstance(row, (list, tuple)) or len(row) < 8:
+                    continue
+                # Strict conversion: a malformed volume must not become zero.
+                yield Candle(float(row[0]) / 1000, float(row[1]), float(row[2]),
+                             float(row[3]), float(row[4]), float(row[5]), float(row[7]))
+            except (ValueError, TypeError, OverflowError):
                 continue
-            # Strict conversion: a malformed volume must not become zero.
-            candles.append(Candle(float(row[0]) / 1000, *(float(row[i]) for i in (1, 2, 3, 4, 5, 7))))
-        except (ValueError, TypeError, OverflowError):
-            continue
-    return list(completed_history(candles, step, end).values())
+
+    return list(completed_history(decoded(), step, end).values())
