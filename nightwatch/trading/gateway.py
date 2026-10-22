@@ -172,8 +172,11 @@ class _PlacementJournal:
             self._performance_schema(db)
             rows = []
             if include_fills:
-                rows = [dict(row) for row in db.execute('SELECT * FROM performance_fills WHERE scope=? '
-                                                       'ORDER BY time_ms, CAST(trade_id AS INTEGER)', (self.scope,))]
+                cursor = db.execute('SELECT * FROM performance_fills WHERE scope=? '
+                                    'ORDER BY time_ms, CAST(trade_id AS INTEGER)', (self.scope,))
+                cursor.row_factory = None
+                columns = tuple(column[0] for column in cursor.description)
+                rows = [dict(zip(columns, row)) for row in cursor]
             orders = [dict(row) for row in db.execute('SELECT * FROM performance_orders WHERE scope=? '
                                                     'AND reconciled=0 ORDER BY created_ms', (self.scope,))]
         return {'fills': rows, 'pending': orders, 'scope': self.scope}
