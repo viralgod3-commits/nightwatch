@@ -43,8 +43,9 @@ def atr_values(candles: list[Candle], period: int = 14) -> np.ndarray:
     if len(true_range) < period:
         return output
     output[period - 1] = np.mean(true_range[:period])
+    target, ranges = memoryview(output), memoryview(true_range)
     for index in range(period, len(true_range)):
-        output[index] = (output[index - 1] * (period - 1) + true_range[index]) / period
+        target[index] = (target[index - 1] * (period - 1) + ranges[index]) / period
     return output
 
 
@@ -813,8 +814,13 @@ def ema_series(values: np.ndarray, period: int) -> np.ndarray:
         return output
     output[period - 1] = float(np.mean(values[:period]))
     weight = 2.0 / (period + 1.0)
+    # Native buffer access keeps the recurrence order without allocating a
+    # NumPy scalar for every read and arithmetic operation in the Python loop.
+    native = type(values) is np.ndarray and values.ndim == 1 and values.dtype == np.float64
+    source = memoryview(values) if native else values
+    target = memoryview(output) if native else output
     for index in range(period, len(values)):
-        output[index] = values[index] * weight + output[index - 1] * (1.0 - weight)
+        target[index] = source[index] * weight + target[index - 1] * (1.0 - weight)
     return output
 
 
@@ -828,9 +834,11 @@ def _rsi_components(values, period):
     changes = np.diff(values)
     gains, losses = np.maximum(changes, 0.0), np.maximum(-changes, 0.0)
     avg_gains[period], avg_losses[period] = gains[:period].mean(), losses[:period].mean()
+    gain_source, loss_source = memoryview(gains), memoryview(losses)
+    gain_target, loss_target = memoryview(avg_gains), memoryview(avg_losses)
     for i in range(period + 1, len(values)):
-        avg_gains[i] = (avg_gains[i-1] * (period-1) + gains[i-1]) / period
-        avg_losses[i] = (avg_losses[i-1] * (period-1) + losses[i-1]) / period
+        gain_target[i] = (gain_target[i-1] * (period-1) + gain_source[i-1]) / period
+        loss_target[i] = (loss_target[i-1] * (period-1) + loss_source[i-1]) / period
     total = avg_gains + avg_losses
     np.divide(100.0 * avg_gains, total, out=output, where=total > 0)
     output[total == 0] = 50.0
@@ -852,13 +860,15 @@ def rolling_previous_extreme(values: np.ndarray, period: int, maximum: bool) -> 
     output = np.full(len(values), np.nan, dtype=float)
     period = max(2, int(period))
     candidates: deque[int] = deque()
-    for index, value in enumerate(values):
+    native = type(values) is np.ndarray and values.ndim == 1 and values.dtype == np.float64
+    source = memoryview(values) if native else values
+    for index, value in enumerate(source):
         while candidates and candidates[0] < index - period:
             candidates.popleft()
         if index >= period and candidates:
-            output[index] = values[candidates[0]]
+            output[index] = source[candidates[0]]
         while candidates and (
-            value >= values[candidates[-1]] if maximum else value <= values[candidates[-1]]
+            value >= source[candidates[-1]] if maximum else value <= source[candidates[-1]]
         ):
             candidates.pop()
         candidates.append(index)
