@@ -235,7 +235,7 @@ from typing import Any
 from ..constants import DEFAULT_INDICATOR_SHORTCUTS, INDICATOR_SETTING_DEFAULTS
 from ..theme import (
     RIGHT_LAYOUT_PRESETS, THEMES,
-    candle_directional_palette, chart_palette,
+    candle_directional_palette, chart_palette, ui_palette,
 )
 from ..models import SettingsHostPort
 from .developer_tools import (
@@ -1547,6 +1547,8 @@ class _SettingsPreviewChoice(QtWidgets.QAbstractButton):
         super().__init__(parent)
         self.setText(title)
         self.preview = dict(preview)
+        self.chart_preview = (candle_directional_palette(chart_palette(ui_palette(preview), title))
+                              if kind == "app" else self.preview)
         self.chrome = dict(chrome)
         self.kind, self.candle_style = kind, style
         self.setCheckable(True)
@@ -1635,6 +1637,7 @@ class _SettingsPreviewChoice(QtWidgets.QAbstractButton):
             plot = area.adjusted(5, 4, -5, -4)
             if self.kind == "app":
                 plot.setRight(area.left() + area.width() * .71)
+                painter.fillRect(plot, QtGui.QColor(self.chart_preview["bg"]))
                 for index in range(3):
                     tile = QtCore.QRectF(plot.right() + 5, area.top() + 4 + index * area.height() / 3,
                                         max(1, area.right() - plot.right() - 9), area.height() / 3 - 6)
@@ -1644,7 +1647,8 @@ class _SettingsPreviewChoice(QtWidgets.QAbstractButton):
                 x = plot.left() + (index + .5) * plot.width() / 7
                 top = plot.top() + plot.height() * position
                 bottom = top + plot.height() * .23
-                color = QtGui.QColor(p.get("candle_up", p["green"]) if up else p.get("candle_down", p["red"]))
+                chart = self.chart_preview
+                color = QtGui.QColor(chart.get("candle_up", chart["green"]) if up else chart.get("candle_down", chart["red"]))
                 painter.setPen(QtGui.QPen(color, 1))
                 painter.drawLine(QtCore.QPointF(x, top - 4), QtCore.QPointF(x, bottom + 4))
                 body = QtCore.QRectF(x - 3, top, 6, max(2, bottom - top))
