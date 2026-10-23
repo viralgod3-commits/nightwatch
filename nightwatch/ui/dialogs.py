@@ -708,13 +708,25 @@ class _WorkspacePresetCanvas(QtWidgets.QWidget):
         self._undo, self._redo = [], []
         self._rects, self._handles = {}, []
         self._press = self._drag_panel = self._drop = self._resize = None
-        self.accent = QtGui.QColor("#f0b34a")
+        self.apply_theme({})
         self.setMinimumSize(360, 240)
         self.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Expanding)
         self.setMouseTracking(True)
         self.setAcceptDrops(True)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.setAccessibleName("Workspace preview. Drag panels to dock, drag dividers to resize. Tab selects a panel; Delete removes it.")
+
+    def apply_theme(self, theme):
+        palette = ui_palette(theme)
+        self._colors = {key: QtGui.QColor(palette[key]) for key in (
+            "bg", "panel", "panel2", "active", "active_line", "text", "muted",
+            "border", "separator", "control_border", "green", "red",
+            "chart_bg", "chart_border", "chart_grid", "chart_muted",
+        )}
+        for key in ("green", "red"):
+            self._colors[key].setAlpha(65)
+        self.accent = self._colors["active_line"]
+        self.update()
 
     def set_tree(self, root):
         validate_tree(root)
@@ -1056,21 +1068,22 @@ class _WorkspacePresetCanvas(QtWidgets.QWidget):
         painter = QtGui.QPainter(self)
         painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing)
         apply_text_render_hints(painter)
-        painter.fillRect(self.rect(), QtGui.QColor("#000000"))
+        c = self._colors
+        painter.fillRect(self.rect(), c["bg"])
         font = QtGui.QFont(self.font())
         font.setPointSizeF(9)
         painter.setFont(font)
         chart = self._chart_rect
-        painter.setPen(QtGui.QPen(QtGui.QColor("#222222"), 1))
-        painter.setBrush(QtGui.QColor("#080808"))
+        painter.setPen(QtGui.QPen(c["chart_border"], 1))
+        painter.setBrush(c["chart_bg"])
         painter.drawRoundedRect(chart, 8, 8)
-        painter.setPen(QtGui.QColor("#777777"))
+        painter.setPen(c["chart_muted"])
         painter.drawText(chart.adjusted(12, 10, -8, -8), Qt.AlignmentFlag.AlignTop, "CHART")
-        painter.setPen(QtGui.QPen(QtGui.QColor("#161616"), 1))
+        painter.setPen(QtGui.QPen(c["chart_grid"], 1))
         for row in range(1, 6):
             y = chart.y() + chart.height() * row / 6
             painter.drawLine(QtCore.QPointF(chart.left() + 8, y), QtCore.QPointF(chart.right() - 8, y))
-        painter.setPen(QtGui.QPen(QtGui.QColor("#484848"), 1.4))
+        painter.setPen(QtGui.QPen(c["chart_muted"], 1.4))
         path = QtGui.QPainterPath()
         for i in range(24):
             point = QtCore.QPointF(chart.x() + 10 + (chart.width() - 20) * i / 23,
@@ -1078,30 +1091,30 @@ class _WorkspacePresetCanvas(QtWidgets.QWidget):
             path.moveTo(point) if i == 0 else path.lineTo(point)
         painter.drawPath(path)
         if self.root is None:
-            painter.setPen(QtGui.QPen(QtGui.QColor("#363636"), 1, Qt.PenStyle.DashLine))
-            painter.setBrush(QtGui.QColor("#080808"))
+            painter.setPen(QtGui.QPen(c["control_border"], 1, Qt.PenStyle.DashLine))
+            painter.setBrush(c["panel"])
             painter.drawRoundedRect(self._rail_rect.adjusted(1, 1, -1, -1), 8, 8)
-            painter.setPen(QtGui.QColor("#999999"))
+            painter.setPen(c["muted"])
             painter.drawText(self._rail_rect, Qt.AlignmentFlag.AlignCenter, "Drag a panel here\nor click a panel below")
         for pid, rect in self._rects.items():
             active = pid == self.selected
-            painter.setPen(QtGui.QPen(self.accent if active else QtGui.QColor("#333333"), 1.3 if active else 1))
-            painter.setBrush(QtGui.QColor("#141414" if active else "#0d0d0d"))
+            painter.setPen(QtGui.QPen(self.accent if active else c["control_border"], 1.3 if active else 1))
+            painter.setBrush(c["active"] if active else c["panel2"])
             painter.drawRoundedRect(rect.adjusted(.7, .7, -.7, -.7), 7, 7)
             painter.save()
             painter.setClipRect(rect.adjusted(3, 3, -3, -3))
-            painter.setPen(QtGui.QColor("#606060"))
+            painter.setPen(c["muted"])
             for y in (12, 17, 22):
                 for x in (8, 12):
                     painter.drawPoint(QtCore.QPointF(rect.x() + x, rect.y() + y))
-            painter.setPen(QtGui.QColor("#eeeeee"))
+            painter.setPen(c["text"])
             label = RIGHT_PANEL_LABELS.get(self.titles[pid], self.titles[pid]).title()
             title_rect = rect.adjusted(21, 7, -28, 0)
             title_rect.setHeight(20)
             painter.drawText(title_rect, Qt.AlignmentFlag.AlignVCenter,
                              painter.fontMetrics().elidedText(label, Qt.TextElideMode.ElideRight, max(0, int(title_rect.width()))))
             close = self._close_rect(rect)
-            painter.setPen(QtGui.QColor("#888888"))
+            painter.setPen(c["muted"])
             painter.drawLine(close.topLeft() + QtCore.QPointF(6, 6), close.bottomRight() - QtCore.QPointF(6, 6))
             painter.drawLine(close.topRight() + QtCore.QPointF(-6, 6), close.bottomLeft() + QtCore.QPointF(6, -6))
             body = rect.adjusted(12, 36, -12, -12)
@@ -1111,14 +1124,14 @@ class _WorkspacePresetCanvas(QtWidgets.QWidget):
                     y = body.y() + row * 14
                     if pid == "depth":
                         width = body.width() * (.2 + .22 * (1 + math.sin(row * .7)))
-                        painter.setBrush(QtGui.QColor("#27352c" if row > 5 else "#38282a"))
+                        painter.setBrush(c["green"] if row > 5 else c["red"])
                         painter.drawRoundedRect(QtCore.QRectF(body.right() - width, y, width, 8), 2, 2)
-                    painter.setBrush(QtGui.QColor("#303030"))
+                    painter.setBrush(c["separator"])
                     painter.drawRoundedRect(QtCore.QRectF(body.x(), y, body.width() * (.26 if pid != "trading" else .8), 4), 2, 2)
                     if pid != "trading":
                         painter.drawRoundedRect(QtCore.QRectF(body.x() + body.width() * .55, y, body.width() * .23, 4), 2, 2)
             painter.restore()
-        painter.setPen(QtGui.QPen(QtGui.QColor("#4a4a4a"), 2, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+        painter.setPen(QtGui.QPen(c["control_border"], 2, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
         for node, index, rect, usable in self._handles:
             center = rect.center()
             offset = QtCore.QPointF(0, 10) if node.axis == "h" else QtCore.QPointF(10, 0)
@@ -1142,7 +1155,7 @@ class WorkspacePresetEditor(QtWidgets.QWidget):
     apply_requested = Signal(object, str)
 
     def __init__(self, presets, parent=None, *, panel_names=None, aliases=None,
-                 active_name=None, current_layout_provider=None):
+                 active_name=None, current_layout_provider=None, theme=None):
         super().__init__(parent)
         self.setObjectName("workspacePresetEditor")
         self.panel_names = tuple(RIGHT_PANEL_NAMES if panel_names is None else panel_names)
@@ -1152,19 +1165,6 @@ class WorkspacePresetEditor(QtWidgets.QWidget):
         self.dirty = False
         self._source_presets = None
         self._token = uuid4().hex
-        self.setStyleSheet("""
-            QWidget#workspacePresetEditor { background: #000000; color: #eeeeee; }
-            QWidget#workspacePresetEditor QLabel { background: transparent; border: 0; color: #dddddd; }
-            QWidget#workspacePresetEditor QListWidget { background: #080808; border: 1px solid #272727; border-radius: 8px; padding: 5px; outline: 0; }
-            QWidget#workspacePresetEditor QListWidget::item { border-radius: 5px; padding: 8px; margin: 2px 0; color: #bbbbbb; }
-            QWidget#workspacePresetEditor QListWidget::item:selected { background: #24211a; color: #f0b34a; }
-            QWidget#workspacePresetEditor QLineEdit, QWidget#workspacePresetEditor QSpinBox { background: #101010; border: 1px solid #333333; border-radius: 5px; padding: 5px 8px; color: #eeeeee; min-height: 0; }
-            QWidget#workspacePresetEditor QPushButton, QWidget#workspacePresetEditor QToolButton { background: #141414; border: 1px solid #333333; border-radius: 5px; padding: 6px 10px; color: #dddddd; min-height: 0; }
-            QWidget#workspacePresetEditor QPushButton:hover, QWidget#workspacePresetEditor QToolButton:hover { background: #222222; border-color: #777777; }
-            QWidget#workspacePresetEditor QPushButton:disabled, QWidget#workspacePresetEditor QToolButton:disabled { color: #666666; border-color: #222222; }
-            QWidget#workspacePresetEditor QPushButton#workspaceSave { background: #f0b34a; border-color: #f0b34a; color: #080808; font-weight: 600; }
-            QWidget#workspacePresetEditor QLabel#workspaceHint { color: #888888; }
-        """)
         root = QtWidgets.QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(10)
@@ -1260,7 +1260,35 @@ class WorkspacePresetEditor(QtWidgets.QWidget):
         self.presets.model().rowsMoved.connect(self._mark_dirty)
         self.canvas.changed.connect(self._canvas_changed)
         self.canvas.history_changed.connect(self._history_changed)
+        self.apply_theme(theme or {})
         self.set_presets(presets, active_name, force=True)
+
+    def apply_theme(self, theme):
+        if theme == getattr(self, "_theme", None):
+            return
+        p = ui_palette(theme)
+        if p == getattr(self, "_theme", None):
+            return
+        self._theme = p
+        # Inherit shared button/input states; only editor-specific surfaces and
+        # compact geometry belong here. Rebuild once per palette change.
+        self.setStyleSheet(f"""
+            QWidget#workspacePresetEditor {{ background: transparent; color: {p['text']}; }}
+            QWidget#workspacePresetEditor QLabel {{ background: transparent; border: 0; color: {p['text']}; }}
+            QWidget#workspacePresetEditor QListWidget {{ background: {p['panel2']}; border: 1px solid {p['border']}; border-radius: 8px; padding: 5px; outline: 0; }}
+            QWidget#workspacePresetEditor QListWidget::item {{ border: 0; border-left: 3px solid transparent; border-radius: 5px; padding: 8px; margin: 2px 0; color: {p['muted']}; }}
+            QWidget#workspacePresetEditor QListWidget::item:hover {{ background: {p['control_hover']}; color: {p['text']}; }}
+            QWidget#workspacePresetEditor QListWidget::item:selected {{ background: {p['active']}; color: {p['text']}; border-left-color: {p['active_line']}; }}
+            QWidget#workspacePresetEditor QLineEdit, QWidget#workspacePresetEditor QSpinBox {{ padding: 5px 8px; min-height: 0; }}
+            QWidget#workspacePresetEditor QPushButton, QWidget#workspacePresetEditor QToolButton {{ padding: 6px 10px; min-height: 0; }}
+            QWidget#workspacePresetEditor QPushButton#workspaceSave {{ background: {p['active']}; border-color: {p['active_line']}; color: {p['text']}; font-weight: 600; }}
+            QWidget#workspacePresetEditor QPushButton#workspaceSave:hover {{ background: {p['control_hover']}; }}
+            QWidget#workspacePresetEditor QPushButton#workspaceSave:pressed {{ background: {p['header']}; }}
+            QWidget#workspacePresetEditor QLabel#workspaceHint {{ color: {p['muted']}; }}
+        """)
+        self.canvas.apply_theme(p)
+        for index in range(self.presets.count()):
+            self._refresh_item(self.presets.item(index))
 
     @staticmethod
     def _button(title, callback):
@@ -1334,11 +1362,11 @@ class WorkspacePresetEditor(QtWidgets.QWidget):
         item.setText(record["name"] + "\n" + f"{len(panel_ids(tree))} panels")
         item.setToolTip(record["name"])
         pixmap = QtGui.QPixmap(44, 34)
-        pixmap.fill(QtGui.QColor("#000000"))
+        pixmap.fill(Qt.GlobalColor.transparent)
         painter = QtGui.QPainter(pixmap)
         def draw(node, rect):
             if isinstance(node, PanelNode):
-                painter.fillRect(rect.adjusted(1, 1, -1, -1), QtGui.QColor("#69645a"))
+                painter.fillRect(rect.adjusted(1, 1, -1, -1), QtGui.QColor(self._theme["muted"]))
             elif isinstance(node, SplitNode):
                 offset = 0.0
                 for child, weight in zip(node.children, node.weights):
@@ -1567,8 +1595,8 @@ class _SettingsPreviewChoice(QtWidgets.QAbstractButton):
         apply_text_render_hints(painter)
         painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing)
         c = self.chrome
-        background = c["control_hover"] if self.underMouse() else c["panel2"]
-        border = c["text"] if self.isChecked() or self.hasFocus() else c["border"]
+        background = c["active"] if self.isChecked() else c["control_hover"] if self.underMouse() else c["panel2"]
+        border = c["active_line"] if self.isChecked() or self.hasFocus() else c["control_border"] if self.underMouse() else c["border"]
         painter.setBrush(QtGui.QColor(background))
         painter.setPen(QtGui.QPen(QtGui.QColor(border), 1.0))
         painter.drawRoundedRect(QtCore.QRectF(self.rect()).adjusted(.5, .5, -.5, -.5), 7, 7)
@@ -1577,7 +1605,7 @@ class _SettingsPreviewChoice(QtWidgets.QAbstractButton):
         title_height = max(20, self.fontMetrics().height())
         painter.drawText(QtCore.QRectF(12, 9, self.width() - 38, title_height), Qt.AlignmentFlag.AlignVCenter, title)
         painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(QtGui.QColor(c["text"] if self.isChecked() else c["border"]))
+        painter.setBrush(QtGui.QColor(c["active_line"] if self.isChecked() else c["border"]))
         painter.drawEllipse(QtCore.QPointF(self.width() - 16, 9 + title_height / 2), 3, 3)
         preview_top = max(35, title_height + 21)
         area = QtCore.QRectF(10, preview_top, max(1, self.width() - 20), self.height() - preview_top - 10)
@@ -2609,6 +2637,7 @@ class NightwatchSettingsDialog(QtWidgets.QDialog):
             self.host.right_layout_presets, panel_names=tuple(self.host.panel_sections),
             aliases=controller.state.aliases, active_name=controller.state.active_preset,
             current_layout_provider=self.host._current_right_panel_definition,
+            theme=self.host.ui_theme,
         )
         self.workspace_editor.apply_requested.connect(self._save_workspace_presets)
         layout.addWidget(self.workspace_editor, 1)
@@ -2955,6 +2984,7 @@ class NightwatchSettingsDialog(QtWidgets.QDialog):
 
                 editor = getattr(self, "workspace_editor", None)
                 if editor is not None:
+                    editor.apply_theme(self.host.ui_theme)
                     editor.set_presets(self.host.right_layout_presets, controller.state.active_preset)
 
             if self.embedded_ui_tuner is not None:
