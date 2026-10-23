@@ -1398,7 +1398,7 @@ class MainWindow(QtWidgets.QMainWindow):
         news_ribbon_height = 40
         self._news_ribbon_height = news_ribbon_height
 
-        # Chart utilities sit at the left; settings and full screen stay at the right.
+        # Chart utilities sit just left of settings and full screen.
         self.indicator_button = QtWidgets.QPushButton()
         self.indicator_button.setObjectName("topUtilityButton")
         self.indicator_button.setIconSize(QtCore.QSize(18, 18))
@@ -5272,7 +5272,12 @@ class MainWindow(QtWidgets.QMainWindow):
                 return True
             if (not text_input and self.symbol_search_dialog is None
                     and self.workspace_stack.currentIndex() == 0):
-                sequence = QtGui.QKeySequence(event.keyCombination()).toString(QtGui.QKeySequence.SequenceFormat.PortableText)
+                # Treat number-pad digits like the number row. Qt includes
+                # KeypadModifier in keyCombination() ("Num+1"), which would
+                # otherwise miss "1" and fall through to symbol search.
+                sequence = QtGui.QKeySequence(
+                    QtCore.QKeyCombination(shortcut_modifiers, Qt.Key(key))
+                ).toString(QtGui.QKeySequence.SequenceFormat.PortableText)
                 name = next((name for name, shortcut in self.indicator_shortcuts.items()
                              if shortcut and shortcut == sequence), None)
                 if name:

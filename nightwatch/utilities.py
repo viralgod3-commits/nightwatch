@@ -1179,18 +1179,17 @@ class MainToolbar(QtWidgets.QFrame):
         self.setAttribute(QtCore.Qt.WidgetAttribute.WA_StyledBackground, True)
         self.setFixedHeight(self.HEIGHT)
         row = QtWidgets.QHBoxLayout(self)
-        # Keep chart utilities at the top left and window utilities at the right.
+        # Keep both utility groups together at the right of navigation.
         row.setContentsMargins(0, 0, 0, 0)
         row.setSpacing(0)
         navigation.setFixedHeight(self.HEIGHT - 1)
         for button in navigation.findChildren(QtWidgets.QPushButton):
             button.setFixedHeight(self.HEIGHT - 1)
+        row.addWidget(navigation)
+        row.addStretch(1)
         for control in (indicator_control, theme_control, layout_control):
             control.setFixedSize(self.HEIGHT, self.HEIGHT - 1)
             row.addWidget(control)
-        row.addSpacing(12)
-        row.addWidget(navigation)
-        row.addStretch(1)
         row.addSpacing(16)
         for control in (settings_control, fullscreen_control):
             control.setFixedSize(self.HEIGHT, self.HEIGHT - 1)

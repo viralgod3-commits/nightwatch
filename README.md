@@ -136,13 +136,15 @@ VWAP resets at UTC day/week/month boundaries and leaves an incomplete first
 anchor blank. Volume profiles are candle-based estimates; liquidation markers
 represent observed exchange snapshots, not complete exchange totals.
 
-The top-left Indicators button opens the study picker. `Ctrl+1` through `Ctrl+9`
-select the displayed timeframes from left to right (up to the last configured
+The Indicators button beside the top-right theme/layout controls opens the study
+picker. `Ctrl+1` through `Ctrl+9` select the displayed timeframes from left to
+right (up to the last configured
 button). Indicator defaults use `1`–`9`: VWAP, EMA Trend, Supertrend, Visible
 Volume Profile, RSI, Relative Volume, Open Interest, Funding Rate History, and
 ADX / DI. The remaining studies are available in the menu and can be assigned
-shortcuts in settings. Text fields retain normal number entry; armed B/S order
-sequences keep priority over indicator keys. Existing default bindings migrate
+shortcuts in settings. Both the number row and number pad work. Text fields
+retain normal number entry; armed B/S order sequences keep priority over
+indicator keys. Existing default bindings migrate
 automatically; compatible custom bindings are retained.
 
 Parameters, shortcuts and pane heights start fresh for this catalog and persist

@@ -166,10 +166,13 @@ class IndicatorSettingsChecks(unittest.TestCase):
         window.chart.graphics.setFocus()
         self.settle()
         self.assertTrue(window._owns_keyboard())
+        navigation = window.main_toolbar.findChild(QtWidgets.QFrame, "workspaceNav")
+        self.assertLess(navigation.geometry().right(), window.indicator_button.x())
         self.assertLess(window.indicator_button.x(), window.theme_button.x())
         self.assertLess(window.theme_button.x(), window.panel_layout_button.x())
-        self.assertGreater(window.settings_button.x() - window.panel_layout_button.geometry().right(), 16)
+        self.assertEqual(window.settings_button.x() - window.panel_layout_button.geometry().right() - 1, 16)
         self.assertLess(window.settings_button.x(), window.fullscreen_button.x())
+        self.assertEqual(window.fullscreen_button.geometry().right() + 1, window.main_toolbar.width())
         self.assertFalse(window.indicator_button.icon().isNull())
         window.indicator_button.click()
         self.settle()
@@ -179,21 +182,27 @@ class IndicatorSettingsChecks(unittest.TestCase):
         window.chart.graphics.setFocus()
         self.settle()
 
-        with patch.object(window, "switch_interval") as switch:
+        with patch.object(window, "switch_interval") as switch, \
+                patch.object(window, "open_symbol_search") as search:
             for name, shortcut in DEFAULT_INDICATOR_SHORTCUTS.items():
                 if not shortcut:
                     continue
                 key = QtCore.Qt.Key(int(QtCore.Qt.Key.Key_0) + int(shortcut))
-                QtTest.QTest.keyClick(window.chart.graphics, key)
-                self.assertTrue(window.chart.indicators[name], name)
-                QtTest.QTest.keyClick(window.chart.graphics, key)
-                self.assertFalse(window.chart.indicators[name], name)
+                for modifiers in (QtCore.Qt.KeyboardModifier.NoModifier,
+                                  QtCore.Qt.KeyboardModifier.KeypadModifier):
+                    QtTest.QTest.keyClick(window.chart.graphics, key, modifiers)
+                    search.assert_not_called()
+                    self.assertTrue(window.chart.indicators[name], (name, modifiers))
+                    QtTest.QTest.keyClick(window.chart.graphics, key, modifiers)
+                    self.assertFalse(window.chart.indicators[name], (name, modifiers))
             switch.assert_not_called()
             for index, interval in enumerate(window.market_bar_timeframes, 1):
                 key = QtCore.Qt.Key(int(QtCore.Qt.Key.Key_0) + index)
-                QtTest.QTest.keyClick(window.chart.graphics, key, QtCore.Qt.KeyboardModifier.ControlModifier)
-                switch.assert_called_with(interval)
-            self.assertEqual(switch.call_count, len(window.market_bar_timeframes))
+                for modifiers in (QtCore.Qt.KeyboardModifier.ControlModifier,
+                                  QtCore.Qt.KeyboardModifier.ControlModifier | QtCore.Qt.KeyboardModifier.KeypadModifier):
+                    QtTest.QTest.keyClick(window.chart.graphics, key, modifiers)
+                    switch.assert_called_with(interval)
+            self.assertEqual(switch.call_count, 2 * len(window.market_bar_timeframes))
             self.assertFalse(any(window.chart.indicators.values()))
             original_timeframes = window.market_bar_timeframes
             window.set_market_bar_timeframes((*original_timeframes, "3m"))
@@ -212,25 +221,32 @@ class IndicatorSettingsChecks(unittest.TestCase):
             editor.setFocus()
             self.settle()
             QtTest.QTest.keyClicks(editor, "123456789")
+            QtTest.QTest.keyClick(editor, QtCore.Qt.Key.Key_1, QtCore.Qt.KeyboardModifier.KeypadModifier)
             QtTest.QTest.keyClick(editor, QtCore.Qt.Key.Key_1, QtCore.Qt.KeyboardModifier.ControlModifier)
-            self.assertEqual(editor.text(), "123456789")
+            self.assertEqual(editor.text(), "1234567891")
             self.assertFalse(any(window.chart.indicators.values()))
             switch.assert_not_called()
+            search.assert_not_called()
             editor.hide()
             editor.deleteLater()
             window.chart.graphics.setFocus()
             self.settle()
+            QtTest.QTest.keyClick(window.chart.graphics, QtCore.Qt.Key.Key_E)
+            search.assert_called_once_with("e")
 
         with patch.object(window, "_execute_armed_percentage_order") as execute:
             window.trading_gateway.armed = True
             try:
-                QtTest.QTest.keyClick(window.chart.graphics, QtCore.Qt.Key.Key_B)
-                QtTest.QTest.keyClick(window.chart.graphics, QtCore.Qt.Key.Key_1)
-                execute.assert_called_once_with("B", 10)
-                self.assertFalse(window.chart.indicators["VWAP"])
-                QtTest.QTest.keyClick(window.chart.graphics, QtCore.Qt.Key.Key_1)
-                self.assertTrue(window.chart.indicators["VWAP"])
-                QtTest.QTest.keyClick(window.chart.graphics, QtCore.Qt.Key.Key_1)
+                for modifiers in (QtCore.Qt.KeyboardModifier.NoModifier,
+                                  QtCore.Qt.KeyboardModifier.KeypadModifier):
+                    execute.reset_mock()
+                    QtTest.QTest.keyClick(window.chart.graphics, QtCore.Qt.Key.Key_B)
+                    QtTest.QTest.keyClick(window.chart.graphics, QtCore.Qt.Key.Key_1, modifiers)
+                    execute.assert_called_once_with("B", 10)
+                    self.assertFalse(window.chart.indicators["VWAP"])
+                    QtTest.QTest.keyClick(window.chart.graphics, QtCore.Qt.Key.Key_1, modifiers)
+                    self.assertTrue(window.chart.indicators["VWAP"])
+                    QtTest.QTest.keyClick(window.chart.graphics, QtCore.Qt.Key.Key_1, modifiers)
             finally:
                 window.trading_gateway.armed = False
                 window._reset_armed_order_sequence()
