@@ -157,32 +157,56 @@ MARKET_SORT_MODES = {
 }
 
 
-INDICATOR_KEYS = (
-    "Bollinger Bands",
-    "ATR",
-    "Open Interest",
-    "Liquidations",
-    "Visible Volume Profile",
-    "Session Volume Profile",
-    "Major Price Levels",
-    "Funding Rate History",
-    "RSI",
-    "EMA Trend",
-    "VWAP",
-    "Donchian Channels",
-)
+# The catalog is deliberately split by where a study appears. Keep menu,
+# selection controls, and shortcut order derived from the same definition.
+INDICATOR_GROUPS = {
+    "Chart overlays": (
+        "EMA Trend", "VWAP", "Supertrend", "Bollinger Bands",
+        "Visible Volume Profile", "Liquidations",
+    ),
+    "Study panes": (
+        "RSI", "ADX / DI", "Relative Volume", "Chaikin Money Flow",
+        "Open Interest", "Funding Rate History",
+    ),
+}
+INDICATOR_KEYS = tuple(name for names in INDICATOR_GROUPS.values() for name in names)
 
 
-DEFAULT_INDICATOR_SHORTCUTS = {
-    name: "Ctrl+" + ("1", "2", "3", "Q", "W", "E", "4", "5", "6")[index-1] if index <= 9 else ""
-    for index, name in enumerate(INDICATOR_KEYS, 1)
+DEFAULT_INDICATOR_SHORTCUTS = dict(zip(
+    INDICATOR_KEYS,
+    ("Ctrl+" + key for key in ("1", "2", "3", "Q", "W", "E", "4", "5", "6", "7", "8", "9")),
+))
+
+
+INDICATOR_DESCRIPTIONS = {
+    "EMA Trend": "21 / 50 / 200 EMAs for trend and pullbacks. Periods follow the selected chart timeframe.",
+    "VWAP": "Volume-weighted price from the selected UTC day, week or month. Uses quote/base traded volume; typical price is an approximation when quote volume is missing. An incomplete first anchor stays blank. Weekly candles require Week; monthly candles require Month.",
+    "Supertrend": "ATR trailing trend line: midpoint ± multiplier × Wilder ATR. The active line switches when price crosses the trailing band. The live bar can change direction before it closes.",
+    "Bollinger Bands": "Rolling close mean ± standard deviations. Band width describes volatility; touching a band alone is not a reversal signal.",
+    "Visible Volume Profile": "Volume distribution estimated from OHLCV candle ranges, not exact trades at each price. Changes with the visible chart range.",
+    "Liquidations": "Observed forced-order snapshots only. Red marks liquidated longs; green marks liquidated shorts. Binance may omit events, so this is not total liquidation volume.",
+    "RSI": "Wilder momentum oscillator. Flat prices produce 50. RSI can stay above 70 or below 30 during a strong trend.",
+    "ADX / DI": "Wilder ADX measures trend strength, while +DI and −DI indicate directional pressure. The threshold is a reference, not a trade signal. Values update during the live bar.",
+    "Relative Volume": "Current base volume divided by mean volume of the prior completed candles. 1× is typical volume. An incomplete live bar can read low; this is not time-of-day adjusted.",
+    "Chaikin Money Flow": "Sum of close-location-weighted volume / sum of volume. An OHLCV estimate of pressure, not taker buy/sell delta. Zero-range candles contribute no directional pressure. Values update during the live bar.",
+    "Open Interest": "USD notional OI changes reflect both positioning and price. Rising OI alone does not identify whether longs or shorts are entering.",
+    "Funding Rate History": "Rates per settlement, not annualized. Positive means longs pay shorts. Optional EMA smoothing uses actual settlements without clipping spikes.",
 }
 
 
 INDICATOR_SETTING_DEFAULTS = {
     "EMA Trend": {"fast": 21, "medium": 50, "slow": 200},
-    "VWAP": {"anchor": "week"},
-    "Donchian Channels": {"period": 20},
+    "VWAP": {"anchor": "day"},
+    "Supertrend": {"period": 10, "multiplier": 3.0},
+    "Bollinger Bands": {"period": 20, "deviations": 2.0},
+    "Visible Volume Profile": {"bins": 52, "levels": 4, "width_pct": 19.0},
+    "Liquidations": {"minimum_notional": 100_000.0, "maximum_markers": 120},
+    "RSI": {"period": 14, "upper": 70.0, "lower": 30.0, "show_thresholds": False},
+    "ADX / DI": {"period": 14, "threshold": 25.0},
+    "Relative Volume": {"period": 20},
+    "Chaikin Money Flow": {"period": 20},
+    "Open Interest": {"smoothing": 1},
+    "Funding Rate History": {"smoothing": 3},
     "Auto Fibonacci": {
         "maximum_candidates": 5,
         "label_position": "right",
@@ -192,20 +216,6 @@ INDICATOR_SETTING_DEFAULTS = {
         "show_anchor": True,
         "show_badge": True,
         "levels": [-0.618, -0.5, -0.382, -0.236, 0.0, 0.236, 0.382, 0.5, 0.618, 0.786, 1.0],
-    },
-    "Bollinger Bands": {"period": 20, "deviations": 2.0},
-    "ATR": {"period": 14},
-    "Open Interest": {"smoothing": 1},
-    "Liquidations": {"minimum_notional": 100_000.0, "maximum_markers": 120},
-    "Visible Volume Profile": {"bins": 52, "levels": 4, "width_pct": 19.0},
-    "Session Volume Profile": {"bins": 56, "levels": 4, "width_pct": 12.0},
-    "Major Price Levels": {"minimum_score": 48.0, "maximum_levels": 4},
-    "Funding Rate History": {"smoothing": 3},
-    "RSI": {
-        "period": 14,
-        "upper": 70.0,
-        "lower": 30.0,
-        "show_thresholds": False,
     },
 }
 

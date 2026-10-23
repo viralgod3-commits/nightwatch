@@ -3,10 +3,8 @@
 from __future__ import annotations
 
 import math
-import time
-from collections import deque
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 import numpy as np
 
@@ -860,36 +858,131 @@ def rolling_mean_series(values: np.ndarray, period: int) -> np.ndarray:
     return output
 
 
-def rolling_previous_extreme(values: np.ndarray, period: int, maximum: bool) -> np.ndarray:
-    """Rolling high/low that excludes the current candle."""
-    output = np.full(len(values), np.nan, dtype=float)
-    period = max(2, int(period))
-    candidates: deque[int] = deque()
-    native = type(values) is np.ndarray and values.ndim == 1 and values.dtype == np.float64
-    # Bound C-level reductions to short, finite price windows. Long windows
-    # and unusual values retain the linear deque algorithm and its tie rules.
-    if (period <= 32 and len(values) >= 512 and native and values.flags.c_contiguous
-            and values.min() > 0 and math.isfinite(float(values.max()))):
-        windows = np.lib.stride_tricks.sliding_window_view(values, period)[:-1]
-        reducer = np.max if maximum else np.min
-        reducer(windows, axis=1, out=output[period:])
+def rolling_sum_series(values: np.ndarray, period: int) -> np.ndarray:
+    """O(N) rolling sums without subtracting a large, old cumulative total.
+
+    A window spans at most two blocks of ``period`` rows. Combining each block's
+    forward/reverse sums keeps small recent volumes after a large old print.
+    """
+    values = np.asarray(values, dtype=float)
+    period = max(1, int(period))
+    output = np.full(len(values), np.nan)
+    if len(values) < period:
         return output
-    source = memoryview(values) if native else values
-    for index, value in enumerate(source):
-        while candidates and candidates[0] < index - period:
-            candidates.popleft()
-        if index >= period and candidates:
-            output[index] = source[candidates[0]]
-        while candidates and (
-            value >= source[candidates[-1]] if maximum else value <= source[candidates[-1]]
-        ):
-            candidates.pop()
-        candidates.append(index)
+    padded = np.zeros(((len(values) + period - 1) // period) * period)
+    padded[:len(values)] = values
+    blocks = padded.reshape(-1, period)
+    prefix = np.cumsum(blocks, axis=1).ravel()
+    suffix = np.cumsum(blocks[:, ::-1], axis=1)[:, ::-1].ravel()
+    ends = np.arange(period - 1, len(values))
+    starts = ends - period + 1
+    output[ends] = np.where(starts % period == 0, suffix[starts], suffix[starts] + prefix[ends])
     return output
 
 
+def relative_volume_values(candles, period=20):
+    volume = np.fromiter((max(0.0, c.volume) for c in candles), dtype=float)
+    previous = np.r_[np.nan, rolling_sum_series(volume, period)[:-1]] if len(volume) else volume
+    return np.divide(volume * int(period), previous, out=np.full(len(volume), np.nan), where=previous > 0)
+
+
+def money_flow_values(candles, period=20):
+    count = len(candles)
+    high = np.fromiter((c.high for c in candles), dtype=float, count=count)
+    low = np.fromiter((c.low for c in candles), dtype=float, count=count)
+    close = np.fromiter((c.close for c in candles), dtype=float, count=count)
+    volume = np.fromiter((c.volume for c in candles), dtype=float, count=count)
+    volume = np.maximum(volume, 0.0)
+    multiplier = np.divide(2.0 * close - high - low, high - low,
+                           out=np.zeros(len(close)), where=high > low)
+    flow = rolling_sum_series(np.clip(multiplier, -1.0, 1.0) * volume, period)
+    total = rolling_sum_series(volume, period)
+    return np.clip(np.divide(flow, total, out=np.full(len(close), np.nan), where=total > 0), -1.0, 1.0)
+
+
+def _wilder_series(values, period, start=0):
+    """Wilder mean, seeded by exactly ``period`` valid consecutive observations."""
+    output = np.full(len(values), np.nan)
+    seed = start + period - 1
+    if seed >= len(values):
+        return output
+    output[seed] = float(np.mean(values[start:seed + 1]))
+    source, target = memoryview(values), memoryview(output)
+    for index in range(seed + 1, len(values)):
+        target[index] = (target[index - 1] * (period - 1) + source[index]) / period
+    return output
+
+
+def _adx_components(candles, period):
+    period = max(2, int(period))
+    count = len(candles)
+    high = np.fromiter((c.high for c in candles), dtype=float, count=count)
+    low = np.fromiter((c.low for c in candles), dtype=float, count=count)
+    close = np.fromiter((c.close for c in candles), dtype=float, count=count)
+    empty = np.full(count, np.nan)
+    if not len(close):
+        return (empty.copy(), empty.copy(), empty.copy()), tuple(empty.copy() for _ in range(4))
+    previous = np.r_[close[0], close[:-1]]
+    tr = np.maximum(high - low, np.maximum(np.abs(high - previous), np.abs(low - previous)))
+    up, down = np.r_[0.0, np.diff(high)], np.r_[0.0, -np.diff(low)]
+    plus = np.where((up > down) & (up > 0.0), up, 0.0)
+    minus = np.where((down > up) & (down > 0.0), down, 0.0)
+    smoothed = tuple(_wilder_series(values, period, 1) for values in (tr, plus, minus))
+    atr, plus, minus = smoothed
+    plus_di = np.divide(100.0 * plus, atr, out=empty.copy(), where=atr > 0)
+    minus_di = np.divide(100.0 * minus, atr, out=empty.copy(), where=atr > 0)
+    plus_di[atr == 0.0] = minus_di[atr == 0.0] = 0.0
+    total = plus_di + minus_di
+    dx = np.divide(100.0 * np.abs(plus_di - minus_di), total, out=empty.copy(), where=total > 0)
+    dx[total == 0.0] = 0.0
+    adx = _wilder_series(dx, period, period)
+    return (adx, plus_di, minus_di), (*smoothed, dx)
+
+
+def _supertrend_components(candles, period, multiplier):
+    period = max(2, int(period))
+    atr = atr_values(candles, period)
+    upper, lower, direction = (np.full(len(candles), np.nan) for _ in range(3))
+    up, down = (np.full(len(candles), np.nan) for _ in range(2))
+    state = (atr, upper, lower, direction)
+    buffers = tuple(memoryview(values) for values in state)
+    outputs = (memoryview(up), memoryview(down))
+    for index in range(period - 1, len(candles)):
+        _supertrend_tail(candles, index, float(multiplier), outputs, buffers)
+    return (up, down), state
+
+
+def _supertrend_tail(candles, index, multiplier, arrays, state):
+    atr, upper, lower, direction = state
+    up, down = arrays
+    up[index] = down[index] = np.nan
+    if not math.isfinite(atr[index]):
+        return
+    candle = candles[index]
+    midpoint = (candle.high + candle.low) * 0.5
+    basic_upper, basic_lower = midpoint + multiplier * atr[index], midpoint - multiplier * atr[index]
+    if index == 0 or not math.isfinite(direction[index - 1]):
+        upper[index], lower[index], direction[index] = basic_upper, basic_lower, -1.0
+    else:
+        previous = candles[index - 1].close
+        upper[index] = basic_upper if basic_upper < upper[index - 1] or previous > upper[index - 1] else upper[index - 1]
+        lower[index] = basic_lower if basic_lower > lower[index - 1] or previous < lower[index - 1] else lower[index - 1]
+        if direction[index - 1] < 0:
+            direction[index] = 1.0 if candle.close > upper[index] else -1.0
+        else:
+            direction[index] = -1.0 if candle.close < lower[index] else 1.0
+    if direction[index] > 0:
+        up[index] = lower[index]
+    else:
+        down[index] = upper[index]
+
+
 def vwap_supports_interval(interval: str, anchor: str) -> bool:
-    """A candle must fit wholly inside its local-time VWAP anchor period."""
+    """Binance candles must fit wholly inside their UTC VWAP anchor period.
+
+    Weekly candles can cross month boundaries; monthly candles cross weeks.
+    All supported intraday candles divide a UTC day without crossing midnight.
+    """
     if interval not in INTERVAL_SECONDS or anchor not in {"day", "week", "month"}:
         return False
     return (
@@ -898,41 +991,31 @@ def vwap_supports_interval(interval: str, anchor: str) -> bool:
     )
 
 
-def _local_vwap_anchor(timestamp: float, anchor: str) -> float:
-    local = datetime.fromtimestamp(float(timestamp)).astimezone()
-    date = local.date()
+def _utc_vwap_anchor(timestamp: float, anchor: str) -> float:
+    utc = datetime.fromtimestamp(float(timestamp), timezone.utc)
+    date = utc.date()
     if anchor == "week":
         date -= timedelta(days=date.weekday())
     elif anchor == "month":
         date = date.replace(day=1)
-    return datetime(date.year, date.month, date.day, tzinfo=local.tzinfo).timestamp()
+    return datetime(date.year, date.month, date.day, tzinfo=timezone.utc).timestamp()
 
 
-def _vwap_components(candles, anchor="week"):
+def _vwap_components(candles, anchor="day"):
     count = len(candles)
     times = np.fromiter((c.time for c in candles), dtype=float, count=count)
     if not count:
-        empty = np.array([], dtype=float)
-        return times.copy(), times.copy(), empty, empty
+        return tuple(times.copy() for _ in range(5))
     volume = np.fromiter((c.volume for c in candles), dtype=float, count=count)
     quote = np.fromiter((c.quote_volume for c in candles), dtype=float, count=count)
-
-    def anchored_groups():
-        previous = None
-        group = math.nan
-        for timestamp in memoryview(times):
-            local = time.localtime(float(timestamp))
-            offset = getattr(local, "tm_gmtoff", None)
-            key = (local.tm_year, local.tm_yday, offset)
-            # The original anchor depends only on the local date and UTC
-            # offset. Include the offset so DST transitions keep their exact
-            # existing boundary, including repeated hours on the same date.
-            if key != previous or offset is None:
-                group = _local_vwap_anchor(timestamp, anchor)
-                previous = key
-            yield group
-
-    groups = np.fromiter(anchored_groups(), dtype=float, count=len(times))
+    if anchor == "day":
+        groups = np.floor(times / 86400.0) * 86400.0
+    elif anchor == "week":
+        groups = np.floor((times + 3.0 * 86400.0) / 604800.0) * 604800.0 - 3.0 * 86400.0
+    else:
+        # Datetime64 conversions are UTC arithmetic, independent of the OS
+        # timezone, and avoid one Python calendar conversion per candle.
+        groups = times.astype("datetime64[s]").astype("datetime64[M]").astype("datetime64[s]").astype(float)
     volume = np.maximum(volume, 0)
     positive_quote = quote > 0
     if not positive_quote.all():
@@ -941,23 +1024,15 @@ def _vwap_components(candles, anchor="week"):
         close = np.fromiter((c.close for c in candles), dtype=float, count=count)
         quote = np.where(positive_quote, quote, (high + low + close) / 3.0 * volume)
     starts = np.flatnonzero(np.r_[True, groups[1:] != groups[:-1]])
-    counts = np.diff(np.r_[starts, len(times)])
-    cv, cq = np.cumsum(volume), np.cumsum(quote)
-    cv -= np.repeat(np.r_[0.0, cv[starts[1:]-1]], counts)
-    cq -= np.repeat(np.r_[0.0, cq[starts[1:]-1]], counts)
-    values = np.divide(cq, cv, out=np.full(len(times), np.nan), where=cv > 0)
-    if times[0] > groups[0]:
-        values[groups == groups[0]] = np.nan
-    return values, groups, cv, cq
-
-
-def donchian_values(candles, period=20):
-    count = len(candles)
-    high = np.fromiter((c.high for c in candles), dtype=float, count=count)
-    low = np.fromiter((c.low for c in candles), dtype=float, count=count)
-    upper = rolling_previous_extreme(high, period, True)
-    lower = rolling_previous_extreme(low, period, False)
-    return upper, (upper + lower) * 0.5, lower
+    cv, cq, complete = np.empty(len(times)), np.empty(len(times)), np.empty(len(times))
+    for first, last in zip(starts, np.r_[starts[1:], len(times)]):
+        # Reset sums per session so a large earlier session cannot erase a later
+        # low-volume session through subtraction of global cumulative totals.
+        cv[first:last] = np.cumsum(volume[first:last])
+        cq[first:last] = np.cumsum(quote[first:last])
+        complete[first:last] = float(times[first] == groups[first])
+    values = np.divide(cq, cv, out=np.full(len(times), np.nan), where=(cv > 0) & (complete > 0))
+    return values, groups, cv, cq, complete
 
 
 class PriceStudyCache:
@@ -1011,11 +1086,6 @@ class PriceStudyCache:
             return ()
         key = self.cache_key(candles, settings)
         cached = self.entries.get(name)
-        # Donchian excludes the mutable candle. Reuse an unchanged history
-        # after its first tail update, preserving that updater's edge cases.
-        if (name == "Donchian Channels" and cached is not None
-                and cached[0] == key and cached[2] is not None):
-            return cached[1]
         if cached is not None and cached[0] != key:
             old, arrays, state = cached
             mode = self._incremental_mode(candles, key, cached)
@@ -1034,8 +1104,6 @@ class PriceStudyCache:
             state = None
             if name == "Bollinger Bands":
                 arrays = bollinger_values(candles, int(settings["period"]), float(settings["deviations"]))
-            elif name == "ATR":
-                arrays = (atr_values(candles, int(settings["period"])),)
             elif name == "RSI":
                 closes = np.fromiter((c.close for c in candles), dtype=float, count=len(candles))
                 rsi, gains, losses = _rsi_components(closes, int(settings["period"]))
@@ -1044,18 +1112,22 @@ class PriceStudyCache:
                 closes = np.fromiter((c.close for c in candles), dtype=float, count=len(candles))
                 arrays = tuple(ema_series(closes, int(settings[k])) for k in ("fast", "medium", "slow"))
             elif name == "VWAP":
-                values, groups, volumes, quotes = _vwap_components(candles, settings.get("anchor", "week"))
-                arrays, state = (values,), (groups, volumes, quotes)
-            elif name == "Donchian Channels":
-                arrays = donchian_values(candles, int(settings["period"]))
+                values, groups, volumes, quotes, complete = _vwap_components(candles, settings.get("anchor", "day"))
+                arrays, state = (values,), (groups, volumes, quotes, complete)
+            elif name == "Supertrend":
+                arrays, state = _supertrend_components(candles, int(settings["period"]), float(settings["multiplier"]))
+            elif name == "ADX / DI":
+                arrays, state = _adx_components(candles, int(settings["period"]))
+            elif name == "Relative Volume":
+                arrays = (relative_volume_values(candles, int(settings["period"])),)
+            elif name == "Chaikin Money Flow":
+                arrays = (money_flow_values(candles, int(settings["period"])),)
             else:
                 raise ValueError(name)
             self.entries[name] = key, arrays, state
             return arrays
         _, arrays, state = cached
         self._update_tail(candles, len(candles)-1, name, settings, arrays, state)
-        if name == "Donchian Channels":
-            self.entries[name] = key, arrays, ()
         return arrays
 
     @staticmethod
@@ -1076,13 +1148,57 @@ class PriceStudyCache:
                 elif n > period:
                     alpha = 2.0 / (period+1)
                     values[index] = alpha*last.close + (1-alpha)*values[index-1]
-        elif name == "ATR":
+        elif name == "Supertrend":
             period = int(settings["period"])
             if n == period:
-                arrays[0][index] = atr_values(candles[:n], period)[-1]
+                state[0][index] = atr_values(candles[:n], period)[-1]
             elif n > period:
-                tr = max(last.high-last.low, abs(last.high-candles[index-1].close), abs(last.low-candles[index-1].close))
-                arrays[0][index] = (arrays[0][index-1]*(period-1)+tr)/period
+                previous = candles[index - 1].close
+                tr = max(last.high - last.low, abs(last.high - previous), abs(last.low - previous))
+                state[0][index] = (state[0][index - 1] * (period - 1) + tr) / period
+            _supertrend_tail(candles, index, float(settings["multiplier"]), arrays, state)
+        elif name == "ADX / DI":
+            period = int(settings["period"])
+            if n == period + 1:
+                seeded, seeded_state = _adx_components(candles[:n], period)
+                for output, values in zip(arrays, seeded):
+                    output[index] = values[-1]
+                for output, values in zip(state, seeded_state):
+                    output[index] = values[-1]
+            elif n > period + 1:
+                previous = candles[index - 1]
+                tr = max(last.high - last.low, abs(last.high - previous.close), abs(last.low - previous.close))
+                up, down = last.high - previous.high, previous.low - last.low
+                plus = up if up > down and up > 0 else 0.0
+                minus = down if down > up and down > 0 else 0.0
+                for output, value in zip(state, (tr, plus, minus)):
+                    output[index] = (output[index - 1] * (period - 1) + value) / period
+                atr, plus, minus = (output[index] for output in state[:3])
+                plus_di = 100.0 * plus / atr if atr > 0 else 0.0
+                minus_di = 100.0 * minus / atr if atr > 0 else 0.0
+                arrays[1][index], arrays[2][index] = plus_di, minus_di
+                total = plus_di + minus_di
+                state[3][index] = 100.0 * abs(plus_di - minus_di) / total if total > 0 else 0.0
+                if n == 2 * period:
+                    arrays[0][index] = float(np.mean(state[3][period:index + 1]))
+                elif n > 2 * period:
+                    arrays[0][index] = (arrays[0][index - 1] * (period - 1) + state[3][index]) / period
+        elif name == "Relative Volume":
+            period = int(settings["period"])
+            if index >= period:
+                total = math.fsum(max(0.0, candle.volume) for candle in candles[index - period:index])
+                arrays[0][index] = max(0.0, last.volume) * period / total if total > 0 else np.nan
+        elif name == "Chaikin Money Flow":
+            period = int(settings["period"])
+            if n >= period:
+                window = candles[n - period:n]
+                total = math.fsum(max(0.0, candle.volume) for candle in window)
+                flow = math.fsum(
+                    max(-1.0, min(1.0, (2.0 * candle.close - candle.high - candle.low) / (candle.high - candle.low)))
+                    * max(0.0, candle.volume)
+                    for candle in window if candle.high > candle.low
+                )
+                arrays[0][index] = max(-1.0, min(1.0, flow / total)) if total > 0 else np.nan
         elif name == "RSI":
             period = int(settings["period"])
             if n == period+1:
@@ -1095,21 +1211,15 @@ class PriceStudyCache:
                 state[0][index], state[1][index] = gain, loss
                 arrays[0][index] = 100*gain/(gain+loss) if gain+loss > 0 else 50.0
         elif name == "VWAP":
-            groups, volumes, quotes = state
-            anchor = settings.get("anchor", "week")
-            group = _local_vwap_anchor(last.time, anchor)
+            groups, volumes, quotes, complete = state
+            anchor = settings.get("anchor", "day")
+            group = _utc_vwap_anchor(last.time, anchor)
             groups[index] = group
-            same = index > 0 and group == groups[index-1]
+            same = index > 0 and group == groups[index - 1]
             volume = max(0.0, last.volume)
-            quote = last.quote_volume if last.quote_volume > 0 else (last.high+last.low+last.close)/3*volume
-            denominator = (volumes[index-1] if same else 0.0) + volume
-            numerator = (quotes[index-1] if same else 0.0) + quote
+            quote = last.quote_volume if last.quote_volume > 0 else (last.high + last.low + last.close) / 3 * volume
+            denominator = (volumes[index - 1] if same else 0.0) + volume
+            numerator = (quotes[index - 1] if same else 0.0) + quote
             volumes[index], quotes[index] = denominator, numerator
-            complete = group != groups[0] or candles[0].time <= groups[0]
-            arrays[0][index] = numerator/denominator if denominator > 0 and complete else np.nan
-        elif name == "Donchian Channels":
-            period = int(settings["period"])
-            if index >= period:
-                previous = candles[index-period:index]
-                upper, lower = max(c.high for c in previous), min(c.low for c in previous)
-                arrays[0][index], arrays[1][index], arrays[2][index] = upper, (upper+lower)*0.5, lower
+            complete[index] = complete[index - 1] if same else float(last.time == group)
+            arrays[0][index] = numerator / denominator if denominator > 0 and complete[index] else np.nan

@@ -94,7 +94,9 @@ def _apply_indicator_source_update(source, update):
 
 
 
-        return True, True
+        # Preserve Wilder/EMA and complete-session VWAP state when the oldest
+        # retained candle rolls away. PriceStudyCache shifts its resident state.
+        return True, False
 
     return False, False
 
@@ -132,14 +134,16 @@ def indicator_analysis(token, generation, source_update, requests, first, last, 
     for name, settings in requests:
         arrays = cache.values(source, name, settings)
         curves, scale_data, scale_index = [], None, None
+        pane_study = name in {"RSI", "ADX / DI", "Relative Volume", "Chaikin Money Flow"}
+        if pane_study and arrays:
+            raw_window = tuple(np.asarray(raw[first:last], dtype=float) for raw in arrays)
+            low = np.fmin.reduce(raw_window)
+            high = np.fmax.reduce(raw_window)
+            scale_data = (times.copy(), raw_window[0].copy())
+            scale_index = RangeExtrema(low, high)
         for index, raw in enumerate(arrays):
             values, line_times = np.asarray(raw[first:last], dtype=float), times
-            if name == "ATR":
-                close = np.fromiter((c.close for c in window), dtype=float, count=len(window))
-                values = np.divide(values*100., close, out=np.full_like(values, np.nan), where=close > 0)
-                scale_data = (times.copy(), values.copy())
-                scale_index = RangeExtrema(values, values)
-            elif name != "RSI":
+            if not pane_study:
                 values = chart_y_array(values, logarithmic)
             if name == "VWAP" and index == 0 and len(times) > 1:
                 entry = cache.entries.get(name)

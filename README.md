@@ -117,6 +117,33 @@ benchmark records actual paint/composition cadence, slowest 1% frame intervals,
 and input latency. See [benchmark instructions](tools/benchmark_interactions.md)
 for matching before/after runs and target GPU/display validation.
 
+## Chart indicators
+
+The indicator picker separates **Chart overlays** from **Study panes**:
+
+- Overlays: EMA Trend (21/50/200), UTC-anchored VWAP, Supertrend (10, 3),
+  Bollinger Bands, Visible Volume Profile, and observed Liquidations.
+- Panes: RSI, ADX / DI, Relative Volume, Chaikin Money Flow, Open Interest,
+  and Funding Rate History.
+
+Supertrend uses Wilder ATR trailing bands; ADX measures strength while +DI/−DI
+show directional pressure. Relative Volume compares current base volume with
+its prior 20 completed candles; an incomplete bar can read low. Chaikin Money
+Flow weights volume by the close's location within each candle, then divides by
+total window volume. It is an OHLCV pressure estimate, not taker delta. These
+studies update during the live bar, so their current values are provisional.
+VWAP resets at UTC day/week/month boundaries and leaves an incomplete first
+anchor blank. Volume profiles are candle-based estimates; liquidation markers
+represent observed exchange snapshots, not complete exchange totals.
+
+Parameters, shortcuts and pane heights start fresh for this catalog and persist
+afterward. Charts continue to start with all studies off. Existing Auto Fibonacci
+drawing preferences are retained. Calculations use the existing background
+analysis workers, incremental caches, and viewport-limited rendering.
+
+Formula references: [Supertrend](https://www.tradingview.com/support/solutions/43000634738-supertrend/)
+and [Chaikin Money Flow](https://www.tradingview.com/support/solutions/43000501974-chaikin-money-flow-cmf/).
+
 ## Local state and recovery
 
 Leaders loads completed Binance futures and exact-symbol spot histories only

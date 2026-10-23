@@ -64,6 +64,8 @@ from ..constants import (
     DEV_UI_STATUS_PRESETS,
     DEV_UI_SURFACE_DEFAULTS,
     DIRECTIONAL_COLOR_MODE_DEFAULTS,
+    INDICATOR_DESCRIPTIONS,
+    INDICATOR_GROUPS,
     INDICATOR_KEYS,
     INDICATOR_SETTING_DEFAULTS,
     INITIAL_CHART_WARM_CANDLES,
@@ -609,7 +611,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 ),
             ),
         )
-        stored_study_heights = self.settings.value("chart/study_heights_v1", "", str)
+        stored_study_heights = self.settings.value("chart/study_heights_v2", "", str)
         if stored_study_heights:
             try:
                 restored_heights = json.loads(stored_study_heights)
@@ -623,7 +625,7 @@ class MainWindow(QtWidgets.QMainWindow):
             name: dict(values) for name, values in INDICATOR_SETTING_DEFAULTS.items()
         }
         stored_indicator_settings = self.settings.value(
-            "chart/indicator_settings_v1", "", str
+            "chart/indicator_settings_v2", "", str
         )
         if stored_indicator_settings:
             try:
@@ -632,25 +634,34 @@ class MainWindow(QtWidgets.QMainWindow):
                 restored = {}
             if isinstance(restored, dict):
                 for name, defaults in self.indicator_settings.items():
-                    if isinstance(restored.get(name), dict):
-                        defaults.update(restored[name])
+                    incoming = restored.get(name)
+                    if isinstance(incoming, dict):
+                        defaults.update({key: incoming[key] for key in defaults if key in incoming})
         else:
-            self.indicator_settings["RSI"] = {
-                "period": self.settings.value("chart/rsi_period", 14, int),
-                "upper": self.settings.value("chart/rsi_upper", 70.0, float),
-                "lower": self.settings.value("chart/rsi_lower", 30.0, float),
-                "show_thresholds": False,
-            }
-        if not self.settings.value("chart/liquidation_display_v2", False, bool):
-            liquidation_settings = self.indicator_settings["Liquidations"]
-            if safe_float(liquidation_settings.get("minimum_notional")) <= 0:
-                liquidation_settings["minimum_notional"] = 100_000.0
-            if int(liquidation_settings.get("maximum_markers", 250)) == 250:
-                liquidation_settings["maximum_markers"] = 120
-            self.settings.setValue("chart/liquidation_display_v2", True)
+            # Replace the old study configuration once. Auto Fibonacci belongs
+            # to drawings, so retain only that independent set of preferences.
+            try:
+                legacy = json.loads(self.settings.value("chart/indicator_settings_v1", "{}", str))
+            except (TypeError, json.JSONDecodeError):
+                legacy = {}
+            fibonacci = legacy.get("Auto Fibonacci") if isinstance(legacy, dict) else None
+            if isinstance(fibonacci, dict):
+                defaults = self.indicator_settings["Auto Fibonacci"]
+                defaults.update({key: fibonacci[key] for key in defaults if key in fibonacci})
+            # Persist the migrated drawing before removing its legacy record.
+            self.settings.setValue(
+                "chart/indicator_settings_v2",
+                json.dumps(self.indicator_settings, separators=(",", ":")),
+            )
+        for legacy_key in (
+            "chart/indicator_settings_v1", "chart/indicator_shortcuts_v1",
+            "chart/study_heights_v1", "chart/rsi_period", "chart/rsi_upper",
+            "chart/rsi_lower", "chart/liquidation_display_v2",
+        ):
+            self.settings.remove(legacy_key)
         restored_shortcuts: dict[str, object] = {}
         stored_indicator_shortcuts = self.settings.value(
-            "chart/indicator_shortcuts_v1", "", str
+            "chart/indicator_shortcuts_v2", "", str
         )
         if stored_indicator_shortcuts:
             try:
@@ -661,29 +672,10 @@ class MainWindow(QtWidgets.QMainWindow):
                 restored_shortcuts = {}
         self.indicator_shortcuts: dict[str, str] = {}
         used_shortcuts: set[str] = set()
-        legacy_indicator_moves = {
-            "Major Price Levels": ("Ctrl+A", "Ctrl+4"),
-            "Funding Rate History": ("Ctrl+S", "Ctrl+5"),
-            "RSI": ("Ctrl+D", "Ctrl+6"),
-        }
-        explicitly_claimed_shortcuts = {
-            str(value)
-            for name, value in restored_shortcuts.items()
-            if name not in legacy_indicator_moves and str(value)
-        }
         for name in INDICATOR_KEYS:
             shortcut = str(
                 restored_shortcuts.get(name, constants.DEFAULT_INDICATOR_SHORTCUTS[name])
             )
-            legacy_move = legacy_indicator_moves.get(name)
-            if (
-                legacy_move is not None
-                and shortcut == legacy_move[0]
-                and legacy_move[1] not in explicitly_claimed_shortcuts
-            ):
-                shortcut = legacy_move[1]
-            if shortcut in set("0123456789"):
-                shortcut = constants.DEFAULT_INDICATOR_SHORTCUTS[name]
             allowed = {"Ctrl+" + k for k in "123QWEASD4567890"}
             if (shortcut in allowed and shortcut not in used_shortcuts
                     and shortcut not in constants.SHELL_RESERVED_SHORTCUTS):
@@ -903,6 +895,12 @@ class MainWindow(QtWidgets.QMainWindow):
                             or shortcut in constants.SHELL_RESERVED_SHORTCUTS
                             else shortcut
                         )
+        # A refreshed indicator shortcut must never take over an existing
+        # trading binding: indicator dispatch runs before the trading handler.
+        trading_shortcuts = {shortcut for shortcut in self.trading_hotkeys.values() if shortcut}
+        for name, shortcut in self.indicator_shortcuts.items():
+            if shortcut in trading_shortcuts:
+                self.indicator_shortcuts[name] = ""
         self.quick_trading_preset = dict(constants.DEFAULT_QUICK_TRADING_PRESET)
         stored_quick_preset = self.settings.value("trading/quick_preset_v1", "", str)
         if stored_quick_preset:
@@ -1526,18 +1524,7 @@ class MainWindow(QtWidgets.QMainWindow):
             action = QtGui.QAction(f"{shortcut}   {name}", self)
             action.setCheckable(True)
             action.setChecked(enabled)
-            if name == "Funding Rate History":
-                action.setToolTip(
-                    'Funding paid at settlement. Positive: longs pay shorts. Negative: shorts pay longs.'
-                )
-            elif name == "Liquidations":
-                action.setToolTip(
-                    'Red: liquidated longs. Green: liquidated shorts. Larger arrows mean larger trades.'
-                )
-            elif name == "Major Price Levels":
-                action.setToolTip(
-                    'Support and resistance zones ranked by confirmed price reactions.'
-                )
+            action.setToolTip(INDICATOR_DESCRIPTIONS[name])
             action.toggled.connect(
                 lambda state, value=name: self._set_indicator_enabled(value, state)
             )
@@ -1970,8 +1957,11 @@ class MainWindow(QtWidgets.QMainWindow):
         view_menu.addSeparator()
         self.indicator_menu = view_menu.addMenu("Indicators")
         self.indicator_menu.setToolTipsVisible(True)
-        for action in self.indicator_actions.values():
-            self.indicator_menu.addAction(action)
+        for category, names in INDICATOR_GROUPS.items():
+            category_menu = self.indicator_menu.addMenu(category)
+            category_menu.setToolTipsVisible(True)
+            for name in names:
+                category_menu.addAction(self.indicator_actions[name])
         self.indicator_menu.addSeparator()
         self.indicator_menu.addAction(self.auto_fibonacci_action)
         self.indicator_menu.addSeparator()
@@ -3354,19 +3344,16 @@ class MainWindow(QtWidgets.QMainWindow):
         self.settings.setValue("candle_style_v4", self.candle_style)
         self.settings.setValue("auto_scale", self.auto_scale)
         self.settings.setValue("logarithmic", self.logarithmic)
-        self.settings.setValue("chart/rsi_period", self.chart.rsi_period)
-        self.settings.setValue("chart/rsi_upper", self.chart.rsi_upper)
-        self.settings.setValue("chart/rsi_lower", self.chart.rsi_lower)
         self.settings.setValue(
-            "chart/indicator_settings_v1",
+            "chart/indicator_settings_v2",
             json.dumps(self.chart.indicator_settings, separators=(",", ":")),
         )
         self.settings.setValue(
-            "chart/indicator_shortcuts_v1",
+            "chart/indicator_shortcuts_v2",
             json.dumps(self.indicator_shortcuts, separators=(",", ":")),
         )
         self.settings.setValue(
-            "chart/study_heights_v1",
+            "chart/study_heights_v2",
             json.dumps(self.chart.saved_study_heights(), separators=(",", ":")),
         )
         self.settings.setValue(
@@ -8311,11 +8298,8 @@ class MainWindow(QtWidgets.QMainWindow):
             return
         self.indicator_settings = dialog.values()
         self.chart.set_indicator_settings(self.indicator_settings)
-        self.settings.setValue("chart/rsi_period", self.chart.rsi_period)
-        self.settings.setValue("chart/rsi_upper", self.chart.rsi_upper)
-        self.settings.setValue("chart/rsi_lower", self.chart.rsi_lower)
         self.settings.setValue(
-            "chart/indicator_settings_v1",
+            "chart/indicator_settings_v2",
             json.dumps(self.chart.indicator_settings, separators=(",", ":")),
         )
         self.settings.sync()
@@ -8337,7 +8321,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.indicator_shortcuts = dialog.shortcuts()
         self._refresh_indicator_action_labels()
         self.settings.setValue(
-            "chart/indicator_shortcuts_v1",
+            "chart/indicator_shortcuts_v2",
             json.dumps(self.indicator_shortcuts, separators=(",", ":")),
         )
         self.settings.sync()

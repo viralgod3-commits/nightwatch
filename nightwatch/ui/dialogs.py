@@ -232,7 +232,10 @@ class MicrostructureNewsCard(QtWidgets.QFrame):
 
 from typing import Any
 
-from ..constants import DEFAULT_INDICATOR_SHORTCUTS, INDICATOR_SETTING_DEFAULTS
+from ..constants import (
+    DEFAULT_INDICATOR_SHORTCUTS, INDICATOR_DESCRIPTIONS, INDICATOR_GROUPS,
+    INDICATOR_SETTING_DEFAULTS,
+)
 from ..theme import (
     RIGHT_LAYOUT_PRESETS, THEMES,
     candle_directional_palette, chart_palette, ui_palette,
@@ -263,56 +266,46 @@ class IndicatorSettingsDialog(QtWidgets.QDialog):
             ("slow", "Slow EMA", 2, 500, 1, 0, " candles", "Longer-term trend context."),
         ),
         "VWAP": (),
-        "Donchian Channels": (
-            ("period", "Lookback", 2, 500, 1, 0, " candles", "Highest high / lowest low of previous candles; excludes the live candle."),
-        ),
-        "Auto Fibonacci": (
-            ("maximum_candidates", "Candidate interpretations", 1, 10, 1, 0, "", "How many high-confidence swing interpretations Alt+F can cycle through."),
+        "Supertrend": (
+            ("period", "ATR period", 2, 200, 1, 0, " candles", "Wilder ATR window used by the trailing bands."),
+            ("multiplier", "ATR multiplier", 0.5, 10, 0.1, 2, " ×", "Distance from the candle midpoint in ATR units."),
         ),
         "Bollinger Bands": (
             ("period", "Period", 2, 200, 1, 0, " candles", "Rolling mean and deviation window."),
-            ("deviations", "Deviation width", 0.5, 5.0, 0.1, 2, " x", "Standard deviations above and below the mean."),
-        ),
-        "ATR": (
-            ("period", "Period", 2, 200, 1, 0, " candles", "Wilder ATR calculation window."),
-        ),
-        "Open Interest": (
-            ("smoothing", "Smoothing", 1, 50, 1, 0, " samples", "1 shows raw OI; higher values apply a rolling mean."),
-        ),
-        "Liquidations": (
-            ("minimum_notional", "Minimum value", 10_000, 1_000_000_000, 25_000, 0, " USD", "Show only forced orders at or above this USD value."),
-            ("maximum_markers", "Maximum markers", 20, 250, 10, 0, "", "Maximum qualifying arrows retained on the chart."),
+            ("deviations", "Deviation width", 0.5, 5.0, 0.1, 2, " ×", "Standard deviations above and below the mean."),
         ),
         "Visible Volume Profile": (
             ("bins", "Price rows", 12, 160, 4, 0, "", "Number of price buckets in the visible-range profile."),
             ("levels", "Alert levels", 1, 8, 1, 0, "", "High-volume nodes exposed to alerts."),
             ("width_pct", "Maximum width", 5, 35, 1, 1, "%", "Maximum horizontal width inside the chart."),
         ),
-        "Session Volume Profile": (
-            ("bins", "Price rows", 12, 160, 4, 0, "", "Number of price buckets in the session profile."),
-            ("levels", "Alert levels", 1, 8, 1, 0, "", "High-volume nodes exposed to alerts."),
-            ("width_pct", "Maximum width", 5, 35, 1, 1, "%", "Maximum horizontal width inside the chart."),
-        ),
-        "Major Price Levels": (
-            ("minimum_score", "Minimum confidence", 30, 90, 1, 0, "/99", "Higher values show fewer, stronger price-action zones."),
-            ("maximum_levels", "Maximum levels", 1, 8, 1, 0, "", "Maximum support and resistance zones shown together."),
-        ),
-        "Funding Rate History": (
-            (
-                "smoothing",
-                "EMA smoothing",
-                1,
-                24,
-                1,
-                0,
-                " settlements",
-                "1 shows the raw settlement path; higher values smooth the funding-rate line with an EMA.",
-            ),
+        "Liquidations": (
+            ("minimum_notional", "Minimum value", 10_000, 1_000_000_000, 25_000, 0, " USD", "Show only forced orders at or above this USD value."),
+            ("maximum_markers", "Maximum markers", 20, 250, 10, 0, "", "Maximum qualifying arrows retained on the chart."),
         ),
         "RSI": (
             ("period", "Period", 2, 200, 1, 0, " candles", "Wilder RSI calculation window."),
             ("upper", "Overbought", 50, 99, 1, 1, "", "Upper reference line."),
             ("lower", "Oversold", 1, 50, 1, 1, "", "Lower reference line."),
+        ),
+        "ADX / DI": (
+            ("period", "Period", 2, 200, 1, 0, " candles", "Wilder smoothing window for directional movement and ADX."),
+            ("threshold", "Trend reference", 1, 99, 1, 1, "", "Reference strength level for ADX; not a directional signal."),
+        ),
+        "Relative Volume": (
+            ("period", "Prior candles", 2, 500, 1, 0, " candles", "Completed candles used to establish typical volume; excludes the current bar."),
+        ),
+        "Chaikin Money Flow": (
+            ("period", "Period", 2, 500, 1, 0, " candles", "Window for close-location-weighted volume divided by total volume."),
+        ),
+        "Open Interest": (
+            ("smoothing", "Smoothing", 1, 50, 1, 0, " samples", "1 shows raw OI; higher values apply a rolling mean."),
+        ),
+        "Funding Rate History": (
+            ("smoothing", "EMA smoothing", 1, 24, 1, 0, " settlements", "1 shows raw settlement rates; higher values smooth the line with an EMA."),
+        ),
+        "Auto Fibonacci": (
+            ("maximum_candidates", "Candidate interpretations", 1, 10, 1, 0, "", "How many high-confidence swing interpretations Alt+F can cycle through."),
         ),
     }
 
@@ -345,6 +338,7 @@ class IndicatorSettingsDialog(QtWidgets.QDialog):
         self.level_editors: dict[str, dict[float, QtWidgets.QCheckBox]] = {}
         for indicator, fields in self.SPECS.items():
             self.names.addItem(indicator)
+            self.names.item(self.names.count() - 1).setToolTip(INDICATOR_DESCRIPTIONS.get(indicator, "Drawing tool"))
             page = QtWidgets.QWidget()
             page_layout = QtWidgets.QFormLayout(page)
             page_layout.setContentsMargins(12, 8, 12, 8)
@@ -367,9 +361,9 @@ class IndicatorSettingsDialog(QtWidgets.QDialog):
             levels: dict[float, QtWidgets.QCheckBox] = {}
             if indicator == "VWAP":
                 anchor = QtWidgets.QComboBox()
-                for label, value in (("Day · Local", "day"), ("Week · Local Monday", "week"), ("Month · Local", "month")):
+                for label, value in (("Day · UTC", "day"), ("Week · Monday UTC", "week"), ("Month · UTC", "month")):
                     anchor.addItem(label, value)
-                anchor.setCurrentIndex(max(0, anchor.findData(current.get("anchor", "week"))))
+                anchor.setCurrentIndex(max(0, anchor.findData(current.get("anchor", "day"))))
                 page_layout.addRow("Reset", anchor)
                 choices["anchor"] = anchor
             if indicator == "Auto Fibonacci":
@@ -444,17 +438,7 @@ class IndicatorSettingsDialog(QtWidgets.QDialog):
                 history_note.setWordWrap(True)
                 page_layout.addRow("History", history_note)
             explanations = {
-                "EMA Trend": "21 / 50 / 200 by default. Rising, ordered averages help describe trend strength and pullbacks. Periods use the selected timeframe; they are not fixed daily averages.",
-                "VWAP": "Volume-weighted price since the selected local-time boundary. Uses quote/base traded volume; OHLC typical-price approximation only when quote volume is missing. The first incomplete anchor stays blank until more history is loaded. Daily and intraday candles support every anchor; weekly candles require Week, and monthly candles require Month.",
-                "Donchian Channels": "Breakout context from completed prior candles. A 20-candle channel reacts faster; 55 gives a broader trend range. The current candle cannot move its own breakout threshold.",
-                "RSI": "Momentum, not an automatic sell signal. RSI can remain above 70 during a strong bull trend. Flat prices produce 50.",
-                "ATR": "Displayed as ATR / close × 100, allowing comparison across differently priced pairs. Measures volatility, not direction.",
-                "Visible Volume Profile": "Estimated from OHLCV candle ranges, not exact trades at each price. Changes with the selected visible range by design.",
-                "Session Volume Profile": "Estimated volume distribution for the current local day. Not an exact trade-by-price histogram.",
-                "Open Interest": "USD notional OI: changes reflect both positioning and price. Rising OI alone does not tell you whether longs or shorts are entering.",
-                "Liquidations": "Observed forced-order snapshots only. Binance can omit events within its snapshot interval; this is not total exchange liquidation volume.",
-                "Funding Rate History": "Raw rates are per settlement, not annualized. Positive rates mean longs pay shorts. The optional EMA uses actual settlements without clipping spikes.",
-                "Major Price Levels": "Ranked support/resistance zones, not probabilities. Confirmed pivots require later candles, so new zones appear with a delay.",
+                **INDICATOR_DESCRIPTIONS,
                 "Auto Fibonacci": "Ranks bullish swing interpretations using current structure. Candidates can change after new price action; this is a drawing aid, not a fixed historical signal.",
             }
             if indicator in explanations:
@@ -647,7 +631,7 @@ class IndicatorShortcutsDialog(QtWidgets.QDialog):
             QtWidgets.QMessageBox.warning(
                 self,
                 "Duplicate indicator shortcut",
-                "Each number key can toggle only one indicator.",
+                "Each shortcut can toggle only one indicator.",
             )
             return
         conflicts = sorted(set(active) & self.reserved_shortcuts)
@@ -2466,27 +2450,22 @@ class NightwatchSettingsDialog(QtWidgets.QDialog):
         grid.addWidget(volume_box, 3, 0, 1, 2, alignment=Qt.AlignmentFlag.AlignTop)
 
         indicators_box, indicators_layout = self._group("Indicators")
-        indicators_note = QtWidgets.QLabel(
-            "Enable studies here; use Parameters for detailed configuration."
-        )
-        indicators_note.setObjectName("subtleLabel")
-        indicators_note.setWordWrap(True)
-        indicators_layout.addWidget(indicators_note)
         indicator_grid_host = QtWidgets.QWidget()
         indicator_grid = QtWidgets.QGridLayout(indicator_grid_host)
         indicator_grid.setContentsMargins(0, 0, 0, 0)
         indicator_grid.setHorizontalSpacing(18)
         indicator_grid.setVerticalSpacing(4)
-        actions = list(self.host.indicator_actions.values())
-        split = (len(actions) + 1) // 2
-        for index, action in enumerate(actions):
-            column = 0 if index < split else 1
-            row = index if index < split else index - split
-            holder = QtWidgets.QVBoxLayout()
-            holder.setContentsMargins(0, 0, 0, 0)
-            widget = self._bind_action(holder, action)
-            if widget is not None:
-                indicator_grid.addWidget(widget, row, column)
+        for column, (category, names) in enumerate(INDICATOR_GROUPS.items()):
+            category_label = QtWidgets.QLabel(category)
+            category_label.setObjectName("subtleLabel")
+            indicator_grid.addWidget(category_label, 0, column)
+            for row, name in enumerate(names, 1):
+                action = self.host.indicator_actions[name]
+                holder = QtWidgets.QVBoxLayout()
+                holder.setContentsMargins(0, 0, 0, 0)
+                widget = self._bind_action(holder, action)
+                if widget is not None:
+                    indicator_grid.addWidget(widget, row, column)
         config_row = QtWidgets.QHBoxLayout()
         config_row.setContentsMargins(0, 6, 0, 0)
         for action, label in (

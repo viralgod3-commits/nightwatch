@@ -392,6 +392,11 @@ class HumanAxisItem(ScalableStudyAxisItem):
         return [human_number(value * scale) for value in values]
 
 
+class RelativeVolumeAxisItem(ScalableStudyAxisItem):
+    def tickStrings(self, values, scale, spacing):
+        return [f"{value * scale:g}×" for value in values]
+
+
 class PercentAxisItem(ScalableStudyAxisItem):
     def tickStrings(self, values: list[float], scale: float, spacing: float) -> list[str]:
         return [
@@ -1403,27 +1408,21 @@ class ChartWorkspace(QtWidgets.QWidget):
         self.rendered_window: tuple[int, int, int] | None = None
         self._history_request_oldest: float | None = None
         self._history_exhausted = False
-        self.session_candles: list[Candle] = []
-        self.session_profile_cache = (np.array([], dtype=float), np.array([], dtype=float))
-        self._session_profile_cache_key: tuple[Any, ...] | None = None
         self._visible_profile_cache_key: tuple[Any, ...] | None = None
         self._visible_profile_cache = (np.array([], dtype=float), np.array([], dtype=float))
 
 
         self._profile_async_keys: dict[str, tuple[Any, ...] | None] = {
             "visible": None,
-            "session": None,
         }
         self._profile_requested_keys: dict[str, tuple[Any, ...] | None] = {
             "visible": None,
-            "session": None,
         }
         self._profile_async_pending: dict[
             str, tuple[tuple[Any, ...], list[Candle], int, int] | None
-        ] = {"visible": None, "session": None}
+        ] = {"visible": None}
         self._profile_workers: dict[str, _ProfileAnalysisWorker | None] = {
             "visible": None,
-            "session": None,
         }
         self._profile_mailbox: dict[
             str, tuple[tuple[Any, ...], np.ndarray, np.ndarray, list[float]]
@@ -1471,7 +1470,6 @@ class ChartWorkspace(QtWidgets.QWidget):
         self.funding_history: list[dict[str, Any]] = []
         self.last_live_profile = 0.0
         self.visible_levels: list[float] = []
-        self.session_levels: list[float] = []
         self.zone_graphics: list[tuple[pg.LinearRegionItem, pg.TextItem, Zone]] = []
         self._zone_render_signature: tuple[Any, ...] | None = None
         self.drawing_mode: str | None = None
@@ -1566,24 +1564,22 @@ class ChartWorkspace(QtWidgets.QWidget):
         self.rsi_lower = float(self.indicator_settings["RSI"]["lower"])
         self.overview_restore: tuple[tuple[float, float], tuple[float, float]] | None = None
         self.study_heights = {
-            "Open Interest": 125.0,
-            "ATR": 115.0,
-            "Funding Rate History": 125.0,
             "RSI": 125.0,
+            "ADX / DI": 125.0,
+            "Relative Volume": 115.0,
+            "Chaikin Money Flow": 115.0,
+            "Open Interest": 125.0,
+            "Funding Rate History": 125.0,
         }
         self._default_study_heights = dict(self.study_heights)
         self._study_layout_signature = None
         self._study_resize_start = 0.0
-        self.study_manual_scale = {
-            "Open Interest": False,
-            "ATR": False,
-            "Funding Rate History": False,
-            "RSI": False,
-        }
-
+        self.study_manual_scale = {name: False for name in self.study_heights}
+        self._candle_study_scale_data = {}
 
         self.volume_bar_height_percent = 30
-        self.subplot_visibility = {1: True, 2: True, 3: True, 4: True}
+        self.subplot_visibility = {row: True for row in range(1, len(self.study_heights) + 1)}
+
 
         layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -1646,64 +1642,42 @@ class ChartWorkspace(QtWidgets.QWidget):
             },
         )
         self.graphics.scene().pan_view_box = self.price_plot.getViewBox()
-        self.oi_plot = self.graphics.addPlot(
-            row=1,
-            col=0,
-            viewBox=StudyViewBox(),
-            axisItems={
-                "bottom": TimeAxisItem("bottom"),
-                "right": HumanAxisItem("right"),
-            },
-        )
-        self.atr_plot = self.graphics.addPlot(
-            row=2,
-            col=0,
-            viewBox=StudyViewBox(),
-            axisItems={
-                "bottom": TimeAxisItem("bottom"),
-                "right": PercentAxisItem("right"),
-            },
-        )
-        self.funding_plot = self.graphics.addPlot(
-            row=3,
-            col=0,
-            viewBox=StudyViewBox(),
-            axisItems={
-                "bottom": TimeAxisItem("bottom"),
-                "right": PercentAxisItem("right"),
-            },
-        )
-        self.rsi_plot = self.graphics.addPlot(
-            row=4,
-            col=0,
-            viewBox=StudyViewBox(),
-            axisItems={
-                "bottom": TimeAxisItem("bottom"),
-                "right": RsiAxisItem("right"),
-            },
-        )
+        self.study_plots: dict[str, pg.PlotItem] = {}
+        for row, (name, axis_type) in enumerate((
+            ("RSI", RsiAxisItem),
+            ("ADX / DI", RsiAxisItem),
+            ("Relative Volume", RelativeVolumeAxisItem),
+            ("Chaikin Money Flow", RsiAxisItem),
+            ("Open Interest", HumanAxisItem),
+            ("Funding Rate History", PercentAxisItem),
+        ), 1):
+            plot = self.graphics.addPlot(
+                row=row,
+                col=0,
+                viewBox=StudyViewBox(),
+                axisItems={
+                    "bottom": TimeAxisItem("bottom"),
+                    "right": axis_type("right"),
+                },
+            )
+            plot.setMaximumHeight(self.study_heights[name])
+            self.graphics.ci.layout.setRowStretchFactor(row, 2)
+            self.study_plots[name] = plot
+        self.rsi_plot = self.study_plots["RSI"]
+        self.adx_plot = self.study_plots["ADX / DI"]
+        self.relative_volume_plot = self.study_plots["Relative Volume"]
+        self.money_flow_plot = self.study_plots["Chaikin Money Flow"]
+        self.oi_plot = self.study_plots["Open Interest"]
+        self.funding_plot = self.study_plots["Funding Rate History"]
+        self._all_plots = (self.price_plot, *self.study_plots.values())
         self.graphics.ci.layout.setRowStretchFactor(0, 14)
-        self.graphics.ci.layout.setRowStretchFactor(1, 2)
-        self.graphics.ci.layout.setRowStretchFactor(2, 2)
-        self.graphics.ci.layout.setRowStretchFactor(3, 2)
-        self.graphics.ci.layout.setRowStretchFactor(4, 2)
         self.graphics.ci.layout.setVerticalSpacing(0)
-        self.oi_plot.setMaximumHeight(self.study_heights["Open Interest"])
-        self.atr_plot.setMaximumHeight(self.study_heights["ATR"])
-        self.funding_plot.setMaximumHeight(self.study_heights["Funding Rate History"])
-        self.rsi_plot.setMaximumHeight(self.study_heights["RSI"])
 
 
         chart_font = _chart_axis_font()
         self._axis_base_width = 66
         self._effective_axis_width = 66
-        for plot in (
-            self.price_plot,
-            self.oi_plot,
-            self.atr_plot,
-            self.funding_plot,
-            self.rsi_plot,
-        ):
+        for plot in self._all_plots:
 
 
             plot.layout.setContentsMargins(0, 0, 0, 0)
@@ -1738,12 +1712,7 @@ class ChartWorkspace(QtWidgets.QWidget):
 
 
         self.study_panes: dict[str, tuple[pg.PlotItem, StudyPaneHeader]] = {}
-        for study_name, plot in (
-            ("Open Interest", self.oi_plot),
-            ("ATR", self.atr_plot),
-            ("Funding Rate History", self.funding_plot),
-            ("RSI", self.rsi_plot),
-        ):
+        for study_name, plot in self.study_plots.items():
             plot.layout.removeItem(plot.titleLabel)
             header = StudyPaneHeader(study_name, theme, plot)
             plot.getAxis("right").setStyle(tickTextOffset=6)
@@ -1755,34 +1724,16 @@ class ChartWorkspace(QtWidgets.QWidget):
             header.resize_reset.connect(lambda name=study_name: self.set_study_heights({name: self._default_study_heights[name]}))
             self.study_panes[study_name] = (plot, header)
 
-        for plot in (
-            self.price_plot,
-            self.oi_plot,
-            self.atr_plot,
-            self.funding_plot,
-            self.rsi_plot,
-        ):
+        for plot in self._all_plots:
             plot.hideAxis("bottom")
-        for plot in (
-            self.oi_plot,
-            self.atr_plot,
-            self.funding_plot,
-            self.rsi_plot,
-        ):
+        for plot in tuple(self.study_plots.values()):
 
             plot.hideAxis("top")
-        self.oi_plot.setXLink(self.price_plot)
-        self.atr_plot.setXLink(self.price_plot)
-        self.funding_plot.setXLink(self.price_plot)
-        self.rsi_plot.setXLink(self.price_plot)
+        for plot in self.study_plots.values():
+            plot.setXLink(self.price_plot)
         self._sync_bottom_time_axis()
 
-        for study, plot in (
-            ("Open Interest", self.oi_plot),
-            ("ATR", self.atr_plot),
-            ("Funding Rate History", self.funding_plot),
-            ("RSI", self.rsi_plot),
-        ):
+        for study, plot in self.study_plots.items():
             axis = plot.getAxis("right")
             if isinstance(axis, ScalableStudyAxisItem):
                 axis.manual_scale_requested.connect(
@@ -1847,7 +1798,7 @@ class ChartWorkspace(QtWidgets.QWidget):
         self.trend_curves = {}
         for name, colors in (("EMA Trend", ("cyan", "amber", "purple")),
                              ("VWAP", ("amber",)),
-                             ("Donchian Channels", ("green", "muted", "red"))):
+                             ("Supertrend", ("green", "red"))):
             curves = []
             for color in colors:
                 curve = self.price_plot.plot(pen=pg.mkPen(theme[color], width=1.15))
@@ -1888,12 +1839,7 @@ class ChartWorkspace(QtWidgets.QWidget):
         self.price_plot.addItem(self.crosshair_vertical, ignoreBounds=True)
         self.price_plot.addItem(self.crosshair_horizontal, ignoreBounds=True)
         self.crosshair_study_verticals: list[pg.InfiniteLine] = []
-        self.crosshair_study_plots = (
-            self.oi_plot,
-            self.atr_plot,
-            self.funding_plot,
-            self.rsi_plot,
-        )
+        self.crosshair_study_plots = tuple(self.study_plots.values())
         for plot in self.crosshair_study_plots:
             line = pg.InfiniteLine(angle=90, movable=False, pen=crosshair_pen)
             line.setZValue(70)
@@ -1941,10 +1887,7 @@ class ChartWorkspace(QtWidgets.QWidget):
         self.price_plot.addItem(self.drawing_selection_graphic, ignoreBounds=True)
 
         self.visible_profile = ProfileItem(theme["bg"])
-        self.session_profile = ProfileItem(theme["bg"])
         self.visible_profile.setZValue(6)
-        self.session_profile.setZValue(5)
-        self.price_plot.addItem(self.session_profile, ignoreBounds=True)
         self.price_plot.addItem(self.visible_profile, ignoreBounds=True)
 
         self.liquidation_points = pg.ScatterPlotItem(hoverable=True, hoverSize=3)
@@ -1956,7 +1899,6 @@ class ChartWorkspace(QtWidgets.QWidget):
         self.liquidation_points.sigHovered.connect(self._liquidation_hovered)
 
         self.oi_curve = self.oi_plot.plot(pen=pg.mkPen(theme["purple"], width=1.4))
-        self.atr_curve = self.atr_plot.plot(pen=pg.mkPen(theme["amber"], width=1.35))
         self.funding_curve = self.funding_plot.plot(
             pen=pg.mkPen(alpha_color(theme["muted"], 220), width=1.35)
         )
@@ -1997,6 +1939,50 @@ class ChartWorkspace(QtWidgets.QWidget):
         )
         self.rsi_plot.addItem(self.rsi_upper_line, ignoreBounds=True)
         self.rsi_plot.addItem(self.rsi_lower_line, ignoreBounds=True)
+        self._candle_study_colors = {
+            "RSI": ("cyan",),
+            "ADX / DI": ("purple", "green", "red"),
+            "Relative Volume": ("amber",),
+            "Chaikin Money Flow": ("cyan",),
+        }
+        self.candle_study_curves = {"RSI": (self.rsi_curve,)}
+        for name, colors in self._candle_study_colors.items():
+            if name == "RSI":
+                continue
+            curves = []
+            for color in colors:
+                curve = self.study_plots[name].plot(pen=pg.mkPen(theme[color], width=1.35))
+                curve.setZValue(12)
+                curve.setClipToView(False)
+                curve.setDownsampling(ds=1, auto=False)
+                curves.append(curve)
+            self.candle_study_curves[name] = tuple(curves)
+        self.study_reference_lines = {}
+        for name, value in (
+            ("ADX / DI", float(self.indicator_settings["ADX / DI"]["threshold"])),
+            ("Relative Volume", 1.0),
+            ("Chaikin Money Flow", 0.0),
+        ):
+            line = pg.InfiniteLine(
+                pos=value, angle=0, movable=False,
+                pen=pg.mkPen(alpha_color(theme["muted"], 120), width=0.8,
+                             style=Qt.PenStyle.DashLine),
+            )
+            line.setZValue(10)
+            self.study_plots[name].addItem(line, ignoreBounds=True)
+            self.study_reference_lines[name] = line
+        self.adx_plot.setToolTip(
+            "Purple: ADX trend strength · Green: +DI · Red: −DI.\n"
+            "Dashed line: trend-strength threshold. Values update during the live bar."
+        )
+        self.relative_volume_plot.setToolTip(
+            "Current volume / average volume of prior completed bars.\n"
+            "1× is average activity. An incomplete live bar may read low."
+        )
+        self.money_flow_plot.setToolTip(
+            "Chaikin Money Flow: OHLCV pressure estimate from −1 to +1.\n"
+            "This is not taker buy/sell volume delta. Zero is neutral."
+        )
         volume_up = theme.get("candle_up", theme["green"])
         volume_down = theme.get("candle_down", theme["red"])
         self.volume_overlay = VolumeOverlayItem(
@@ -2013,7 +1999,6 @@ class ChartWorkspace(QtWidgets.QWidget):
             self.use_opengl and self.native_bar_renderer_enabled
         )
         self.oi_curve.setZValue(12)
-        self.atr_curve.setZValue(12)
         self.funding_positive_bars.setZValue(11)
         self.funding_negative_bars.setZValue(11)
         self.funding_curve.setZValue(12)
@@ -2099,7 +2084,7 @@ class ChartWorkspace(QtWidgets.QWidget):
             self.bb_mid, self.bb_upper, self.bb_lower, self.bb_fill,
             *(curve for curves in self.trend_curves.values() for curve in curves),
             self.trend_label, self.auto_fib_badge,
-            self.visible_profile, self.session_profile, self.liquidation_points,
+            self.visible_profile, self.liquidation_points,
         ):
             self._retained_indicators.register(item)
         self.apply_theme(theme)
@@ -2109,10 +2094,7 @@ class ChartWorkspace(QtWidgets.QWidget):
     def _apply_typography(self) -> None:
         chart_font = _chart_axis_font()
         self._chart_axis_metrics = QtGui.QFontMetricsF(chart_font)
-        for plot in (
-            self.price_plot, self.oi_plot, self.atr_plot, self.funding_plot,
-            self.rsi_plot,
-        ):
+        for plot in self._all_plots:
             plot.getAxis("right").setTickFont(chart_font)
             plot.getAxis("bottom").setTickFont(chart_font)
         self._sync_bottom_time_axis()
@@ -2514,16 +2496,13 @@ class ChartWorkspace(QtWidgets.QWidget):
         self._navigation_deferred_major_levels |= bool(
             major_levels
             and self.indicators_enabled
-            and self.indicators["Major Price Levels"]
+            and self.indicators.get("Major Price Levels", False)
         )
         self._navigation_deferred_auto_fib |= bool(auto_fib and self.auto_fib_enabled)
         self._navigation_deferred_profiles |= bool(
             profiles
             and self.indicators_enabled
-            and (
-                self.indicators["Visible Volume Profile"]
-                or self.indicators["Session Volume Profile"]
-            )
+            and self.indicators["Visible Volume Profile"]
         )
         self._navigation_deferred_study_scale |= bool(study_scale)
         self._navigation_deferred_history |= bool(history)
@@ -2602,10 +2581,7 @@ class ChartWorkspace(QtWidgets.QWidget):
                 self._navigation_pending_liquidations = True
             if (
                 self.indicators_enabled
-                and (
-                    self.indicators["Visible Volume Profile"]
-                    or self.indicators["Session Volume Profile"]
-                )
+                and self.indicators["Visible Volume Profile"]
             ):
                 self._navigation_deferred_profiles = True
             self._navigation_deferred_study_scale = True
@@ -2849,11 +2825,10 @@ class ChartWorkspace(QtWidgets.QWidget):
         self._indicator_display_requested_key = None
         self._indicator_display_async_pending = None
         self._indicator_display_mailbox = None
-        self._profile_requested_keys = {"visible": None, "session": None}
-        self._profile_async_pending = {"visible": None, "session": None}
+        self._profile_requested_keys = {"visible": None}
+        self._profile_async_pending = {"visible": None}
         self._profile_mailbox.clear()
         self._visible_profile_cache_key = None
-        self._session_profile_cache_key = None
         self._major_levels_requested_key = None
         self._major_levels_async_pending = None
         self._major_levels_mailbox = None
@@ -2875,8 +2850,7 @@ class ChartWorkspace(QtWidgets.QWidget):
         self._navigation_deferred_history_page = False
         self.overview_restore = None
         self.oi_history.clear()
-        self._atr_scale_data = (np.array([]), np.array([]))
-        self._atr_scale_index = None
+        self._candle_study_scale_data.clear()
         if reset_analysis:
             self.funding_history.clear()
         for study in self.study_manual_scale:
@@ -2909,12 +2883,13 @@ class ChartWorkspace(QtWidgets.QWidget):
         self.live_candle.set_data([])
         self.volume_overlay.clear()
         self.oi_curve.setData([], [])
-        self.atr_curve.setData([], [])
         self.funding_curve.setData([], [])
         self.funding_positive_bars.setOpts(x=[], height=[])
         self.funding_negative_bars.setOpts(x=[], height=[])
         self.funding_zero_line.setVisible(False)
-        self.rsi_curve.setData([], [])
+        for curves in self.candle_study_curves.values():
+            for curve in curves:
+                curve.setData([], [])
         for curve in (
             self.bb_mid,
             self.bb_upper,
@@ -2949,17 +2924,6 @@ class ChartWorkspace(QtWidgets.QWidget):
                 self.price_axis_focus_overlay.hide()
         self._set_crosshair_visible(False)
         if reset_analysis:
-            self.session_candles.clear()
-            self.session_profile_cache = (np.array([], dtype=float), np.array([], dtype=float))
-            self._session_profile_cache_key = None
-            self.session_levels.clear()
-            self.session_profile.set_profile(
-                np.array([]),
-                np.array([]),
-                (0.0, 1.0),
-                self.theme["purple"],
-                0.12,
-            )
             self.multi_frames.clear()
             self.zones.clear()
             self._zone_render_signature = None
@@ -3420,13 +3384,11 @@ class ChartWorkspace(QtWidgets.QWidget):
             self._hidden_presentation_dirty = True
             return
         self._deferred_analysis_snapshot = None
-        self.session_candles = list(payload.get("session", []))
         self.multi_frames = dict(payload.get("multi", {}))
         self.update_funding_history(list(payload.get("funding_history", [])))
         self.auto_fib_dirty = True
         if self.interval in self.multi_frames and self.candles:
             self.multi_frames[self.interval] = list(self.candles[-800:])
-        self._session_profile_cache_key = None
         self._major_levels_dirty = True
         self._schedule_render_work(major_levels=True, auto_fib=True, profiles=True)
 
@@ -3437,13 +3399,7 @@ class ChartWorkspace(QtWidgets.QWidget):
         self._effective_axis_width = width
         if self._overlay_frame_geometry is not None:
             self._overlay_frame_geometry.clear()
-        for plot in (
-            self.price_plot,
-            self.oi_plot,
-            self.atr_plot,
-            self.funding_plot,
-            self.rsi_plot,
-        ):
+        for plot in self._all_plots:
             plot.getAxis("right").setWidth(width)
         self.graphics.ci.layout.invalidate()
         return True
@@ -3829,7 +3785,7 @@ class ChartWorkspace(QtWidgets.QWidget):
         if (
             not self._major_levels_dirty
             or not self.indicators_enabled
-            or not self.indicators["Major Price Levels"]
+            or not self.indicators.get("Major Price Levels", False)
         ):
             return
         key = self._major_levels_analysis_key()
@@ -4012,12 +3968,7 @@ class ChartWorkspace(QtWidgets.QWidget):
             rect_text("price ViewBox", self.price_plot.getViewBox()),
         ]
         first_visible_study = None
-        for name, plot in (
-            ("OI PlotItem", self.oi_plot),
-            ("ATR PlotItem", self.atr_plot),
-            ("Funding PlotItem", self.funding_plot),
-            ("RSI PlotItem", self.rsi_plot),
-        ):
+        for name, plot in self.study_plots.items():
             if plot.isVisible():
                 lines.append(rect_text(name, plot))
                 if first_visible_study is None:
@@ -4164,7 +4115,7 @@ class ChartWorkspace(QtWidgets.QWidget):
             # This runs outside painting while the surface is being initialized.
             viewport.makeCurrent()
             try:
-                for area in (self.bb_fill, self.visible_profile, self.session_profile):
+                for area in (self.bb_fill, self.visible_profile):
                     area.prime_gpu(context)
             finally:
                 viewport.doneCurrent()
@@ -7203,7 +7154,12 @@ class ChartWorkspace(QtWidgets.QWidget):
                 if int(settings.get("smoothing", 1)) > 1:
                     caption += f" · EMA {settings['smoothing']}"
             else:
-                caption = f"{name} · {settings['period']}" + (" · %" if name == "ATR" else "")
+                label = {"Chaikin Money Flow": "CMF", "Relative Volume": "RVOL"}.get(name, name)
+                caption = f"{label} · {settings['period']}"
+                if name == "ADX / DI":
+                    caption += f" · ADX / +DI / −DI"
+                elif name == "Relative Volume":
+                    caption += " · ×"
             header.set_caption(caption)
 
     def _price_to_graphics_y(self, price: float) -> float | None:
@@ -7425,7 +7381,7 @@ class ChartWorkspace(QtWidgets.QWidget):
                 view.mapSceneToView(scene_rect.topRight() + QtCore.QPointF(-6, 4))
             )
         x_range, y_range = self.price_plot.viewRange()
-        for profile in (self.visible_profile, self.session_profile):
+        for profile in (self.visible_profile,):
             if profile.isVisible():
                 profile.set_x_range(x_range)
         if self.indicators_enabled and self.indicators.get("Major Price Levels", False):
@@ -7613,14 +7569,7 @@ class ChartWorkspace(QtWidgets.QWidget):
             return False
         return any(
             self.indicators.get(name, False)
-            for name in (
-                "Bollinger Bands",
-                "ATR",
-                "RSI",
-                "EMA Trend",
-                "VWAP",
-                "Donchian Channels",
-            )
+            for name in ("Bollinger Bands", *self.candle_study_curves, *self.trend_curves)
         )
 
     def _render_viewport(
@@ -7987,8 +7936,7 @@ class ChartWorkspace(QtWidgets.QWidget):
     ) -> None:
         groups = {
             "Bollinger Bands": (self.bb_mid, self.bb_upper, self.bb_lower),
-            "ATR": (self.atr_curve,),
-            "RSI": (self.rsi_curve,),
+            **self.candle_study_curves,
             **self.trend_curves,
         }
         for name, payload in prepared.items():
@@ -8005,12 +7953,10 @@ class ChartWorkspace(QtWidgets.QWidget):
             if name == "Bollinger Bands":
                 self.bb_fill.prepare_geometry()
             scale_data = payload.get("scale_data")
-            if name == "ATR" and scale_data is not None:
-                self._atr_scale_data = scale_data
-                self._atr_scale_index = payload["scale_index"]
-                self._fit_atr_to_visible()
-            if name == "RSI" and not self.study_manual_scale["RSI"]:
-                self.rsi_plot.setYRange(0.0, 100.0, padding=0)
+            if name in self.candle_study_curves:
+                if scale_data is not None:
+                    self._candle_study_scale_data[name] = (scale_data, payload["scale_index"])
+                self._fit_candle_study_to_visible(name)
         self._update_trend_label()
 
     def _render_indicators(self, candles: list[Candle] | None = None) -> None:
@@ -8041,8 +7987,7 @@ class ChartWorkspace(QtWidgets.QWidget):
 
         groups = {
             "Bollinger Bands": (self.bb_mid, self.bb_upper, self.bb_lower),
-            "ATR": (self.atr_curve,),
-            "RSI": (self.rsi_curve,),
+            **self.candle_study_curves,
             **self.trend_curves,
         }
         active_requests: list[tuple[str, dict[str, Any]]] = []
@@ -8052,7 +7997,7 @@ class ChartWorkspace(QtWidgets.QWidget):
             settings = dict(self.indicator_settings[name])
             if (
                 name == "VWAP"
-                and not vwap_supports_interval(self.interval, settings.get("anchor", "week"))
+                and not vwap_supports_interval(self.interval, settings.get("anchor", "day"))
             ):
                 for curve in groups[name]:
                     curve.setData([], [])
@@ -8115,11 +8060,11 @@ class ChartWorkspace(QtWidgets.QWidget):
                 text = " · ".join(f"<span style='color:{self.theme[color]}'>EMA {settings[key]}</span>"
                                   for key, color in (("fast", "cyan"), ("medium", "amber"), ("slow", "purple")))
             elif name == "VWAP":
-                text = f"VWAP · {settings['anchor'].upper()} LOCAL"
+                text = f"VWAP · {settings['anchor'].upper()} UTC"
                 if not vwap_supports_interval(self.interval, settings['anchor']):
                     text += " · ANCHOR UNAVAILABLE ON THIS TIMEFRAME"
             else:
-                text = f"DONCHIAN {settings['period']} · PRIOR BARS"
+                text = f"SUPERTREND · {settings['period']} / {settings['multiplier']:g}×"
             rows.append(text)
         label_html = "<div style='color:" + self.theme["muted"] + "'>" + "<br>".join(rows) + "</div>"
         if label_html != getattr(self, "_trend_label_html", None):
@@ -8284,7 +8229,7 @@ class ChartWorkspace(QtWidgets.QWidget):
         self.liquidation_points.setData(spots)
 
     def _render_zones(self) -> None:
-        if not self.indicators_enabled or not self.indicators["Major Price Levels"]:
+        if not self.indicators_enabled or not self.indicators.get("Major Price Levels", False):
 
 
             self.analysis_changed.emit(self.zones, self.profile_alert_levels())
@@ -8373,26 +8318,34 @@ class ChartWorkspace(QtWidgets.QWidget):
         """Scale only visible linked studies without rebuilding their data."""
         if self._resize_expensive_deferred or not self.indicators_enabled:
             return
-        if self.atr_plot.isVisible() and self.indicators["ATR"]:
-            self._fit_atr_to_visible()
+        for name in self.candle_study_curves:
+            if self.study_plots[name].isVisible():
+                self._fit_candle_study_to_visible(name)
         if self.oi_plot.isVisible() and self.indicators["Open Interest"]:
             self._render_study("oi")
         if self.funding_plot.isVisible() and self.indicators["Funding Rate History"]:
             self._render_study("funding")
 
-    def _fit_atr_to_visible(self) -> None:
-        if not self.indicators_enabled or not self.indicators["ATR"] or self.study_manual_scale["ATR"]:
+    def _fit_candle_study_to_visible(self, name: str) -> None:
+        if not self.indicators_enabled or not self.indicators[name] or self.study_manual_scale[name]:
             return
-        index = getattr(self, "_atr_scale_index", None)
-        if index is None:
+        plot = self.study_plots[name]
+        if name in {"RSI", "ADX / DI"}:
+            plot.setYRange(0.0, 100.0, padding=0)
             return
-        times, _values = self._atr_scale_data
+        if name == "Chaikin Money Flow":
+            plot.setYRange(-1.0, 1.0, padding=0)
+            return
+        cached = self._candle_study_scale_data.get(name)
+        if cached is None:
+            plot.setYRange(0.0, 2.0, padding=0)
+            return
+        (times, _values), index = cached
         x0, x1 = self.price_plot.viewRange()[0]
-        low, high = index.query(np.searchsorted(times, x0), np.searchsorted(times, x1, side="right"))
-        if math.isfinite(low) and math.isfinite(high):
-            low = max(0., low)
-            pad = max((high-low)*.12, high*.04, 1e-6)
-            self.atr_plot.setYRange(max(0., low-pad), high+pad, padding=0)
+        _low, high = index.query(np.searchsorted(times, x0), np.searchsorted(times, x1, side="right"))
+        # Keep the 1× baseline visible even in quiet or unseeded windows.
+        high = max(1.0, high) if math.isfinite(high) else 1.0
+        plot.setYRange(0.0, high * 1.12, padding=0)
 
     def _fit_oi_to_visible(self) -> None:
         if not self.indicators_enabled or not self.indicators["Open Interest"] or self.study_manual_scale["Open Interest"]:
@@ -8520,15 +8473,11 @@ class ChartWorkspace(QtWidgets.QWidget):
         visible_active = bool(
             self.indicators_enabled and self.indicators["Visible Volume Profile"]
         )
-        session_active = bool(
-            self.indicators_enabled and self.indicators["Session Volume Profile"]
-        )
-        if not visible_active and not session_active:
+        if not visible_active:
             return
 
         x0, x1 = self.price_plot.viewRange()[0]
         visible_settings = self.indicator_settings["Visible Volume Profile"]
-        session_settings = self.indicator_settings["Session Volume Profile"]
         committed = False
 
         if visible_active:
@@ -8575,50 +8524,6 @@ class ChartWorkspace(QtWidgets.QWidget):
                     self.theme["cyan"],
                     float(visible_settings["width_pct"]) / 100.0,
                     72,
-                    self.logarithmic,
-                )
-                committed = True
-
-        if session_active:
-            session_bins = int(session_settings["bins"])
-            session_level_count = int(session_settings["levels"])
-            if self.session_candles:
-                session_source = self.session_candles
-                session_live_revision = 0
-            else:
-                session_source = self.candles[-400:]
-                session_live_revision = self._live_data_revision
-            session_key = self._profile_identity_key(
-                session_source,
-                session_bins,
-                session_level_count,
-                live_revision=session_live_revision,
-            )
-            mailbox = self._profile_mailbox.get("session")
-            if mailbox is not None and mailbox[0] == session_key:
-                _, centers, volumes, level_values = mailbox
-                self._profile_mailbox.pop("session", None)
-                self.session_profile_cache = (centers, volumes)
-                self._session_profile_cache_key = session_key
-                self.session_levels = level_values
-            elif session_key != self._session_profile_cache_key:
-                self._request_profile_analysis(
-                    "session",
-                    session_key,
-                    list(session_source),
-                    session_bins,
-                    session_level_count,
-                )
-
-            if session_key == self._session_profile_cache_key:
-                session_centers, session_volumes = self.session_profile_cache
-                self.session_profile.set_profile(
-                    session_centers,
-                    session_volumes,
-                    (x0, x1),
-                    self.theme["purple"],
-                    float(session_settings["width_pct"]) / 100.0,
-                    43,
                     self.logarithmic,
                 )
                 committed = True
@@ -8678,17 +8583,17 @@ class ChartWorkspace(QtWidgets.QWidget):
 
     def profile_alert_levels(self) -> list[float]:
         combined: list[float] = []
-        for level in (*self.visible_levels, *self.session_levels):
+        for level in self.visible_levels:
             if all(abs(level - old) > max(level, old) * 0.0005 for old in combined):
                 combined.append(level)
         return combined[:6]
 
     def toggle_indicator(self, name: str, enabled: bool) -> None:
-        if self.indicators.get(name) == bool(enabled):
+        if name not in self.indicators or self.indicators[name] == bool(enabled):
             return
         self.indicators[name] = bool(enabled)
         self._apply_indicator_visibility()
-        if name in {"Bollinger Bands", "ATR", "RSI", "EMA Trend", "VWAP", "Donchian Channels"}:
+        if name == "Bollinger Bands" or name in self.candle_study_curves or name in self.trend_curves:
             if enabled and self.indicators_enabled:
                 self._schedule_render_work(indicators=True)
         elif name == "Open Interest":
@@ -8698,10 +8603,7 @@ class ChartWorkspace(QtWidgets.QWidget):
         if enabled and self.indicators_enabled:
             if name == "Liquidations":
                 self._render_liquidations()
-            if name == "Major Price Levels":
-                self._major_levels_dirty = True
-                self._schedule_render_work(major_levels=True)
-            elif name in {"Visible Volume Profile", "Session Volume Profile"}:
+            if name == "Visible Volume Profile":
                 self._schedule_render_work(profiles=True)
 
     def _apply_indicator_visibility(self) -> None:
@@ -8716,31 +8618,16 @@ class ChartWorkspace(QtWidgets.QWidget):
         bb_visible = active and self.indicators["Bollinger Bands"]
         for item in (self.bb_mid, self.bb_upper, self.bb_lower, self.bb_fill):
             set_visible(item, bb_visible)
-        self._set_subplot_visible(
-            self.atr_plot,
-            row=2,
-            visible=active and self.indicators["ATR"],
-            maximum_height=self.study_heights["ATR"],
-        )
-        self._set_subplot_visible(
-            self.oi_plot,
-            row=1,
-            visible=active and self.indicators["Open Interest"],
-            maximum_height=self.study_heights["Open Interest"],
-        )
-        self._set_subplot_visible(
-            self.funding_plot,
-            row=3,
-            visible=active and self.indicators["Funding Rate History"],
-            maximum_height=self.study_heights["Funding Rate History"],
-        )
-        self._set_subplot_visible(
-            self.rsi_plot,
-            row=4,
-            visible=active and self.indicators["RSI"],
-            maximum_height=self.study_heights["RSI"],
-        )
-        set_visible(self.atr_curve, active and self.indicators["ATR"])
+        for row, (name, plot) in enumerate(self.study_plots.items(), 1):
+            self._set_subplot_visible(
+                plot, row=row, visible=active and self.indicators[name],
+                maximum_height=self.study_heights[name],
+            )
+        for name, curves in self.candle_study_curves.items():
+            for curve in curves:
+                set_visible(curve, active and self.indicators[name])
+        for name, line in self.study_reference_lines.items():
+            set_visible(line, active and self.indicators[name])
         set_visible(self.oi_curve, active and self.indicators["Open Interest"])
         funding_visible = active and self.indicators["Funding Rate History"]
         set_visible(self.funding_curve, funding_visible)
@@ -8756,8 +8643,7 @@ class ChartWorkspace(QtWidgets.QWidget):
         set_visible(self.rsi_lower_line, rsi_visible and show_rsi_thresholds)
         set_visible(self.liquidation_points, active and self.indicators["Liquidations"])
         set_visible(self.visible_profile, active and self.indicators["Visible Volume Profile"])
-        set_visible(self.session_profile, active and self.indicators["Session Volume Profile"])
-        zones_visible = active and self.indicators["Major Price Levels"]
+        zones_visible = active and self.indicators.get("Major Price Levels", False)
         for region, label, _zone in self.zone_graphics:
             set_visible(region, zones_visible)
             set_visible(label, zones_visible)
@@ -8767,20 +8653,9 @@ class ChartWorkspace(QtWidgets.QWidget):
 
     def _sync_bottom_time_axis(self) -> None:
         """Show one shared time axis on the lowest visible chart row."""
-        plots = (
-            self.price_plot,
-            self.oi_plot,
-            self.atr_plot,
-            self.funding_plot,
-            self.rsi_plot,
-        )
+        plots = self._all_plots
         owner = self.price_plot
-        for candidate in (
-            self.rsi_plot,
-            self.funding_plot,
-            self.atr_plot,
-            self.oi_plot,
-        ):
+        for candidate in reversed(tuple(self.study_plots.values())):
             if candidate.isVisible():
                 owner = candidate
                 break
@@ -8896,10 +8771,8 @@ class ChartWorkspace(QtWidgets.QWidget):
             self._fit_oi_to_visible()
         elif name == "Funding Rate History":
             self._fit_funding_to_visible()
-        elif name == "ATR":
-            self._fit_atr_to_visible()
-        elif name == "RSI":
-            self.rsi_plot.setYRange(0.0, 100.0, padding=0)
+        elif name in self.candle_study_curves:
+            self._fit_candle_study_to_visible(name)
         self.graphics.request_redraw()
 
     def set_study_heights(self, values: dict[str, float | int]) -> None:
@@ -8925,14 +8798,15 @@ class ChartWorkspace(QtWidgets.QWidget):
 
     def _restore_study_ranges(self) -> None:
         """Reassert lower-pane ranges after the graphics layout has settled."""
-        if self.indicators_enabled and self.indicators["ATR"]:
-            self._schedule_render_work(indicators=True)
         if self.indicators_enabled and self.indicators["Open Interest"]:
             self._render_oi()
         if self.indicators_enabled and self.indicators["Funding Rate History"]:
             self._render_funding()
-        if self.indicators_enabled and self.indicators["RSI"]:
-            self._schedule_render_work(indicators=True)
+        if self.indicators_enabled:
+            for name in self.candle_study_curves:
+                if self.indicators[name]:
+                    self._fit_candle_study_to_visible(name)
+            self._schedule_render_work(indicators=self._has_active_rendered_indicators())
         self.graphics.request_redraw()
 
     def set_rsi_settings(
@@ -8980,8 +8854,11 @@ class ChartWorkspace(QtWidgets.QWidget):
             float(rsi["lower"]),
             bool(rsi.get("show_thresholds", False)),
         )
+        self.study_reference_lines["ADX / DI"].setValue(
+            float(self.indicator_settings["ADX / DI"]["threshold"])
+        )
+        self._candle_study_scale_data.clear()
         self._update_study_headers()
-        self._session_profile_cache_key = None
         self._visible_profile_cache_key = None
         self._major_levels_dirty = True
         self._schedule_render_work(indicators=True)
@@ -8999,7 +8876,7 @@ class ChartWorkspace(QtWidgets.QWidget):
             self._render_oi()
             self._render_funding()
             self._render_liquidations()
-            if self.indicators["Major Price Levels"]:
+            if self.indicators.get("Major Price Levels", False):
                 self._major_levels_dirty = True
             self._schedule_render_work(major_levels=True, profiles=True)
 
@@ -9263,15 +9140,8 @@ class ChartWorkspace(QtWidgets.QWidget):
         if self.price_axis_focus_overlay is not None:
             self.price_axis_focus_overlay.apply_theme(theme)
         self.visible_profile.background = theme["bg"]
-        self.session_profile.background = theme["bg"]
         self.graphics.setBackground(theme["bg"])
-        for plot in (
-            self.price_plot,
-            self.oi_plot,
-            self.atr_plot,
-            self.funding_plot,
-            self.rsi_plot,
-        ):
+        for plot in self._all_plots:
             for name in ("right", "bottom", "top"):
                 axis = plot.getAxis(name)
                 axis_pen = pg.mkPen(theme["border"])
@@ -9297,7 +9167,7 @@ class ChartWorkspace(QtWidgets.QWidget):
         )
         for name, colors in (("EMA Trend", ("cyan", "amber", "purple")),
                              ("VWAP", ("amber",)),
-                             ("Donchian Channels", ("green", "muted", "red"))):
+                             ("Supertrend", ("green", "red"))):
             for curve, color in zip(self.trend_curves[name], colors):
                 curve.setPen(pg.mkPen(theme[color], width=1.15))
         self._update_trend_label()
@@ -9319,7 +9189,6 @@ class ChartWorkspace(QtWidgets.QWidget):
             header.theme = theme
             header.update()
         self.oi_curve.setPen(pg.mkPen(theme["purple"], width=1.4))
-        self.atr_curve.setPen(pg.mkPen(theme["amber"], width=1.35))
         self.funding_curve.setPen(pg.mkPen(alpha_color(theme["muted"], 220), width=1.35))
         self.funding_positive_bars.setOpts(
             brush=pg.mkBrush(opaque_overlay_color(theme["bg"], theme["red"], 68))
@@ -9330,7 +9199,12 @@ class ChartWorkspace(QtWidgets.QWidget):
         self.funding_zero_line.setPen(
             pg.mkPen(alpha_color(theme["muted"], 110), width=0.8, style=Qt.PenStyle.DashLine)
         )
-        self.rsi_curve.setPen(pg.mkPen(theme["cyan"], width=1.35))
+        for name, curves in self.candle_study_curves.items():
+            for curve, color in zip(curves, self._candle_study_colors[name]):
+                curve.setPen(pg.mkPen(theme[color], width=1.35))
+        for line in self.study_reference_lines.values():
+            line.setPen(pg.mkPen(alpha_color(theme["muted"], 120), width=0.8,
+                               style=Qt.PenStyle.DashLine))
         self.rsi_upper_line.setPen(
             pg.mkPen(alpha_color(theme["red"], 145), width=1, style=Qt.PenStyle.DashLine)
         )
