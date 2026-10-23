@@ -61,6 +61,10 @@ CONDITIONAL_ORDER_TYPES = {
 # quick-order system is explicitly armed. Keep this policy shared by dispatch.
 LOW_PRIORITY_TRADING_HOTKEYS = frozenset({"B", "S"})
 
+# Bare digits belong to indicators and armed B/S sequences, not configurable
+# trading actions or type-to-search.
+BARE_NUMBER_SHORTCUTS = frozenset("0123456789")
+
 # These keys are handled before configurable indicator/trading shortcuts.
 TIMEFRAME_SHORTCUTS = tuple(f"Ctrl+{index}" for index in range(1, 10))
 SHELL_RESERVED_SHORTCUTS = frozenset({

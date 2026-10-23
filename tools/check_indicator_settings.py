@@ -19,7 +19,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6 import QtCore, QtWidgets, QtTest
 
 from nightwatch.constants import (
-    APP_NAME, ORG_NAME, DEFAULT_INDICATOR_SHORTCUTS,
+    APP_NAME, ORG_NAME, DEFAULT_INDICATOR_SHORTCUTS, DEFAULT_TRADING_HOTKEYS,
     INDICATOR_GROUPS, INDICATOR_KEYS, INDICATOR_SETTING_DEFAULTS,
     TIMEFRAME_SHORTCUTS, normalized_indicator_shortcuts,
 )
@@ -195,6 +195,18 @@ class IndicatorSettingsChecks(unittest.TestCase):
                     self.assertTrue(window.chart.indicators[name], (name, modifiers))
                     QtTest.QTest.keyClick(window.chart.graphics, key, modifiers)
                     self.assertFalse(window.chart.indicators[name], (name, modifiers))
+            for modifiers in (QtCore.Qt.KeyboardModifier.NoModifier,
+                              QtCore.Qt.KeyboardModifier.KeypadModifier):
+                QtTest.QTest.keyClick(window.chart.graphics, QtCore.Qt.Key.Key_0, modifiers)
+            # Unassigned digits must not become type-to-search shortcuts.
+            original_shortcuts = window.indicator_shortcuts.copy()
+            try:
+                window.indicator_shortcuts = {name: "" for name in original_shortcuts}
+                QtTest.QTest.keyClicks(window.chart.graphics, "0123456789")
+                search.assert_not_called()
+                self.assertFalse(any(window.chart.indicators.values()))
+            finally:
+                window.indicator_shortcuts = original_shortcuts
             switch.assert_not_called()
             for index, interval in enumerate(window.market_bar_timeframes, 1):
                 key = QtCore.Qt.Key(int(QtCore.Qt.Key.Key_0) + index)
@@ -220,10 +232,10 @@ class IndicatorSettingsChecks(unittest.TestCase):
             editor.show()
             editor.setFocus()
             self.settle()
-            QtTest.QTest.keyClicks(editor, "123456789")
+            QtTest.QTest.keyClicks(editor, "0123456789")
             QtTest.QTest.keyClick(editor, QtCore.Qt.Key.Key_1, QtCore.Qt.KeyboardModifier.KeypadModifier)
             QtTest.QTest.keyClick(editor, QtCore.Qt.Key.Key_1, QtCore.Qt.KeyboardModifier.ControlModifier)
-            self.assertEqual(editor.text(), "1234567891")
+            self.assertEqual(editor.text(), "01234567891")
             self.assertFalse(any(window.chart.indicators.values()))
             switch.assert_not_called()
             search.assert_not_called()
@@ -233,6 +245,9 @@ class IndicatorSettingsChecks(unittest.TestCase):
             self.settle()
             QtTest.QTest.keyClick(window.chart.graphics, QtCore.Qt.Key.Key_E)
             search.assert_called_once_with("e")
+            search.reset_mock()
+            QtTest.QTest.keyClick(window.chart.graphics, QtCore.Qt.Key.Key_F, QtCore.Qt.KeyboardModifier.ControlModifier)
+            search.assert_called_once_with()
 
         with patch.object(window, "_execute_armed_percentage_order") as execute:
             window.trading_gateway.armed = True
@@ -341,7 +356,11 @@ class IndicatorSettingsChecks(unittest.TestCase):
         self.settings.setValue("chart/study_heights_v1", json.dumps({"RSI": 350, "ATR": 240}))
         self.settings.setValue("chart/active_indicators_v1", json.dumps({"RSI": True}))
         self.settings.setValue("chart/rsi_period", 99)
-        self.settings.setValue("trading/hotkeys_v1", json.dumps({"place_buy": "Ctrl+D"}))
+        legacy_hotkeys = {
+            "place_buy": "Ctrl+D", "close_1": "1", "close_2": "2",
+            "close_3": "3", "refresh_account": "0",
+        }
+        self.settings.setValue("trading/hotkeys_v1", json.dumps(legacy_hotkeys))
         self.settings.setValue("trading/quick_preset_v1", json.dumps({"leverage": 7}))
         self.settings.setValue("chart/volume_bar_height_pct_v1", 22)
         self.settings.sync()
@@ -361,6 +380,9 @@ class IndicatorSettingsChecks(unittest.TestCase):
             self.assertEqual(window.saved_study_heights, {})
             self.assertEqual(window.volume_bar_height_percent, 22)
             self.assertEqual(window.trading_hotkeys["place_buy"], "Ctrl+D")
+            for action in ("close_1", "close_2", "close_3", "refresh_account"):
+                self.assertEqual(window.trading_hotkeys[action], DEFAULT_TRADING_HOTKEYS[action])
+            self.assertTrue(set("0123456789") <= window._reserved_trading_shortcuts())
             self.assertEqual(window.quick_trading_preset["leverage"], 7)
             self.assertEqual(window.indicator_shortcuts["Chaikin Money Flow"], "")
             self.assertEqual(window.indicator_shortcuts["RSI"], DEFAULT_INDICATOR_SHORTCUTS["RSI"])
@@ -402,6 +424,14 @@ class IndicatorSettingsChecks(unittest.TestCase):
             self.assertEqual(saved["Auto Fibonacci"], fibonacci)
             self.assertEqual(set(saved), set(INDICATOR_KEYS) | {"Auto Fibonacci"})
 
+            # Reproduce v3 settings already damaged by the old trading-binding
+            # conflict check, plus an unrelated deliberate indicator opt-out.
+            damaged_shortcuts = dict(DEFAULT_INDICATOR_SHORTCUTS)
+            for name in ("VWAP", "EMA Trend", "Supertrend", "RSI"):
+                damaged_shortcuts[name] = ""
+            self.settings.setValue("chart/indicator_shortcuts_v3", json.dumps(damaged_shortcuts))
+            self.settings.setValue("trading/hotkeys_v1", json.dumps(legacy_hotkeys))
+            self.settings.sync()
             reopened = OfflineWindow(symbol="BTCUSDT", interval="15m", testnet=True)
             self.widgets.append(reopened)
             self.settle()
@@ -412,6 +442,25 @@ class IndicatorSettingsChecks(unittest.TestCase):
             self.assertFalse(any(reopened.chart.indicators.values()))
             self.assertEqual(reopened.trading_hotkeys["place_buy"], "Ctrl+D")
             self.assertEqual(reopened.quick_trading_preset["leverage"], 7)
+            self.assertEqual(reopened.indicator_shortcuts["RSI"], "")
+            reopened.show()
+            reopened.activateWindow()
+            self.app.setActiveWindow(reopened)
+            reopened.chart.graphics.setFocus()
+            self.settle()
+            with patch.object(reopened, "open_symbol_search") as search, \
+                    patch.object(reopened, "_execute_trading_hotkey") as execute:
+                for name in ("VWAP", "EMA Trend", "Supertrend"):
+                    self.assertEqual(reopened.indicator_shortcuts[name], DEFAULT_INDICATOR_SHORTCUTS[name])
+                    key = QtCore.Qt.Key(int(QtCore.Qt.Key.Key_0) + int(DEFAULT_INDICATOR_SHORTCUTS[name]))
+                    QtTest.QTest.keyClick(reopened.chart.graphics, key)
+                    self.assertTrue(reopened.chart.indicators[name])
+                    QtTest.QTest.keyClick(reopened.chart.graphics, key)
+                    self.assertFalse(reopened.chart.indicators[name])
+                QtTest.QTest.keyClick(reopened.chart.graphics, QtCore.Qt.Key.Key_0)
+                QtTest.QTest.keyClick(reopened.chart.graphics, QtCore.Qt.Key.Key_5)
+                search.assert_not_called()
+                execute.assert_not_called()
             self.close_window(reopened)
         self.assertEqual(requests, [], "UI checks attempted network I/O")
 

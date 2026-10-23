@@ -866,6 +866,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.ui_tuner_dialog: UiTunerDialog | None = None
         self.magnetic_rail_lab_dialog: MagneticRailLabDialog | None = None
         self.trading_hotkeys = dict(DEFAULT_TRADING_HOTKEYS)
+        legacy_number_trading_shortcuts: set[str] = set()
         stored_hotkeys = self.settings.value("trading/hotkeys_v1", "", str)
         if stored_hotkeys:
             try:
@@ -876,13 +877,26 @@ class MainWindow(QtWidgets.QMainWindow):
                 for action in self.trading_hotkeys:
                     if action in decoded_hotkeys:
                         shortcut = str(decoded_hotkeys[action])
+                        if shortcut in constants.BARE_NUMBER_SHORTCUTS:
+                            legacy_number_trading_shortcuts.add(shortcut)
                         self.trading_hotkeys[action] = (
                             DEFAULT_TRADING_HOTKEYS[action]
                             if is_shift_letter_shortcut(shortcut)
                             or is_smart_exit_shortcut(shortcut)
                             or shortcut in constants.SHELL_RESERVED_SHORTCUTS
+                            or shortcut in constants.BARE_NUMBER_SHORTCUTS
                             else shortcut
                         )
+        # Earlier versions cleared indicator defaults when a saved bare-digit
+        # trading binding conflicted, even though trading dispatch ignores those
+        # bindings. Repair only those blanks; retain custom indicator choices.
+        for name, default in constants.DEFAULT_INDICATOR_SHORTCUTS.items():
+            if (
+                default in legacy_number_trading_shortcuts
+                and not self.indicator_shortcuts[name]
+                and default not in self.indicator_shortcuts.values()
+            ):
+                self.indicator_shortcuts[name] = default
         # A refreshed indicator shortcut must never take over an existing
         # trading binding: indicator dispatch runs before the trading handler.
         trading_shortcuts = {shortcut for shortcut in self.trading_hotkeys.values() if shortcut}
@@ -3092,7 +3106,8 @@ class MainWindow(QtWidgets.QMainWindow):
             ("Ctrl+Z", "Toggle primary-chart overview"),
             ("Alt+F", "Next automatic Fibonacci candidate"),
             ("Alt+Shift+F", "Previous automatic Fibonacci candidate"),
-            ("Type letters/numbers", "Open symbol search while quick orders are locked"),
+            ("Type letters", "Open symbol search while quick orders are locked"),
+            ("Ctrl+F", "Open symbol search, including numeric symbol prefixes"),
             ("Up / Down (search)", "Select the previous / next symbol-search result"),
             ("Enter (search)", "Open the selected symbol-search result"),
             ("B1-B9 / S1-S9 (unlocked)", "Quick BUY/SELL using 10%-90% collateral"),
@@ -5241,6 +5256,13 @@ class MainWindow(QtWidgets.QMainWindow):
             if (
                 not text_input
                 and shortcut_modifiers == Qt.KeyboardModifier.ControlModifier
+                and key == int(Qt.Key.Key_F)
+            ):
+                self.open_symbol_search()
+                return True
+            if (
+                not text_input
+                and shortcut_modifiers == Qt.KeyboardModifier.ControlModifier
                 and key in {int(Qt.Key.Key_PageUp), int(Qt.Key.Key_PageDown)}
             ):
                 self._cycle_right_layout(
@@ -5350,7 +5372,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 for action, configured in self.trading_hotkeys.items():
                     if (
                         configured
-                        and configured not in set("0123456789")
+                        and configured not in constants.BARE_NUMBER_SHORTCUTS
                         and pressed_sequence == configured
                     ):
                         # Bare B/S are deliberately lower priority than symbol
@@ -5418,7 +5440,7 @@ class MainWindow(QtWidgets.QMainWindow):
             if (
                 not text_input
                 and typed
-                and typed.isalnum()
+                and typed.isalpha()
                 and not event.modifiers() & blocked_modifiers
                 and QtWidgets.QApplication.activePopupWidget() is None
                 and self.symbol_search_dialog is None
@@ -8422,6 +8444,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _reserved_trading_shortcuts(self) -> set[str]:
         reserved = set(constants.SHELL_RESERVED_SHORTCUTS)
+        reserved.update(constants.BARE_NUMBER_SHORTCUTS)
         reserved.update(
             str(value) for value in self.indicator_shortcuts.values() if str(value)
         )

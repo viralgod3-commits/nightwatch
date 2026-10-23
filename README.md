@@ -146,6 +146,8 @@ shortcuts in settings. Both the number row and number pad work. Text fields
 retain normal number entry; armed B/S order sequences keep priority over
 indicator keys. Existing default bindings migrate
 automatically; compatible custom bindings are retained.
+Typing a letter opens symbol search. Digits do not open it; type numeric symbol
+prefixes directly into the search field after opening it with `Ctrl+F`.
 
 Parameters, shortcuts and pane heights start fresh for this catalog and persist
 afterward. Charts continue to start with all studies off. Existing Auto Fibonacci
