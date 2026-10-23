@@ -460,8 +460,8 @@ class TimeframeStrip(QtWidgets.QWidget):
         button.setCheckable(True)
         button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         button.setFixedSize(self.BUTTON_WIDTH, self.BUTTON_HEIGHT)
-        button.setToolTip(f"Shortcut: {index + 1}")
-        button.setAccessibleName(f"{text} chart timeframe, shortcut {index + 1}")
+        button.setToolTip(f"Shortcut: Ctrl+{index + 1}")
+        button.setAccessibleName(f"{text} chart timeframe, shortcut Ctrl+{index + 1}")
         button.setProperty("informationalToolTip", True)
         set_text_role(button, TextRole.UI_CONTROL_COMPACT)
         button.clicked.connect(
@@ -473,7 +473,7 @@ class TimeframeStrip(QtWidgets.QWidget):
         self._buttons.append(button)
 
         # Render the key without installing competing QAction shortcuts.
-        action = self._collapsed_menu.addAction(f"{text}\t{index + 1}")
+        action = self._collapsed_menu.addAction(f"{text}\tCtrl+{index + 1}")
         action.setCheckable(True)
         action.setData(index)
         action.triggered.connect(
@@ -569,7 +569,7 @@ class TimeframeStrip(QtWidgets.QWidget):
         if 0 <= self._current_index < len(self._items):
             text = self._items[self._current_index][0]
             self._collapsed_button.setText(text)
-            self._collapsed_button.setToolTip(f"Choose timeframe · Shortcuts 1–{self.count()}")
+            self._collapsed_button.setToolTip(f"Choose timeframe · Ctrl+1–{self.count()}")
         if was_external:
             self._sync_mode_width()
             self.content_changed.emit()

@@ -234,7 +234,7 @@ from typing import Any
 
 from ..constants import (
     DEFAULT_INDICATOR_SHORTCUTS, INDICATOR_DESCRIPTIONS, INDICATOR_GROUPS,
-    INDICATOR_SETTING_DEFAULTS,
+    INDICATOR_SETTING_DEFAULTS, INDICATOR_SHORTCUT_CHOICES,
 )
 from ..theme import (
     RIGHT_LAYOUT_PRESETS, THEMES,
@@ -571,7 +571,7 @@ class IndicatorShortcutsDialog(QtWidgets.QDialog):
         heading = QtWidgets.QLabel("INDICATOR SHORTCUTS")
         heading.setObjectName("dialogHeading")
         note = QtWidgets.QLabel(
-            "Assign Ctrl shortcuts to chart indicators. Number keys follow the market bar's selected timeframes from left to right."
+            "Use 1–9 for priority indicators. Ctrl+1–9 selects timeframes from left to right. Other studies remain available in the Indicators menu."
         )
         note.setObjectName("subtleLabel")
         note.setWordWrap(True)
@@ -585,8 +585,8 @@ class IndicatorShortcutsDialog(QtWidgets.QDialog):
             editor = QtWidgets.QComboBox()
             editor.setFixedWidth(110)
             editor.addItem("—", "")
-            for key in ("1", "2", "3", "Q", "W", "E", "A", "S", "D", "4", "5", "6", "7", "8", "9", "0"):
-                editor.addItem("Ctrl+" + key, "Ctrl+" + key)
+            for shortcut in INDICATOR_SHORTCUT_CHOICES:
+                editor.addItem(shortcut, shortcut)
             selected = str(shortcuts.get(indicator, DEFAULT_INDICATOR_SHORTCUTS[indicator]))
             editor.setCurrentIndex(max(0, editor.findData(selected)))
             editor.setToolTip(
@@ -2361,7 +2361,7 @@ class NightwatchSettingsDialog(QtWidgets.QDialog):
         page, layout = self._scroll_page("Chart & Indicators")
         timeframe_box, timeframe_layout = self._group("Market bar timeframes")
         timeframe_note = QtWidgets.QLabel(
-            "Choose up to nine buttons. Number shortcuts follow their order; your current interval stays available."
+            "Choose up to nine buttons. Ctrl+1–9 follows their order; your current interval stays available."
         )
         timeframe_note.setObjectName("subtleLabel")
         timeframe_note.setWordWrap(True)
@@ -2517,7 +2517,7 @@ class NightwatchSettingsDialog(QtWidgets.QDialog):
             del blocker
         if self._timeframe_preview is not None:
             keys = "   ·   ".join(
-                f"{index} → {interval.upper() if interval in {'1d', '1w'} else interval}"
+                f"Ctrl+{index} → {interval.upper() if interval in {'1d', '1w'} else interval}"
                 for index, interval in enumerate(selected, 1)
             )
             self._timeframe_preview.setText(f"{len(selected)}/9 selected\n{keys}")

@@ -62,7 +62,9 @@ CONDITIONAL_ORDER_TYPES = {
 LOW_PRIORITY_TRADING_HOTKEYS = frozenset({"B", "S"})
 
 # These keys are handled before configurable indicator/trading shortcuts.
+TIMEFRAME_SHORTCUTS = tuple(f"Ctrl+{index}" for index in range(1, 10))
 SHELL_RESERVED_SHORTCUTS = frozenset({
+    *TIMEFRAME_SHORTCUTS,
     "Ctrl+A", "Ctrl+P", "Ctrl+PageUp", "Ctrl+PageDown", "Ctrl+O", "Ctrl+Shift+O",
     "Ctrl+Shift+A", "Ctrl+Shift+X", "Ctrl+Tab", "Ctrl+Shift+Tab",
     "Alt+F", "Alt+Shift+F", "Ctrl+Z", "Ctrl+Enter", "Ctrl+Return", "Ctrl+F", "F3", "F5", "F11", "Esc",
@@ -126,7 +128,7 @@ INTERVAL_SECONDS = {
 # Supported chart intervals are independent of the trader's quick-access strip.
 TIMEFRAMES = tuple(INTERVAL_SECONDS)
 DEFAULT_MARKET_BAR_TIMEFRAMES = ("1m", "5m", "15m", "1h", "4h", "1d", "1w", "1M")
-MARKET_BAR_TIMEFRAME_LIMIT = 9
+MARKET_BAR_TIMEFRAME_LIMIT = len(TIMEFRAME_SHORTCUTS)
 MARKET_BAR_TIMEFRAME_PRESETS = {
     "Default": DEFAULT_MARKET_BAR_TIMEFRAMES,
     "Intraday": ("1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h"),
@@ -172,10 +174,40 @@ INDICATOR_GROUPS = {
 INDICATOR_KEYS = tuple(name for names in INDICATOR_GROUPS.values() for name in names)
 
 
-DEFAULT_INDICATOR_SHORTCUTS = dict(zip(
-    INDICATOR_KEYS,
-    ("Ctrl+" + key for key in ("1", "2", "3", "Q", "W", "E", "4", "5", "6", "7", "8", "9")),
-))
+# One-key defaults prioritize price context, participation and derivatives.
+INDICATOR_SHORTCUT_PRIORITY = (
+    "VWAP", "EMA Trend", "Supertrend", "Visible Volume Profile", "RSI",
+    "Relative Volume", "Open Interest", "Funding Rate History", "ADX / DI",
+)
+DEFAULT_INDICATOR_SHORTCUTS = {name: "" for name in INDICATOR_KEYS}
+DEFAULT_INDICATOR_SHORTCUTS.update({
+    name: str(index) for index, name in enumerate(INDICATOR_SHORTCUT_PRIORITY, 1)
+})
+INDICATOR_SHORTCUT_CHOICES = tuple("123456789") + (
+    "Ctrl+Q", "Ctrl+W", "Ctrl+E", "Ctrl+S", "Ctrl+D", "Ctrl+0",
+)
+
+
+def normalized_indicator_shortcuts(values: object, *, legacy: bool = False) -> dict[str, str]:
+    """Migrate old defaults while retaining compatible custom bindings/opt-outs."""
+    values = values if isinstance(values, dict) else {}
+    previous_defaults = dict(zip(
+        INDICATOR_KEYS,
+        ("Ctrl+" + key for key in ("1", "2", "3", "Q", "W", "E", "4", "5", "6", "7", "8", "9")),
+    ))
+    result, used = {}, set()
+    for name, default in DEFAULT_INDICATOR_SHORTCUTS.items():
+        shortcut = str(values.get(name, default))
+        if legacy and name in values and (
+            shortcut == previous_defaults[name] or shortcut in TIMEFRAME_SHORTCUTS
+        ):
+            shortcut = default
+        if shortcut not in INDICATOR_SHORTCUT_CHOICES or shortcut in used:
+            shortcut = ""
+        result[name] = shortcut
+        if shortcut:
+            used.add(shortcut)
+    return result
 
 
 INDICATOR_DESCRIPTIONS = {

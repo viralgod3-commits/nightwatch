@@ -1169,8 +1169,9 @@ class MainToolbar(QtWidgets.QFrame):
 
     HEIGHT = 42
 
-    def __init__(self, navigation: QtWidgets.QWidget, theme_control: QtWidgets.QWidget,
-                 layout_control: QtWidgets.QWidget, settings_control: QtWidgets.QWidget,
+    def __init__(self, navigation: QtWidgets.QWidget, indicator_control: QtWidgets.QWidget,
+                 theme_control: QtWidgets.QWidget, layout_control: QtWidgets.QWidget,
+                 settings_control: QtWidgets.QWidget,
                  fullscreen_control: QtWidgets.QWidget,
                  parent: QtWidgets.QWidget | None = None):
         super().__init__(parent)
@@ -1178,16 +1179,20 @@ class MainToolbar(QtWidgets.QFrame):
         self.setAttribute(QtCore.Qt.WidgetAttribute.WA_StyledBackground, True)
         self.setFixedHeight(self.HEIGHT)
         row = QtWidgets.QHBoxLayout(self)
-        # Utility controls form a contiguous, edge-aligned group in the
-        # top-right corner; workspace navigation begins directly at the left.
+        # Keep chart utilities at the top left and window utilities at the right.
         row.setContentsMargins(0, 0, 0, 0)
         row.setSpacing(0)
         navigation.setFixedHeight(self.HEIGHT - 1)
         for button in navigation.findChildren(QtWidgets.QPushButton):
             button.setFixedHeight(self.HEIGHT - 1)
+        for control in (indicator_control, theme_control, layout_control):
+            control.setFixedSize(self.HEIGHT, self.HEIGHT - 1)
+            row.addWidget(control)
+        row.addSpacing(12)
         row.addWidget(navigation)
         row.addStretch(1)
-        for control in (theme_control, layout_control, settings_control, fullscreen_control):
+        row.addSpacing(16)
+        for control in (settings_control, fullscreen_control):
             control.setFixedSize(self.HEIGHT, self.HEIGHT - 1)
             row.addWidget(control)
         self.apply_theme({})
@@ -1848,6 +1853,16 @@ def line_icon_pixmap(
                                 ((2.5, 15.5), (6.0, 15.5)), ((2.5, 15.5), (2.5, 12.0)),
                                 ((15.5, 15.5), (12.0, 15.5)), ((15.5, 15.5), (15.5, 12.0))):
                 painter.drawLine(QtCore.QPointF(*start), QtCore.QPointF(*stop))
+    elif kind == 'indicators':
+        # Two chart studies crossing, distinct from layout and settings icons.
+        for points in (
+            ((2, 13), (6, 9), (10, 11), (16, 3)),
+            ((2, 6), (6, 7), (10, 5), (16, 10)),
+        ):
+            path = QtGui.QPainterPath(QtCore.QPointF(*points[0]))
+            for point in points[1:]:
+                path.lineTo(QtCore.QPointF(*point))
+            painter.drawPath(path)
     elif kind == 'panels':
         painter.drawRoundedRect(QtCore.QRectF(2.0, 2.5, 14.0, 13.0), 1.0, 1.0)
         painter.drawLine(QtCore.QPointF(10.5, 2.5), QtCore.QPointF(10.5, 15.5))

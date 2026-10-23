@@ -659,30 +659,18 @@ class MainWindow(QtWidgets.QMainWindow):
             "chart/rsi_lower", "chart/liquidation_display_v2",
         ):
             self.settings.remove(legacy_key)
-        restored_shortcuts: dict[str, object] = {}
+        shortcut_key = "chart/indicator_shortcuts_v3"
+        legacy_shortcuts = not self.settings.contains(shortcut_key)
         stored_indicator_shortcuts = self.settings.value(
-            "chart/indicator_shortcuts_v2", "", str
+            "chart/indicator_shortcuts_v2" if legacy_shortcuts else shortcut_key, "", str
         )
-        if stored_indicator_shortcuts:
-            try:
-                restored_shortcuts = json.loads(stored_indicator_shortcuts)
-            except (TypeError, json.JSONDecodeError):
-                restored_shortcuts = {}
-            if not isinstance(restored_shortcuts, dict):
-                restored_shortcuts = {}
-        self.indicator_shortcuts: dict[str, str] = {}
-        used_shortcuts: set[str] = set()
-        for name in INDICATOR_KEYS:
-            shortcut = str(
-                restored_shortcuts.get(name, constants.DEFAULT_INDICATOR_SHORTCUTS[name])
-            )
-            allowed = {"Ctrl+" + k for k in "123QWEASD4567890"}
-            if (shortcut in allowed and shortcut not in used_shortcuts
-                    and shortcut not in constants.SHELL_RESERVED_SHORTCUTS):
-                self.indicator_shortcuts[name] = shortcut
-                used_shortcuts.add(shortcut)
-            else:
-                self.indicator_shortcuts[name] = ""
+        try:
+            restored_shortcuts = json.loads(stored_indicator_shortcuts or "{}")
+        except (TypeError, json.JSONDecodeError):
+            restored_shortcuts = {}
+        self.indicator_shortcuts = constants.normalized_indicator_shortcuts(
+            restored_shortcuts, legacy=legacy_shortcuts
+        )
         self.right_layout_presets = json.loads(json.dumps(RIGHT_LAYOUT_PRESETS))
         # The new presets persist actual splitter trees, not panel membership.
         try:
@@ -901,6 +889,8 @@ class MainWindow(QtWidgets.QMainWindow):
         for name, shortcut in self.indicator_shortcuts.items():
             if shortcut in trading_shortcuts:
                 self.indicator_shortcuts[name] = ""
+        self.settings.setValue("chart/indicator_shortcuts_v3", json.dumps(self.indicator_shortcuts))
+        self.settings.remove("chart/indicator_shortcuts_v2")
         self.quick_trading_preset = dict(constants.DEFAULT_QUICK_TRADING_PRESET)
         stored_quick_preset = self.settings.value("trading/quick_preset_v1", "", str)
         if stored_quick_preset:
@@ -1408,8 +1398,16 @@ class MainWindow(QtWidgets.QMainWindow):
         news_ribbon_height = 40
         self._news_ribbon_height = news_ribbon_height
 
-        # The top-right utility controls are contiguous and flush with the
-        # toolbar edge: theme, layout, settings, then full screen.
+        # Chart utilities sit at the left; settings and full screen stay at the right.
+        self.indicator_button = QtWidgets.QPushButton()
+        self.indicator_button.setObjectName("topUtilityButton")
+        self.indicator_button.setIconSize(QtCore.QSize(18, 18))
+        self.indicator_button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.indicator_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.indicator_button.setAccessibleName("Indicators")
+        self.indicator_button.setToolTip("Indicators · 1–9")
+        self.indicator_button.setProperty("informationalToolTip", True)
+        self.indicator_button.clicked.connect(self._show_indicator_menu)
         self.theme_button = QtWidgets.QPushButton()
         self.theme_button.setObjectName("topUtilityButton")
         self.theme_button.setFixedSize(toolbar_height, toolbar_height)
@@ -1544,7 +1542,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.indicator_settings_action.triggered.connect(self.edit_indicator_settings)
         self.indicator_shortcuts_action = QtGui.QAction("Indicator shortcuts...", self)
         self.indicator_shortcuts_action.setToolTip(
-            "Assign Ctrl shortcuts for chart indicators"
+            "Assign indicator shortcuts · 1–9 by default"
         )
         self.indicator_shortcuts_action.triggered.connect(self.edit_indicator_shortcuts)
 
@@ -1574,8 +1572,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.clear_drawings_action = QtGui.QAction("Clear drawings", self)
 
         self.main_toolbar = MainToolbar(
-            workspace_nav, self.theme_button, self.panel_layout_button, self.settings_button,
-            self.fullscreen_button, central
+            workspace_nav, self.indicator_button, self.theme_button, self.panel_layout_button,
+            self.settings_button, self.fullscreen_button, central
         )
         self.main_toolbar.apply_theme(self.ui_theme)
         outer.addWidget(self.main_toolbar)
@@ -3120,7 +3118,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 rows.append((shortcut, trading_labels.get(action, action.replace("_", " ").title())))
         for index, timeframe in enumerate(self.market_bar_timeframes, start=1):
             label = timeframe.upper() if timeframe in {"1d", "1w"} else timeframe
-            rows.append((str(index), f"Switch primary chart to {label}"))
+            rows.append((f"Ctrl+{index}", f"Switch primary chart to {label}"))
         for indicator, shortcut in self.indicator_shortcuts.items():
             if shortcut:
                 rows.append((shortcut, f"Toggle {indicator} indicator"))
@@ -3349,7 +3347,7 @@ class MainWindow(QtWidgets.QMainWindow):
             json.dumps(self.chart.indicator_settings, separators=(",", ":")),
         )
         self.settings.setValue(
-            "chart/indicator_shortcuts_v2",
+            "chart/indicator_shortcuts_v3",
             json.dumps(self.indicator_shortcuts, separators=(",", ":")),
         )
         self.settings.setValue(
@@ -3431,6 +3429,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.chart.cancel_drawing()
 
         chart_workspace = index == 0
+        self.indicator_button.setEnabled(chart_workspace)
         # Global navigation and utilities remain visible; the instrument row
         # occupies only the Chart page above its viewport and price axis.
         self.instrument_bar.set_chart_context_visible(chart_workspace)
@@ -4661,9 +4660,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 else:
                     self._execute_armed_percentage_order(side, int(typed) * 10)
                 return True
-            # Quick trading being unlocked must not monopolize timeframe keys.
-            # Once the B/S prefix has expired (or was never entered), let this
-            # exact key event continue to the existing numeric timeframe handler.
+            # Without a pending B/S prefix, digits remain indicator shortcuts.
             return False
         if typed.isalpha():
             self._reset_armed_order_sequence()
@@ -5250,6 +5247,29 @@ class MainWindow(QtWidgets.QMainWindow):
                     -1 if key == int(Qt.Key.Key_PageUp) else 1
                 )
                 return True
+            # Complete armed B/S + digit sequences before one-key indicators.
+            if self._handle_armed_trading_key(
+                event, key, modifiers, text_input
+            ):
+                return True
+            first_key = int(Qt.Key.Key_1)
+            if (
+                shortcut_modifiers == Qt.KeyboardModifier.ControlModifier
+                and not text_input
+                and self.symbol_search_dialog is None
+                and self.workspace_stack.currentIndex() == 0
+                and first_key <= key < first_key + len(self.market_bar_timeframes)
+            ):
+                timeframe = self.market_bar_timeframes[key - first_key]
+                self.switch_interval(timeframe)
+                timeframe_label = (
+                    timeframe.upper() if timeframe in {"1d", "1w"} else timeframe
+                )
+                self.statusBar().showMessage(
+                    f"TIMEFRAME · {timeframe_label}",
+                    1800,
+                )
+                return True
             if (not text_input and self.symbol_search_dialog is None
                     and self.workspace_stack.currentIndex() == 0):
                 sequence = QtGui.QKeySequence(event.keyCombination()).toString(QtGui.QKeySequence.SequenceFormat.PortableText)
@@ -5288,10 +5308,6 @@ class MainWindow(QtWidgets.QMainWindow):
                 and key == int(Qt.Key.Key_A)
             ):
                 self._toggle_quick_order_lock()
-                return True
-            if self._handle_armed_trading_key(
-                event, key, modifiers, text_input
-            ):
                 return True
             if (
                 not text_input
@@ -5387,24 +5403,6 @@ class MainWindow(QtWidgets.QMainWindow):
                 self.chart.clear_drawings()
                 self._store_current_symbol_drawings()
                 self.statusBar().showMessage("Chart drawings cleared.", 1800)
-                return True
-            first_key = int(Qt.Key.Key_1)
-            if (
-                shortcut_modifiers == Qt.KeyboardModifier.NoModifier
-                and not text_input
-                and self.symbol_search_dialog is None
-                and self.workspace_stack.currentIndex() == 0
-                and first_key <= key < first_key + len(self.market_bar_timeframes)
-            ):
-                timeframe = self.market_bar_timeframes[key - first_key]
-                self.switch_interval(timeframe)
-                timeframe_label = (
-                    timeframe.upper() if timeframe in {"1d", "1w"} else timeframe
-                )
-                self.statusBar().showMessage(
-                    f"TIMEFRAME · {timeframe_label}",
-                    1800,
-                )
                 return True
             blocked_modifiers = (
                 Qt.KeyboardModifier.ControlModifier
@@ -6279,7 +6277,15 @@ class MainWindow(QtWidgets.QMainWindow):
             action.setChecked(self.logarithmic)
             del blocker
 
+    def _show_indicator_menu(self) -> None:
+        self.indicator_menu.popup(self.indicator_button.mapToGlobal(
+            QtCore.QPoint(0, self.indicator_button.height())
+        ))
+
     def _update_toolbar_icons(self) -> None:
+        indicator_button = getattr(self, "indicator_button", None)
+        if indicator_button is not None:
+            indicator_button.setIcon(line_icon("indicators", self.ui_theme["muted"], self.devicePixelRatioF()))
         theme_button = getattr(self, "theme_button", None)
         if theme_button is not None:
             theme_button.setIcon(asset_svg_icon("theme-droplet.svg", self.ui_theme["muted"], self.devicePixelRatioF()))
@@ -8321,7 +8327,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.indicator_shortcuts = dialog.shortcuts()
         self._refresh_indicator_action_labels()
         self.settings.setValue(
-            "chart/indicator_shortcuts_v2",
+            "chart/indicator_shortcuts_v3",
             json.dumps(self.indicator_shortcuts, separators=(",", ":")),
         )
         self.settings.sync()

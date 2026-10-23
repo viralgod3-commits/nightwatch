@@ -16,11 +16,12 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6 import QtCore, QtWidgets
+from PySide6 import QtCore, QtWidgets, QtTest
 
 from nightwatch.constants import (
     APP_NAME, ORG_NAME, DEFAULT_INDICATOR_SHORTCUTS,
     INDICATOR_GROUPS, INDICATOR_KEYS, INDICATOR_SETTING_DEFAULTS,
+    TIMEFRAME_SHORTCUTS, normalized_indicator_shortcuts,
 )
 from nightwatch.ui.dialogs import IndicatorSettingsDialog, IndicatorShortcutsDialog
 
@@ -142,6 +143,98 @@ class IndicatorSettingsChecks(unittest.TestCase):
         self.assertEqual(set(shortcuts.editors), expected)
         self.assertEqual(shortcuts.shortcuts(), DEFAULT_INDICATOR_SHORTCUTS)
 
+    def test_shortcut_defaults_migrate_without_losing_custom_choices(self):
+        old = dict(zip(INDICATOR_KEYS, (
+            "Ctrl+1", "Ctrl+2", "Ctrl+3", "Ctrl+Q", "Ctrl+W", "Ctrl+E",
+            "Ctrl+4", "Ctrl+5", "Ctrl+6", "Ctrl+7", "Ctrl+8", "Ctrl+9",
+        )))
+        self.assertEqual(normalized_indicator_shortcuts(old, legacy=True), DEFAULT_INDICATOR_SHORTCUTS)
+        self.assertEqual(set(DEFAULT_INDICATOR_SHORTCUTS.values()) - {""}, set("123456789"))
+        old["RSI"] = "Ctrl+0"
+        old["EMA Trend"] = ""
+        migrated = normalized_indicator_shortcuts(old, legacy=True)
+        self.assertEqual(migrated["RSI"], "Ctrl+0")
+        self.assertEqual(migrated["EMA Trend"], "")
+        self.assertFalse(set(migrated.values()) & set(TIMEFRAME_SHORTCUTS))
+        self.assertEqual(normalized_indicator_shortcuts(migrated), migrated)
+
+    def check_keyboard_and_toolbar(self, window):
+        window.resize(1440, 900)
+        window.show()
+        window.activateWindow()
+        self.app.setActiveWindow(window)
+        window.chart.graphics.setFocus()
+        self.settle()
+        self.assertTrue(window._owns_keyboard())
+        self.assertLess(window.indicator_button.x(), window.theme_button.x())
+        self.assertLess(window.theme_button.x(), window.panel_layout_button.x())
+        self.assertGreater(window.settings_button.x() - window.panel_layout_button.geometry().right(), 16)
+        self.assertLess(window.settings_button.x(), window.fullscreen_button.x())
+        self.assertFalse(window.indicator_button.icon().isNull())
+        window.indicator_button.click()
+        self.settle()
+        self.assertTrue(window.indicator_menu.isVisible())
+        window.indicator_menu.hide()
+        window.activateWindow()
+        window.chart.graphics.setFocus()
+        self.settle()
+
+        with patch.object(window, "switch_interval") as switch:
+            for name, shortcut in DEFAULT_INDICATOR_SHORTCUTS.items():
+                if not shortcut:
+                    continue
+                key = QtCore.Qt.Key(int(QtCore.Qt.Key.Key_0) + int(shortcut))
+                QtTest.QTest.keyClick(window.chart.graphics, key)
+                self.assertTrue(window.chart.indicators[name], name)
+                QtTest.QTest.keyClick(window.chart.graphics, key)
+                self.assertFalse(window.chart.indicators[name], name)
+            switch.assert_not_called()
+            for index, interval in enumerate(window.market_bar_timeframes, 1):
+                key = QtCore.Qt.Key(int(QtCore.Qt.Key.Key_0) + index)
+                QtTest.QTest.keyClick(window.chart.graphics, key, QtCore.Qt.KeyboardModifier.ControlModifier)
+                switch.assert_called_with(interval)
+            self.assertEqual(switch.call_count, len(window.market_bar_timeframes))
+            self.assertFalse(any(window.chart.indicators.values()))
+            original_timeframes = window.market_bar_timeframes
+            window.set_market_bar_timeframes((*original_timeframes, "3m"))
+            self.assertEqual(len(window.market_bar_timeframes), 9)
+            QtTest.QTest.keyClick(window.chart.graphics, QtCore.Qt.Key.Key_9, QtCore.Qt.KeyboardModifier.ControlModifier)
+            switch.assert_called_with(window.market_bar_timeframes[-1])
+            window.set_market_bar_timeframes(original_timeframes)
+            switch.reset_mock()
+            QtTest.QTest.keyClick(window.chart.graphics, QtCore.Qt.Key.Key_9, QtCore.Qt.KeyboardModifier.ControlModifier)
+            switch.assert_not_called()
+            for index, button in enumerate(window.stats.timeframe_selector._buttons, 1):
+                self.assertIn(f"Ctrl+{index}", button.toolTip())
+
+            editor = QtWidgets.QLineEdit(window)
+            editor.show()
+            editor.setFocus()
+            self.settle()
+            QtTest.QTest.keyClicks(editor, "123456789")
+            QtTest.QTest.keyClick(editor, QtCore.Qt.Key.Key_1, QtCore.Qt.KeyboardModifier.ControlModifier)
+            self.assertEqual(editor.text(), "123456789")
+            self.assertFalse(any(window.chart.indicators.values()))
+            switch.assert_not_called()
+            editor.hide()
+            editor.deleteLater()
+            window.chart.graphics.setFocus()
+            self.settle()
+
+        with patch.object(window, "_execute_armed_percentage_order") as execute:
+            window.trading_gateway.armed = True
+            try:
+                QtTest.QTest.keyClick(window.chart.graphics, QtCore.Qt.Key.Key_B)
+                QtTest.QTest.keyClick(window.chart.graphics, QtCore.Qt.Key.Key_1)
+                execute.assert_called_once_with("B", 10)
+                self.assertFalse(window.chart.indicators["VWAP"])
+                QtTest.QTest.keyClick(window.chart.graphics, QtCore.Qt.Key.Key_1)
+                self.assertTrue(window.chart.indicators["VWAP"])
+                QtTest.QTest.keyClick(window.chart.graphics, QtCore.Qt.Key.Key_1)
+            finally:
+                window.trading_gateway.armed = False
+                window._reset_armed_order_sequence()
+
     def test_dialog_rejects_invalid_cross_field_values(self):
         dialog = IndicatorSettingsDialog(deepcopy(INDICATOR_SETTING_DEFAULTS))
         self.widgets.append(dialog)
@@ -225,10 +318,14 @@ class IndicatorSettingsChecks(unittest.TestCase):
         }
         self.settings.setValue("chart/indicator_settings_v1", json.dumps(old_settings))
         self.settings.setValue("chart/indicator_shortcuts_v1", json.dumps({"RSI": "Ctrl+0"}))
+        self.settings.setValue("chart/indicator_shortcuts_v2", json.dumps(dict(zip(
+            INDICATOR_KEYS,
+            ("Ctrl+" + key for key in ("1", "2", "3", "Q", "W", "E", "4", "5", "6", "7", "8", "9")),
+        ))))
         self.settings.setValue("chart/study_heights_v1", json.dumps({"RSI": 350, "ATR": 240}))
         self.settings.setValue("chart/active_indicators_v1", json.dumps({"RSI": True}))
         self.settings.setValue("chart/rsi_period", 99)
-        self.settings.setValue("trading/hotkeys_v1", json.dumps({"place_buy": "Ctrl+7"}))
+        self.settings.setValue("trading/hotkeys_v1", json.dumps({"place_buy": "Ctrl+D"}))
         self.settings.setValue("trading/quick_preset_v1", json.dumps({"leverage": 7}))
         self.settings.setValue("chart/volume_bar_height_pct_v1", 22)
         self.settings.sync()
@@ -247,7 +344,7 @@ class IndicatorSettingsChecks(unittest.TestCase):
             self.assertEqual(window.indicator_settings["Auto Fibonacci"], fibonacci)
             self.assertEqual(window.saved_study_heights, {})
             self.assertEqual(window.volume_bar_height_percent, 22)
-            self.assertEqual(window.trading_hotkeys["place_buy"], "Ctrl+7")
+            self.assertEqual(window.trading_hotkeys["place_buy"], "Ctrl+D")
             self.assertEqual(window.quick_trading_preset["leverage"], 7)
             self.assertEqual(window.indicator_shortcuts["Chaikin Money Flow"], "")
             self.assertEqual(window.indicator_shortcuts["RSI"], DEFAULT_INDICATOR_SHORTCUTS["RSI"])
@@ -266,6 +363,10 @@ class IndicatorSettingsChecks(unittest.TestCase):
                 self.assertTrue(window.chart.indicators[name], name)
                 action.trigger()
                 self.assertFalse(window.chart.indicators[name], name)
+
+            self.check_keyboard_and_toolbar(window)
+            self.assertTrue(self.settings.contains("chart/indicator_shortcuts_v3"))
+            self.assertFalse(self.settings.contains("chart/indicator_shortcuts_v2"))
 
             def save_parameters(dialog):
                 dialog.editors["Supertrend"]["period"].setValue(18)
@@ -293,7 +394,7 @@ class IndicatorSettingsChecks(unittest.TestCase):
             self.assertEqual(reopened.chart.study_heights["Relative Volume"], 188)
             self.assertEqual(reopened.chart.indicator_settings["Auto Fibonacci"], fibonacci)
             self.assertFalse(any(reopened.chart.indicators.values()))
-            self.assertEqual(reopened.trading_hotkeys["place_buy"], "Ctrl+7")
+            self.assertEqual(reopened.trading_hotkeys["place_buy"], "Ctrl+D")
             self.assertEqual(reopened.quick_trading_preset["leverage"], 7)
             self.close_window(reopened)
         self.assertEqual(requests, [], "UI checks attempted network I/O")
