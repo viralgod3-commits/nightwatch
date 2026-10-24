@@ -660,23 +660,27 @@ class MainWindow(QtWidgets.QMainWindow):
             "chart/rsi_lower", "chart/liquidation_display_v2",
         ):
             self.settings.remove(legacy_key)
-        shortcut_key = "chart/indicator_shortcuts_v4"
-        migrate_digit_zero = not self.settings.contains(shortcut_key)
-        previous_shortcut_key = (
-            "chart/indicator_shortcuts_v3"
-            if self.settings.contains("chart/indicator_shortcuts_v3")
-            else "chart/indicator_shortcuts_v2"
+        shortcut_key = "chart/indicator_shortcuts_v5"
+        stored_shortcut_key = next(
+            (key for key in (shortcut_key, "chart/indicator_shortcuts_v4",
+                             "chart/indicator_shortcuts_v3", "chart/indicator_shortcuts_v2")
+             if self.settings.contains(key)),
+            shortcut_key,
         )
-        legacy_shortcuts = migrate_digit_zero and previous_shortcut_key.endswith("_v2")
         stored_indicator_shortcuts = self.settings.value(
-            previous_shortcut_key if migrate_digit_zero else shortcut_key, "", str
+            stored_shortcut_key, "", str
         )
         try:
             restored_shortcuts = json.loads(stored_indicator_shortcuts or "{}")
         except (TypeError, json.JSONDecodeError):
             restored_shortcuts = {}
         self.indicator_shortcuts = constants.normalized_indicator_shortcuts(
-            restored_shortcuts, legacy=legacy_shortcuts, migrate_digit_zero=migrate_digit_zero
+            restored_shortcuts,
+            legacy=stored_shortcut_key == "chart/indicator_shortcuts_v2",
+            migrate_digit_zero=stored_shortcut_key in (
+                "chart/indicator_shortcuts_v2", "chart/indicator_shortcuts_v3"
+            ),
+            repair_trend_shortcuts=stored_shortcut_key != shortcut_key,
         )
         self.right_layout_presets = json.loads(json.dumps(RIGHT_LAYOUT_PRESETS))
         # The new presets persist actual splitter trees, not panel membership.
@@ -909,7 +913,8 @@ class MainWindow(QtWidgets.QMainWindow):
         for name, shortcut in self.indicator_shortcuts.items():
             if shortcut in trading_shortcuts:
                 self.indicator_shortcuts[name] = ""
-        self.settings.setValue("chart/indicator_shortcuts_v4", json.dumps(self.indicator_shortcuts))
+        self.settings.setValue("chart/indicator_shortcuts_v5", json.dumps(self.indicator_shortcuts))
+        self.settings.remove("chart/indicator_shortcuts_v4")
         self.settings.remove("chart/indicator_shortcuts_v3")
         self.settings.remove("chart/indicator_shortcuts_v2")
         self.quick_trading_preset = dict(constants.DEFAULT_QUICK_TRADING_PRESET)
@@ -3334,7 +3339,7 @@ class MainWindow(QtWidgets.QMainWindow):
             json.dumps(self.chart.indicator_settings, separators=(",", ":")),
         )
         self.settings.setValue(
-            "chart/indicator_shortcuts_v4",
+            "chart/indicator_shortcuts_v5",
             json.dumps(self.indicator_shortcuts, separators=(",", ":")),
         )
         self.settings.setValue(
@@ -8335,7 +8340,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.indicator_shortcuts = dialog.shortcuts()
         self._refresh_indicator_action_labels()
         self.settings.setValue(
-            "chart/indicator_shortcuts_v4",
+            "chart/indicator_shortcuts_v5",
             json.dumps(self.indicator_shortcuts, separators=(",", ":")),
         )
         self.settings.sync()

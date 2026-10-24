@@ -194,7 +194,8 @@ INDICATOR_SHORTCUT_CHOICES = tuple("1234567890") + (
 
 
 def normalized_indicator_shortcuts(
-    values: object, *, legacy: bool = False, migrate_digit_zero: bool = False
+    values: object, *, legacy: bool = False, migrate_digit_zero: bool = False,
+    repair_trend_shortcuts: bool = False,
 ) -> dict[str, str]:
     """Migrate old defaults while retaining compatible custom bindings/opt-outs."""
     values = values if isinstance(values, dict) else {}
@@ -218,6 +219,15 @@ def normalized_indicator_shortcuts(
     # Fill that new default once; retain custom bindings and later opt-outs.
     if migrate_digit_zero and not result["Bollinger Bands"] and "0" not in used:
         result["Bollinger Bands"] = "0"
+        used.add("0")
+    # Older settings can retain empty bindings for the three trend overlays.
+    # Repair those once on upgrade without displacing any custom assignment.
+    if repair_trend_shortcuts:
+        for name in ("VWAP", "EMA Trend", "Supertrend"):
+            default = DEFAULT_INDICATOR_SHORTCUTS[name]
+            if not result[name] and default not in used:
+                result[name] = default
+                used.add(default)
     return result
 
 
