@@ -793,7 +793,6 @@ class SettingsHostPort(Protocol):
     help_menu: Any
     right_layout_presets: Any
     right_rail_controller: Any
-    ui_tuner_dialog: Any
     developer_dialog: Any
     magnetic_rail_lab_dialog: Any
 

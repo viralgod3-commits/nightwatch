@@ -132,7 +132,6 @@ from ..ui.developer_tools import (
     DeveloperDialog,
     MagneticRailLabDialog,
     MagneticRailPresetsDialog,
-    UiTunerDialog,
 )
 from ..ui.dialogs import (
     IndicatorSettingsDialog,
@@ -863,7 +862,6 @@ class MainWindow(QtWidgets.QMainWindow):
         self.magnetic_rail_order_presets, self.active_magnetic_rail_order_preset = self._load_magnetic_rail_order_presets()
         self.settings_dialog: NightwatchSettingsDialog | None = None
         self.developer_dialog: DeveloperDialog | None = None
-        self.ui_tuner_dialog: UiTunerDialog | None = None
         self.magnetic_rail_lab_dialog: MagneticRailLabDialog | None = None
         self.trading_hotkeys = dict(DEFAULT_TRADING_HOTKEYS)
         legacy_number_trading_shortcuts: set[str] = set()
@@ -2581,10 +2579,9 @@ class MainWindow(QtWidgets.QMainWindow):
                 self._apply_active_magnetic_rail_order_preset()
 
         self.settings.sync()
-        if self.ui_tuner_dialog is not None:
-            self.ui_tuner_dialog.sync_from_owner()
         if self.magnetic_rail_lab_dialog is not None:
             self.magnetic_rail_lab_dialog.sync_from_owner()
+        self._sync_settings_window()
         message = f"UI PROFILE IMPORTED · {os.path.basename(path)}"
         if not colors_compatible:
             message += " · Older color settings skipped; current theme colors applied"

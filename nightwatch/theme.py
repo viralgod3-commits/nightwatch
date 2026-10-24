@@ -1946,21 +1946,19 @@ def build_shell_stylesheet(theme_name: str, theme: dict[str, str], surfaces: dic
             QDialog#nightwatchSettingsDialog QRadioButton {{
                 min-height: 23px; spacing: 7px; background: transparent;
             }}
-            QDialog#nightwatchSettingsDialog QTabWidget#settingsDeveloperTabs::pane {{
-                border: 1px solid {separator}; background: {t['panel']};
-                top: -1px;
+            QDialog#nightwatchSettingsDialog QTabWidget#settingsSectionTabs::pane {{
+                border: 0; background: {t['panel']};
             }}
-            QDialog#nightwatchSettingsDialog QTabWidget#settingsDeveloperTabs QTabBar::tab {{
-                min-height: 34px; min-width: 150px; padding: 7px 14px;
+            QDialog#nightwatchSettingsDialog QTabWidget#settingsSectionTabs QTabBar::tab {{
+                min-height: 26px; min-width: 0; padding: 5px 12px; margin: 0;
                 background: {t['panel2']}; color: {t['muted']};
                 border: 0; border-bottom: 2px solid transparent;
             }}
-            QDialog#nightwatchSettingsDialog QTabWidget#settingsDeveloperTabs QTabBar::tab:hover {{
+            QDialog#nightwatchSettingsDialog QTabWidget#settingsSectionTabs QTabBar::tab:hover {{
                 background: {control_hover}; color: {t['text']};
             }}
-            QDialog#nightwatchSettingsDialog QTabWidget#settingsDeveloperTabs QTabBar::tab:selected {{
-                background: {t['panel']}; color: {t['text']};
-                border-bottom: 2px solid {active_line};
+            QDialog#nightwatchSettingsDialog QTabWidget#settingsSectionTabs QTabBar::tab:selected {{
+                background: {t['panel']}; color: {t['text']}; border-bottom-color: {active_line};
             }}
             QWidget#settingsEmbeddedTool {{
                 background: {t['panel']}; border: 0;

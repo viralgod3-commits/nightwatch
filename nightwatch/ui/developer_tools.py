@@ -5,107 +5,93 @@ from typing import Any
 from PySide6 import QtCore, QtGui, QtWidgets
 from PySide6.QtCore import Qt
 from ..models import UiTunerHostPort
-from ..constants import DEV_UI_COLOR_FIELDS, DEV_UI_COLOR_PROFILE_FIELDS, DEV_UI_LAYOUT_DEFAULTS, DEV_UI_LAYOUT_PRESETS, DEV_UI_SURFACE_DEFAULTS, DEV_UI_STATUS_COLOR_FIELDS, DEV_UI_STATUS_PRESETS
+from ..constants import DEV_UI_COLOR_PROFILE_FIELDS, DEV_UI_STATUS_COLOR_FIELDS
 from ..utilities import DEV_UI_STATUS_FONT_DEFAULTS, TYPOGRAPHY_DEFAULTS, TYPOGRAPHY_ROLE_LABELS, TextRole, format_local_time, typography_controller, typography_font
 
 class UiTunerDialog(QtWidgets.QWidget):
-    """Live developer-only controls for visual contrast and layout geometry."""
+    """One lazy appearance section, using the existing persistent settings."""
 
-    def __init__(self, host: UiTunerHostPort):
+    def __init__(self, host: UiTunerHostPort, *, section: str = "colors"):
         super().__init__(host)
         self.host = host
         self.setObjectName('settingsEmbeddedTool')
-        self._color_edits: dict[str, QtWidgets.QLineEdit] = {}
-        self._color_buttons: dict[str, QtWidgets.QPushButton] = {}
-        self._layout_spins: dict[str, QtWidgets.QSpinBox] = {}
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self._color_edits = {}
+        self._color_buttons = {}
         root = QtWidgets.QVBoxLayout(self)
-        root.setContentsMargins(12, 12, 12, 12)
-        root.setSpacing(8)
-        note = QtWidgets.QLabel('Developer-only live overrides. Changes are persistent until reset; normal Nightwatch defaults are never rewritten.')
+        root.setContentsMargins(18, 14, 18, 18)
+        root.setSpacing(10)
+        titles = {"colors": "Custom colors", "typography": "Fonts & text", "status": "Status bar"}
+        heading = QtWidgets.QLabel(titles[section])
+        heading.setObjectName('settingsPageHeading')
+        root.addWidget(heading)
+        note = QtWidgets.QLabel('Select a text role to edit. Changes save automatically.' if section == 'typography'
+                                else 'Changes save automatically. Reset restores the defaults for this section.')
         note.setObjectName('subtleLabel')
         note.setWordWrap(True)
         root.addWidget(note)
-        tabs = QtWidgets.QTabWidget()
-        root.addWidget(tabs, 1)
+        builder = {"colors": self._build_colors, "typography": self._build_typography,
+                   "status": self._build_status}[section]
+        root.addWidget(builder(), 1)
+
+    def _build_colors(self):
+        host = self.host
         colors_page = QtWidgets.QWidget()
+        colors_page.setObjectName("settingsPage")
         colors_root = QtWidgets.QVBoxLayout(colors_page)
         colors_root.setContentsMargins(10, 10, 10, 10)
         colors_root.setSpacing(10)
-        color_preset_row = QtWidgets.QWidget()
-        color_preset_layout = QtWidgets.QFormLayout(color_preset_row)
-        color_preset_layout.setContentsMargins(0, 0, 0, 0)
-        color_preset_layout.setHorizontalSpacing(12)
-        self.color_preset = QtWidgets.QComboBox()
-        self.color_preset.addItem('Custom', 'Custom')
-        self.color_preset.addItem('Theme default', 'Theme default')
-        self._set_combo_data(self.color_preset, host.current_developer_ui_color_preset())
-        self.color_preset.currentIndexChanged.connect(lambda _index: self._color_preset_changed())
-        color_preset_layout.addRow('Color style', self.color_preset)
-        colors_root.addWidget(color_preset_row)
-        color_note = QtWidgets.QLabel('These are explicit color overrides. Unset semantic colors continue to derive from the selected base theme and propagate through the canonical resolver to shell, chart, rail and DOM.')
-        color_note.setObjectName('subtleLabel')
-        color_note.setWordWrap(True)
-        colors_root.addWidget(color_note)
         colors_scroll = QtWidgets.QScrollArea()
+        colors_scroll.setObjectName("settingsScroll")
         colors_scroll.setWidgetResizable(True)
         colors_scroll.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
         colors_content = QtWidgets.QWidget()
+        colors_content.setObjectName("settingsPage")
         colors_layout = QtWidgets.QGridLayout(colors_content)
         colors_layout.setContentsMargins(0, 0, 0, 0)
         colors_layout.setHorizontalSpacing(8)
         colors_layout.setVerticalSpacing(6)
-        colors_layout.setColumnStretch(1, 1)
+        colors_layout.setColumnStretch(3, 1)
         for row, (key, label) in enumerate(DEV_UI_COLOR_PROFILE_FIELDS):
             colors_layout.addWidget(QtWidgets.QLabel(label), row, 0)
             edit = QtWidgets.QLineEdit(host.ui_theme.get(key, '#000000'))
             edit.setMaxLength(9)
+            edit.setAccessibleName(label + " color")
+            edit.setMaximumWidth(150)
             edit.editingFinished.connect(lambda name=key, field=edit: self._commit_color(name, field.text()))
-            pick = QtWidgets.QPushButton('PICK')
-            pick.setFixedWidth(62)
+            pick = QtWidgets.QPushButton('Choose…')
+            pick.setFixedWidth(76)
             pick.clicked.connect(lambda _checked=False, name=key: self._pick_color(name))
             colors_layout.addWidget(edit, row, 1)
             colors_layout.addWidget(pick, row, 2)
             self._color_edits[key] = edit
             self._color_buttons[key] = pick
             self._update_color_button(key)
-        colors_layout.setRowStretch(len(DEV_UI_COLOR_FIELDS), 1)
+        colors_layout.setRowStretch(len(DEV_UI_COLOR_PROFILE_FIELDS), 1)
         colors_scroll.setWidget(colors_content)
         colors_root.addWidget(colors_scroll, 1)
-        reset_colors_tab = QtWidgets.QPushButton('RESET TO THEME COLORS')
+        reset_colors_tab = QtWidgets.QPushButton('Reset to theme colors')
         reset_colors_tab.clicked.connect(self._reset_colors)
         colors_root.addWidget(reset_colors_tab, 0, Qt.AlignmentFlag.AlignRight)
-        tabs.addTab(colors_page, 'COLORS')
-        surfaces_page = QtWidgets.QWidget()
-        surfaces_form = QtWidgets.QFormLayout(surfaces_page)
-        surfaces_form.setContentsMargins(14, 14, 14, 14)
-        surfaces_form.setHorizontalSpacing(16)
-        surfaces_form.setVerticalSpacing(9)
-        self._surface_spins: dict[str, QtWidgets.QSpinBox] = {}
-        for key, label, minimum, maximum in (('block_border_width', 'Structural block border', 0, 4), ('block_radius', 'Structural block radius', 0, 16), ('element_radius', 'Element/control radius', 0, 12)):
-            spin = QtWidgets.QSpinBox()
-            spin.setRange(minimum, maximum)
-            spin.setSuffix(' px')
-            spin.setValue(int(host.developer_ui_surfaces.get(key, DEV_UI_SURFACE_DEFAULTS[key])))
-            spin.setEnabled(False)
-            spin.setToolTip('Fixed in this version.')
-            surfaces_form.addRow(label, spin)
-            self._surface_spins[key] = spin
-        surface_note = QtWidgets.QLabel('Surface geometry is locked by the current build-time UI contract. These values are shown for reference only; color, status and typography tuning remain live.')
-        surface_note.setObjectName('subtleLabel')
-        surface_note.setWordWrap(True)
-        surfaces_form.addRow(surface_note)
-        tabs.addTab(surfaces_page, 'SURFACES')
+        return colors_page
+
+    def _build_status(self):
+        host = self.host
         status_page = QtWidgets.QWidget()
+        status_page.setObjectName("settingsPage")
         status_root = QtWidgets.QVBoxLayout(status_page)
         status_root.setContentsMargins(10, 10, 10, 10)
         status_root.setSpacing(10)
         status_scroll = QtWidgets.QScrollArea()
+        status_scroll.setObjectName("settingsScroll")
         status_scroll.setWidgetResizable(True)
         status_scroll.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
         status_content = QtWidgets.QWidget()
+        status_content.setObjectName("settingsPage")
         status_layout = QtWidgets.QFormLayout(status_content)
         status_layout.setHorizontalSpacing(14)
         status_layout.setVerticalSpacing(7)
+        status_layout.setRowWrapPolicy(QtWidgets.QFormLayout.RowWrapPolicy.WrapLongRows)
         self._status_color_edits: dict[str, QtWidgets.QLineEdit] = {}
         self._status_color_buttons: dict[str, QtWidgets.QPushButton] = {}
         self._status_font_combos: dict[str, QtWidgets.QComboBox] = {}
@@ -115,25 +101,19 @@ class UiTunerDialog(QtWidgets.QWidget):
             row_layout.setContentsMargins(0, 0, 0, 0)
             edit = QtWidgets.QLineEdit(str(host.developer_ui_status[key]))
             edit.setMaxLength(9)
+            edit.setAccessibleName(label + " color")
+            edit.setMaximumWidth(150)
             edit.editingFinished.connect(lambda name=key, field=edit: self._commit_status_color(name, field.text()))
-            pick = QtWidgets.QPushButton('PICK')
-            pick.setFixedWidth(62)
+            pick = QtWidgets.QPushButton('Choose…')
+            pick.setFixedWidth(76)
             pick.clicked.connect(lambda _checked=False, name=key: self._pick_status_color(name))
-            row_layout.addWidget(edit, 1)
+            row_layout.addWidget(edit)
             row_layout.addWidget(pick)
+            row_layout.addStretch(1)
             status_layout.addRow(label, row)
             self._status_color_edits[key] = edit
             self._status_color_buttons[key] = pick
             self._update_status_color_button(key)
-        self.status_density = QtWidgets.QComboBox()
-        self.status_density.addItem('Custom', 'Custom')
-        for name in DEV_UI_STATUS_PRESETS:
-            self.status_density.addItem(name, name)
-        self._set_combo_data(self.status_density, host.current_developer_ui_status_preset())
-        self.status_density.setEnabled(False)
-        self.status_density.setToolTip('Fixed in this version.')
-        self.status_density.currentIndexChanged.connect(lambda _index: self._status_density_changed())
-        status_layout.addRow('Density', self.status_density)
         for key, default in DEV_UI_STATUS_FONT_DEFAULTS.items():
             combo = QtWidgets.QComboBox()
             for role, label in TYPOGRAPHY_ROLE_LABELS.items():
@@ -144,77 +124,35 @@ class UiTunerDialog(QtWidgets.QWidget):
             self._status_font_combos[key] = combo
         status_scroll.setWidget(status_content)
         status_root.addWidget(status_scroll)
-        reset_status = QtWidgets.QPushButton('RESET STATUS BAR')
+        reset_status = QtWidgets.QPushButton('Reset status bar')
         reset_status.clicked.connect(self._reset_status)
         status_root.addWidget(reset_status, 0, Qt.AlignmentFlag.AlignRight)
-        tabs.addTab(status_page, 'STATUS BAR')
-        geometry_page = QtWidgets.QWidget()
-        geometry_root = QtWidgets.QVBoxLayout(geometry_page)
-        geometry_root.setContentsMargins(0, 0, 0, 0)
-        geometry_scroll = QtWidgets.QScrollArea()
-        geometry_scroll.setWidgetResizable(True)
-        geometry_scroll.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
-        geometry_content = QtWidgets.QWidget()
-        geometry_layout = QtWidgets.QVBoxLayout(geometry_content)
-        geometry_layout.setContentsMargins(10, 10, 10, 10)
-        geometry_layout.setSpacing(10)
-        geometry_lock_note = QtWidgets.QLabel('Geometry is locked by the current build-time layout contract. Controls below are reference-only so they cannot appear to apply and then snap back.')
-        geometry_lock_note.setObjectName('subtleLabel')
-        geometry_lock_note.setWordWrap(True)
-        geometry_layout.addWidget(geometry_lock_note)
-        preset_group = QtWidgets.QGroupBox('UI PRESETS')
-        preset_form = QtWidgets.QFormLayout(preset_group)
-        preset_form.setContentsMargins(10, 8, 10, 8)
-        preset_form.setHorizontalSpacing(12)
-        preset_form.setVerticalSpacing(7)
-        self.layout_preset = QtWidgets.QComboBox()
-        self.layout_preset.addItem('Custom', 'Custom')
-        for name in DEV_UI_LAYOUT_PRESETS:
-            self.layout_preset.addItem(name, name)
-        self._set_combo_data(self.layout_preset, host.current_developer_ui_layout_preset())
-        self.layout_preset.setEnabled(False)
-        self.layout_preset.setToolTip('Fixed in this version.')
-        preset_form.addRow('Layout', self.layout_preset)
-        preset_note = QtWidgets.QLabel('Presets own the repetitive margins and padding. Near zero is the dense reference layout; the others add separation only where it helps distinguish functional groups.')
-        preset_note.setObjectName('subtleLabel')
-        preset_note.setWordWrap(True)
-        preset_form.addRow(preset_note)
-        geometry_layout.addWidget(preset_group)
-        spacing_group = QtWidgets.QGroupBox('FINE TUNE')
-        spacing_form = QtWidgets.QFormLayout(spacing_group)
-        spacing_form.setContentsMargins(10, 8, 10, 8)
-        spacing_form.setHorizontalSpacing(12)
-        spacing_form.setVerticalSpacing(7)
-        self.shared_control_spacing = QtWidgets.QSpinBox()
-        self.shared_control_spacing.setRange(0, 12)
-        self.shared_control_spacing.setSuffix(' px')
-        self.shared_control_spacing.setValue(int(host.developer_ui_layout.get('toolbar_gap', 1)))
-        self.shared_control_spacing.setEnabled(False)
-        self.shared_control_spacing.setToolTip('Fixed in this version.')
-        spacing_form.addRow('Control spacing', self.shared_control_spacing)
-        geometry_layout.addWidget(spacing_group)
-        self._add_geometry_group(geometry_layout, 'STRUCTURE', (('topbar_group_gap', 'Logical group separation', 0, 24), ('instrument_height', 'Instrument bar height', 30, 64), ('right_panel_margin', 'Right-panel padding', 0, 12), ('axis_width', 'Price-axis width', 56, 120)))
-        geometry_layout.addStretch(1)
-        geometry_scroll.setWidget(geometry_content)
-        geometry_root.addWidget(geometry_scroll)
-        tabs.addTab(geometry_page, 'GEOMETRY')
+        return status_page
+
+    def _build_typography(self):
         typography_page = QtWidgets.QWidget()
+        typography_page.setObjectName("settingsPage")
         typography_root = QtWidgets.QHBoxLayout(typography_page)
         typography_root.setContentsMargins(10, 10, 10, 10)
         typography_root.setSpacing(12)
         self.typography_roles = QtWidgets.QListWidget()
         self.typography_roles.setMinimumWidth(150)
         self.typography_roles.setMaximumWidth(210)
+        self.typography_roles.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.typography_roles.setTextElideMode(Qt.TextElideMode.ElideRight)
         for role, label in TYPOGRAPHY_ROLE_LABELS.items():
             item = QtWidgets.QListWidgetItem(label)
+            item.setToolTip(label)
             item.setData(Qt.ItemDataRole.UserRole, role)
             self.typography_roles.addItem(item)
         typography_root.addWidget(self.typography_roles)
         typography_controls = QtWidgets.QWidget()
+        typography_controls.setObjectName("settingsGridHost")
         typography_form = QtWidgets.QFormLayout(typography_controls)
         typography_form.setContentsMargins(0, 0, 0, 0)
         typography_form.setHorizontalSpacing(14)
         typography_form.setVerticalSpacing(7)
+        typography_form.setRowWrapPolicy(QtWidgets.QFormLayout.RowWrapPolicy.WrapLongRows)
         self._typography_loading = False
         self.type_family = QtWidgets.QComboBox()
         self.type_family.addItem('Inter / UI', 'ui')
@@ -224,7 +162,7 @@ class UiTunerDialog(QtWidgets.QWidget):
         self.type_numeric_width.addItem('Extended · display', 'extended')
         self.type_size_mode = QtWidgets.QComboBox()
         self.type_size_mode.addItem('Point · DPI scaled', 'point')
-        self.type_size_mode.addItem('Pixel · A/B test', 'pixel')
+        self.type_size_mode.addItem('Pixels · fixed size', 'pixel')
         self.type_size = QtWidgets.QDoubleSpinBox()
         self.type_size.setRange(5.0, 24.0)
         self.type_size.setDecimals(2)
@@ -274,27 +212,27 @@ class UiTunerDialog(QtWidgets.QWidget):
             hidden_control.hide()
         self.type_rendering_preset = QtWidgets.QComboBox()
         self.type_rendering_preset.addItem('Custom', 'Custom')
+        self.type_rendering_preset.model().item(0).setEnabled(False)
         self.type_rendering_preset.addItem('Native', 'Native')
         self.type_rendering_preset.addItem('Balanced', 'Balanced')
         self.type_rendering_preset.addItem('Crisp', 'Crisp')
-        typography_form.addRow('Family', self.type_family)
+        typography_form.addRow('Font family', self.type_family)
         typography_form.addRow('Numeric width', self.type_numeric_width)
-        typography_form.addRow('Size mode', self.type_size_mode)
-        typography_form.addRow('Size', self.type_size)
+        typography_form.addRow('Size units', self.type_size_mode)
+        typography_form.addRow('Font size', self.type_size)
         typography_form.addRow('Weight', self.type_weight)
         typography_form.addRow('Rendering', self.type_rendering_preset)
         typography_form.addRow('Preview', self.type_preview)
         typography_buttons = QtWidgets.QHBoxLayout()
-        reset_role = QtWidgets.QPushButton('RESET ROLE')
+        reset_role = QtWidgets.QPushButton('Reset selected font')
         reset_role.clicked.connect(self._reset_typography_role)
-        reset_type = QtWidgets.QPushButton('RESET TYPOGRAPHY')
+        reset_type = QtWidgets.QPushButton('Reset all fonts')
         reset_type.clicked.connect(self._reset_typography)
         typography_buttons.addWidget(reset_role)
         typography_buttons.addWidget(reset_type)
         typography_buttons.addStretch(1)
         typography_form.addRow(typography_buttons)
         typography_root.addWidget(typography_controls, 1)
-        tabs.addTab(typography_page, 'TYPOGRAPHY')
         for control, key in (
             (self.type_family, 'family'),
             (self.type_numeric_width, 'numeric_width'),
@@ -318,32 +256,12 @@ class UiTunerDialog(QtWidgets.QWidget):
         self.typography_roles.currentRowChanged.connect(lambda _row: self._load_typography_role())
         self.typography_roles.setCurrentRow(0)
         self._load_typography_role()
-        actions = QtWidgets.QGridLayout()
-        copy_geometry = QtWidgets.QPushButton('COPY CHART GEOMETRY')
-        copy_geometry.setToolTip('Copy price-plot/ViewBox scene geometry for diagnosing dead strips')
-        copy_geometry.clicked.connect(self._copy_chart_geometry)
-        reset_colors = QtWidgets.QPushButton('THEME COLORS')
-        reset_colors.setToolTip('Return shell colors to the active theme')
-        reset_colors.clicked.connect(self._reset_colors)
-        import_profile = QtWidgets.QPushButton('IMPORT PROFILE')
-        import_profile.setToolTip('Load and apply a saved UI profile.')
-        import_profile.clicked.connect(self._import_profile)
-        export_profile = QtWidgets.QPushButton('EXPORT PROFILE')
-        export_profile.setToolTip('Save the current UI settings as a JSON profile.')
-        export_profile.clicked.connect(self._export_profile)
-        reset_surfaces = QtWidgets.QPushButton('RESET SURFACES')
-        reset_surfaces.setEnabled(False)
-        reset_surfaces.setToolTip('Fixed in this version.')
-        reset_geometry = QtWidgets.QPushButton('RESET GEOMETRY')
-        reset_geometry.setEnabled(False)
-        reset_geometry.setToolTip('Fixed in this version.')
-        actions.addWidget(copy_geometry, 0, 0)
-        actions.addWidget(import_profile, 0, 1)
-        actions.addWidget(export_profile, 0, 2)
-        actions.addWidget(reset_colors, 1, 0)
-        actions.addWidget(reset_surfaces, 1, 1)
-        actions.addWidget(reset_geometry, 1, 2)
-        root.addLayout(actions)
+        scroll = QtWidgets.QScrollArea()
+        scroll.setObjectName('settingsScroll')
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
+        scroll.setWidget(typography_page)
+        return scroll
 
     def _selected_typography_role(self) -> str:
         item = self.typography_roles.currentItem()
@@ -426,58 +344,6 @@ class UiTunerDialog(QtWidgets.QWidget):
         self.host.reset_developer_typography()
         self._load_typography_role()
 
-    def _color_preset_changed(self) -> None:
-        name = str(self.color_preset.currentData() or '')
-        if name == 'Theme default':
-            self.host.apply_developer_ui_color_preset(name)
-            self.sync_from_owner()
-
-
-    def _status_density_changed(self) -> None:
-        name = str(self.status_density.currentData() or '')
-        if name in DEV_UI_STATUS_PRESETS:
-            self.host.apply_developer_ui_status_preset(name)
-            self.sync_from_owner()
-
-    def _sync_layout_controls(self) -> None:
-        if hasattr(self, 'color_preset'):
-            blocker = QtCore.QSignalBlocker(self.color_preset)
-            self._set_combo_data(self.color_preset, self.host.current_developer_ui_color_preset())
-            del blocker
-        if hasattr(self, 'layout_preset'):
-            blocker = QtCore.QSignalBlocker(self.layout_preset)
-            self._set_combo_data(self.layout_preset, self.host.current_developer_ui_layout_preset())
-            del blocker
-        if hasattr(self, 'shared_control_spacing'):
-            blocker = QtCore.QSignalBlocker(self.shared_control_spacing)
-            values = self.host.developer_ui_layout
-            spacing = max(int(values.get('toolbar_gap', 0)), int(values.get('timeframe_gap', 0)), int(values.get('instrument_spacing', 0)))
-            self.shared_control_spacing.setValue(spacing)
-            del blocker
-        if hasattr(self, 'status_density'):
-            blocker = QtCore.QSignalBlocker(self.status_density)
-            self._set_combo_data(self.status_density, self.host.current_developer_ui_status_preset())
-            del blocker
-
-
-    def _add_geometry_group(self, parent: QtWidgets.QVBoxLayout, title: str, fields: tuple) -> None:
-        group = QtWidgets.QGroupBox(title)
-        grid = QtWidgets.QGridLayout(group)
-        grid.setContentsMargins(10, 8, 10, 8)
-        grid.setHorizontalSpacing(12)
-        grid.setVerticalSpacing(5)
-        grid.setColumnStretch(0, 1)
-        for row, (key, label, minimum, maximum) in enumerate(fields):
-            grid.addWidget(QtWidgets.QLabel(label), row, 0)
-            spin = QtWidgets.QSpinBox()
-            spin.setRange(int(minimum), int(maximum))
-            spin.setValue(int(self.host.developer_ui_layout.get(key, DEV_UI_LAYOUT_DEFAULTS[key])))
-            spin.setEnabled(False)
-            spin.setToolTip('Fixed in this version.')
-            grid.addWidget(spin, row, 1)
-            self._layout_spins[key] = spin
-        parent.addWidget(group)
-
     def _commit_color(self, key: str, value: str) -> None:
         color = QtGui.QColor(str(value).strip())
         if not color.isValid():
@@ -530,14 +396,6 @@ class UiTunerDialog(QtWidgets.QWidget):
         for key, edit in self._color_edits.items():
             edit.setText(self.host.ui_theme.get(key, '#000000'))
             self._update_color_button(key)
-        for key, spin in self._layout_spins.items():
-            blocker = QtCore.QSignalBlocker(spin)
-            spin.setValue(int(self.host.developer_ui_layout.get(key, DEV_UI_LAYOUT_DEFAULTS[key])))
-            del blocker
-        for key, spin in getattr(self, '_surface_spins', {}).items():
-            blocker = QtCore.QSignalBlocker(spin)
-            spin.setValue(int(self.host.developer_ui_surfaces.get(key, DEV_UI_SURFACE_DEFAULTS[key])))
-            del blocker
         for key, edit in getattr(self, '_status_color_edits', {}).items():
             edit.setText(str(self.host.developer_ui_status[key]))
             self._update_status_color_button(key)
@@ -545,7 +403,6 @@ class UiTunerDialog(QtWidgets.QWidget):
             blocker = QtCore.QSignalBlocker(combo)
             self._set_combo_data(combo, self.host.developer_ui_status[key])
             del blocker
-        self._sync_layout_controls()
         if hasattr(self, 'typography_roles'):
             self._load_typography_role()
 
@@ -558,16 +415,6 @@ class UiTunerDialog(QtWidgets.QWidget):
         self.host.reset_developer_ui_status()
         self.sync_from_owner()
 
-    def _import_profile(self) -> None:
-        self.host.import_developer_ui_profile()
-
-    def _export_profile(self) -> None:
-        self.host.export_developer_ui_profile()
-
-    def _copy_chart_geometry(self) -> None:
-        report = self.host.chart.developer_geometry_report()
-        QtWidgets.QApplication.clipboard().setText(report)
-        self.host.statusBar().showMessage('CHART GEOMETRY COPIED', 1800)
 from ..models import MagneticRailLabHostPort
 from ..chart.magnetic_rail import ORDER_RAIL_LAB_DEFAULTS, ORDER_RAIL_STYLE_PRESETS, ORDER_RAIL_ORDER_PRESET_DEFAULTS, normalized_order_rail_order_preset
 from ..constants import LEVERAGE_PRESETS
@@ -582,39 +429,32 @@ class MagneticRailLabDialog(QtWidgets.QWidget):
         self._syncing = False
         self.setObjectName('settingsEmbeddedTool')
         root = QtWidgets.QVBoxLayout(self)
-        root.setContentsMargins(14, 14, 14, 14)
+        root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(10)
-        heading = QtWidgets.QLabel('MAGNETIC RAIL DESIGN')
-        heading.setObjectName('dialogHeading')
-        root.addWidget(heading)
-        note = QtWidgets.QLabel("The rail stays pinned to the chart's right edge. Order size, leverage and reduce-only are now compact inline controls on the rail body; the old expandable tooltip/tray frontend has been removed.")
-        note.setObjectName('subtleLabel')
-        note.setWordWrap(True)
-        root.addWidget(note)
         form = QtWidgets.QFormLayout()
         form.setHorizontalSpacing(14)
         form.setVerticalSpacing(10)
+        form.setRowWrapPolicy(QtWidgets.QFormLayout.RowWrapPolicy.WrapLongRows)
         self.style_combo = QtWidgets.QComboBox()
         self.style_combo.addItems(tuple(ORDER_RAIL_STYLE_PRESETS))
         self.style_combo.currentTextChanged.connect(self._style_selected)
-        form.addRow('RAY EFFECT', self.style_combo)
+        form.addRow('Ray effect', self.style_combo)
         self.armed_transition_check = QtWidgets.QCheckBox('Animate contraction + directional latch')
         self.armed_transition_check.setToolTip('Animate the rail shrinking when armed. Off changes its size instantly.')
         self.armed_transition_check.toggled.connect(self._armed_transition_toggled)
-        form.addRow('ARM TRANSITION', self.armed_transition_check)
+        form.addRow('Arm transition', self.armed_transition_check)
         self.cancel_implosion_check = QtWidgets.QCheckBox('Animate cancellation implosion')
         self.cancel_implosion_check.setToolTip('Animate removal when the working order disappears.')
         self.cancel_implosion_check.toggled.connect(self._cancel_implosion_toggled)
-        form.addRow('CANCEL EFFECT', self.cancel_implosion_check)
+        form.addRow('Cancel effect', self.cancel_implosion_check)
         root.addLayout(form)
         self.preview_note = QtWidgets.QLabel()
         self.preview_note.setObjectName('subtleLabel')
         self.preview_note.setWordWrap(True)
-        self.preview_note.setMinimumHeight(72)
         root.addWidget(self.preview_note)
         root.addStretch(1)
         bottom = QtWidgets.QHBoxLayout()
-        reset = QtWidgets.QPushButton('RESTORE RAIL DEFAULTS')
+        reset = QtWidgets.QPushButton('Reset rail visuals')
         reset.clicked.connect(self._reset)
         bottom.addWidget(reset)
         bottom.addStretch(1)
@@ -640,9 +480,7 @@ class MagneticRailLabDialog(QtWidgets.QWidget):
 
     def _refresh_note(self) -> None:
         style = self.style_combo.currentText()
-        arm_state = 'ON' if self.armed_transition_check.isChecked() else 'OFF · SNAP'
-        cancel_state = 'ON' if self.cancel_implosion_check.isChecked() else 'OFF · IMMEDIATE REMOVE'
-        self.preview_note.setText(f'RAY · {self._RAY_NOTES.get(style, style)}\nINLINE CONTROLS · SIZE CYCLE · LEVERAGE CYCLE · REDUCE-ONLY TOGGLE\nARM TRANSITION · {arm_state}\nCANCEL IMPLOSION · {cancel_state}')
+        self.preview_note.setText(self._RAY_NOTES.get(style, style))
 
     def sync_from_owner(self) -> None:
         self._syncing = True

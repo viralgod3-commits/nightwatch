@@ -5,17 +5,18 @@ from __future__ import annotations
 from collections import deque
 from copy import deepcopy
 import math
+import re
 import time
 from uuid import uuid4
 
 from PySide6 import QtCore, QtGui, QtWidgets
 from PySide6.QtCore import QTimer, Qt, Signal
 
-from ..utilities import TextRole, apply_text_render_hints, set_text_role
+from ..utilities import TextRole, TYPOGRAPHY_ROLE_LABELS, apply_text_render_hints, set_text_role
 from ..utilities import device_pixel_value
 from ..constants import (
     MARKET_BAR_TIMEFRAME_LIMIT, MARKET_BAR_TIMEFRAME_PRESETS, TIMEFRAMES,
-    SHELL_RESERVED_SHORTCUTS,
+    SHELL_RESERVED_SHORTCUTS, DEV_UI_COLOR_PROFILE_FIELDS, DEV_UI_STATUS_COLOR_FIELDS,
 )
 
 
@@ -1743,19 +1744,23 @@ class NightwatchSettingsDialog(QtWidgets.QDialog):
         "depth trading positions large trades watchlist stack columns even sizes "
         "undo redo new duplicate delete save apply current clear restore defaults revert"
     )
+    INDICATOR_SEARCH_TERMS = " ".join(
+        name + " " + " ".join(str(field[1]) + " " + str(field[-1]) for field in fields)
+        for name, fields in IndicatorSettingsDialog.SPECS.items()
+    )
+    ALERT_SEARCH_TERMS = "alerts notifications delivery sound desktop popup telegram bot token chat id price"
     # Index the controls on lazy pages without constructing their widgets.
     # Action labels/tooltips and option names are added from the live host below.
     PAGE_SEARCH_TERMS = (
-        "appearance application theme order book theme ladder heatmap embedded tape candle geometry buy sell colors",
+        "appearance application theme order book theme ladder heatmap embedded tape candle style buy sell colors fonts text typography status bar latency",
         "chart market bar timeframes shortcuts workspace price scale auto-scale logarithmic fit visible layers "
         "drawing tools measure ruler fibonacci horizontal level clear drawings volume overlay maximum bar height "
         "indicators parameters shortcuts auto fibonacci",
         WORKSPACE_SEARCH_TERMS,
-        "trading connection order entry account actions execution live testnet credentials quick trading magnetic rail",
-        "alerts delivery notifications market data history download candles CSV research database",
+        "trading connection order entry account actions execution live testnet credentials quick trading magnetic rail leverage sizing collateral margin slippage take profit stop loss reduce only time in force shortcuts hotkeys ray effect arm transition cancel animation",
+        ALERT_SEARCH_TERMS + " market data history download date range candles CSV research database storage",
         "advanced guidance application help order book guide chart performance benchmark FPS frame timing capture "
-        "developer tools UI tuner diagnostics magnetic rail colors surfaces status bar geometry typography "
-        "fonts rendering profiles import export ray effect arm transition cancel effect",
+        "developer diagnostics chart geometry appearance profiles import export",
     )
 
     def __init__(
@@ -1794,10 +1799,13 @@ class NightwatchSettingsDialog(QtWidgets.QDialog):
         self.frame_benchmark_button: QtWidgets.QPushButton | None = None
         self.frame_benchmark_label: QtWidgets.QLabel | None = None
         self.developer_tabs: QtWidgets.QTabWidget | None = None
-        self.embedded_ui_tuner: UiTunerDialog | None = None
+        self.appearance_tabs: QtWidgets.QTabWidget | None = None
+        self.trading_tabs: QtWidgets.QTabWidget | None = None
+        self._appearance_editors: dict[str, UiTunerDialog] = {}
         self.embedded_diagnostics: DeveloperDialog | None = None
         self.embedded_rail_design: MagneticRailLabDialog | None = None
         self._syncing = False
+        self._filtering_search = False
         self._page_builders = (
             self._build_appearance_page,
             self._build_chart_indicators_page,
@@ -1808,7 +1816,6 @@ class NightwatchSettingsDialog(QtWidgets.QDialog):
         )
         self._built_pages: set[int] = set()
         self._developer_tab_keys: list[str] = []
-        self._developer_placeholders: dict[str, QtWidgets.QWidget] = {}
 
         root = QtWidgets.QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
@@ -2093,7 +2100,7 @@ class NightwatchSettingsDialog(QtWidgets.QDialog):
 
     @staticmethod
     def _searchable_text(widget: QtWidgets.QWidget) -> str:
-        parts: list[str] = [widget.objectName(), widget.toolTip()]
+        parts: list[str] = [widget.accessibleName(), widget.toolTip(), str(widget.property("settingsSearchTerms") or "")]
         if isinstance(widget, QtWidgets.QGroupBox):
             parts.append(widget.title())
         if isinstance(widget, QtWidgets.QLabel):
@@ -2103,7 +2110,7 @@ class NightwatchSettingsDialog(QtWidgets.QDialog):
         if isinstance(widget, QtWidgets.QComboBox):
             parts.extend(widget.itemText(index) for index in range(widget.count()))
         for child in widget.findChildren(QtWidgets.QWidget):
-            parts.extend((child.objectName(), child.toolTip()))
+            parts.extend((child.accessibleName(), child.toolTip(), str(child.property("settingsSearchTerms") or "")))
             if isinstance(child, QtWidgets.QGroupBox):
                 parts.append(child.title())
             if isinstance(child, QtWidgets.QLabel):
@@ -2138,7 +2145,12 @@ class NightwatchSettingsDialog(QtWidgets.QDialog):
             actions.extend(self.host.candle_style_actions.values())
             parts.extend(label for _mode, label in DIRECTIONAL_COLOR_MODE_OPTIONS)
             parts.append("Nightwatch orderbook ladder depth heatmap tape colors override")
+            parts.extend(terms for _key, _label, terms in self.APPEARANCE_SECTIONS)
+            parts.extend(TYPOGRAPHY_ROLE_LABELS.values())
+            parts.extend(label for _key, label in DEV_UI_COLOR_PROFILE_FIELDS)
+            parts.extend(label for _key, label in DEV_UI_STATUS_COLOR_FIELDS)
         elif index == 1:
+            parts.append(self.INDICATOR_SEARCH_TERMS)
             for mapping in (self.host.chart_layout_actions, self.host.chart_visibility_actions,
                             self.host.indicator_actions):
                 actions.extend(mapping.values())
@@ -2154,6 +2166,7 @@ class NightwatchSettingsDialog(QtWidgets.QDialog):
             parts.extend(self.host.panel_sections)
         elif index == 3:
             actions.extend(self.host.trading_menu.actions())
+            parts.extend(terms for _key, _label, terms in self.TRADING_SECTIONS)
         elif index == 4:
             actions.extend(self.host.alert_menu.actions())
             actions.extend(self.host.data_menu.actions())
@@ -2170,46 +2183,76 @@ class NightwatchSettingsDialog(QtWidgets.QDialog):
                 actions.extend(submenu.actions())
         return " ".join(parts).casefold()
 
+    @staticmethod
+    def _settings_match(query: str, text: str) -> bool:
+        # Match words in any order, including common punctuation in labels.
+        haystack = " ".join(re.findall(r"\w+", str(text).casefold()))
+        return all(word in haystack for word in re.findall(r"\w+", query.casefold()))
+
+    def _route_search_section(self, index, query):
+        tabs, sections = (self.appearance_tabs, self.APPEARANCE_SECTIONS) if index == 0 else (
+            (self.trading_tabs, self.TRADING_SECTIONS) if index == 3 else (None, ()))
+        if tabs is None or not query:
+            return
+        matches = []
+        for section_index, (key, label, terms) in enumerate(sections):
+            direct_match = self._settings_match(query, label + " " + terms)
+            if key == "colors":
+                terms += " " + " ".join(label for _key, label in DEV_UI_COLOR_PROFILE_FIELDS)
+            elif key == "typography":
+                terms += " " + " ".join(TYPOGRAPHY_ROLE_LABELS.values())
+            elif key == "status":
+                terms += " " + " ".join(label for _key, label in DEV_UI_STATUS_COLOR_FIELDS)
+            if self._settings_match(query, label + " " + terms):
+                matches.append((int(direct_match), section_index))
+        best = max((score for score, _index in matches), default=0)
+        choices = [index for score, index in matches if score == best]
+        if tabs.currentIndex() not in choices:
+            tabs.setCurrentIndex(choices[0] if choices else 0)
+
     def _filter_settings_pages(self, query: str) -> None:
-        first_match = -1
-        current = self.categories.currentRow()
-        current_visible = False
-        for index in range(len(self._page_builders)):
-            page = self.pages.widget(index)
-            category = self.CATEGORIES[index].casefold() if index < len(self.CATEGORIES) else ""
-            category_match = bool(query and query in category)
-            if not query or category_match:
-                page_match = True
-            else:
-                page_match = query in self._page_search_metadata(index)
-                if not page_match and index in self._built_pages:
-                    page_match = query in self._searchable_text(page)
-            item = self.categories.item(index)
-            if item is not None:
-                item.setHidden(not page_match)
-            if page_match and first_match < 0:
-                first_match = index
-            if page_match and index == current:
-                current_visible = True
-
-            groups = [group for group in page.findChildren(QtWidgets.QGroupBox)
-                      if group.objectName() == "settingsGroup"]
-            matching_groups = {group for group in groups
-                               if query and query in self._searchable_text(group)}
-            for group in groups:
-                # Metadata also indexes synonyms and controls in nested dialogs.
-                # Keep the page useful when no group contains the literal query.
-                group.setVisible(not query or category_match or not matching_groups
-                                 or group in matching_groups)
-
-        if query and not current_visible and first_match >= 0:
-            self.categories.setCurrentRow(first_match)
-        elif query and first_match < 0:
-            self.pages.setCurrentWidget(self._no_results_page)
-        elif current >= 0:
+        if self._filtering_search:
+            return
+        self._filtering_search = True
+        try:
+            matches = []
+            for index in range(len(self._page_builders)):
+                page = self.pages.widget(index)
+                text = self.CATEGORIES[index] + " " + self._page_search_metadata(index)
+                if index in self._built_pages:
+                    text += " " + self._searchable_text(page)
+                match = not query or self._settings_match(query, text)
+                self.categories.item(index).setHidden(not match)
+                if match:
+                    matches.append(index)
+            if not matches:
+                self.pages.setCurrentWidget(self._no_results_page)
+                return
+            current = self.categories.currentRow()
+            if current not in matches:
+                current = matches[0]
+                self.categories.setCurrentRow(current)
             self.pages.setCurrentIndex(current)
-        elif not query and current < 0 and self.categories.count():
-            self.categories.setCurrentRow(0)
+            if query and not self._settings_match(query, self.CATEGORIES[current]):
+                self._route_search_section(current, query)
+            for index in self._built_pages:
+                page = self.pages.widget(index)
+                category_match = query and self._settings_match(query, self.CATEGORIES[index])
+                groups = [g for g in page.findChildren(QtWidgets.QGroupBox)
+                          if g.objectName() == "settingsGroup"]
+                matching_groups = [g for g in groups
+                                   if query and self._settings_match(query, self._searchable_text(g))]
+                for group in groups:
+                    group.setVisible(not query or category_match or not matching_groups or group in matching_groups)
+                if query and index == current and matching_groups:
+                    group = matching_groups[0]
+                    parent = group.parentWidget()
+                    while parent is not None and not isinstance(parent, QtWidgets.QScrollArea):
+                        parent = parent.parentWidget()
+                    if parent is not None:
+                        parent.ensureWidgetVisible(group)
+        finally:
+            self._filtering_search = False
 
     def _settings_escape(self) -> None:
         editor = getattr(self, "workspace_editor", None)
@@ -2305,7 +2348,59 @@ class NightwatchSettingsDialog(QtWidgets.QDialog):
         sync()
         layout.addWidget(combo, 0, Qt.AlignmentFlag.AlignLeft)
 
+    APPEARANCE_SECTIONS = (
+        ("theme", "Theme", "theme palette candles candle style buy sell colors order book heatmap tape"),
+        ("typography", "Fonts && text", "font fonts text typography family size units numeric number width weight rendering crisp native balanced preview reset"),
+        ("colors", "Custom colors", "custom colors colour contrast background foreground grid borders accent palette override reset"),
+        ("status", "Status bar", "status bar latency network connection colors font text"),
+    )
+    TRADING_SECTIONS = (
+        ("orders", "Orders && connection", "connection api credentials keys testnet live account portfolio reconcile cancel orders quick trading shortcuts hotkeys leverage collateral margin size slippage take profit stop loss reduce only time in force"),
+        ("rail", "Magnetic rail", "magnetic rail presets active order entry limit stop take profit ray effect animation arm transition cancel visuals"),
+    )
+
+    @staticmethod
+    def _section_tabs() -> QtWidgets.QTabWidget:
+        tabs = QtWidgets.QTabWidget()
+        tabs.setObjectName("settingsSectionTabs")
+        tabs.setDocumentMode(True)
+        tabs.tabBar().setExpanding(False)
+        return tabs
+
+    @staticmethod
+    def _replace_section(tabs, index, widget):
+        current = tabs.currentIndex()
+        label = tabs.tabText(index)
+        old = tabs.widget(index)
+        with QtCore.QSignalBlocker(tabs):
+            tabs.removeTab(index)
+            tabs.insertTab(index, widget, label)
+            tabs.setCurrentIndex(current)
+        old.deleteLater()
+
     def _build_appearance_page(self) -> QtWidgets.QWidget:
+        self.appearance_tabs = self._section_tabs()
+        self.appearance_tabs.addTab(self._build_theme_page(), "Theme")
+        for _key, label, _terms in self.APPEARANCE_SECTIONS[1:]:
+            self.appearance_tabs.addTab(QtWidgets.QWidget(), label)
+        self.appearance_tabs.currentChanged.connect(self._ensure_appearance_section)
+        return self.appearance_tabs
+
+    def _ensure_appearance_section(self, index):
+        if self.appearance_tabs is None or not 0 < index < len(self.APPEARANCE_SECTIONS):
+            return
+        key = self.APPEARANCE_SECTIONS[index][0]
+        if key in self._appearance_editors:
+            self._appearance_editors[key].sync_from_owner()
+            return
+        editor = UiTunerDialog(self.host, section=key)
+        if key == "status":
+            control = self._bind_action(editor.layout(), self.host.show_latency_action)
+            editor.layout().insertWidget(2, control)
+        self._appearance_editors[key] = editor
+        self._replace_section(self.appearance_tabs, index, editor)
+
+    def _build_theme_page(self) -> QtWidgets.QWidget:
         page, layout = self._scroll_page("Appearance")
         theme_box, theme_layout = self._group("Application theme")
         buttons = []
@@ -2348,9 +2443,6 @@ class NightwatchSettingsDialog(QtWidgets.QDialog):
             buttons.append(button)
         candle_layout.addWidget(_SettingsChoiceGrid(buttons))
         layout.addWidget(candle_box)
-        status_box, status_layout = self._group("Status bar")
-        self._bind_action(status_layout, self.host.show_latency_action)
-        layout.addWidget(status_box)
         layout.addStretch(1)
         return page
 
@@ -2478,6 +2570,7 @@ class NightwatchSettingsDialog(QtWidgets.QDialog):
         grid.addWidget(volume_box, 3, 0, 1, 2, alignment=Qt.AlignmentFlag.AlignTop)
 
         indicators_box, indicators_layout = self._group("Indicators")
+        indicators_box.setProperty("settingsSearchTerms", self.INDICATOR_SEARCH_TERMS)
         indicator_grid_host = QtWidgets.QWidget()
         indicator_grid = QtWidgets.QGridLayout(indicator_grid_host)
         indicator_grid.setContentsMargins(0, 0, 0, 0)
@@ -2654,11 +2747,15 @@ class NightwatchSettingsDialog(QtWidgets.QDialog):
         self.sync_from_owner()
 
     def _build_trading_page(self) -> QtWidgets.QWidget:
+        tabs = self._section_tabs()
+        self.trading_tabs = tabs
         page, layout = self._scroll_page("Trading")
         grid = self._settings_grid(layout)
         groups = {}
-        for title, row, column in (("Connection", 0, 0), ("Order entry", 0, 1), ("Account actions", 1, 0)):
+        for title, row, column in (("Connection", 0, 0), ("Quick trading", 0, 1), ("Account actions", 1, 0)):
             box, section = self._group(title)
+            if title == "Quick trading":
+                box.setProperty("settingsSearchTerms", "leverage collateral margin sizing slippage take profit stop loss reduce only time in force shortcuts hotkeys")
             grid.addWidget(box, row, column, alignment=Qt.AlignmentFlag.AlignTop)
             groups[title] = section
         for action in self.host.trading_menu.actions():
@@ -2670,17 +2767,42 @@ class NightwatchSettingsDialog(QtWidgets.QDialog):
                 mode.setObjectName("subtleLabel")
                 groups["Connection"].insertWidget(0, mode)
                 continue
+            if "rail" in label.casefold():
+                continue
             title = ("Connection" if label in {"API credentials", "Test API connection"}
-                     else "Order entry" if any(word in label.casefold() for word in ("quick trading", "rail", "open trading"))
+                     else "Quick trading" if any(word in label.casefold() for word in ("quick trading", "open trading"))
                      else "Account actions")
-            self._bind_action(groups[title], action)
-        return page
+            widget = self._bind_action(groups[title], action)
+            if label == "Cancel all current-symbol orders":
+                widget.setObjectName("dangerButton")
+        tabs.addTab(page, self.TRADING_SECTIONS[0][1])
+        tabs.addTab(QtWidgets.QWidget(), self.TRADING_SECTIONS[1][1])
+        tabs.currentChanged.connect(self._ensure_trading_section)
+        return tabs
+
+    def _ensure_trading_section(self, index):
+        if self.trading_tabs is None or index != 1 or self.embedded_rail_design is not None:
+            return
+        page, layout = self._scroll_page("Magnetic rail")
+        box, section = self._group("Order presets")
+        for action in self.host.trading_menu.actions():
+            if not action.isSeparator() and "rail" in action.text().casefold():
+                self._bind_action(section, action)
+        layout.addWidget(box)
+        box, section = self._group("Rail visuals")
+        self.embedded_rail_design = MagneticRailLabDialog(self.host)
+        self.host.magnetic_rail_lab_dialog = self.embedded_rail_design
+        section.addWidget(self.embedded_rail_design)
+        layout.addWidget(box)
+        layout.addStretch(1)
+        self._replace_section(self.trading_tabs, index, page)
 
     def _build_data_alerts_page(self) -> QtWidgets.QWidget:
         page, layout = self._scroll_page("Data & Alerts")
         grid = self._settings_grid(layout)
 
         alerts_box, alerts_layout = self._group("Alerts")
+        alerts_box.setProperty("settingsSearchTerms", self.ALERT_SEARCH_TERMS)
         for action in self.host.alert_menu.actions():
             submenu = action.menu()
             if submenu is not None:
@@ -2708,58 +2830,30 @@ class NightwatchSettingsDialog(QtWidgets.QDialog):
         return page
 
     def _build_advanced_page(self) -> QtWidgets.QWidget:
-        scroll = QtWidgets.QScrollArea()
-        scroll.setObjectName("settingsScroll")
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        scroll.setMinimumSize(0, 0)
-        scroll.setSizePolicy(
-            QtWidgets.QSizePolicy.Policy.Expanding,
-            QtWidgets.QSizePolicy.Policy.Ignored,
-        )
-
-        page = QtWidgets.QWidget()
-        page.setObjectName("settingsPage")
-        page.setMinimumSize(0, 0)
-        page.setSizePolicy(
-            QtWidgets.QSizePolicy.Policy.Expanding,
-            QtWidgets.QSizePolicy.Policy.Preferred,
-        )
-        root = QtWidgets.QVBoxLayout(page)
-        root.setContentsMargins(24, 20, 24, 24)
-        root.setSpacing(14)
-
-        heading = QtWidgets.QLabel("ADVANCED")
-        heading.setObjectName("settingsPageHeading")
-        root.addWidget(heading)
-
-        top_host = QtWidgets.QWidget()
-        top_host.setObjectName("settingsGridHost")
-        top_grid = QtWidgets.QGridLayout(top_host)
-        top_grid.setContentsMargins(0, 0, 0, 0)
-        top_grid.setHorizontalSpacing(14)
-        top_grid.setVerticalSpacing(14)
-        top_grid.setColumnStretch(0, 1)
-        top_grid.setColumnStretch(1, 1)
-
-        guidance_box, guidance_layout = self._group("Guidance")
-        guide = QtWidgets.QPushButton("Open order book guide…")
+        tabs = self._section_tabs()
+        self.developer_tabs = tabs
+        self._developer_tab_keys = ["tools"]
+        page, layout = self._scroll_page("Advanced")
+        help_box, help_layout = self._group("Help")
+        guide = QtWidgets.QPushButton("Order book guide…")
         guide.setAutoDefault(False)
         guide.clicked.connect(self._open_orderbook_guide)
-        guidance_layout.addWidget(guide)
-        top_grid.addWidget(guidance_box, 0, 0, alignment=Qt.AlignmentFlag.AlignTop)
-
-        help_box, help_layout = self._group("Application help")
+        help_layout.addWidget(guide, 0, Qt.AlignmentFlag.AlignLeft)
         for action in self.host.help_menu.actions():
-            submenu = action.menu()
-            if submenu is not None:
-                for child in submenu.actions():
-                    self._bind_action(help_layout, child)
-            else:
-                self._bind_action(help_layout, action)
-        top_grid.addWidget(help_box, 0, 1, alignment=Qt.AlignmentFlag.AlignTop)
-        root.addWidget(top_host)
+            self._bind_action(help_layout, action)
+        layout.addWidget(help_box)
+
+        profile_box, profile_layout = self._group("Appearance profiles")
+        row = QtWidgets.QHBoxLayout()
+        for label, callback in (("Import profile…", self.host.import_developer_ui_profile),
+                                ("Export profile…", self.host.export_developer_ui_profile)):
+            button = QtWidgets.QPushButton(label)
+            button.setAutoDefault(False)
+            button.clicked.connect(lambda _checked=False, fn=callback: fn())
+            row.addWidget(button)
+        row.addStretch(1)
+        profile_layout.addLayout(row)
+        layout.addWidget(profile_box)
 
         benchmark_box, benchmark_layout = self._group("Chart performance")
         note = QtWidgets.QLabel("Pan or zoom for 30 seconds to capture FPS and frame timing.")
@@ -2776,109 +2870,46 @@ class NightwatchSettingsDialog(QtWidgets.QDialog):
         self.frame_benchmark_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         row.addWidget(self.frame_benchmark_label, 1)
         benchmark_layout.addLayout(row)
-        root.addWidget(benchmark_box)
+        layout.addWidget(benchmark_box)
         self._refresh_frame_benchmark()
 
-        developer_label = QtWidgets.QLabel("DEVELOPER TOOLS")
-        developer_label.setObjectName("settingsSubheading")
-        root.addWidget(developer_label)
-        self.developer_tabs = QtWidgets.QTabWidget()
-        self.developer_tabs.setObjectName("settingsDeveloperTabs")
-        self.developer_tabs.setDocumentMode(True)
-        self._developer_tab_keys = ["ui_tuner"]
+        geometry = QtWidgets.QPushButton("Copy chart geometry")
+        geometry.setAutoDefault(False)
+        geometry.clicked.connect(self._copy_chart_geometry)
+        benchmark_layout.addWidget(geometry, 0, Qt.AlignmentFlag.AlignLeft)
+        layout.addStretch(1)
+        tabs.addTab(page, "Tools && help")
         app = QtWidgets.QApplication.instance()
-        diagnostics_enabled = bool(
-            app is not None and app.property("nightwatchDiagnosticsEnabled")
-        )
-        if diagnostics_enabled:
+        if app is not None and app.property("nightwatchDiagnosticsEnabled"):
             self._developer_tab_keys.append("diagnostics")
-        self._developer_tab_keys.append("magnetic_rail")
-        labels = {
-            "ui_tuner": "UI TUNER",
-            "diagnostics": "DIAGNOSTICS",
-            "magnetic_rail": "MAGNETIC RAIL",
-        }
-        self._developer_placeholders.clear()
-        for key in self._developer_tab_keys:
-            placeholder = QtWidgets.QWidget()
-            placeholder.setObjectName("settingsDeveloperPlaceholder")
-            layout = QtWidgets.QVBoxLayout(placeholder)
-            layout.setContentsMargins(20, 20, 20, 20)
-            layout.addStretch(1)
-            note = QtWidgets.QLabel(f"{labels[key]} · loads when selected")
-            note.setObjectName("subtleLabel")
-            note.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            layout.addWidget(note)
-            layout.addStretch(1)
-            self._developer_placeholders[key] = placeholder
-            self.developer_tabs.addTab(placeholder, labels[key])
-        self.developer_tabs.setMinimumHeight(360)
-        self.developer_tabs.setSizePolicy(
-            QtWidgets.QSizePolicy.Policy.Expanding,
-            QtWidgets.QSizePolicy.Policy.Expanding,
-        )
-        self.developer_tabs.currentChanged.connect(self._on_developer_tab_changed)
-        root.addWidget(self.developer_tabs, 1)
+            tabs.addTab(QtWidgets.QWidget(), "Diagnostics")
+        tabs.currentChanged.connect(self._on_developer_tab_changed)
+        return tabs
 
-        self.host.ui_tuner_dialog = None
-        self.host.developer_dialog = None
-        self.host.magnetic_rail_lab_dialog = None
-        scroll.setWidget(page)
-        return scroll
+    def _copy_chart_geometry(self):
+        QtWidgets.QApplication.clipboard().setText(self.host.chart.developer_geometry_report())
 
-    def _developer_key_for_index(self, index: int) -> str | None:
-        if index < 0 or index >= len(self._developer_tab_keys):
+    def _ensure_developer_tool(self, key):
+        if key != "diagnostics" or self.developer_tabs is None:
             return None
-        return self._developer_tab_keys[index]
+        if self.embedded_diagnostics is None:
+            self.embedded_diagnostics = DeveloperDialog(self.host)
+            self.host.developer_dialog = self.embedded_diagnostics
+            scroll = QtWidgets.QScrollArea()
+            scroll.setObjectName("settingsScroll")
+            scroll.setWidgetResizable(True)
+            scroll.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
+            scroll.setWidget(self.embedded_diagnostics)
+            self._replace_section(self.developer_tabs, self._developer_tab_keys.index(key), scroll)
+        return self.embedded_diagnostics
 
-    def _ensure_developer_tool(self, key: str) -> QtWidgets.QWidget | None:
-        if self.developer_tabs is None or key not in self._developer_tab_keys:
-            return None
-        if key == "ui_tuner" and self.embedded_ui_tuner is not None:
-            return self.embedded_ui_tuner
-        if key == "diagnostics" and self.embedded_diagnostics is not None:
-            return self.embedded_diagnostics
-        if key == "magnetic_rail" and self.embedded_rail_design is not None:
-            return self.embedded_rail_design
+    def _ensure_current_developer_tool(self):
+        if self.developer_tabs is not None:
+            self._on_developer_tab_changed(self.developer_tabs.currentIndex())
 
-        index = self._developer_tab_keys.index(key)
-        label = self.developer_tabs.tabText(index)
-        current = self.developer_tabs.currentIndex()
-        old = self.developer_tabs.widget(index)
-        if key == "ui_tuner":
-            widget = UiTunerDialog(self.host)
-            self.embedded_ui_tuner = widget
-            self.host.ui_tuner_dialog = widget
-        elif key == "diagnostics":
-            widget = DeveloperDialog(self.host)
-            self.embedded_diagnostics = widget
-            self.host.developer_dialog = widget
-        else:
-            widget = MagneticRailLabDialog(self.host)
-            self.embedded_rail_design = widget
-            self.host.magnetic_rail_lab_dialog = widget
-        self.developer_tabs.removeTab(index)
-        old.deleteLater()
-        self.developer_tabs.insertTab(index, widget, label)
-        self._developer_placeholders.pop(key, None)
-        if current == index:
-            self.developer_tabs.setCurrentIndex(index)
-        return widget
-
-    def _ensure_current_developer_tool(self) -> None:
-        if self.developer_tabs is None:
-            return
-        key = self._developer_key_for_index(self.developer_tabs.currentIndex())
-        if key is not None:
-            self._ensure_developer_tool(key)
-
-    def _on_developer_tab_changed(self, index: int) -> None:
-        if not self.isVisible():
-            return
-        key = self._developer_key_for_index(int(index))
-        if key is not None:
-            QtCore.QTimer.singleShot(0, lambda k=key: self._ensure_developer_tool(k))
-
+    def _on_developer_tab_changed(self, index):
+        if self.isVisible() and 0 <= index < len(self._developer_tab_keys):
+            self._ensure_developer_tool(self._developer_tab_keys[index])
 
     def _open_orderbook_guide(self) -> None:
         dialog = self.findChild(QtWidgets.QDialog, "orderbookGuideDialog")
@@ -2898,7 +2929,7 @@ class NightwatchSettingsDialog(QtWidgets.QDialog):
                 the rulers; 100% includes the full visible depth.</p>
                 <p>The <b>Display menu</b> controls row spacing, depth overlays, and the embedded trade tape.
                 Use <b>Reset orderbook display</b> to restore the display defaults.</p>
-                <p>Choose a visual theme in <b>Settings → Appearance → Order book theme</b>.</p>
+                <p>Choose whether the order book follows the application theme in <b>Settings → Appearance → Theme → Order book colors</b>.</p>
                 <h3>Prices and gestures</h3>
                 <p>Click a price to prefill the current ticket. An existing unfocused
                 price is preserved; focus that field to replace it. Drag the
@@ -2987,8 +3018,9 @@ class NightwatchSettingsDialog(QtWidgets.QDialog):
                     editor.apply_theme(self.host.ui_theme)
                     editor.set_presets(self.host.right_layout_presets, controller.state.active_preset)
 
-            if self.embedded_ui_tuner is not None:
-                self.embedded_ui_tuner.sync_from_owner()
+            for editor in self._appearance_editors.values():
+                if editor.isVisible():
+                    editor.sync_from_owner()
             if self.embedded_rail_design is not None:
                 self.embedded_rail_design.sync_from_owner()
             if self.embedded_diagnostics is not None:
