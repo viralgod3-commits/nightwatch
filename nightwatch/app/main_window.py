@@ -153,6 +153,8 @@ from ..utilities import (
     DEV_UI_STATUS_FONT_DEFAULTS,
     TYPOGRAPHY_DEFAULTS,
     TYPOGRAPHY_GLOBAL_DEFAULTS,
+    TEXT_SIZE_PRESETS,
+    text_size_overrides,
     ChartSurfaceHost,
     InstrumentBar,
     MainToolbar,
@@ -2382,6 +2384,7 @@ class MainWindow(QtWidgets.QMainWindow):
             },
             "status_bar": dict(self.developer_ui_status),
             "status_bar_overrides": dict(self._developer_ui_status_overrides),
+            "text_size_preset": self.text_size_preset,
             "typography": {
                 role: dict(controller.profile(role))
                 for role in TYPOGRAPHY_DEFAULTS
@@ -2509,28 +2512,13 @@ class MainWindow(QtWidgets.QMainWindow):
         self.settings.remove("developer/ui_layout_v1")
         self.settings.remove("developer/ui_surfaces_v1")
 
-        typography_compatible = (
-            profile.get("version") == 2
-            and profile.get("typography_contract") == self._developer_typography_contract()
-        )
-        # Resolved snapshots contain the exporting build's defaults. Import only
-        # explicit, compatible overrides so old profiles cannot pin retired fonts.
+        imported_text_size = profile.get("text_size_preset")
+        typography_compatible = isinstance(imported_text_size, str) and imported_text_size in TEXT_SIZE_PRESETS
         if typography_compatible:
-            imported_typography = profile.get("typography_overrides")
-            self.developer_typography = (
-                imported_typography if isinstance(imported_typography, dict) else {}
-            )
-            imported_globals = profile.get("typography_global_overrides")
-            self.developer_typography_globals = (
-                imported_globals if isinstance(imported_globals, dict) else {}
-            )
-        if "dpi_rounding" in profile:
-            self.developer_typography_globals["dpi_rounding"] = profile.get("dpi_rounding")
-
-        configure_typography(
-            self.developer_typography,
-            self.developer_typography_globals,
-        )
+            self.text_size_preset = imported_text_size
+            self.settings.setValue("appearance/text_size_preset", imported_text_size)
+        # Legacy role overrides must never override the user's text preset.
+        configure_typography(text_size_overrides(self.text_size_preset), TYPOGRAPHY_GLOBAL_DEFAULTS)
         self._save_developer_typography()
 
         imported_directional_modes = profile.get("directional_modes")
@@ -2721,25 +2709,20 @@ class MainWindow(QtWidgets.QMainWindow):
         return dict(DEV_UI_SURFACE_DEFAULTS)
 
     def _load_developer_typography(self) -> dict[str, dict[str, Any]]:
-        self._prepare_developer_typography_settings()
-        stored = self.settings.value("developer/typography_v1", "", str)
-        if not stored:
-            return {}
-        try:
-            decoded = json.loads(stored)
-        except (TypeError, json.JSONDecodeError):
-            return {}
-        if not isinstance(decoded, dict):
-            return {}
-        result: dict[str, dict[str, Any]] = {}
-        for role, values in decoded.items():
-            if role not in TYPOGRAPHY_DEFAULTS or not isinstance(values, dict):
-                continue
-            allowed = TYPOGRAPHY_DEFAULTS[role]
-            result[role] = {
-                key: value for key, value in values.items() if key in allowed
-            }
-        return result
+        self.text_size_preset = self.settings.value("appearance/text_size_preset", "Standard", str)
+        if self.text_size_preset not in TEXT_SIZE_PRESETS:
+            self.text_size_preset = "Standard"
+        self.settings.setValue("appearance/text_size_preset", self.text_size_preset)
+        return text_size_overrides(self.text_size_preset)
+
+    def set_text_size_preset(self, name: str) -> None:
+        if name not in TEXT_SIZE_PRESETS or name == self.text_size_preset:
+            return
+        self.text_size_preset = name
+        self.settings.setValue("appearance/text_size_preset", name)
+        configure_typography(text_size_overrides(name), TYPOGRAPHY_GLOBAL_DEFAULTS)
+        self._save_developer_typography()
+        self._sync_settings_window()
 
     @staticmethod
     def _developer_typography_contract() -> str:
@@ -2777,12 +2760,9 @@ class MainWindow(QtWidgets.QMainWindow):
             color = QtGui.QColor(str(values.get(key, "")))
             if color.isValid():
                 result[key] = color.name(QtGui.QColor.NameFormat.HexRgb).upper()
-        # Geometry remains a build-time contract. Font roles are semantic
-        # typography choices and may be tuned independently.
+        # Status text uses the same semantic hierarchy as the selected preset.
         result.update(DEV_UI_STATUS_GEOMETRY_DEFAULTS)
-        for key, default in DEV_UI_STATUS_FONT_DEFAULTS.items():
-            role = str(values.get(key, default))
-            result[key] = role if role in TYPOGRAPHY_DEFAULTS else default
+        result.update(DEV_UI_STATUS_FONT_DEFAULTS)
         return result
 
     def _store_developer_ui_status_overrides(self, source: object) -> dict[str, object]:
@@ -2811,26 +2791,7 @@ class MainWindow(QtWidgets.QMainWindow):
         return self._store_developer_ui_status_overrides(decoded)
 
     def _load_developer_typography_globals(self) -> dict[str, Any]:
-        result = dict(TYPOGRAPHY_GLOBAL_DEFAULTS)
-        stored = self.settings.value("developer/typography_global_v1", "", str)
-        if stored:
-            try:
-                decoded = json.loads(stored)
-            except (TypeError, json.JSONDecodeError):
-                decoded = {}
-            if isinstance(decoded, dict):
-                for key, value in decoded.items():
-                    if key in result:
-                        result[key] = value
-        # Bootstrap owns DPI application before QApplication. Mirror the saved
-        # restart-only choice into the controller/profile state for one coherent
-        # configuration surface.
-        result["dpi_rounding"] = self.settings.value(
-            "developer/typography_dpi_rounding_v1",
-            result.get("dpi_rounding", "auto"),
-            str,
-        )
-        return result
+        return dict(TYPOGRAPHY_GLOBAL_DEFAULTS)
 
     def _save_developer_typography(self) -> None:
         controller = typography_controller()

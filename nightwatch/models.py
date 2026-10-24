@@ -687,6 +687,11 @@ ChartMarketDataFactory = Callable[[Any], ChartMarketDataPort]
 
 
 class UiTunerHostPort(Protocol):
+    text_size_preset: str
+
+    def set_text_size_preset(self, name: str) -> None:
+        ...
+
     settings: Any
     ui_theme: dict[str, str]
     developer_ui_layout: dict[str, Any]

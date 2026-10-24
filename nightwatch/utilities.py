@@ -245,6 +245,21 @@ TYPOGRAPHY_DEFAULTS: dict[str, dict[str, Any]] = {
     TextRole.STATUS_LATENCY: _font_profile("numeric", 7.5, 500, hinting="full", fixed_pitch=True),
 }
 
+# Presets change font metrics directly, never scale rendered UI surfaces.
+TEXT_SIZE_PRESETS = {"Compact": -0.5, "Standard": 0.0, "Large": 1.0}
+
+
+def text_size_overrides(name: str) -> dict[str, dict[str, Any]]:
+    delta = TEXT_SIZE_PRESETS.get(name, 0.0)
+    if not delta:
+        return {}
+    return {
+        role: {"size": float(values["size"]) + (int(delta * 2) if values["size_mode"] == "pixel" else delta)}
+        for role, values in TYPOGRAPHY_DEFAULTS.items()
+        if role not in {TextRole.ICON_FALLBACK, TextRole.UI_GLYPH, TextRole.ORDERBOOK_CONTROL_ARROW}
+    }
+
+
 TYPOGRAPHY_GLOBAL_DEFAULTS: dict[str, Any] = {
     "painter_text_antialias": True,
     # Applied before QApplication. Preserve the monitor's native scale,

@@ -2349,10 +2349,8 @@ class NightwatchSettingsDialog(QtWidgets.QDialog):
         layout.addWidget(combo, 0, Qt.AlignmentFlag.AlignLeft)
 
     APPEARANCE_SECTIONS = (
-        ("theme", "Theme", "theme palette candles candle style buy sell colors order book heatmap tape"),
-        ("typography", "Fonts && text", "font fonts text typography family size units numeric number width weight rendering crisp native balanced preview reset"),
-        ("colors", "Custom colors", "custom colors colour contrast background foreground grid borders accent palette override reset"),
-        ("status", "Status bar", "status bar latency network connection colors font text"),
+        ("theme", "Theme", "theme palette candles candle style buy sell colors order book heatmap tape reset"),
+        ("typography", "Text && status", "font fonts text typography size presets compact standard large preview status bar latency network connection"),
     )
     TRADING_SECTIONS = (
         ("orders", "Orders && connection", "connection api credentials keys testnet live account portfolio reconcile cancel orders quick trading shortcuts hotkeys leverage collateral margin size slippage take profit stop loss reduce only time in force"),
@@ -2394,9 +2392,8 @@ class NightwatchSettingsDialog(QtWidgets.QDialog):
             self._appearance_editors[key].sync_from_owner()
             return
         editor = UiTunerDialog(self.host, section=key)
-        if key == "status":
-            control = self._bind_action(editor.layout(), self.host.show_latency_action)
-            editor.layout().insertWidget(2, control)
+        control = self._bind_action(editor.layout(), self.host.show_latency_action, text="Show connection latency in status bar")
+        editor.layout().insertWidget(editor.layout().count() - 2, control)
         self._appearance_editors[key] = editor
         self._replace_section(self.appearance_tabs, index, editor)
 
@@ -2409,6 +2406,10 @@ class NightwatchSettingsDialog(QtWidgets.QDialog):
             self._bind_appearance_action(action, button)
             buttons.append(button)
         theme_layout.addWidget(_SettingsChoiceGrid(buttons))
+        reset_colors = QtWidgets.QPushButton("Reset theme colors")
+        reset_colors.setAutoDefault(False)
+        reset_colors.clicked.connect(self._reset_appearance_colors)
+        theme_layout.addWidget(reset_colors, 0, Qt.AlignmentFlag.AlignLeft)
         layout.addWidget(theme_box)
 
         book_box, book_layout = self._group("Order book colors")
@@ -2445,6 +2446,10 @@ class NightwatchSettingsDialog(QtWidgets.QDialog):
         layout.addWidget(candle_box)
         layout.addStretch(1)
         return page
+
+    def _reset_appearance_colors(self) -> None:
+        self.host.reset_developer_ui_colors()
+        self.host.reset_developer_ui_status()
 
     def _bind_appearance_action(self, action, button) -> None:
         self._appearance_actions[action] = button

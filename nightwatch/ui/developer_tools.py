@@ -5,415 +5,62 @@ from typing import Any
 from PySide6 import QtCore, QtGui, QtWidgets
 from PySide6.QtCore import Qt
 from ..models import UiTunerHostPort
-from ..constants import DEV_UI_COLOR_PROFILE_FIELDS, DEV_UI_STATUS_COLOR_FIELDS
-from ..utilities import DEV_UI_STATUS_FONT_DEFAULTS, TYPOGRAPHY_DEFAULTS, TYPOGRAPHY_ROLE_LABELS, TextRole, format_local_time, typography_controller, typography_font
+from ..utilities import TEXT_SIZE_PRESETS, TextRole, format_local_time, typography_font
+
 
 class UiTunerDialog(QtWidgets.QWidget):
-    """One lazy appearance section, using the existing persistent settings."""
+    """Preset-only text settings, created when the section is opened."""
 
-    def __init__(self, host: UiTunerHostPort, *, section: str = "colors"):
+    def __init__(self, host: UiTunerHostPort, *, section: str = "typography"):
         super().__init__(host)
         self.host = host
-        self.setObjectName('settingsEmbeddedTool')
+        self.setObjectName("settingsEmbeddedTool")
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-        self._color_edits = {}
-        self._color_buttons = {}
         root = QtWidgets.QVBoxLayout(self)
         root.setContentsMargins(18, 14, 18, 18)
-        root.setSpacing(10)
-        titles = {"colors": "Custom colors", "typography": "Fonts & text", "status": "Status bar"}
-        heading = QtWidgets.QLabel(titles[section])
-        heading.setObjectName('settingsPageHeading')
+        root.setSpacing(12)
+        heading = QtWidgets.QLabel("Text size")
+        heading.setObjectName("settingsPageHeading")
         root.addWidget(heading)
-        note = QtWidgets.QLabel('Select a text role to edit. Changes save automatically.' if section == 'typography'
-                                else 'Changes save automatically. Reset restores the defaults for this section.')
-        note.setObjectName('subtleLabel')
+        note = QtWidgets.QLabel("One preset for labels, prices, tables, and chart text. Changes save automatically.")
         note.setWordWrap(True)
+        note.setObjectName("subtleLabel")
         root.addWidget(note)
-        builder = {"colors": self._build_colors, "typography": self._build_typography,
-                   "status": self._build_status}[section]
-        root.addWidget(builder(), 1)
-
-    def _build_colors(self):
-        host = self.host
-        colors_page = QtWidgets.QWidget()
-        colors_page.setObjectName("settingsPage")
-        colors_root = QtWidgets.QVBoxLayout(colors_page)
-        colors_root.setContentsMargins(10, 10, 10, 10)
-        colors_root.setSpacing(10)
-        colors_scroll = QtWidgets.QScrollArea()
-        colors_scroll.setObjectName("settingsScroll")
-        colors_scroll.setWidgetResizable(True)
-        colors_scroll.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
-        colors_content = QtWidgets.QWidget()
-        colors_content.setObjectName("settingsPage")
-        colors_layout = QtWidgets.QGridLayout(colors_content)
-        colors_layout.setContentsMargins(0, 0, 0, 0)
-        colors_layout.setHorizontalSpacing(8)
-        colors_layout.setVerticalSpacing(6)
-        colors_layout.setColumnStretch(3, 1)
-        for row, (key, label) in enumerate(DEV_UI_COLOR_PROFILE_FIELDS):
-            colors_layout.addWidget(QtWidgets.QLabel(label), row, 0)
-            edit = QtWidgets.QLineEdit(host.ui_theme.get(key, '#000000'))
-            edit.setMaxLength(9)
-            edit.setAccessibleName(label + " color")
-            edit.setMaximumWidth(150)
-            edit.editingFinished.connect(lambda name=key, field=edit: self._commit_color(name, field.text()))
-            pick = QtWidgets.QPushButton('Choose…')
-            pick.setFixedWidth(76)
-            pick.clicked.connect(lambda _checked=False, name=key: self._pick_color(name))
-            colors_layout.addWidget(edit, row, 1)
-            colors_layout.addWidget(pick, row, 2)
-            self._color_edits[key] = edit
-            self._color_buttons[key] = pick
-            self._update_color_button(key)
-        colors_layout.setRowStretch(len(DEV_UI_COLOR_PROFILE_FIELDS), 1)
-        colors_scroll.setWidget(colors_content)
-        colors_root.addWidget(colors_scroll, 1)
-        reset_colors_tab = QtWidgets.QPushButton('Reset to theme colors')
-        reset_colors_tab.clicked.connect(self._reset_colors)
-        colors_root.addWidget(reset_colors_tab, 0, Qt.AlignmentFlag.AlignRight)
-        return colors_page
-
-    def _build_status(self):
-        host = self.host
-        status_page = QtWidgets.QWidget()
-        status_page.setObjectName("settingsPage")
-        status_root = QtWidgets.QVBoxLayout(status_page)
-        status_root.setContentsMargins(10, 10, 10, 10)
-        status_root.setSpacing(10)
-        status_scroll = QtWidgets.QScrollArea()
-        status_scroll.setObjectName("settingsScroll")
-        status_scroll.setWidgetResizable(True)
-        status_scroll.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
-        status_content = QtWidgets.QWidget()
-        status_content.setObjectName("settingsPage")
-        status_layout = QtWidgets.QFormLayout(status_content)
-        status_layout.setHorizontalSpacing(14)
-        status_layout.setVerticalSpacing(7)
-        status_layout.setRowWrapPolicy(QtWidgets.QFormLayout.RowWrapPolicy.WrapLongRows)
-        self._status_color_edits: dict[str, QtWidgets.QLineEdit] = {}
-        self._status_color_buttons: dict[str, QtWidgets.QPushButton] = {}
-        self._status_font_combos: dict[str, QtWidgets.QComboBox] = {}
-        for key, label in DEV_UI_STATUS_COLOR_FIELDS:
-            row = QtWidgets.QWidget()
-            row_layout = QtWidgets.QHBoxLayout(row)
-            row_layout.setContentsMargins(0, 0, 0, 0)
-            edit = QtWidgets.QLineEdit(str(host.developer_ui_status[key]))
-            edit.setMaxLength(9)
-            edit.setAccessibleName(label + " color")
-            edit.setMaximumWidth(150)
-            edit.editingFinished.connect(lambda name=key, field=edit: self._commit_status_color(name, field.text()))
-            pick = QtWidgets.QPushButton('Choose…')
-            pick.setFixedWidth(76)
-            pick.clicked.connect(lambda _checked=False, name=key: self._pick_status_color(name))
-            row_layout.addWidget(edit)
-            row_layout.addWidget(pick)
-            row_layout.addStretch(1)
-            status_layout.addRow(label, row)
-            self._status_color_edits[key] = edit
-            self._status_color_buttons[key] = pick
-            self._update_status_color_button(key)
-        for key, default in DEV_UI_STATUS_FONT_DEFAULTS.items():
-            combo = QtWidgets.QComboBox()
-            for role, label in TYPOGRAPHY_ROLE_LABELS.items():
-                combo.addItem(label, role)
-            self._set_combo_data(combo, host.developer_ui_status.get(key, default))
-            combo.currentIndexChanged.connect(lambda _index, name=key, widget=combo: host.set_developer_ui_status_value(name, widget.currentData()))
-            status_layout.addRow(key.replace('_font_role', '').replace('_', ' ').title() + ' font', combo)
-            self._status_font_combos[key] = combo
-        status_scroll.setWidget(status_content)
-        status_root.addWidget(status_scroll)
-        reset_status = QtWidgets.QPushButton('Reset status bar')
-        reset_status.clicked.connect(self._reset_status)
-        status_root.addWidget(reset_status, 0, Qt.AlignmentFlag.AlignRight)
-        return status_page
-
-    def _build_typography(self):
-        typography_page = QtWidgets.QWidget()
-        typography_page.setObjectName("settingsPage")
-        typography_root = QtWidgets.QHBoxLayout(typography_page)
-        typography_root.setContentsMargins(10, 10, 10, 10)
-        typography_root.setSpacing(12)
-        self.typography_roles = QtWidgets.QListWidget()
-        self.typography_roles.setMinimumWidth(150)
-        self.typography_roles.setMaximumWidth(210)
-        self.typography_roles.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self.typography_roles.setTextElideMode(Qt.TextElideMode.ElideRight)
-        for role, label in TYPOGRAPHY_ROLE_LABELS.items():
-            item = QtWidgets.QListWidgetItem(label)
-            item.setToolTip(label)
-            item.setData(Qt.ItemDataRole.UserRole, role)
-            self.typography_roles.addItem(item)
-        typography_root.addWidget(self.typography_roles)
-        typography_controls = QtWidgets.QWidget()
-        typography_controls.setObjectName("settingsGridHost")
-        typography_form = QtWidgets.QFormLayout(typography_controls)
-        typography_form.setContentsMargins(0, 0, 0, 0)
-        typography_form.setHorizontalSpacing(14)
-        typography_form.setVerticalSpacing(7)
-        typography_form.setRowWrapPolicy(QtWidgets.QFormLayout.RowWrapPolicy.WrapLongRows)
-        self._typography_loading = False
-        self.type_family = QtWidgets.QComboBox()
-        self.type_family.addItem('Inter / UI', 'ui')
-        self.type_family.addItem('Iosevka / numeric', 'numeric')
-        self.type_numeric_width = QtWidgets.QComboBox()
-        self.type_numeric_width.addItem('Normal · dense', 'normal')
-        self.type_numeric_width.addItem('Extended · display', 'extended')
-        self.type_size_mode = QtWidgets.QComboBox()
-        self.type_size_mode.addItem('Point · DPI scaled', 'point')
-        self.type_size_mode.addItem('Pixels · fixed size', 'pixel')
-        self.type_size = QtWidgets.QDoubleSpinBox()
-        self.type_size.setRange(5.0, 24.0)
-        self.type_size.setDecimals(2)
-        self.type_size.setSingleStep(0.25)
-        self.type_weight = QtWidgets.QComboBox()
-        for label, value in (
-            ('Regular · 400', 400),
-            ('Medium · 500', 500),
-            ('SemiBold · 600', 600),
-            ('Bold · 700', 700),
-        ):
-            self.type_weight.addItem(label, value)
-        self.type_hinting = QtWidgets.QComboBox()
-        for label, value in (('Default', 'default'), ('No hinting', 'none'), ('Vertical hinting', 'vertical'), ('Full hinting', 'full')):
-            self.type_hinting.addItem(label, value)
-        self.type_antialias = QtWidgets.QComboBox()
-        for label, value in (('Qt default', 'default'), ('Prefer antialiasing', 'prefer'), ('Disable antialiasing', 'none')):
-            self.type_antialias.addItem(label, value)
-        self.type_quality = QtWidgets.QComboBox()
-        for label, value in (('Qt default', 'default'), ('Prefer quality', 'quality'), ('Prefer font match', 'match')):
-            self.type_quality.addItem(label, value)
-        self.type_no_subpixel = QtWidgets.QCheckBox('Disable subpixel antialiasing')
-        self.type_letter_spacing = QtWidgets.QDoubleSpinBox()
-        self.type_letter_spacing.setRange(75.0, 140.0)
-        self.type_letter_spacing.setSuffix(' %')
-        self.type_letter_spacing.setSingleStep(0.5)
-        self.type_word_spacing = QtWidgets.QDoubleSpinBox()
-        self.type_word_spacing.setRange(-8.0, 20.0)
-        self.type_word_spacing.setSuffix(' px')
-        self.type_word_spacing.setSingleStep(0.25)
-        self.type_stretch = QtWidgets.QSpinBox()
-        self.type_stretch.setRange(50, 200)
-        self.type_stretch.setSuffix(' %')
-        self.type_kerning = QtWidgets.QCheckBox('Enable kerning')
-        self.type_fixed_pitch = QtWidgets.QCheckBox('Declare fixed pitch')
-        self.type_painter_aa = QtWidgets.QCheckBox('Custom QPainter TextAntialiasing')
-        self.type_dpi_rounding = QtWidgets.QComboBox()
-        for label, value in (('Auto · Round Windows / PassThrough elsewhere', 'auto'), ('Round', 'round'), ('PassThrough', 'passthrough'), ('RoundPreferFloor', 'round_prefer_floor'), ('Floor', 'floor'), ('Ceil', 'ceil')):
-            self.type_dpi_rounding.addItem(label, value)
-        self.type_dpi_rounding.setToolTip('Restart to apply.')
-        self.type_preview = QtWidgets.QLabel('Aa  OI  FUNDING  1234.5678  BTCUSDT.P')
-        self.type_preview.setMinimumHeight(34)
-        self.type_preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.type_preview.setFrameShape(QtWidgets.QFrame.Shape.StyledPanel)
-        for hidden_control in (self.type_hinting, self.type_antialias, self.type_quality, self.type_no_subpixel, self.type_letter_spacing, self.type_word_spacing, self.type_stretch, self.type_kerning, self.type_fixed_pitch, self.type_painter_aa, self.type_dpi_rounding):
-            hidden_control.setParent(typography_controls)
-            hidden_control.hide()
-        self.type_rendering_preset = QtWidgets.QComboBox()
-        self.type_rendering_preset.addItem('Custom', 'Custom')
-        self.type_rendering_preset.model().item(0).setEnabled(False)
-        self.type_rendering_preset.addItem('Native', 'Native')
-        self.type_rendering_preset.addItem('Balanced', 'Balanced')
-        self.type_rendering_preset.addItem('Crisp', 'Crisp')
-        typography_form.addRow('Font family', self.type_family)
-        typography_form.addRow('Numeric width', self.type_numeric_width)
-        typography_form.addRow('Size units', self.type_size_mode)
-        typography_form.addRow('Font size', self.type_size)
-        typography_form.addRow('Weight', self.type_weight)
-        typography_form.addRow('Rendering', self.type_rendering_preset)
-        typography_form.addRow('Preview', self.type_preview)
-        typography_buttons = QtWidgets.QHBoxLayout()
-        reset_role = QtWidgets.QPushButton('Reset selected font')
-        reset_role.clicked.connect(self._reset_typography_role)
-        reset_type = QtWidgets.QPushButton('Reset all fonts')
-        reset_type.clicked.connect(self._reset_typography)
-        typography_buttons.addWidget(reset_role)
-        typography_buttons.addWidget(reset_type)
-        typography_buttons.addStretch(1)
-        typography_form.addRow(typography_buttons)
-        typography_root.addWidget(typography_controls, 1)
-        for control, key in (
-            (self.type_family, 'family'),
-            (self.type_numeric_width, 'numeric_width'),
-            (self.type_size_mode, 'size_mode'),
-            (self.type_weight, 'weight'),
-            (self.type_hinting, 'hinting'),
-            (self.type_antialias, 'antialias'),
-            (self.type_quality, 'quality'),
-        ):
-            control.currentIndexChanged.connect(lambda _index, name=key, widget=control: self._typography_value_changed(name, widget.currentData()))
-        self.type_size.valueChanged.connect(lambda value: self._typography_value_changed('size', float(value)))
-        self.type_letter_spacing.valueChanged.connect(lambda value: self._typography_value_changed('letter_spacing', float(value)))
-        self.type_word_spacing.valueChanged.connect(lambda value: self._typography_value_changed('word_spacing', float(value)))
-        self.type_stretch.valueChanged.connect(lambda value: self._typography_value_changed('stretch', int(value)))
-        self.type_kerning.toggled.connect(lambda value: self._typography_value_changed('kerning', bool(value)))
-        self.type_fixed_pitch.toggled.connect(lambda value: self._typography_value_changed('fixed_pitch', bool(value)))
-        self.type_no_subpixel.toggled.connect(lambda value: self._typography_value_changed('no_subpixel', bool(value)))
-        self.type_painter_aa.toggled.connect(lambda value: self._typography_global_changed('painter_text_antialias', bool(value)))
-        self.type_dpi_rounding.currentIndexChanged.connect(lambda _index: self._typography_global_changed('dpi_rounding', self.type_dpi_rounding.currentData()))
-        self.type_rendering_preset.currentIndexChanged.connect(lambda _index: self._typography_rendering_preset_changed())
-        self.typography_roles.currentRowChanged.connect(lambda _row: self._load_typography_role())
-        self.typography_roles.setCurrentRow(0)
-        self._load_typography_role()
-        scroll = QtWidgets.QScrollArea()
-        scroll.setObjectName('settingsScroll')
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
-        scroll.setWidget(typography_page)
-        return scroll
-
-    def _selected_typography_role(self) -> str:
-        item = self.typography_roles.currentItem()
-        role = str(item.data(Qt.ItemDataRole.UserRole) or '') if item is not None else ''
-        return role if role in TYPOGRAPHY_DEFAULTS else TextRole.UI_BODY
-
-    def _set_combo_data(self, combo: QtWidgets.QComboBox, value: object) -> None:
-        index = combo.findData(value)
-        combo.setCurrentIndex(max(0, index))
-
-    def _load_typography_role(self) -> None:
-        if not hasattr(self, 'typography_roles'):
-            return
-        role = self._selected_typography_role()
-        profile = typography_controller().profile(role)
-        globals_ = typography_controller().globals()
-        self._typography_loading = True
-        try:
-            self._set_combo_data(self.type_family, profile['family'])
-            self._set_combo_data(self.type_numeric_width, profile['numeric_width'])
-            self.type_numeric_width.setEnabled(profile['family'] == 'numeric')
-            self._set_combo_data(self.type_size_mode, profile['size_mode'])
-            self.type_size.setValue(float(profile['size']))
-            self._set_combo_data(self.type_weight, int(profile['weight']))
-            self._set_combo_data(self.type_hinting, profile['hinting'])
-            self._set_combo_data(self.type_antialias, profile['antialias'])
-            self._set_combo_data(self.type_quality, profile['quality'])
-            self.type_no_subpixel.setChecked(bool(profile['no_subpixel']))
-            self.type_letter_spacing.setValue(float(profile['letter_spacing']))
-            self.type_word_spacing.setValue(float(profile['word_spacing']))
-            self.type_stretch.setValue(int(profile['stretch']))
-            self.type_kerning.setChecked(bool(profile['kerning']))
-            self.type_fixed_pitch.setChecked(bool(profile['fixed_pitch']))
-            self.type_painter_aa.setChecked(bool(globals_.get('painter_text_antialias', True)))
-            self._set_combo_data(self.type_dpi_rounding, self.host.settings.value('developer/typography_dpi_rounding_v1', 'auto', str))
-            self._set_combo_data(self.type_rendering_preset, self._current_typography_rendering_preset(profile))
-            self.type_preview.setFont(typography_font(role))
-        finally:
-            self._typography_loading = False
-
-    @staticmethod
-    def _typography_rendering_presets() -> dict[str, dict[str, object]]:
-        return {'Native': {'hinting': 'default', 'antialias': 'default', 'quality': 'default', 'no_subpixel': False, 'kerning': True}, 'Balanced': {'hinting': 'vertical', 'antialias': 'prefer', 'quality': 'quality', 'no_subpixel': False, 'kerning': True}, 'Crisp': {'hinting': 'full', 'antialias': 'prefer', 'quality': 'quality', 'no_subpixel': False, 'kerning': True}}
-
-    def _current_typography_rendering_preset(self, profile: dict[str, object]) -> str:
-        for name, values in self._typography_rendering_presets().items():
-            if all((profile.get(key) == value for key, value in values.items())):
-                return name
-        return 'Custom'
-
-    def _typography_rendering_preset_changed(self) -> None:
-        if self._typography_loading:
-            return
-        name = str(self.type_rendering_preset.currentData() or '')
-        values = self._typography_rendering_presets().get(name)
-        if values is None:
-            return
-        role = self._selected_typography_role()
-        self.host.set_developer_typography_values(role, values)
-        self._load_typography_role()
-
-    def _typography_value_changed(self, key: str, value: object) -> None:
-        if self._typography_loading:
-            return
-        self.host.set_developer_typography_value(self._selected_typography_role(), key, value)
-        if key == 'family':
-            self.type_numeric_width.setEnabled(value == 'numeric')
-        self.type_preview.setFont(typography_font(self._selected_typography_role()))
-
-    def _typography_global_changed(self, key: str, value: object) -> None:
-        if self._typography_loading:
-            return
-        self.host.set_developer_typography_global(key, value)
-
-    def _reset_typography_role(self) -> None:
-        self.host.reset_developer_typography_role(self._selected_typography_role())
-        self._load_typography_role()
-
-    def _reset_typography(self) -> None:
-        self.host.reset_developer_typography()
-        self._load_typography_role()
-
-    def _commit_color(self, key: str, value: str) -> None:
-        color = QtGui.QColor(str(value).strip())
-        if not color.isValid():
-            self._color_edits[key].setText(self.host.ui_theme.get(key, '#000000'))
-            return
-        normalized = color.name(QtGui.QColor.NameFormat.HexRgb).upper()
-        self.host.set_developer_ui_color(key, normalized)
-        self._color_edits[key].setText(normalized)
-        self._update_color_button(key)
-
-    def _pick_color(self, key: str) -> None:
-        initial = QtGui.QColor(self.host.ui_theme.get(key, '#000000'))
-        color = QtWidgets.QColorDialog.getColor(initial, self, f'Choose {key} color')
-        if not color.isValid():
-            return
-        value = color.name(QtGui.QColor.NameFormat.HexRgb).upper()
-        self.host.set_developer_ui_color(key, value)
-        self._color_edits[key].setText(value)
-        self._update_color_button(key)
-
-    def _update_color_button(self, key: str) -> None:
-        value = self.host.ui_theme.get(key, '#000000')
-        color = QtGui.QColor(value)
-        foreground = '#000000' if color.lightness() > 145 else '#FFFFFF'
-        self._color_buttons[key].setStyleSheet(f'background:{value}; color:{foreground}; border:1px solid #666;')
-
-    def _commit_status_color(self, key: str, value: str) -> None:
-        color = QtGui.QColor(str(value).strip())
-        if not color.isValid():
-            self._status_color_edits[key].setText(str(self.host.developer_ui_status[key]))
-            return
-        normalized = color.name(QtGui.QColor.NameFormat.HexRgb).upper()
-        self.host.set_developer_ui_status_value(key, normalized)
-        self._status_color_edits[key].setText(normalized)
-        self._update_status_color_button(key)
-
-    def _pick_status_color(self, key: str) -> None:
-        initial = QtGui.QColor(str(self.host.developer_ui_status[key]))
-        color = QtWidgets.QColorDialog.getColor(initial, self, f'Choose status {key} color')
-        if color.isValid():
-            self._commit_status_color(key, color.name(QtGui.QColor.NameFormat.HexRgb))
-
-    def _update_status_color_button(self, key: str) -> None:
-        value = str(self.host.developer_ui_status[key])
-        color = QtGui.QColor(value)
-        foreground = '#000000' if color.lightness() > 145 else '#FFFFFF'
-        self._status_color_buttons[key].setStyleSheet(f'background:{value}; color:{foreground}; border:1px solid #666;')
+        self.preset_buttons = {}
+        self.preset_group = QtWidgets.QButtonGroup(self)
+        choices = QtWidgets.QHBoxLayout()
+        for name in TEXT_SIZE_PRESETS:
+            button = QtWidgets.QPushButton(name)
+            button.setCheckable(True)
+            button.setAutoDefault(False)
+            button.setMinimumHeight(36)
+            self.preset_group.addButton(button)
+            button.clicked.connect(lambda _checked=False, value=name: host.set_text_size_preset(value))
+            self.preset_buttons[name] = button
+            choices.addWidget(button)
+        root.addLayout(choices)
+        preview = QtWidgets.QGroupBox("Preview")
+        preview_layout = QtWidgets.QVBoxLayout(preview)
+        preview_layout.setSpacing(12)
+        self.preview_labels = []
+        for text, role in (("Available balance", TextRole.UI_BODY),
+                           ("12,345.67 USDT", TextRole.MARKET_VALUE_LARGE),
+                           ("Price   67,432.10     Size   0.025", TextRole.TABLE_VALUE)):
+            label = QtWidgets.QLabel(text)
+            label.setWordWrap(True)
+            preview_layout.addWidget(label)
+            self.preview_labels.append((label, role))
+        root.addWidget(preview)
+        root.addStretch(1)
+        self.sync_from_owner()
 
     def sync_from_owner(self) -> None:
-        for key, edit in self._color_edits.items():
-            edit.setText(self.host.ui_theme.get(key, '#000000'))
-            self._update_color_button(key)
-        for key, edit in getattr(self, '_status_color_edits', {}).items():
-            edit.setText(str(self.host.developer_ui_status[key]))
-            self._update_status_color_button(key)
-        for key, combo in getattr(self, '_status_font_combos', {}).items():
-            blocker = QtCore.QSignalBlocker(combo)
-            self._set_combo_data(combo, self.host.developer_ui_status[key])
-            del blocker
-        if hasattr(self, 'typography_roles'):
-            self._load_typography_role()
+        for name, button in self.preset_buttons.items():
+            with QtCore.QSignalBlocker(button):
+                button.setChecked(name == self.host.text_size_preset)
+        for label, role in self.preview_labels:
+            label.setFont(typography_font(role))
 
-    def _reset_colors(self) -> None:
-        self.host.reset_developer_ui_colors()
-        self.sync_from_owner()
-
-
-    def _reset_status(self) -> None:
-        self.host.reset_developer_ui_status()
-        self.sync_from_owner()
 
 from ..models import MagneticRailLabHostPort
 from ..chart.magnetic_rail import ORDER_RAIL_LAB_DEFAULTS, ORDER_RAIL_STYLE_PRESETS, ORDER_RAIL_ORDER_PRESET_DEFAULTS, normalized_order_rail_order_preset
