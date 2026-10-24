@@ -572,7 +572,7 @@ class IndicatorShortcutsDialog(QtWidgets.QDialog):
         heading = QtWidgets.QLabel("INDICATOR SHORTCUTS")
         heading.setObjectName("dialogHeading")
         note = QtWidgets.QLabel(
-            "Use 1–9 for priority indicators. Ctrl+1–9 selects timeframes from left to right. Other studies remain available in the Indicators menu."
+            "Use 1–9 and 0 for priority indicators. Ctrl+1–9 selects timeframes from left to right. Other studies remain available in the Indicators menu."
         )
         note.setObjectName("subtleLabel")
         note.setWordWrap(True)

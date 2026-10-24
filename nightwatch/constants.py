@@ -182,17 +182,20 @@ INDICATOR_KEYS = tuple(name for names in INDICATOR_GROUPS.values() for name in n
 INDICATOR_SHORTCUT_PRIORITY = (
     "VWAP", "EMA Trend", "Supertrend", "Visible Volume Profile", "RSI",
     "Relative Volume", "Open Interest", "Funding Rate History", "ADX / DI",
+    "Bollinger Bands",
 )
 DEFAULT_INDICATOR_SHORTCUTS = {name: "" for name in INDICATOR_KEYS}
 DEFAULT_INDICATOR_SHORTCUTS.update({
-    name: str(index) for index, name in enumerate(INDICATOR_SHORTCUT_PRIORITY, 1)
+    name: str(index % 10) for index, name in enumerate(INDICATOR_SHORTCUT_PRIORITY, 1)
 })
-INDICATOR_SHORTCUT_CHOICES = tuple("123456789") + (
+INDICATOR_SHORTCUT_CHOICES = tuple("1234567890") + (
     "Ctrl+Q", "Ctrl+W", "Ctrl+E", "Ctrl+S", "Ctrl+D", "Ctrl+0",
 )
 
 
-def normalized_indicator_shortcuts(values: object, *, legacy: bool = False) -> dict[str, str]:
+def normalized_indicator_shortcuts(
+    values: object, *, legacy: bool = False, migrate_digit_zero: bool = False
+) -> dict[str, str]:
     """Migrate old defaults while retaining compatible custom bindings/opt-outs."""
     values = values if isinstance(values, dict) else {}
     previous_defaults = dict(zip(
@@ -211,6 +214,10 @@ def normalized_indicator_shortcuts(values: object, *, legacy: bool = False) -> d
         result[name] = shortcut
         if shortcut:
             used.add(shortcut)
+    # Version 3 had no bare-zero choice and left Bollinger Bands unassigned.
+    # Fill that new default once; retain custom bindings and later opt-outs.
+    if migrate_digit_zero and not result["Bollinger Bands"] and "0" not in used:
+        result["Bollinger Bands"] = "0"
     return result
 
 
