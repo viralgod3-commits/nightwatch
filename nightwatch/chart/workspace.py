@@ -1307,6 +1307,7 @@ class ChartWorkspace(QtWidgets.QWidget):
     ):
         super().__init__(parent)
         self.theme = theme
+        self.market_controls: _ChartMarketControls | None = None
         self.use_opengl = bool(use_opengl)
         self._isolate_gl_composition = bool(isolate_gl_composition)
         self._requested_opengl = self.use_opengl
@@ -2139,6 +2140,7 @@ class ChartWorkspace(QtWidgets.QWidget):
             getattr(self, "current_price_line_overlay", None),
             getattr(self, "order_rail_visual", None),
             getattr(self, "order_rail_hud", None),
+            self.market_controls,
         ):
             if overlay is not None:
                 overlay.raise_()
@@ -7376,9 +7378,14 @@ class ChartWorkspace(QtWidgets.QWidget):
         scene_rect = view.sceneBoundingRect()
         if scene_rect.isEmpty():
             return
+        controls_bottom = (
+            float(self.market_controls.geometry().bottom() + 4)
+            if self.market_controls is not None and not self.market_controls.isHidden()
+            else 0.0
+        )
         if self.trend_label.isVisible():
             self.trend_label.setPos(
-                view.mapSceneToView(scene_rect.topRight() + QtCore.QPointF(-6, 4))
+                view.mapSceneToView(scene_rect.topRight() + QtCore.QPointF(-6, max(4.0, controls_bottom)))
             )
         x_range, y_range = self.price_plot.viewRange()
         for profile in (self.visible_profile,):
@@ -7393,7 +7400,7 @@ class ChartWorkspace(QtWidgets.QWidget):
                     )
         if self.auto_fib_badge.isVisible():
             self.auto_fib_badge.setPos(
-                view.mapSceneToView(scene_rect.topLeft() + QtCore.QPointF(4.0, 22.0))
+                view.mapSceneToView(scene_rect.topLeft() + QtCore.QPointF(4.0, max(22.0, controls_bottom)))
             )
         if self.auto_fib_enabled and self.indicators_enabled:
             self._position_auto_fibonacci_levels()
@@ -9231,10 +9238,81 @@ CHART_LAYOUTS = (
 )
 
 
+class _ChartMarketControls(QtWidgets.QFrame):
+    """Small, stationary controls over the canvas; never reserve a chart row."""
+
+    symbol_requested = Signal()
+    interval_selected = Signal(str)
+
+    def __init__(self, chart: ChartWorkspace, symbol: str, interval: str) -> None:
+        super().__init__(chart.graphics)
+        self.setObjectName("chartMarketControls")
+        layout = QtWidgets.QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(2)
+        layout.setSizeConstraint(QtWidgets.QLayout.SizeConstraint.SetFixedSize)
+        row = QtWidgets.QHBoxLayout()
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(3)
+        self.symbol_button = QtWidgets.QToolButton(self)
+        self.symbol_button.setObjectName("chartSymbolButton")
+        self.symbol_button.setAccessibleName("Change chart symbol")
+        self.symbol_button.setToolTip("Change symbol")
+        set_text_role(self.symbol_button, TextRole.INSTRUMENT_SYMBOL)
+        self.symbol_button.clicked.connect(self.symbol_requested.emit)
+        self.interval_button = QtWidgets.QToolButton(self)
+        self.interval_button.setObjectName("chartIntervalButton")
+        self.interval_button.setAccessibleName("Change chart timeframe")
+        self.interval_button.setToolTip("Change timeframe")
+        set_text_role(self.interval_button, TextRole.UI_CAPTION)
+        self.interval_button.setPopupMode(QtWidgets.QToolButton.ToolButtonPopupMode.InstantPopup)
+        menu = QtWidgets.QMenu(self.interval_button)
+        self.interval_group = QtGui.QActionGroup(menu)
+        self.interval_actions: dict[str, QtGui.QAction] = {}
+        for timeframe in TIMEFRAMES:
+            action = menu.addAction(timeframe.upper() if timeframe in {"1d", "1w"} else timeframe)
+            action.setCheckable(True)
+            action.setData(timeframe)
+            self.interval_group.addAction(action)
+            self.interval_actions[timeframe] = action
+        self.interval_group.triggered.connect(
+            lambda action: self.interval_selected.emit(str(action.data()))
+        )
+        self.interval_button.setMenu(menu)
+        for button in (self.symbol_button, self.interval_button):
+            chart._exclude_chart_pointer_for_widget(button)
+            button.setCursor(Qt.CursorShape.PointingHandCursor)
+            row.addWidget(button)
+        layout.addLayout(row)
+        self.status_label = QtWidgets.QLabel(self)
+        self.status_label.setObjectName("chartMarketStatus")
+        self.status_label.setWordWrap(True)
+        self.status_label.setMaximumWidth(200)
+        set_text_role(self.status_label, TextRole.UI_CAPTION)
+        self.status_label.hide()
+        layout.addWidget(self.status_label)
+        chart._exclude_chart_pointer_for_widget(self)
+        chart._exclude_chart_pointer_for_widget(self.status_label)
+        chart.market_controls = self
+        self.set_market(symbol, interval)
+        self.move(8, 6)
+        self.raise_()
+
+    def set_market(self, symbol: str, interval: str) -> None:
+        self.symbol_button.setText(perpetual_display_symbol(symbol))
+        self.interval_button.setText(interval.upper() if interval in {"1d", "1w"} else interval)
+        self.interval_actions[interval].setChecked(True)
+
+    def set_status(self, message: str = "") -> None:
+        self.status_label.setText(message)
+        self.status_label.setVisible(bool(message))
+
+
 class AuxiliaryChartPane(QtWidgets.QFrame):
     """A small, self-contained chart with an independent market stream."""
 
     market_changed = Signal(str, str)
+    symbol_requested = Signal()
 
     def __init__(
         self,
@@ -9258,56 +9336,12 @@ class AuxiliaryChartPane(QtWidgets.QFrame):
         self.symbols: tuple[str, ...] = ()
         self.symbol = self._normalize_symbol(symbol) or DEFAULT_SYMBOL
         self.interval = interval if interval in TIMEFRAMES else DEFAULT_INTERVAL
-        self._controls_updating = False
         self._should_run = False
         self._start_attempt = 0
 
         layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
-        header = QtWidgets.QFrame()
-        header.setObjectName("auxChartHeader")
-        header_layout = QtWidgets.QHBoxLayout(header)
-        header_layout.setContentsMargins(6, 2, 4, 2)
-        header_layout.setSpacing(4)
-
-        self.symbol_box = QtWidgets.QComboBox()
-        self.symbol_box.setObjectName("auxChartSymbol")
-        self.symbol_box.setEditable(True)
-        self.symbol_box.setInsertPolicy(QtWidgets.QComboBox.InsertPolicy.NoInsert)
-        self.symbol_box.setMinimumWidth(118)
-        self.symbol_box.setMaximumWidth(190)
-        self.symbol_box.setFixedHeight(24)
-        self.symbol_box.addItem(perpetual_display_symbol(self.symbol), self.symbol)
-        self.symbol_box.setCurrentIndex(0)
-        set_text_role(self.symbol_box, TextRole.INSTRUMENT_SYMBOL)
-        self.symbol_box.activated.connect(self._symbol_activated)
-        line_edit = self.symbol_box.lineEdit()
-        if line_edit is not None:
-            set_text_role(line_edit, TextRole.INSTRUMENT_SYMBOL)
-            line_edit.editingFinished.connect(self._symbol_entered)
-
-        self.interval_box = QtWidgets.QComboBox()
-        self.interval_box.setObjectName("auxChartInterval")
-        self.interval_box.setFixedSize(62, 24)
-        for timeframe in TIMEFRAMES:
-            self.interval_box.addItem(
-                timeframe.upper() if timeframe in {"1d", "1w"} else timeframe,
-                timeframe,
-            )
-        self.interval_box.setCurrentIndex(TIMEFRAMES.index(self.interval))
-        self.interval_box.currentIndexChanged.connect(self._interval_selected)
-
-        self.status_label = QtWidgets.QLabel("OFF")
-        self.status_label.setObjectName("auxChartStatus")
-        self.status_label.setAlignment(
-            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
-        )
-        header_layout.addWidget(self.symbol_box)
-        header_layout.addWidget(self.interval_box)
-        header_layout.addStretch(1)
-        header_layout.addWidget(self.status_label)
-
         self.chart = ChartWorkspace(
             theme,
             use_opengl=use_opengl,
@@ -9321,8 +9355,12 @@ class AuxiliaryChartPane(QtWidgets.QFrame):
         self.chart.setMinimumWidth(280)
         self.chart.set_indicators_enabled(False)
         self.chart.set_order_rail_market_symbol(self.symbol)
-        layout.addWidget(header)
         layout.addWidget(self.chart, 1)
+        self.controls = _ChartMarketControls(self.chart, self.symbol, self.interval)
+        self.controls.symbol_requested.connect(self.symbol_requested.emit)
+        self.controls.interval_selected.connect(
+            lambda interval: self.set_market(self.symbol, interval)
+        )
 
         self.hub: ChartMarketDataPort = market_data_factory(self)
         self.hub.bootstrap_ready.connect(self._on_bootstrap)
@@ -9339,24 +9377,11 @@ class AuxiliaryChartPane(QtWidgets.QFrame):
         self.symbols = cleaned
         current = self.symbol
         market_replaced = False
-        blocker = QtCore.QSignalBlocker(self.symbol_box)
-        self.symbol_box.clear()
-        for symbol in cleaned:
-            self.symbol_box.addItem(perpetual_display_symbol(symbol), symbol)
         if current not in cleaned and cleaned:
             current = DEFAULT_SYMBOL if DEFAULT_SYMBOL in cleaned else cleaned[0]
             self.symbol = current
             market_replaced = True
-        index = self.symbol_box.findData(current)
-        if index >= 0:
-            self.symbol_box.setCurrentIndex(index)
-        else:
-            self.symbol_box.setEditText(perpetual_display_symbol(current))
-        del blocker
-        completer = self.symbol_box.completer()
-        if completer is not None:
-            completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
-            completer.setFilterMode(Qt.MatchFlag.MatchContains)
+        self.controls.set_market(self.symbol, self.interval)
         if market_replaced:
             self.chart.set_order_rail_market_symbol(self.symbol)
         if market_replaced and self._should_run:
@@ -9376,41 +9401,12 @@ class AuxiliaryChartPane(QtWidgets.QFrame):
         self.interval = interval
         if symbol_changed:
             self.chart.set_order_rail_market_symbol(self.symbol)
-        self._sync_controls()
+        self.controls.set_market(self.symbol, self.interval)
         if changed and self._should_run:
             self.chart.prepare_market(interval, reset_analysis=symbol_changed)
             self.hub.switch_market(normalized, interval)
         if changed:
             self.market_changed.emit(normalized, interval)
-
-    def _sync_controls(self) -> None:
-        self._controls_updating = True
-        try:
-            index = self.symbol_box.findData(self.symbol)
-            if index >= 0:
-                self.symbol_box.setCurrentIndex(index)
-            else:
-                self.symbol_box.setEditText(perpetual_display_symbol(self.symbol))
-            self.interval_box.setCurrentIndex(TIMEFRAMES.index(self.interval))
-        finally:
-            self._controls_updating = False
-
-    def _symbol_activated(self, index: int) -> None:
-        if self._controls_updating:
-            return
-        symbol = str(self.symbol_box.itemData(index) or self.symbol_box.itemText(index))
-        self.set_market(symbol, self.interval)
-
-    def _symbol_entered(self) -> None:
-        if not self._controls_updating:
-            self.set_market(self.symbol_box.currentText(), self.interval)
-        self._sync_controls()
-
-    def _interval_selected(self, index: int) -> None:
-        if self._controls_updating or index < 0:
-            return
-        interval = str(self.interval_box.itemData(index) or "")
-        self.set_market(self.symbol, interval)
 
     def set_active(self, active: bool) -> None:
         active = bool(active)
@@ -9421,7 +9417,7 @@ class AuxiliaryChartPane(QtWidgets.QFrame):
         else:
             self._start_attempt = 0
             self.hub.stop()
-            self.status_label.setText("OFF")
+            self.controls.set_status()
 
     def _start_if_active(self) -> None:
         if not self._should_run or self.hub.started:
@@ -9430,7 +9426,7 @@ class AuxiliaryChartPane(QtWidgets.QFrame):
             self.chart.prime_render_surface()
             self._start_attempt += 1
             if self._start_attempt == 120:
-                self.status_label.setText("SURFACE PENDING")
+                self.controls.set_status("SURFACE PENDING")
 
 
             retry_ms = 25 if self._start_attempt < 120 else 250
@@ -9456,10 +9452,10 @@ class AuxiliaryChartPane(QtWidgets.QFrame):
             self.chart.update_kline(event)
 
     def _on_status(self, message: str, live: bool) -> None:
-        self.status_label.setText("LIVE" if live else str(message).upper())
+        self.controls.set_status("" if live else str(message).upper())
 
     def _on_problem(self, _message: str) -> None:
-        self.status_label.setText("OFFLINE")
+        self.controls.set_status("OFFLINE")
 
     def apply_theme(self, theme: dict[str, str]) -> None:
         self.theme = theme
@@ -9490,6 +9486,8 @@ class MultiChartContainer(QtWidgets.QWidget):
     interaction_priority_changed = Signal(bool)
     interaction_driver_changed = Signal(object)
     chart_added = Signal(object)
+    symbol_search_requested = Signal(object)
+    primary_interval_selected = Signal(str)
 
     def __init__(
         self,
@@ -9509,6 +9507,8 @@ class MultiChartContainer(QtWidgets.QWidget):
         super().__init__(parent)
         self.setObjectName("multiChartContainer")
         self.primary_chart = primary_chart
+        self._primary_symbol = DEFAULT_SYMBOL
+        self._primary_interval = DEFAULT_INTERVAL
         self._interacting_charts: set[ChartWorkspace] = set()
         self._interaction_order: dict[ChartWorkspace, None] = {}
         self._interaction_chart: ChartWorkspace | None = None
@@ -9648,6 +9648,9 @@ class MultiChartContainer(QtWidgets.QWidget):
                     symbol, interval, pane_ref.chart
                 )
             )
+            pane.symbol_requested.connect(
+                lambda pane_ref=pane: self.symbol_search_requested.emit(pane_ref)
+            )
             self.auxiliary.append(pane)
             pane.chart.interaction_priority_changed.connect(
                 lambda active, chart=pane.chart: self._chart_interaction(chart, active)
@@ -9661,6 +9664,17 @@ class MultiChartContainer(QtWidgets.QWidget):
         if mode not in CHART_LAYOUTS:
             mode = "Single"
         required_panes = self._panes_required(mode)
+        controls = self.primary_chart.market_controls
+        if required_panes and controls is None:
+            controls = _ChartMarketControls(
+                self.primary_chart, self._primary_symbol, self._primary_interval
+            )
+            controls.symbol_requested.connect(
+                lambda: self.symbol_search_requested.emit(None)
+            )
+            controls.interval_selected.connect(self.primary_interval_selected.emit)
+        if controls is not None:
+            controls.setVisible(bool(required_panes))
         if required_panes:
 
 
@@ -9703,6 +9717,13 @@ class MultiChartContainer(QtWidgets.QWidget):
         # GL surface would be destroyed and recreated as the grid adopts it.
         self.primary_chart.show()
         self.layout_mode = mode
+
+    def set_primary_market(self, symbol: str, interval: str) -> None:
+        self._primary_symbol = symbol
+        self._primary_interval = interval
+        controls = self.primary_chart.market_controls
+        if controls is not None:
+            controls.set_market(symbol, interval)
 
     def set_workspace_active(self, active: bool) -> None:
         active = bool(active)

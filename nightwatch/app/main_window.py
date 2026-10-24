@@ -48,7 +48,7 @@ from ..chart.magnetic_rail import (
     normalized_order_rail_config,
     normalized_order_rail_order_preset,
 )
-from ..chart.workspace import CHART_LAYOUTS, ChartWorkspace, MultiChartContainer
+from ..chart.workspace import CHART_LAYOUTS, AuxiliaryChartPane, ChartWorkspace, MultiChartContainer
 from ..chart.analysis import LatestJob
 from ..constants import (
     APP_NAME,
@@ -1648,6 +1648,11 @@ class MainWindow(QtWidgets.QMainWindow):
             presentation_clock=None,
         )
         self.chart_container.restore_auxiliary(self.saved_auxiliary_charts)
+        self.chart_container.set_primary_market(self.current_symbol, self.current_interval)
+        self.chart_container.symbol_search_requested.connect(
+            lambda pane: self.open_symbol_search(chart_pane=pane)
+        )
+        self.chart_container.primary_interval_selected.connect(self.switch_interval)
         self.chart_container.chart_added.connect(self._observe_chart_surface)
         self.chart_container.set_order_rail_lab_config(self.magnetic_rail_config)
         self.chart_container.set_order_rail_order_preset(
@@ -1802,6 +1807,7 @@ class MainWindow(QtWidgets.QMainWindow):
         chart_column_layout.setContentsMargins(0, 0, 0, 0)
         chart_column_layout.setSpacing(0)
         instrument_host = QtWidgets.QWidget(self.chart_column)
+        self.instrument_bar_host = instrument_host
         instrument_host.setObjectName("instrumentBarHost")
         instrument_host.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         instrument_layout = QtWidgets.QHBoxLayout(instrument_host)
@@ -2221,6 +2227,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.chart_layout_mode = mode
             self.settings.setValue("chart/layout_mode_v1", mode)
         self.chart_container.set_layout_mode(mode)
+        self.instrument_bar_host.setVisible(mode == "Single")
         self._apply_auxiliary_symbol_rules()
         for name, action in self.chart_layout_actions.items():
             blocker = QtCore.QSignalBlocker(action)
@@ -3977,7 +3984,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self.search_hour_task = task
         self.tasks.add(task)
 
-    def open_symbol_search(self, initial_text: str = "") -> None:
+    def open_symbol_search(
+        self, initial_text: str = "", *, chart_pane: AuxiliaryChartPane | None = None
+    ) -> None:
         self.symbol_search_pending = False
         if self.symbol_search_dialog is not None:
             if initial_text:
@@ -4012,6 +4021,7 @@ class MainWindow(QtWidgets.QMainWindow):
             lambda result, current=dialog: self._symbol_search_finished(
                 current,
                 result,
+                chart_pane,
             )
         )
         dialog.open()
@@ -4027,6 +4037,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self,
         dialog: SymbolSearchDialog,
         result: int,
+        chart_pane: AuxiliaryChartPane | None = None,
     ) -> None:
         if self.symbol_search_dialog is not dialog:
             return
@@ -4039,7 +4050,10 @@ class MainWindow(QtWidgets.QMainWindow):
             result == int(QtWidgets.QDialog.DialogCode.Accepted)
             and selected
         ):
-            self.switch_symbol(selected)
+            if chart_pane is None:
+                self.switch_symbol(selected)
+            else:
+                chart_pane.set_market(selected, chart_pane.interval)
         QTimer.singleShot(0, self, self._restore_terminal_keyboard_focus)
 
     def _toggle_drawing_tool(self, mode: str, checked: bool) -> None:
@@ -5898,6 +5912,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._store_current_symbol_drawings()
         self._warm_initial_chart_history_pending = False
         self.current_symbol = symbol
+        self.chart_container.set_primary_market(symbol, self.current_interval)
         self._market_data_live = False
         self._book_valid = False
         self.best_bid = 0.0
@@ -5944,6 +5959,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._store_current_symbol_drawings()
         self._warm_initial_chart_history_pending = False
         self.current_interval = interval
+        self.chart_container.set_primary_market(self.current_symbol, interval)
         self._select_timeframe_button(interval)
         self.alert_center.set_market(self.current_symbol, interval)
         # The previous interval's worker is stale by definition.  Drop only

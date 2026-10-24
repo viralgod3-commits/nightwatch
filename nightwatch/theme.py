@@ -1495,12 +1495,23 @@ def build_shell_stylesheet(theme_name: str, theme: dict[str, str], surfaces: dic
             QFrame#auxChartPane {{
                 background: {t['bg']}; border: {block_border}; border-radius: 0;
             }}
-            QFrame#auxChartHeader {{
-                background: {t['header']}; border: 0; border-bottom: {block_separator};
+            QFrame#chartMarketControls {{
+                background: transparent; border: 0;
             }}
-            QLabel#auxChartStatus {{ color: {t['muted']}; padding: 0 3px; }}
-            QComboBox#auxChartSymbol, QComboBox#auxChartInterval {{
-                min-height: 22px; padding-top: 0; padding-bottom: 0;
+            QToolButton#chartSymbolButton, QToolButton#chartIntervalButton {{
+                background: {t['bg']}; color: {t['text']};
+                border: 1px solid transparent; border-radius: 3px;
+                padding: 3px 6px;
+            }}
+            QToolButton#chartIntervalButton {{ color: {t['muted']}; }}
+            QToolButton#chartSymbolButton:hover, QToolButton#chartSymbolButton:focus,
+            QToolButton#chartIntervalButton:hover, QToolButton#chartIntervalButton:focus {{
+                background: {control_hover}; color: {t['text']};
+                border-color: {control_border};
+            }}
+            QToolButton#chartIntervalButton::menu-indicator {{ image: none; width: 0; }}
+            QLabel#chartMarketStatus {{
+                background: {t['bg']}; color: {t['muted']}; padding: 1px 6px;
             }}
             QFrame#microstructureCard {{
                 background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
