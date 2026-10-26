@@ -32,6 +32,50 @@ except ImportError:
     QtOpenGL = None
 
 
+class PreparedCurveItem(pg.PlotDataItem):
+    """Retain worker-prepared line geometry through camera-only changes.
+
+    PlotDataItem's range handler resubmits even unchanged arrays to its curve,
+    invalidating the painter path and OpenGL buffer on every Y adjustment.
+    Keep its dynamic-range safety clipping, but only upload changed geometry.
+    Callers use one-pixel cosmetic pens to avoid Qt's costly wide-path stroker.
+    """
+
+    def __init__(self, plot: pg.PlotItem, *, clip_to_view: bool = False, **kwargs):
+        self._displayed_arrays = None
+        super().__init__(**kwargs)
+        plot.addItem(self)
+        # The analysis worker supplies a bounded window with a pan margin and
+        # extrema-preserving decimation. ViewBox clips painting at its edges.
+        self.setClipToView(clip_to_view)
+        self.setDownsampling(ds=1, auto=False)
+
+    def setData(self, *args, **kwargs):
+        # An explicit update may reuse arrays whose values changed in place.
+        # Only camera-driven updates are allowed to retain their geometry.
+        self._displayed_arrays = None
+        return super().setData(*args, **kwargs)
+
+    def updateItems(self, styleUpdate: bool = True):
+        dataset = self._getDisplayDataset()
+        arrays = None if dataset is None else (dataset.x, dataset.y, dataset.connect)
+        previous = self._displayed_arrays
+        if (
+            not styleUpdate and arrays is not None and previous is not None
+            and all(
+                current is old or (
+                    isinstance(current, np.ndarray) and isinstance(old, np.ndarray)
+                    and current.shape == old.shape and current.strides == old.strides
+                    and current.dtype == old.dtype and current.ctypes.data == old.ctypes.data
+                )
+                for current, old in zip(arrays, previous)
+            )
+        ):
+            return
+        super().updateItems(styleUpdate=styleUpdate)
+        self._displayed_arrays = arrays
+
+
 def _qt_enum_member(owner: Any, group: str, member: str) -> Any:
     """Resolve scoped and legacy PySide6 enum spellings."""
     scoped = getattr(owner, group, None)

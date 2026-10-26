@@ -29,7 +29,7 @@ from .preparation import (
 from .analysis import LatestJob, analysis_worker_count, run_analysis, indicator_analysis, profile_analysis, major_level_analysis, fibonacci_analysis
 from .rendering import (
     ChartGraphicsView, CandlestickItem, VolumeOverlayItem, NativeBarCompositeItem,
-    NativeAreaItem, NativeBandItem,
+    NativeAreaItem, NativeBandItem, PreparedCurveItem,
 )
 from .retained import RetainedChartItems
 from .axis import CachedAxisPainting, CalendarTickCache, PanningAxisLayout
@@ -1778,12 +1778,12 @@ class ChartWorkspace(QtWidgets.QWidget):
 
         bb_pen = pg.mkPen(
             theme["cyan"],
-            width=1.15,
+            width=1.0,
             style=Qt.PenStyle.SolidLine,
         )
-        self.bb_mid = self.price_plot.plot(pen=bb_pen, antialias=True)
-        self.bb_upper = self.price_plot.plot(pen=bb_pen, antialias=True)
-        self.bb_lower = self.price_plot.plot(pen=bb_pen, antialias=True)
+        self.bb_mid = PreparedCurveItem(self.price_plot, pen=bb_pen, antialias=True)
+        self.bb_upper = PreparedCurveItem(self.price_plot, pen=bb_pen, antialias=True)
+        self.bb_lower = PreparedCurveItem(self.price_plot, pen=bb_pen, antialias=True)
         for curve in (self.bb_mid, self.bb_upper, self.bb_lower):
             curve.setZValue(4)
         self.bb_fill = NativeBandItem(
@@ -1793,19 +1793,14 @@ class ChartWorkspace(QtWidgets.QWidget):
         )
         self.bb_fill.setZValue(3)
         self.price_plot.addItem(self.bb_fill)
-        for curve in (self.bb_mid, self.bb_upper, self.bb_lower):
-            curve.setClipToView(False)
-            curve.setDownsampling(auto=False)
         self.trend_curves = {}
         for name, colors in (("EMA Trend", ("cyan", "amber", "purple")),
                              ("VWAP", ("amber",)),
                              ("Supertrend", ("green", "red"))):
             curves = []
             for color in colors:
-                curve = self.price_plot.plot(pen=pg.mkPen(theme[color], width=1.15))
+                curve = PreparedCurveItem(self.price_plot, clip_to_view=True, pen=pg.mkPen(theme[color], width=1.0))
                 curve.setZValue(7)
-                curve.setDownsampling(auto=True, method="peak")
-                curve.setClipToView(True)
                 curve.setVisible(False)
                 curves.append(curve)
             self.trend_curves[name] = curves
@@ -1899,12 +1894,10 @@ class ChartWorkspace(QtWidgets.QWidget):
         self.price_plot.addItem(self.liquidation_points)
         self.liquidation_points.sigHovered.connect(self._liquidation_hovered)
 
-        self.oi_curve = self.oi_plot.plot(pen=pg.mkPen(theme["purple"], width=1.4))
-        self.funding_curve = self.funding_plot.plot(
-            pen=pg.mkPen(alpha_color(theme["muted"], 220), width=1.35)
+        self.oi_curve = PreparedCurveItem(self.oi_plot, pen=pg.mkPen(theme["purple"], width=1.0))
+        self.funding_curve = PreparedCurveItem(self.funding_plot, clip_to_view=True,
+            pen=pg.mkPen(alpha_color(theme["muted"], 220), width=1.0)
         )
-        self.funding_curve.setClipToView(True)
-        self.funding_curve.setDownsampling(auto=True, method="peak")
         self.funding_positive_bars = pg.BarGraphItem(
             x=[], height=[], width=1,
             brush=opaque_overlay_color(theme["bg"], theme["red"], 68), pen=None
@@ -1925,7 +1918,7 @@ class ChartWorkspace(QtWidgets.QWidget):
         self.funding_plot.setToolTip(
             'Bars: settled funding rates. Line: smoothed trend.\nDrag the right axis to scale; double-click to reset.'
         )
-        self.rsi_curve = self.rsi_plot.plot(pen=pg.mkPen(theme["cyan"], width=1.35))
+        self.rsi_curve = PreparedCurveItem(self.rsi_plot, pen=pg.mkPen(theme["cyan"], width=1.0))
         self.rsi_upper_line = pg.InfiniteLine(
             pos=self.rsi_upper,
             angle=0,
@@ -1952,10 +1945,8 @@ class ChartWorkspace(QtWidgets.QWidget):
                 continue
             curves = []
             for color in colors:
-                curve = self.study_plots[name].plot(pen=pg.mkPen(theme[color], width=1.35))
+                curve = PreparedCurveItem(self.study_plots[name], pen=pg.mkPen(theme[color], width=1.0))
                 curve.setZValue(12)
-                curve.setClipToView(False)
-                curve.setDownsampling(ds=1, auto=False)
                 curves.append(curve)
             self.candle_study_curves[name] = tuple(curves)
         self.study_reference_lines = {}
@@ -9169,14 +9160,14 @@ class ChartWorkspace(QtWidgets.QWidget):
         self.graphics.request_redraw()
         bb_pen = pg.mkPen(
             theme["cyan"],
-            width=1.15,
+            width=1.0,
             style=Qt.PenStyle.SolidLine,
         )
         for name, colors in (("EMA Trend", ("cyan", "amber", "purple")),
                              ("VWAP", ("amber",)),
                              ("Supertrend", ("green", "red"))):
             for curve, color in zip(self.trend_curves[name], colors):
-                curve.setPen(pg.mkPen(theme[color], width=1.15))
+                curve.setPen(pg.mkPen(theme[color], width=1.0))
         self._update_trend_label()
         self.bb_mid.setPen(bb_pen)
         self.bb_upper.setPen(bb_pen)
@@ -9195,8 +9186,8 @@ class ChartWorkspace(QtWidgets.QWidget):
         for _plot, header in self.study_panes.values():
             header.theme = theme
             header.update()
-        self.oi_curve.setPen(pg.mkPen(theme["purple"], width=1.4))
-        self.funding_curve.setPen(pg.mkPen(alpha_color(theme["muted"], 220), width=1.35))
+        self.oi_curve.setPen(pg.mkPen(theme["purple"], width=1.0))
+        self.funding_curve.setPen(pg.mkPen(alpha_color(theme["muted"], 220), width=1.0))
         self.funding_positive_bars.setOpts(
             brush=pg.mkBrush(opaque_overlay_color(theme["bg"], theme["red"], 68))
         )
@@ -9208,7 +9199,7 @@ class ChartWorkspace(QtWidgets.QWidget):
         )
         for name, curves in self.candle_study_curves.items():
             for curve, color in zip(curves, self._candle_study_colors[name]):
-                curve.setPen(pg.mkPen(theme[color], width=1.35))
+                curve.setPen(pg.mkPen(theme[color], width=1.0))
         for line in self.study_reference_lines.values():
             line.setPen(pg.mkPen(alpha_color(theme["muted"], 120), width=0.8,
                                style=Qt.PenStyle.DashLine))

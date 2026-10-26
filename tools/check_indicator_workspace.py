@@ -14,10 +14,12 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 import numpy as np
-from PySide6 import QtCore, QtWidgets
+import pyqtgraph as pg
+from PySide6 import QtCore, QtGui, QtWidgets
 
 from nightwatch.chart.analysis import shutdown_analysis
 from nightwatch.chart.workspace import ChartWorkspace
+from nightwatch.chart.rendering import PreparedCurveItem
 from nightwatch.constants import INDICATOR_KEYS, INDICATOR_SETTING_DEFAULTS
 from nightwatch.models import Candle
 from nightwatch.theme import THEMES
@@ -202,6 +204,121 @@ class IndicatorWorkspaceChecks(unittest.TestCase):
         self.chart.set_study_heights({"ADX / DI": 180, "Relative Volume": 160})
         self.assertEqual(self.chart.saved_study_heights()["ADX / DI"], 180)
         self.assertEqual(self.qt_errors, [])
+
+
+class PreparedCurveChecks(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+
+    def setUp(self):
+        self.widget = pg.PlotWidget()
+        if os.environ.get("NIGHTWATCH_TEST_GL") == "1":
+            self.widget.useOpenGL(True)
+        self.widget.resize(800, 500)
+        self.plot = self.widget.getPlotItem()
+        self.plot.disableAutoRange()
+        self.plot.setXRange(20, 120, padding=0)
+        self.plot.setYRange(-2, 2, padding=0)
+        self.curve = PreparedCurveItem(self.plot, pen=pg.mkPen("#22dddd", width=1), antialias=True)
+        self.x = np.linspace(0, 200, 2000)
+        self.y = np.sin(self.x / 5)
+        self.y[500:650] = np.nan
+        self.curve.setData(self.x, self.y, connect="finite")
+        self.widget.show()
+        self.app.processEvents()
+
+    def tearDown(self):
+        self.widget.close()
+        self.widget.deleteLater()
+        QtCore.QCoreApplication.sendPostedEvents(None, QtCore.QEvent.Type.DeferredDelete)
+
+    def test_camera_reuses_path_but_data_and_styles_refresh(self):
+        submissions = []
+        self.curve.curve.sigPlotChanged.connect(lambda *_: submissions.append(True))
+        path = self.curve.curve.getPath()
+        gl_state = self.curve.curve.glstate
+        if os.environ.get("NIGHTWATCH_TEST_GL") == "1":
+            self.assertTrue(self.widget.viewport().isValid())
+            self.assertIsNotNone(gl_state)
+            self.assertIsNotNone(gl_state.render_cache)
+        gl_cache = gl_state.render_cache if gl_state is not None else None
+        for step in range(20):
+            self.plot.setXRange(20 + step, 120 + step, padding=0)
+            self.plot.setYRange(-2 + step*.01, 2 + step*.01, padding=0)
+            self.app.processEvents()
+            self.assertIs(self.curve.curve.getPath(), path)
+            if gl_state is not None:
+                self.assertIs(gl_state.render_cache, gl_cache)
+        self.assertEqual(submissions, [])
+        np.testing.assert_allclose(self.curve.getData()[1], self.y, equal_nan=True)
+
+        changed = self.y.copy()
+        changed[-1] = 1.5
+        self.curve.setData(self.x, changed, connect="finite")
+        self.assertTrue(submissions)
+        self.assertIsNot(self.curve.curve.getPath(), path)
+        self.assertEqual(self.curve.getData()[1][-1], 1.5)
+        self.curve.setPen(pg.mkPen("#ff9900", width=1))
+        self.assertEqual(self.curve.curve.opts["pen"].color(), QtGui.QColor("#ff9900"))
+        self.curve.clear()
+        self.curve.setData(self.x, self.y, connect="finite")
+        np.testing.assert_allclose(self.curve.getData()[1], self.y, equal_nan=True)
+
+    def test_clipped_curve_reuses_y_changes_and_refreshes_x_window(self):
+        self.curve.setClipToView(True)
+        submissions = []
+        self.curve.curve.sigPlotChanged.connect(lambda *_: submissions.append(True))
+        path = self.curve.curve.getPath()
+        original_x = self.curve.getData()[0].copy()
+        self.assertLess(len(original_x), len(self.x))
+        for step in range(20):
+            self.plot.setYRange(-2 + step*.01, 2 + step*.01, padding=0)
+            self.app.processEvents()
+            self.assertIs(self.curve.curve.getPath(), path)
+        self.assertEqual(submissions, [])
+        self.plot.setXRange(30, 130, padding=0)
+        self.app.processEvents()
+        self.assertTrue(submissions)
+        self.assertGreater(self.curve.getData()[0][0], original_x[0])
+        self.assertIsNot(self.curve.curve.getPath(), path)
+
+    def test_explicit_data_updates_invalidate_reused_array_storage(self):
+        path = self.curve.curve.getPath()
+        self.y[-1] = 1.5
+        self.curve.setData(self.x, self.y)
+        self.assertIsNot(self.curve.curve.getPath(), path)
+        self.assertEqual(self.curve.curve.getData()[1][-1], 1.5)
+        self.curve.clear()
+        self.curve.setData(self.x, self.y)
+        self.assertFalse(self.curve.curve.getPath().isEmpty())
+        self.assertTrue(self.curve.curve.isVisible())
+
+    def test_rendering_matches_reference_including_extreme_scale_and_gaps(self):
+        reference = self.plot.plot(pen=pg.mkPen("#22dddd", width=1), antialias=True)
+        reference.setClipToView(False)
+        reference.setDownsampling(ds=1, auto=False)
+        reference.setData(self.x, self.y, connect="finite")
+        reference.hide()
+        # Exercise entry into and recovery from pyqtgraph's safety clipping.
+        for curve in (self.curve, reference):
+            curve.setDynamicRangeLimit(10, hysteresis=3)
+        for bounds in ((-2, 2), (-.001, .001), (-.002, .002), (-2, 2)):
+            self.plot.setYRange(*bounds, padding=0)
+            self.curve.show()
+            reference.hide()
+            for _ in range(8):
+                self.app.processEvents()
+            viewport = self.widget.viewport()
+            actual = viewport.grabFramebuffer() if hasattr(viewport, "grabFramebuffer") else self.widget.grab().toImage()
+            self.curve.hide()
+            reference.show()
+            for _ in range(8):
+                self.app.processEvents()
+            expected = viewport.grabFramebuffer() if hasattr(viewport, "grabFramebuffer") else self.widget.grab().toImage()
+            np.testing.assert_allclose(self.curve.getData()[1], reference.getData()[1], equal_nan=True)
+            self.assertEqual(actual, expected, f"Raster changed at Y range {bounds}")
+        self.assertTrue(np.isnan(self.curve.getData()[1][500:650]).all())
 
 
 if __name__ == "__main__":

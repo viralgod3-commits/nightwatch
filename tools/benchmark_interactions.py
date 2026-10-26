@@ -37,6 +37,7 @@ def arguments():
     parser.add_argument("--cases", default="pan,zoom,deep_pan,wide_pan,watchlist_resize,rail_resize")
     parser.add_argument("--market-hz", type=float, default=20.0, help="Offline watchlist/depth/trade updates per second")
     parser.add_argument("--live-candle-hz", type=float, default=0.0, help="Optional production mutable-candle updates per second; zero preserves static-candle comparisons")
+    parser.add_argument("--indicators", default="", help="Comma-separated indicator names, or all; empty leaves indicators off")
     parser.add_argument("--label", default="", help="Machine/run identity for before/after comparisons")
     args = parser.parse_args()
     if any(not math.isfinite(value) or value <= 0 for value in (args.duration, args.input_hz)):
@@ -127,7 +128,7 @@ def main():
     import PySide6
     import numpy as np
     import pyqtgraph as pg
-    from nightwatch.constants import APP_NAME, ORG_NAME
+    from nightwatch.constants import APP_NAME, ORG_NAME, INDICATOR_KEYS
     from nightwatch.entrypoint import _configure_chart_surface_format, AppComposition
     from nightwatch.utilities import load_app_fonts
     from nightwatch.models import Candle, SymbolRules
@@ -196,11 +197,16 @@ def main():
     allowed_cases = {"pan", "zoom", "deep_pan", "wide_pan", "history_traverse", "watchlist_resize", "rail_resize"}
     if not symbols or set(cases)-allowed_cases:
         raise ValueError("Supply symbols and valid case names")
+    indicators = list(INDICATOR_KEYS) if args.indicators == "all" else [name.strip() for name in args.indicators.split(",") if name.strip()]
+    if set(indicators) - set(INDICATOR_KEYS):
+        raise ValueError("Unknown indicator: " + ", ".join(sorted(set(indicators) - set(INDICATOR_KEYS))))
     window = OfflineWindow(symbol=symbols[0], interval="1m", testnet=True)
     window.start_fullscreen = False
     window.start_maximized = False
     window.resize(args.window_width, args.window_height)
-    window.chart.set_indicators_enabled(False)
+    window.chart.set_indicators_enabled(bool(indicators))
+    for name in indicators:
+        window.chart.toggle_indicator(name, True)
     window.watchlist.set_icon_requests_enabled(False)
     pairs = ["BTCUSDT", "ETHUSDT", "SHIBUSDT", "SOLUSDT", "XRPUSDT", "DOGEUSDT", "ADAUSDT", "AVAXUSDT", "LINKUSDT", "LTCUSDT"]
     window.watchlist.set_symbols(pairs, emit=False)
@@ -219,7 +225,7 @@ def main():
             "isolated_chart_composition_requested": args.isolate_chart_gl,
             "numeric_threads": numeric_threads, "input_hz_requested": args.input_hz, "market_hz": args.market_hz, "live_candle_hz": args.live_candle_hz, "watchlist_pairs": pairs,
             "panel_ids": list(panel_ids(window.right_rail_controller.state.root)),
-            "indicators_enabled": False, "offline": True, "data_workload": "Synthetic tickers/BBO at 20 Hz by default; 120 depth levels per side with 1k–10k quote notional per level; four 10k–100k quote trades per update; one display-only position; no network or order execution."},
+            "indicators_enabled": bool(indicators), "indicators": indicators, "offline": True, "data_workload": "Synthetic tickers/BBO at 20 Hz by default; 120 depth levels per side with 1k–10k quote notional per level; four 10k–100k quote trades per update; one display-only position; no network or order execution."},
         "environment": {"os": platform.platform(), "cpu": platform.processor(), "logical_cpus": os.cpu_count(),
             "python": platform.python_version(), "qt": QtCore.qVersion(), "pyside": PySide6.__version__,
             "numpy": np.__version__, "pyqtgraph": pg.__version__, "qt_platform": app.platformName(),
@@ -244,6 +250,20 @@ def main():
              "gesture_start": None, "point": None, "target": None, "live_rows_max": 0,
              "snapshots_received": 0, "order_flow_failures": [], "last_received_snapshot": {},
              "capture_cpu_start": None, "live_fixture": None, "live_updates": 0, "live_stamp": 0}
+
+    indicator_curves = {
+        "Bollinger Bands": (chart.bb_mid, chart.bb_upper, chart.bb_lower),
+        **chart.trend_curves, **chart.candle_study_curves,
+        "Open Interest": (chart.oi_curve,), "Funding Rate History": (chart.funding_curve,),
+    }
+
+    def curve_submitted(*_args):
+        if state["case"] and state.get("gesture_ended_at") is None:
+            state["indicator_geometry_submissions"] += 1
+
+    for name in indicators:
+        for curve in indicator_curves.get(name, ()):
+            curve.curve.sigPlotChanged.connect(curve_submitted)
 
     shells = {shell.panel_id: shell for shell in window.right_rail_controller.sections.values()}
     panel_contents = {shell.content: pid for pid, shell in shells.items()}
@@ -363,7 +383,7 @@ def main():
         tick = tick_for(window.current_symbol)
         bids = tuple((price-j*tick,(1000+1000*((i+j)%10))/(price-j*tick)) for j in range(1,121))
         asks = tuple((price+j*tick,(1000+1000*((i+2*j)%10))/(price+j*tick)) for j in range(1,121))
-        window._order_flow_depth_requested.emit(window._order_flow_generation, bids, asks, i, None)
+        window._order_flow_depth_requested.emit(window._order_flow_generation, bids, asks, i, None, None)
         window._order_flow_book_ticker_requested.emit(window._order_flow_generation,{"s":window.current_symbol,"u":i,
             "b":bids[0][0],"a":asks[0][0],"B":bids[0][1],"A":asks[0][1]})
         trades = tuple({"s": window.current_symbol, "p": price+(j%3-1)*tick,
@@ -525,6 +545,9 @@ def main():
         item = {"symbol": window.current_symbol, "interaction": case, "elapsed_s": end-state["gesture_start"],
             "inputs_sent": len(state["input_stamps"]), "actual_input_hz": len(state["input_stamps"])/(end-state["gesture_start"]),
             "live_candle_updates_during_gesture": state["live_updates_end"]-state["live_updates_start"],
+            "indicator_geometry_submissions": state["indicator_geometry_submissions"],
+            "indicator_curve_points": {name: [len(curve.xData) if curve.xData is not None else 0 for curve in curves]
+                                       for name, curves in indicator_curves.items() if name in indicators},
             "candle_count_start": state["candle_count_start"], "candle_count_end": len(chart.candles),
             "cgroup_cpu_stat_delta": counter_delta(state["case_cpu_start"],state["case_cpu_end"]),
             "chart_paints": interval_summary(stamps,state["gesture_start"],end,target_hz),
@@ -563,7 +586,7 @@ def main():
                 **depth_observations(),
                 "tape_visible_rows": window.large_trades.model.rowCount(),
                 "tape_mode": window.large_trades.mode(),
-                "display_position_count": window.trading_workspace._position_count,
+                "display_position_count": window.trading_workspace.positions.count(),
                 "trading_armed": window.trading_gateway.armed,
                 "last_received_snapshot": state["last_received_snapshot"],
                 "orderbook_symbol": window.orderbook.symbol, "canvas_symbol": window.orderbook.canvas.symbol,
@@ -613,10 +636,16 @@ def main():
         QtCore.QTimer.singleShot(350, prepare_case)
 
     def begin_case():
+        if chart._has_active_rendered_indicators() and chart._indicator_committed_key is None:
+            if time.monotonic() >= state["indicator_ready_deadline"]:
+                raise RuntimeError("Enabled indicators did not produce a displayed result")
+            QtCore.QTimer.singleShot(50, begin_case)
+            return
         case = cases[state["case_index"]]
         for key in ("paint_stamps","swap_stamps","raw_swap_stamps","widget_stamps","watchlist_surface_stamps","input_stamps","input_latencies_ms","paint_durations_ms","pending_inputs"):
             state[key] = []
         state["gesture_ended_at"] = None
+        state["indicator_geometry_submissions"] = 0
         state["panel_preview_stamps"] = {pid: [] for pid in shells}
         state["panel_events"] = {pid: {phase: {"resize": 0, "layout_request": 0} for phase in ("gesture", "release")}
                                  for pid in shells}
@@ -686,10 +715,23 @@ def main():
         if chart.auto_scale:
             chart._fit_y_to_visible(*chart.price_plot.viewRange()[0])
         window.right_rail_controller.apply_preset("Balanced",window.right_layout_presets["Balanced"],reset_geometry=True)
+        state["indicator_ready_deadline"] = time.monotonic() + 30.0
         QtCore.QTimer.singleShot(500,begin_case)
 
     def loaded(*_):
         base = chart.candles[-1]
+        if "Open Interest" in indicators:
+            chart.update_oi_history([{"timestamp": candle.time*1000, "sumOpenInterestValue": 1e9*(1+.02*math.sin(i*.1))}
+                                     for i, candle in enumerate(chart.candles[::5])])
+        if "Funding Rate History" in indicators:
+            chart.update_funding_history([{"fundingTime": candle.time*1000, "fundingRate": .0001*math.sin(i*.7)}
+                                          for i, candle in enumerate(chart.candles[::480])])
+        if "Liquidations" in indicators:
+            # Keep visible events near both the current and historical cases.
+            selected = [*chart.candles[-1000::20], *chart.candles[len(chart.candles)//2-1000:len(chart.candles)//2:20]]
+            chart.update_liquidation_history([{"o": {"T": candle.time*1000, "ap": candle.close,
+                                                       "z": 200_000/candle.close, "S": "SELL" if i%2 else "BUY"}}
+                                              for i, candle in enumerate(selected)])
         state["live_fixture"] = {"base":base, "high":base.high, "low":base.low, "index":0}
         QtCore.QTimer.singleShot(750,prepare_case)
     chart.snapshot_committed.connect(loaded)
