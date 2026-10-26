@@ -9,10 +9,12 @@ from __future__ import annotations
 import math
 import time
 import logging
+from bisect import bisect_left, bisect_right
 from typing import Any
 
 import numpy as np
 import pyqtgraph as pg
+from pyqtgraph.graphicsItems.PlotDataItem import PlotDataset
 from PySide6 import QtCore, QtGui, QtWidgets
 from PySide6.QtCore import Qt
 
@@ -43,6 +45,7 @@ class PreparedCurveItem(pg.PlotDataItem):
 
     def __init__(self, plot: pg.PlotItem, *, clip_to_view: bool = False, **kwargs):
         self._displayed_arrays = None
+        self._clip_window = None
         super().__init__(**kwargs)
         plot.addItem(self)
         # The analysis worker supplies a bounded window with a pan margin and
@@ -54,7 +57,48 @@ class PreparedCurveItem(pg.PlotDataItem):
         # An explicit update may reuse arrays whose values changed in place.
         # Only camera-driven updates are allowed to retain their geometry.
         self._displayed_arrays = None
+        self._clip_window = None
         return super().setData(*args, **kwargs)
+
+    def _getDisplayDataset(self):
+        # Keep a small pan margin for clipped overlays. Upstream clipping at
+        # the exact viewport edges replaces the path/VBO every candle crossed,
+        # even though the worker's retained geometry has not changed.
+        if (not self.opts['clipToView'] or self.opts['autoDownsample']
+                or self.opts['downsample'] != 1):
+            return super()._getDisplayDataset()
+        self.opts['clipToView'] = False
+        try:
+            dataset = super()._getDisplayDataset()
+        finally:
+            self.opts['clipToView'] = True
+        view = self.getViewBox()
+        if dataset is None or view is None or view.autoRangeEnabled()[0]:
+            return dataset
+        rect = view.viewRect()
+        left, right = rect.left(), rect.right()
+        span = right - left
+        if span <= 0 or not math.isfinite(span):
+            return dataset
+        previous = self._clip_window
+        arrays = (dataset.x, dataset.y, dataset.connect)
+        if previous is not None:
+            old_arrays, lower, upper, old_span, clipped = previous
+            if (all(a is b for a, b in zip(arrays, old_arrays))
+                    and lower <= left and right <= upper
+                    and old_span * .5 <= span <= old_span * 2):
+                return clipped
+        lower, upper = left - span * .25, right + span * .25
+        first = max(0, bisect_left(dataset.x, lower) - 1)
+        last = min(len(dataset.x), bisect_right(dataset.x, upper) + 1)
+        connect = dataset.connect
+        clipped = PlotDataset(
+            dataset.x[first:last], dataset.y[first:last],
+            dataset.xAllFinite, dataset.yAllFinite,
+            connect[first:last] if isinstance(connect, np.ndarray) else connect,
+        )
+        self._clip_window = (arrays, lower, upper, span, clipped)
+        return clipped
 
     def updateItems(self, styleUpdate: bool = True):
         dataset = self._getDisplayDataset()

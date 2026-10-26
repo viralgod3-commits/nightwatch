@@ -279,9 +279,48 @@ class PreparedCurveChecks(unittest.TestCase):
         self.assertEqual(submissions, [])
         self.plot.setXRange(30, 130, padding=0)
         self.app.processEvents()
+        self.assertEqual(submissions, [])
+        self.assertIs(self.curve.curve.getPath(), path)
+        self.plot.setXRange(65, 165, padding=0)
+        self.app.processEvents()
         self.assertTrue(submissions)
         self.assertGreater(self.curve.getData()[0][0], original_x[0])
         self.assertIsNot(self.curve.curve.getPath(), path)
+
+    def test_clipped_pan_margin_matches_reference_pixels(self):
+        self.curve.setClipToView(True)
+        reference = self.plot.plot(pen=pg.mkPen("#22dddd", width=1), antialias=True)
+        reference.setClipToView(True)
+        reference.setData(self.x, self.y, connect="finite")
+        reference.hide()
+        for curve in (self.curve, reference):
+            curve.setDynamicRangeLimit(10, hysteresis=3)
+        for left, width, bounds in (
+            (20, 100, (-2, 2)), (30, 100, (-2, 2)),
+            (65, 100, (-2, 2)), (105, 20, (-2, 2)),
+            (50, 100, (-.001, .001)), (60, 100, (-.002, .002)),
+            (-40, 100, (-2, 2)), (180, 100, (-2, 2)),
+        ):
+            self.plot.setXRange(left, left + width, padding=0)
+            self.plot.setYRange(*bounds, padding=0)
+            self.curve.show()
+            reference.hide()
+            for _ in range(8):
+                self.app.processEvents()
+            viewport = self.widget.viewport()
+            actual = viewport.grabFramebuffer() if hasattr(viewport, "grabFramebuffer") else self.widget.grab().toImage()
+            self.curve.hide()
+            reference.show()
+            for _ in range(8):
+                self.app.processEvents()
+            expected = viewport.grabFramebuffer() if hasattr(viewport, "grabFramebuffer") else self.widget.grab().toImage()
+            # A retained segment continues beyond the viewport instead of
+            # ending at the upstream clip point. Compare the complete interior
+            # while excluding the edge pixels affected by cap antialiasing.
+            area = self.widget.mapFromScene(self.plot.getViewBox().sceneBoundingRect()).boundingRect()
+            area = area.adjusted(4, 4, -4, -4)
+            self.assertEqual(actual.copy(area), expected.copy(area),
+                             f"Clipped curve changed at {left, width, bounds}")
 
     def test_explicit_data_updates_invalidate_reused_array_storage(self):
         path = self.curve.curve.getPath()
