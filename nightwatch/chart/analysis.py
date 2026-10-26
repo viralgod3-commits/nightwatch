@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from collections import Counter, OrderedDict
+from dataclasses import dataclass, field
 import numpy as np
 
 from ..models import Candle, chart_y_array
@@ -11,6 +12,16 @@ from ..indicators import (PriceStudyCache, volume_profile, profile_levels,
 from .preparation import RangeExtrema, decimate_series
 
 _states = OrderedDict()
+_STATE_BUDGET = 64 * 1024 * 1024
+
+
+@dataclass
+class _IndicatorState:
+    generation: object = None
+    source: list = field(default_factory=list)
+    cache: PriceStudyCache = field(default_factory=PriceStudyCache)
+    closed: np.ndarray | None = None
+    retained_bytes: int = 0
 
 
 def _candles(matrix):
@@ -21,9 +32,31 @@ def _candles(matrix):
 
 def _remember_state(token, state):
     if state is not None:
+        # Conservatively account for Candle objects, boxed floats and list
+        # references as well as numeric buffers. Keep active charts resident,
+        # but do not multiply their footprint by the number of visited intervals.
+        state.retained_bytes = len(state.source) * 320
+        if state.closed is not None:
+            state.retained_bytes += state.closed.nbytes
+        for _key, arrays, seeds in state.cache.entries.values():
+            state.retained_bytes += sum(a.nbytes for a in arrays)
+            if seeds is not None:
+                state.retained_bytes += sum(a.nbytes for a in seeds)
         _states[token] = state
-    while len(_states) > 12:
-        _states.popitem(last=False)
+    retained = sum(value.retained_bytes for value in _states.values())
+    latest = {}
+    for key in _states:
+        owner = key[0] if isinstance(key, tuple) and len(key) == 2 else key
+        latest[owner] = key
+    active = set(latest.values())
+    while len(_states) > 1 and (len(_states) > 12 or retained > _STATE_BUDGET):
+        oldest = next((key for key in _states if key not in active), None)
+        if oldest is None:
+            if len(_states) <= 12:
+                break  # Evicting active panes would force full seeds each tick.
+            oldest = next(iter(_states))
+        removed = _states.pop(oldest)
+        retained -= removed.retained_bytes
 
 
 def _delta_cache_miss(token, state):
@@ -107,9 +140,9 @@ def indicator_analysis(token, generation, source_update, requests, first, last, 
     if state is None:
         if mode != "full":
             return _delta_cache_miss(token, None)
-        state = [None, [], PriceStudyCache()]
+        state = _IndicatorState()
 
-    old_generation, source, cache = state
+    old_generation, source, cache = state.generation, state.source, state.cache
 
 
     if mode != "full" and old_generation is not None:
@@ -119,14 +152,35 @@ def indicator_analysis(token, generation, source_update, requests, first, last, 
         except (IndexError, TypeError, ValueError):
             return _delta_cache_miss(token, state)
 
-    applied, full_reset = _apply_indicator_source_update(source, source_update)
+    # A full transport after a timeframe switch need not discard calculations.
+    # Compare every closed OHLCV value; matching endpoints alone would miss an
+    # exchange correction inside the history. Only the mutable tail may differ.
+    matrix = np.asarray(source_update[1], dtype=np.float64) if mode == "full" else None
+    reuse = (matrix is not None and state.closed is not None
+             and len(matrix) == len(source)
+             and np.array_equal(matrix[:-1], state.closed))
+    old_prefix = (len(source), id(source[0]) if source else None,
+                  id(source[-2]) if len(source) > 1 else None)
+    if reuse:
+        if source:
+            source[-1] = Candle(*matrix[-1].tolist())
+        applied, full_reset = True, False
+    else:
+        applied, full_reset = _apply_indicator_source_update(source, source_update)
     if not applied:
         return _delta_cache_miss(token, state)
     if full_reset:
         cache.entries.clear()
+        state.closed = matrix[:-1].copy() if matrix is not None else None
+    elif mode == "delta" and old_prefix != (
+        len(source), id(source[0]) if source else None,
+        id(source[-2]) if len(source) > 1 else None,
+    ):
+        # An append/roll changes the closed prefix. Keep the incremental study
+        # state, but require a fresh full comparison baseline before reuse.
+        state.closed = None
 
-    state[0] = generation
-    _remember_state(token, state)
+    state.generation = generation
     first, last = min(first, len(source)), min(last, len(source))
     window = source[first:last]
     times = np.fromiter((c.time for c in window), dtype=float, count=len(window))
@@ -157,6 +211,7 @@ def indicator_analysis(token, generation, source_update, requests, first, last, 
             curves.append(decimate_series(line_times, values, width))
         prepared[name] = {"curves": tuple(curves), "scale_data": scale_data, "scale_index": scale_index}
     prepared["__source_generation__"] = tuple(generation)
+    _remember_state(token, state)
     return prepared
 
 

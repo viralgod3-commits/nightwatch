@@ -389,6 +389,86 @@ class IndicatorChecks(unittest.TestCase):
             expected = self.values(complete[:102], name, STUDIES[name])
             self.assert_series_equal(tuple(curve[1] for curve in result[name]["curves"]), tuple(series[1:] for series in expected))
 
+    def assert_prepared_equal(self, actual, expected):
+        for name in STUDIES:
+            for left, right in zip(actual[name]["curves"], expected[name]["curves"]):
+                self.assert_series_equal(left[:2], right[:2])
+
+    def test_timeframe_return_reuses_only_exact_closed_history(self):
+        from unittest.mock import patch
+        from nightwatch.chart import analysis
+
+        source = matrix(history())
+        requests = tuple(STUDIES.items())
+        token = (self.id(), "15m")
+        indicator_analysis(token, (1, 0), ("full", source), requests, 0, len(source), 800, False)
+        other = source.copy()
+        other[:, 0] += 60
+        indicator_analysis((self.id(), "1m"), (2, 0), ("full", other), requests, 0, len(source), 800, False)
+        source[-1, 2] += 5
+        source[-1, 4] += 4
+        source[-1, 5:] *= 1.5
+        with patch.object(analysis, "_candles", side_effect=AssertionError("Unchanged history rebuilt")):
+            actual = indicator_analysis(token, (3, 0), ("full", source), requests, 0, len(source), 800, False)
+        expected = indicator_analysis((self.id(), "reference"), (3, 0), ("full", source), requests, 0, len(source), 800, False)
+        self.assert_prepared_equal(actual, expected)
+
+        # Live deltas keep the closed-prefix proof valid on another return.
+        source[-1, 4] -= 1
+        indicator_analysis(token, (3, 1), ("delta", len(source), source[0, 0], source[-2:]), requests, 0, len(source), 800, False)
+        with patch.object(analysis, "_candles", side_effect=AssertionError("Live tail invalidated history")):
+            actual = indicator_analysis(token, (4, 0), ("full", source), requests, 0, len(source), 800, False)
+        expected = indicator_analysis((self.id(), "reference"), (4, 0), ("full", source), requests, 0, len(source), 800, False)
+        self.assert_prepared_equal(actual, expected)
+
+        # An interior correction must invalidate even with identical endpoints.
+        source[100, 2] += 8
+        source[100, 4] += 7
+        with patch.object(analysis, "_candles", wraps=analysis._candles) as rebuild:
+            actual = indicator_analysis(token, (5, 0), ("full", source), requests, 0, len(source), 800, False)
+            rebuild.assert_called_once()
+        expected = indicator_analysis((self.id(), "reference"), (5, 0), ("full", source), requests, 0, len(source), 800, False)
+        self.assert_prepared_equal(actual, expected)
+
+    def test_full_seed_after_append_or_roll_refreshes_comparison_baseline(self):
+        from unittest.mock import patch
+        from nightwatch.chart import analysis
+
+        complete = matrix(history(305))
+        requests = tuple(STUDIES.items())
+        for rolled in (False, True):
+            with self.subTest(rolled=rolled):
+                token = (self.id(), rolled)
+                source = complete[:300].copy()
+                indicator_analysis(token, (1, 0), ("full", source), requests, 0, len(source), 800, False)
+                source[-1, 4] += 2
+                source[-1, 2] = max(source[-1, 2], source[-1, 4])
+                source = np.concatenate((source[1:] if rolled else source, complete[300:301]))
+                indicator_analysis(token, (1, 1), ("delta", len(source), source[0, 0], source[-2:]), requests, 0, len(source), 800, False)
+                with patch.object(analysis, "_candles", wraps=analysis._candles) as rebuild:
+                    actual = indicator_analysis(token, (2, 0), ("full", source), requests, 0, len(source), 800, False)
+                    rebuild.assert_called_once()
+                expected = indicator_analysis((self.id(), "reference"), (2, 0), ("full", source), requests, 0, len(source), 800, False)
+                self.assert_prepared_equal(actual, expected)
+
+    def test_timeframe_cache_budget_preserves_other_active_charts(self):
+        from unittest.mock import patch
+        from nightwatch.chart import analysis
+
+        source = matrix(history())
+        requests = tuple(STUDIES.items())
+        owner = self.id()
+        first, other, current = (owner, "1m"), (owner + "/other", "1m"), (owner, "5m")
+        with patch.object(analysis, "_states", analysis.OrderedDict()), patch.object(analysis, "_STATE_BUDGET", 1):
+            for token in (first, other, current):
+                indicator_analysis(token, (1, 0), ("full", source), requests, 0, len(source), 800, False)
+            self.assertEqual(set(analysis._states), {other, current})
+            missing = indicator_analysis(first, (1, 0), ("delta", len(source), source[0, 0], source[-2:]), requests, 0, len(source), 800, False)
+            self.assertTrue(missing["__cache_miss__"])
+            for token in (other, current):
+                result = indicator_analysis(token, (1, 1), ("delta", len(source), source[0, 0], source[-2:]), requests, 0, len(source), 800, False)
+                self.assertNotIn("__cache_miss__", result)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

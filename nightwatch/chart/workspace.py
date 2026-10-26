@@ -829,6 +829,7 @@ class _IndicatorAnalysisWorker(QtCore.QRunnable):
         key: tuple[Any, ...],
         source_update: tuple[Any, ...],
         transport_epoch: int,
+        interval: str,
         requests: tuple[tuple[str, dict[str, Any]], ...],
         first: int,
         last: int,
@@ -840,6 +841,7 @@ class _IndicatorAnalysisWorker(QtCore.QRunnable):
         self.key = key
         self.source_update = source_update
         self.transport_epoch = int(transport_epoch)
+        self.interval = interval
         self.requests = requests
         self.first = max(0, int(first))
         self.last = max(self.first, int(last))
@@ -876,7 +878,7 @@ class _IndicatorAnalysisWorker(QtCore.QRunnable):
                 )
             prepared = run_analysis(
                 indicator_analysis,
-                id(self.state),
+                (id(self.state), self.interval),
                 generation,
                 process_update,
                 self.requests,
@@ -7844,6 +7846,7 @@ class ChartWorkspace(QtWidgets.QWidget):
             key,
             source_update,
             transport_epoch,
+            self.interval,
             requests,
             first,
             last,
